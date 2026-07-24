@@ -30,6 +30,41 @@ fn keyboard_up_belongs_to_composer_history_not_transcript() {
 }
 
 #[test]
+fn composer_edits_do_not_invalidate_transcript_presentation() {
+    let mut app = Application::new(AppState::new());
+    let revision = app.state.transcript_revision;
+
+    app.handle(UserIntent::Key(KeyEvent::new(
+        KeyCode::Char('你'),
+        KeyModifiers::NONE,
+    )));
+
+    assert_eq!(app.state.transcript_revision, revision);
+    assert_eq!(app.state.composer.row(0), "你");
+}
+
+#[test]
+fn submitting_a_prompt_invalidates_transcript_presentation() {
+    let mut app = Application::new(AppState::new());
+    app.handle(UserIntent::Key(KeyEvent::new(
+        KeyCode::Char('你'),
+        KeyModifiers::NONE,
+    )));
+    let revision = app.state.transcript_revision;
+
+    app.handle(UserIntent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    assert_ne!(app.state.transcript_revision, revision);
+    assert!(matches!(
+        app.state.messages.last(),
+        Some(crate::app::ChatMessage::User(text)) if text == "你"
+    ));
+}
+
+#[test]
 fn mouse_scroll_down_returns_to_live_and_clears_unread() {
     let mut app = Application::new(AppState::new());
     app.state.set_chat_scroll_limit(40);

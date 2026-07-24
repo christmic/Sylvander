@@ -100,6 +100,13 @@ Rendering occurs only when state is dirty. Idle animation ticks do not dirty a
 still interface. User input bypasses the frame clock for immediate feedback;
 streaming deltas are coalesced to avoid cursor churn and excess terminal writes.
 
+The runtime presentation owns a width- and revision-keyed transcript cache.
+Composer-only edits repaint the Composer without reparsing Markdown or
+rewrapping retained history. New transcript events, live elapsed-time ticks,
+session metadata changes, tool-detail mode, theme changes, and terminal width
+changes invalidate the cache. The cache contains only owned presentation rows;
+it never becomes application state or protocol data.
+
 Panels are pure renderers:
 
 - Input: `&AppState`, `Rect`, active semantic Palette.
@@ -122,6 +129,7 @@ At minimum, preserve tests for:
 - CJK, combining sequences, and exact-width wrapping preserve the hardware
   cursor's terminal-cell position;
 - redraw floods remain bounded and do not drop a subsequent keyboard event;
+- Composer-only edits do not rebuild retained transcript rows;
 - transcript count/byte budgets and streaming/tool payload limits remain bounded.
 - repeated scrolling at the oldest row remains bounded and the next downward
   input moves immediately;

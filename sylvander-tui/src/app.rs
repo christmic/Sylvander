@@ -108,6 +108,11 @@ pub struct AppState {
     pub chat_scroll_limit: usize,
     /// Events received while the viewport is detached from live output.
     pub unread_events: usize,
+    /// Monotonic presentation revision for transcript-affecting state.
+    ///
+    /// The renderer uses this to retain already parsed and wrapped history
+    /// while the user edits the Composer. It does not encode domain meaning.
+    pub(crate) transcript_revision: u64,
     /// Quit signal — set by `handle_key` on Ctrl+C / Esc.
     pub should_quit: bool,
 
@@ -201,6 +206,7 @@ impl AppState {
             chat_scroll: 0,
             chat_scroll_limit: 0,
             unread_events: 0,
+            transcript_revision: 0,
             should_quit: false,
             pending_actions: Vec::new(),
             dirty: DirtyFlag::default(),
@@ -275,6 +281,10 @@ impl AppState {
             self.chat_scroll.min(limit)
         };
     }
+
+    pub(crate) fn touch_transcript(&mut self) {
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
+    }
 }
 
 impl Default for AppState {
@@ -295,10 +305,12 @@ impl AppState {
             // A still interface must remain still. Ticks only repaint while
             // elapsed time or an active state can visibly change.
             if self.has_live_activity() {
+                self.touch_transcript();
                 self.dirty.mark();
             }
             return None;
         }
+        self.touch_transcript();
         if self.chat_scroll > 0 && event_adds_transcript_content(&event) {
             self.unread_events = self.unread_events.saturating_add(1);
         }

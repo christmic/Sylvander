@@ -16,7 +16,13 @@ use ratatui::{
 use crate::app::AppState;
 use crate::component::Component;
 use crate::modal::ModalPlacement;
+use crate::panel::chat::TranscriptCache;
 use crate::panel::{ChatPanel, InputPanel, StatusPanel};
+
+#[derive(Default)]
+pub(crate) struct RuntimeRenderer {
+    transcript: TranscriptCache,
+}
 
 pub fn dispatch(frame: &mut Frame, state: &AppState) {
     dispatch_with_metrics(frame, state);
@@ -28,6 +34,22 @@ pub struct FrameMetrics {
 }
 
 pub fn dispatch_with_metrics(frame: &mut Frame, state: &AppState) -> FrameMetrics {
+    dispatch_impl(frame, state, None)
+}
+
+pub(crate) fn dispatch_runtime(
+    frame: &mut Frame,
+    state: &AppState,
+    renderer: &mut RuntimeRenderer,
+) -> FrameMetrics {
+    dispatch_impl(frame, state, Some(&mut renderer.transcript))
+}
+
+fn dispatch_impl(
+    frame: &mut Frame,
+    state: &AppState,
+    transcript_cache: Option<&mut TranscriptCache>,
+) -> FrameMetrics {
     let area = frame.area();
     // 1. Panel layer.
     // Paint one warm-neutral canvas first. Individual widgets may leave
@@ -40,7 +62,10 @@ pub fn dispatch_with_metrics(frame: &mut Frame, state: &AppState) -> FrameMetric
     let input = InputPanel;
     let status = StatusPanel;
     let chunks = panel_chunks(area, state);
-    let transcript_scroll_limit = chat.render_with_scroll_limit(frame, chunks[0], state);
+    let transcript_scroll_limit = match transcript_cache {
+        Some(cache) => ChatPanel::render_cached(frame, chunks[0], state, cache),
+        None => chat.render_with_scroll_limit(frame, chunks[0], state),
+    };
     input.render(frame, chunks[1], state);
 
     // Temporary choices are structurally below the Composer. Long-form review

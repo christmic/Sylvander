@@ -134,6 +134,41 @@ fn readable_column_stays_left_anchored_when_terminal_goes_fullscreen() {
 }
 
 #[test]
+fn runtime_cache_retains_wrapped_history_while_composer_changes() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut state = seeded();
+    let mut cache = TranscriptCache::default();
+    let mut t = terminal(80, 24);
+    t.draw(|frame| {
+        ChatPanel::render_cached(frame, Rect::new(0, 0, 80, 24), &state, &mut cache);
+    })
+    .unwrap();
+    assert_eq!(cache.rebuilds, 1);
+
+    state
+        .composer
+        .handle_key(&KeyEvent::new(KeyCode::Char('你'), KeyModifiers::NONE));
+    t.draw(|frame| {
+        ChatPanel::render_cached(frame, Rect::new(0, 0, 80, 24), &state, &mut cache);
+    })
+    .unwrap();
+    assert_eq!(
+        cache.rebuilds, 1,
+        "Composer-only input must not reparse transcript history"
+    );
+
+    state.apply(crate::event::DomainEvent::TextChunk {
+        delta: "new".into(),
+    });
+    t.draw(|frame| {
+        ChatPanel::render_cached(frame, Rect::new(0, 0, 80, 24), &state, &mut cache);
+    })
+    .unwrap();
+    assert_eq!(cache.rebuilds, 2);
+}
+
+#[test]
 fn welcome_prelude_remains_when_first_turn_is_appended() {
     let mut s = AppState::new();
     s.welcomed = true;

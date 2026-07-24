@@ -8,6 +8,20 @@ use crossterm::event::KeyEvent;
 use crate::app::AppState;
 use crate::event::{Action, DomainEvent};
 
+#[derive(PartialEq, Eq)]
+struct TranscriptInputSignature {
+    message_count: usize,
+    streaming_bytes: usize,
+    thinking_bytes: usize,
+    welcomed: bool,
+    tool_details_expanded: bool,
+    session_id: Option<String>,
+    model: String,
+    workspace: std::path::PathBuf,
+    branch: String,
+    theme: crate::theme::ThemeName,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum UserIntent {
     Key(KeyEvent),
@@ -26,6 +40,7 @@ impl Application {
     }
 
     pub fn handle(&mut self, intent: UserIntent) {
+        let before = transcript_input_signature(&self.state);
         match intent {
             UserIntent::Key(key) => {
                 if let Some(action) = self.state.handle_key(&key) {
@@ -37,6 +52,9 @@ impl Application {
             UserIntent::Redraw => self.state.dirty.mark(),
         }
         self.state.enforce_memory_budget();
+        if before != transcript_input_signature(&self.state) {
+            self.state.touch_transcript();
+        }
     }
 
     pub fn apply(&mut self, event: DomainEvent) {
@@ -47,6 +65,21 @@ impl Application {
 
     pub fn take_effects(&mut self) -> Vec<Action> {
         std::mem::take(&mut self.state.pending_actions)
+    }
+}
+
+fn transcript_input_signature(state: &AppState) -> TranscriptInputSignature {
+    TranscriptInputSignature {
+        message_count: state.messages.len(),
+        streaming_bytes: state.streaming.len(),
+        thinking_bytes: state.streaming_thinking.len(),
+        welcomed: state.welcomed,
+        tool_details_expanded: state.tool_details_expanded,
+        session_id: state.session_id.clone(),
+        model: state.metadata.model.clone(),
+        workspace: state.metadata.workspace.clone(),
+        branch: state.metadata.branch.clone(),
+        theme: crate::theme::active_name(),
     }
 }
 

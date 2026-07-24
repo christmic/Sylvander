@@ -18,6 +18,16 @@ use crate::theme;
 
 pub struct ChatPanel;
 
+#[derive(Default)]
+pub(crate) struct TranscriptCache {
+    revision: u64,
+    width: usize,
+    initialized: bool,
+    lines: Vec<Line<'static>>,
+    #[cfg(test)]
+    rebuilds: usize,
+}
+
 impl Component for ChatPanel {
     fn height(&self, _state: &AppState, _viewport_width: u16) -> Constraint {
         Constraint::Min(0)
@@ -29,59 +39,80 @@ impl Component for ChatPanel {
 }
 
 impl ChatPanel {
+    pub(crate) fn render_cached(
+        frame: &mut Frame,
+        area: Rect,
+        state: &AppState,
+        cache: &mut TranscriptCache,
+    ) -> usize {
+        let inner = readable_area(area);
+        let width = inner.width as usize;
+        if !cache.initialized || cache.revision != state.transcript_revision || cache.width != width
+        {
+            cache.lines = transcript_lines(state, width);
+            cache.revision = state.transcript_revision;
+            cache.width = width;
+            cache.initialized = true;
+            #[cfg(test)]
+            {
+                cache.rebuilds += 1;
+            }
+        }
+        render_transcript_lines(frame, area, inner, state, &cache.lines)
+    }
+
     pub fn render_with_scroll_limit(
         &self,
         frame: &mut Frame,
         area: Rect,
         state: &AppState,
     ) -> usize {
-        let block = Block::default().borders(Borders::NONE);
         let inner = readable_area(area);
-        frame.render_widget(block, area);
-
         let width = inner.width as usize;
-
         let lines = transcript_lines(state, width);
-
-        let has_unread = state.chat_scroll > 0 && state.unread_events > 0;
-        let visible = inner.height.saturating_sub(u16::from(has_unread)) as usize;
-        let total = lines.len();
-        let start = if total > visible + state.chat_scroll {
-            total - visible - state.chat_scroll
-        } else {
-            0
-        };
-
-        for (row, line) in lines.iter().skip(start).enumerate() {
-            if row >= visible {
-                break;
-            }
-            let line_area = Rect {
-                x: inner.x,
-                y: inner.y + row as u16,
-                width: inner.width,
-                height: 1,
-            };
-            frame.render_widget(line.clone(), line_area);
-        }
-
-        if has_unread {
-            let unread_area = Rect {
-                x: inner.x,
-                y: inner.y + inner.height.saturating_sub(1),
-                width: inner.width,
-                height: 1,
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!("↓ {} new events · PgDn return to live", state.unread_events),
-                    theme::active(),
-                ))),
-                unread_area,
-            );
-        }
-        total.saturating_sub(visible)
+        render_transcript_lines(frame, area, inner, state, &lines)
     }
+}
+
+fn render_transcript_lines(
+    frame: &mut Frame,
+    area: Rect,
+    inner: Rect,
+    state: &AppState,
+    lines: &[Line<'static>],
+) -> usize {
+    frame.render_widget(Block::default().borders(Borders::NONE), area);
+    let has_unread = state.chat_scroll > 0 && state.unread_events > 0;
+    let visible = inner.height.saturating_sub(u16::from(has_unread)) as usize;
+    let total = lines.len();
+    let start = total.saturating_sub(visible + state.chat_scroll);
+
+    for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
+        let line_area = Rect {
+            x: inner.x,
+            y: inner.y + row as u16,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(line.clone(), line_area);
+    }
+
+    if has_unread {
+        let unread_area = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("↓ {} new events · PgDn return to live", state.unread_events),
+                theme::active(),
+            ))),
+            unread_area,
+        );
+    }
+    total.saturating_sub(visible)
 }
 
 impl ChatPanel {
@@ -95,7 +126,7 @@ impl ChatPanel {
     }
 }
 
-fn transcript_lines(state: &AppState, width: usize) -> Vec<Line<'_>> {
+fn transcript_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
     // Welcome is the first block in a newly started conversation, not a
     // separate page. Once the user submits, turns append below it and the
     // lockup leaves the viewport only through ordinary transcript scroll.
@@ -130,9 +161,9 @@ fn transcript_lines(state: &AppState, width: usize) -> Vec<Line<'_>> {
     lines
 }
 
-fn push_message_lines<'a>(
-    msg: &'a ChatMessage,
-    lines: &mut Vec<Line<'a>>,
+fn push_message_lines(
+    msg: &ChatMessage,
+    lines: &mut Vec<Line<'static>>,
     width: usize,
     tool_details_expanded: bool,
     tool_presentations: &[sylvander_protocol::ToolPresentationDescriptor],
@@ -148,7 +179,7 @@ fn push_message_lines<'a>(
             {
                 lines.push(Line::from(vec![
                     Span::styled(if index == 0 { "❯ " } else { "  " }, theme::user_speaker()),
-                    Span::styled(chunk, theme::text()),
+                    Span::styled(chunk.to_owned(), theme::text()),
                 ]));
             }
         }
@@ -182,7 +213,7 @@ fn push_message_lines<'a>(
             let st = theme::tool_status_style(*status);
             lines.push(Line::from(vec![
                 Span::styled("⏺ ", st),
-                Span::styled(name, st),
+                Span::styled(name.clone(), st),
             ]));
             for line in input_kv_lines(input, width) {
                 lines.push(line);
@@ -290,7 +321,10 @@ fn push_message_lines<'a>(
         }
         ChatMessage::Thinking(text) => {
             for chunk in display_chunks(text, width) {
-                lines.push(Line::from(Span::styled(chunk, theme::thinking_text())));
+                lines.push(Line::from(Span::styled(
+                    chunk.to_owned(),
+                    theme::thinking_text(),
+                )));
             }
         }
         ChatMessage::Info(text) => {
@@ -340,7 +374,7 @@ fn push_message_lines<'a>(
                     let short_id = task.task_id.chars().take(8).collect::<String>();
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {glyph} "), style),
-                        Span::styled(&task.purpose, theme::text()),
+                        Span::styled(task.purpose.clone(), theme::text()),
                         Span::styled(format!(" · {short_id}"), theme::text_muted()),
                     ]));
                     if !task.detail.is_empty() {
@@ -376,7 +410,7 @@ fn detail_style(kind: crate::tool_presenter::DetailKind, is_error: bool) -> rata
 
 /// Render one meaningful Sylvander turn. The compact presence mark appears
 /// once; it is not a miniature replacement for the welcome character.
-fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
+fn push_agent_turn(text: &str, lines: &mut Vec<Line<'static>>, width: usize) {
     let body_width = width.saturating_sub(3).max(1);
     let body = crate::markdown::render(text, body_width);
     let mut has_marker = false;
