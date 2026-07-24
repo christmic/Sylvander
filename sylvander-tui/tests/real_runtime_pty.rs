@@ -894,6 +894,13 @@ fn run_tui_with_exit(
     if disconnect {
         child.kill().expect("disconnect TUI child");
     } else {
+        writer.write_all(b"\x1b").expect("send idle escape");
+        writer.flush().expect("flush idle escape");
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            child.try_wait().expect("poll after idle Escape").is_none(),
+            "idle Escape must keep the real-runtime TUI open"
+        );
         writer.write_all(b"\x03").expect("send explicit quit");
         writer.flush().expect("flush explicit quit");
     }

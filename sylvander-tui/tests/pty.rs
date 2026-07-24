@@ -309,6 +309,13 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
         })
         .expect("resize pseudo-terminal");
     std::thread::sleep(Duration::from_millis(250));
+    writer.write_all(b"\x1b").expect("send idle escape");
+    writer.flush().expect("flush idle escape");
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        child.try_wait().expect("poll after idle Escape").is_none(),
+        "idle Escape must keep the TUI open"
+    );
     writer.write_all(b"\x03").expect("send explicit quit");
     writer.flush().expect("flush quit");
 
@@ -426,6 +433,16 @@ fn binary_renders_across_compact_tmux_and_ghostty_term_surfaces() {
             pair.master.resize(size).expect("resize surface PTY");
             std::thread::sleep(Duration::from_millis(50));
         }
+        writer.write_all(b"\x1b").expect("send idle surface escape");
+        writer.flush().expect("flush idle surface escape");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            child
+                .try_wait()
+                .expect("poll surface after idle Escape")
+                .is_none(),
+            "{term} TUI exited on idle Escape"
+        );
         writer.write_all(b"\x03").expect("exit surface TUI");
         writer.flush().expect("flush surface exit");
         let deadline = Instant::now() + Duration::from_secs(3);
