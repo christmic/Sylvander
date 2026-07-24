@@ -35,6 +35,17 @@ target/release/sylvander       server
 target/release/sylvander-tui   terminal client
 ```
 
+Both binaries are self-describing:
+
+```sh
+target/release/sylvander --help
+target/release/sylvander-tui --help
+```
+
+Use `--version` to report the package version. The server intentionally reads
+its configuration path from `SYLVANDER_CONFIG`; the TUI help lists its three
+launch options and points to the separate preference reference.
+
 ### 2.2 Create the local configuration
 
 Copy the maintained self-use profile:
