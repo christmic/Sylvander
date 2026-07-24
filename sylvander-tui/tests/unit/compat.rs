@@ -38,11 +38,13 @@ fn compact_help_wide_carries_full_shortcuts_per_mode() {
 
 #[test]
 fn compact_help_collapses_at_narrow() {
-    // Narrow + below must reduce to `Enter:send  Esc:quit`.
+    // Narrow + below keeps the explicit quit chord discoverable.
     let narrow = compact_help_for(Breakpoint::Narrow, "Normal");
     let compact = compact_help_for(Breakpoint::Compact, "Normal");
     assert_eq!(narrow, compact);
     assert!(narrow.starts_with("Enter:send"));
+    assert!(narrow.contains("Ctrl+C:quit"));
+    assert!(!narrow.contains("Esc:quit"));
 }
 
 #[test]

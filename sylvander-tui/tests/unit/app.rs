@@ -785,15 +785,15 @@ fn shift_enter_inserts_newline_and_does_not_submit() {
 }
 
 #[test]
-fn esc_quits_when_no_modal() {
+fn idle_escape_preserves_the_work_surface() {
     let mut s = AppState::new();
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     s.handle_key(&esc);
-    assert!(s.should_quit);
+    assert!(!s.should_quit);
 }
 
 #[test]
-fn vim_insert_escape_changes_mode_before_idle_exit() {
+fn vim_insert_escape_changes_mode_without_an_idle_exit() {
     let mut state = AppState::new();
     state
         .composer
@@ -805,7 +805,7 @@ fn vim_insert_escape_changes_mode_before_idle_exit() {
     assert_eq!(state.composer.mode_label(), Some("NORMAL"));
 
     state.handle_key(&esc);
-    assert!(state.should_quit);
+    assert!(!state.should_quit);
 }
 
 #[test]

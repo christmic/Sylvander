@@ -35,6 +35,11 @@ not quit the TUI or send the Agent-wide Stop command. The terminal interrupted
 event preserves partial prose, settles pending tool rows, closes decision
 surfaces, and then advances the local queue.
 
+While idle, `Esc` dismisses the current temporary surface or leaves Vim insert
+mode; with no such state it is intentionally inert. Exiting requires `/quit` or
+`Ctrl+C` on an empty Composer, so an ordinary cancel/IME key cannot accidentally
+destroy the current terminal work surface.
+
 ## Tool Activity
 
 Tool calls are paired by `call_id`, never by display name. This is required when

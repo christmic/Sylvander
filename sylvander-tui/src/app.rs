@@ -113,7 +113,7 @@ pub struct AppState {
     /// The renderer uses this to retain already parsed and wrapped history
     /// while the user edits the Composer. It does not encode domain meaning.
     pub(crate) transcript_revision: u64,
-    /// Quit signal — set by `handle_key` on Ctrl+C / Esc.
+    /// Quit signal — set only by an explicit quit action.
     pub should_quit: bool,
 
     // ---- pending outbound actions (drained by main loop each tick) ----
@@ -1653,7 +1653,9 @@ impl AppState {
             return None;
         }
 
-        // 4. Esc interrupts an active turn. It never terminates the Agent.
+        // 4. Esc interrupts active work, leaves Vim insert mode, or otherwise
+        // stays local. Quitting requires Ctrl+C on an empty Composer or /quit;
+        // an ordinary cancel/back key must never destroy the work surface.
         if key.code == crossterm::event::KeyCode::Esc {
             if self.turn_active {
                 if self.interrupt_requested {
@@ -1675,8 +1677,6 @@ impl AppState {
                 self.dirty.mark();
                 return None;
             }
-            self.should_quit = true;
-            self.dirty.mark();
             return None;
         }
 

@@ -418,6 +418,8 @@ A change is acceptable only when all are true:
 13. Closing any temporary surface restores the exact draft and scroll position.
 14. During tool activity, historical `❯` turns remain unframed; exactly one
     pair of full-width rules and one hardware cursor identify the live Composer.
+15. Idle `Esc` never quits the application; `/quit` or `Ctrl+C` on an empty
+    Composer is the explicit exit path.
 
 ## 14. Editable references
 
