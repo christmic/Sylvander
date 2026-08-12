@@ -20,7 +20,6 @@ use sylvander_agent::curated_memory::{
     CuratedContextEntry, CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope,
     MemoryCandidateError, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSubmission,
 };
-use sylvander_agent::session_store::StoredSession;
 use sylvander_agent::tool_context::ToolContext;
 use sylvander_agent::tool_invocation::{
     AuthorizedToolInvocation, CapabilityFeature, CapabilityFeatureKind, ToolInvocationClass,
@@ -45,6 +44,7 @@ use crate::guardian_curation::{
     GuardianCurationStore, GuardianEvent, GuardianEventKind, MutationAction, MutationDeliveryState,
     PolicyOutcome, Reconciliation, Sensitivity,
 };
+use crate::storage::session::StoredSession;
 use crate::user_profile_store::UserProfileStore;
 
 const CANONICAL_APPLICATION_ID: i64 = 1_398_361_987;
@@ -1045,7 +1045,7 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
                 &tool_capability_name(request.route()),
                 request.input(),
                 request.snapshot().revision(),
-                sylvander_agent::session::now_secs(),
+                crate::session::now_secs(),
             )
             .map_err(map_invocation_error)?;
         Ok(Box::new(RuntimeWorkerToolGrant { lease: Some(lease) }))
@@ -1136,7 +1136,7 @@ impl GuardianRuntimeInner {
             if *shutdown.borrow() {
                 break;
             }
-            let now = sylvander_agent::session::now_secs();
+            let now = crate::session::now_secs();
             for _ in 0..MAX_RUNS_PER_PASS {
                 match self.drain_once(now).await {
                     Ok(true) => {
@@ -2066,7 +2066,7 @@ fn digest_value(domain: &[u8], value: &Value) -> Result<String, serde_json::Erro
 }
 
 fn now_seconds() -> i64 {
-    sylvander_agent::session::now_secs()
+    crate::session::now_secs()
 }
 
 fn initialize_canonical_schema(connection: &mut Connection) -> Result<(), GuardianRuntimeError> {

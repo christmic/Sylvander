@@ -1,6 +1,6 @@
-//! Agent run engine — lifecycle manager for agents and sessions.
+//! Runtime Agent supervisor — lifecycle manager for Agents and Sessions.
 //!
-//! [`AgentRunEngine`](crate::engine::AgentRunEngine) is the top-level orchestrator. All communication
+//! [`AgentRunEngine`] is the top-level lifecycle orchestrator. All communication
 //! flows through the message bus — there are no direct channels between
 //! the engine and agents.
 //!
@@ -27,12 +27,12 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::bus::{
+use crate::agent_run::AgentRun;
+use crate::session::SessionMetadata;
+use sylvander_agent::bus::{
     AgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender, SystemMessage,
 };
-use crate::run::AgentRun;
-use crate::session::SessionMetadata;
-use crate::spec::{AgentId, AgentSpec, SessionId};
+use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 
 /// Supplies immutable Agent runs to the engine's revision router.
 ///
@@ -207,7 +207,7 @@ impl AgentRunEngine {
         // Subscribe to all broadcast messages — we filter for StatusUpdate
         // in the receiver. (We can't filter by SystemMessage variant alone
         // because PartialEq compares the inner fields too.)
-        let status_filter = crate::bus::SubscriptionFilter {
+        let status_filter = sylvander_agent::bus::SubscriptionFilter {
             session_ids: None,
             recipients: Some(vec![Recipient::Broadcast]),
             kinds: None,
@@ -291,7 +291,7 @@ impl AgentRunEngine {
             .subscribe(initial_run.subscription_filter())
             .await
             .map_err(|error| EngineError::Bus(format!("agent subscribe failed: {error}")))?;
-        let status_filter = crate::bus::SubscriptionFilter {
+        let status_filter = sylvander_agent::bus::SubscriptionFilter {
             session_ids: None,
             recipients: Some(vec![Recipient::Broadcast]),
             kinds: None,
@@ -529,7 +529,7 @@ impl AgentRunEngine {
     pub async fn send_message(
         &self,
         session_id: SessionId,
-        target: crate::bus::Recipient,
+        target: sylvander_agent::bus::Recipient,
         text: impl Into<String>,
     ) -> Result<(), EngineError> {
         // Verify the session exists
@@ -548,7 +548,7 @@ impl AgentRunEngine {
             payload: text.into(),
             attachments: Vec::new(),
             timestamp: crate::session::now_secs(),
-            id: crate::bus::MessageId::new(),
+            id: sylvander_agent::bus::MessageId::new(),
         };
 
         self.bus
@@ -697,7 +697,7 @@ pub enum EngineError {
 
     /// `AgentRun` build failed.
     #[error("build error: {0}")]
-    Build(#[from] crate::run::AgentRunError),
+    Build(#[from] crate::agent_run::AgentRunError),
 
     /// Bus operation failed.
     #[error("bus error: {0}")]
@@ -713,5 +713,5 @@ pub enum EngineError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../tests/unit/engine.rs"]
+#[path = "../tests/unit/agent_supervisor.rs"]
 mod tests;

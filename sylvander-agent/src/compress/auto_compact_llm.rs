@@ -43,13 +43,18 @@ pub trait AutoCompactLlm: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>>;
 }
 
-pub(crate) struct ProviderAutoCompactLlm {
+/// Provider-neutral summarizer backed by an injected `llm-core` provider.
+///
+/// Runtime selects the provider and exact model; this adapter only performs
+/// the bounded kernel call required by automatic compaction.
+pub struct ProviderAutoCompactLlm {
     provider: Arc<dyn sylvander_llm_core::ModelProvider>,
     model: sylvander_llm_core::ModelInfo,
 }
 
 impl ProviderAutoCompactLlm {
-    pub(crate) fn new(
+    /// Bind an already-authorized provider and exact model to compaction.
+    pub fn new(
         provider: Arc<dyn sylvander_llm_core::ModelProvider>,
         model: sylvander_llm_core::ModelInfo,
     ) -> Self {

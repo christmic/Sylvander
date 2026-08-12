@@ -15,6 +15,7 @@ sylvander-llm-dashscope = { path = "../sylvander-llm-dashscope" }
 sylvander-llm-openai = { path = "../sylvander-llm-openai" }
 sylvander-protocol = { path = "../sylvander-protocol" }
 tokio = { workspace = true }
+futures-util = { workspace = true }
 async-trait = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,8 +29,7 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 
 [dev-dependencies]
-futures-util = { workspace = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 tempfile = "3"
 wiremock = "0.6"
 

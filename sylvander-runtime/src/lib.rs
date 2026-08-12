@@ -1,13 +1,13 @@
 //! # sylvander-runtime
 //!
-//! System runtime — the bootstrap and orchestration layer above the
-//! agent engine.
+//! System runtime — the stateful orchestration layer around the stateless
+//! Agent execution kernel.
 //!
 //! The runtime:
-//! 1. Boots the system (creates bus, engine, session store)
-//! 2. Spawns agents from configuration
-//! 3. Loads persistent sessions
-//! 4. Starts protocol channels (TUI, Telegram, ...)
+//! 1. Owns Agent and Session lifecycles
+//! 2. Persists transcripts and Runtime artifacts
+//! 3. Composes concrete execution environments and providers
+//! 4. Hosts protocol channels and exposes observable lifecycle events
 //!
 //! # Architecture
 //!
@@ -16,9 +16,9 @@
 //!       │  normalize external messages → BusMessage
 //!       ▼
 //! ┌──────────────────┐
-//! │  sylvander-runtime│  durable boot / session lifecycle / shutdown
+//! │  sylvander-runtime│  durable state / lifecycle / environment / shutdown
 //! ├──────────────────┤
-//! │  sylvander-agent  │  AgentRunEngine / AgentRun / AgentLoop
+//! │  sylvander-agent  │  immutable request + ports → AgentOutcome
 //! └──────────────────┘
 //! ```
 
@@ -33,6 +33,11 @@ mod agent_registry_snapshot_v3;
 #[cfg(test)]
 #[path = "../tests/unit/agent_registry_snapshot_v3_contract.rs"]
 mod agent_registry_snapshot_v3_tests;
+/// Runtime-owned execution facade for one configured Agent revision.
+pub mod agent_run;
+/// Runtime-owned lifecycle supervisor for Agents and Sessions.
+pub mod agent_supervisor;
+mod approval_store;
 mod boundary;
 mod capability_runtime;
 /// Target-aware local and remote coding-session isolation.
@@ -109,8 +114,16 @@ pub use request_scoped_provider::{
 };
 /// Evidence-backed, human-gated self-change experiments.
 pub mod self_change;
+/// Runtime Session state and metadata.
+pub mod session;
+/// Durable Runtime storage contracts and implementations.
+pub mod storage;
 #[allow(dead_code)] // Runtime-owned profile dispatch is integrated in the next bounded batch
 mod user_profile_store;
+
+#[cfg(test)]
+#[path = "../tests/unit/support.rs"]
+mod test_support;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -125,14 +138,7 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{
     BusDiagnostics, BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
 };
-use sylvander_agent::engine::{AgentRunEngine, RevisionedAgentRunProvider};
 use sylvander_agent::mcp_stdio::McpResultArtifactSink;
-#[cfg(test)]
-use sylvander_agent::run::AgentRun;
-use sylvander_agent::session::SessionMetadata;
-use sylvander_agent::session_store::{
-    SESSION_SCHEMA_OBJECT_NAMES, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
-};
 #[cfg(test)]
 use sylvander_agent::spec::AgentSpec;
 use sylvander_agent::spec::{AgentId, SessionId};
@@ -170,6 +176,9 @@ use crate::agent_admin::{
 };
 use crate::agent_registry_snapshot_v3::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
 #[cfg(test)]
+use crate::agent_run::AgentRun;
+use crate::agent_supervisor::{AgentRunEngine, RevisionedAgentRunProvider};
+#[cfg(test)]
 use crate::composition::default_tools;
 use crate::composition::{
     ConfiguredAgent, build_registry_agent_versioned_with_resolver, resolve_session_config,
@@ -194,6 +203,10 @@ use crate::memory_maintenance::{
 };
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
+use crate::session::SessionMetadata;
+use crate::storage::session::{
+    SESSION_SCHEMA_OBJECT_NAMES, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+};
 use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
 use agent_registry::{AgentRegistry, REGISTRY_SCHEMA_OBJECT_NAMES};
 use boundary::BoundaryGuard;
@@ -737,7 +750,7 @@ impl RevisionedAgentRunProvider for RuntimeRevisionProvider {
         &self,
         agent_id: &AgentId,
         revision: u64,
-    ) -> Result<sylvander_agent::run::AgentRun, String> {
+    ) -> Result<crate::agent_run::AgentRun, String> {
         self.configured_revision(agent_id, revision)
             .await
             .map(|configured| configured.run)
@@ -850,7 +863,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .list_persistent()
             .await
             .map_err(|error| boundary_failure(boundary, "list_sessions", error.to_string()))?;
-        let now = sylvander_agent::session::now_secs();
+        let now = crate::session::now_secs();
         let mut visible = Vec::new();
         for session in sessions {
             if session.metadata.user_id != user_id.0 && !privileged_principal(boundary) {
@@ -1035,7 +1048,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
         let feedback_digest = serde_json::to_string(&feedback)
             .map(|encoded| format!("sha256:{}", sha256_text(&encoded)))
             .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))?;
-        let recorded_at = sylvander_agent::session::now_secs();
+        let recorded_at = crate::session::now_secs();
         let feedback_id = store
             .record_feedback(
                 feedback,
@@ -1290,7 +1303,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
         let Some(guardian) = &self.guardian else {
             return MemoryConfirmationResponse::service_unavailable(operation);
         };
-        let now = sylvander_agent::session::now_secs();
+        let now = crate::session::now_secs();
         match request {
             MemoryConfirmationRequest::List { session_id, .. } => {
                 match guardian.pending_confirmations(&session, now).await {
@@ -1452,7 +1465,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 kind: sylvander_agent::bus::MessageKind::Chat,
                 payload: text,
                 attachments,
-                timestamp: sylvander_agent::session::now_secs(),
+                timestamp: crate::session::now_secs(),
                 id: sylvander_agent::bus::MessageId::new(),
             };
             let feedback_target = self.evidence_run_id.as_ref().map(|run_id| {
@@ -1536,7 +1549,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 kind: sylvander_agent::bus::MessageKind::System(system),
                 payload: String::new(),
                 attachments: Vec::new(),
-                timestamp: sylvander_agent::session::now_secs(),
+                timestamp: crate::session::now_secs(),
                 id: sylvander_agent::bus::MessageId::new(),
             })
             .await
@@ -1688,7 +1701,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
         })?;
         if let Some(guardian) = &self.guardian
             && let Err(error) = guardian
-                .enqueue_session_closed(&session, sylvander_agent::session::now_secs())
+                .enqueue_session_closed(&session, crate::session::now_secs())
                 .await
         {
             warn!(
@@ -1719,7 +1732,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
         self.discard_worktree(session_id, target).await;
         if let Some(guardian) = &self.guardian
             && let Err(error) = guardian
-                .enqueue_session_closed(&session, sylvander_agent::session::now_secs())
+                .enqueue_session_closed(&session, crate::session::now_secs())
                 .await
         {
             warn!(
@@ -1760,7 +1773,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 if store
                     .begin_agent_administration(crate::evidence::AgentAdministrationAudit {
                         id: id.clone(),
-                        occurred_at: sylvander_agent::session::now_secs(),
+                        occurred_at: crate::session::now_secs(),
                         request_id: boundary.request_id.clone(),
                         principal_digest: sha256_text(&principal.id.0),
                         channel_instance_id: boundary.channel_instance_id.clone(),
@@ -2155,7 +2168,7 @@ impl RuntimeUiService {
         }
         if let Some(guardian) = &self.guardian
             && let Err(error) = guardian
-                .audit_worker_session_binding(&session, sylvander_agent::session::now_secs())
+                .audit_worker_session_binding(&session, crate::session::now_secs())
                 .await
         {
             self.rollback_created_session(
@@ -2404,7 +2417,7 @@ impl RuntimeUiService {
         store
             .record_authorization_denial(AuthorizationDenial {
                 id: uuid::Uuid::new_v4().to_string(),
-                occurred_at: sylvander_agent::session::now_secs(),
+                occurred_at: crate::session::now_secs(),
                 request_id: boundary.request_id.clone(),
                 principal_digest: boundary
                     .principal
@@ -2791,7 +2804,7 @@ fn user_profile_audit(
 ) -> AdministrationAudit {
     AdministrationAudit {
         id,
-        occurred_at: sylvander_agent::session::now_secs(),
+        occurred_at: crate::session::now_secs(),
         request_id: boundary.request_id.clone(),
         principal_digest: boundary.principal.as_ref().map_or_else(
             || sha256_text("unauthenticated"),
@@ -2951,7 +2964,7 @@ fn registry_administration_audit(
 ) -> AdministrationAudit {
     AdministrationAudit {
         id,
-        occurred_at: sylvander_agent::session::now_secs(),
+        occurred_at: crate::session::now_secs(),
         request_id: boundary.request_id.clone(),
         principal_digest: sha256_text(&principal.id.0),
         channel_instance_id: boundary.channel_instance_id.clone(),
@@ -3714,7 +3727,7 @@ impl Runtime {
             .await
             .map_err(|error| RuntimeError::Evidence(error.to_string()))?,
         );
-        let guardian_now = sylvander_agent::session::now_secs();
+        let guardian_now = crate::session::now_secs();
         let guardian_settings = GuardianRuntimeSettings::for_runtime(
             config
                 .server
@@ -4037,7 +4050,7 @@ impl Runtime {
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
         if let Some(guardian) = &self.guardian
             && let Err(error) = guardian
-                .enqueue_session_closed(&session, sylvander_agent::session::now_secs())
+                .enqueue_session_closed(&session, crate::session::now_secs())
                 .await
         {
             warn!(
@@ -4155,7 +4168,6 @@ impl Runtime {
             let task_lifecycle = lifecycle.clone();
             let task_health = health.clone();
             let bus = self.bus.clone();
-            let sessions = self.session_store.clone();
             let ui = self.ui_service.clone();
             let mut task = tokio::spawn(async move {
                 let _exit_signal = ChannelExitSignal {
@@ -4166,7 +4178,7 @@ impl Runtime {
                     registration.channel,
                     registration.restart,
                     registration.session_defaults,
-                    (bus, sessions, ui),
+                    (bus, ui),
                     task_lifecycle,
                     task_health,
                 )
@@ -4363,15 +4375,11 @@ async fn supervise_channel(
     channel: Arc<dyn Channel>,
     policy: ChannelRestartPolicy,
     session_defaults: SessionConfigOverrides,
-    services: (
-        Arc<dyn MessageBus>,
-        Arc<dyn SessionStore>,
-        Arc<RuntimeUiService>,
-    ),
+    services: (Arc<dyn MessageBus>, Arc<RuntimeUiService>),
     lifecycle: ChannelReadiness,
     health: Arc<std::sync::RwLock<ChannelHealth>>,
 ) {
-    let (bus, sessions, ui) = services;
+    let (bus, ui) = services;
     let mut ready_once = false;
     let mut failures = 0_u32;
     loop {
@@ -4387,7 +4395,6 @@ async fn supervise_channel(
         let attempt = lifecycle.next_attempt();
         let ctx = ChannelContext::with_runtime_services_and_defaults(
             bus.clone(),
-            sessions.clone(),
             ui.clone(),
             Some(attempt.clone()),
             session_defaults.clone(),

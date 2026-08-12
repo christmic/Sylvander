@@ -124,7 +124,7 @@ enum MemoryAuthority {
 /// use sylvander_agent::tools::MemoryExecutionContext;
 /// use sylvander_agent::execution_context::AgentExecutionContext;
 /// let execution = AgentExecutionContext::restricted_for("forged-user", "agent", "session");
-/// let _ = MemoryExecutionContext::application_worker(&execution);
+/// let _ = MemoryExecutionContext::for_runtime_worker(&execution);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryExecutionContext {
@@ -140,10 +140,10 @@ pub struct MemoryExecutionContext {
 impl MemoryExecutionContext {
     /// Create an application-issued Worker context.
     ///
-    /// This constructor is crate-private so ordinary tools and plugins cannot
-    /// turn a caller-created execution context into trusted provenance.
+    /// Runtime must derive `execution` from authenticated, non-wire state.
+    /// Tools receive the resulting context but never this constructor's input.
     #[must_use]
-    pub(crate) fn application_worker(execution: &AgentExecutionContext) -> Self {
+    pub fn for_runtime_worker(execution: &AgentExecutionContext) -> Self {
         Self {
             authority: MemoryAuthority::ApplicationIssued,
             actor: MemoryActorKind::Worker,

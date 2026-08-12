@@ -8,8 +8,6 @@ use sylvander_agent::bus::MessageBus;
 use sylvander_agent::curated_memory::MemoryCandidateSink;
 use sylvander_agent::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
-use sylvander_agent::run::{AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession};
-use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentSpec, ToolRef};
 use sylvander_agent::tool::ToolRegistry;
 use sylvander_agent::tools::memory::MemoryStore;
@@ -34,6 +32,7 @@ use sylvander_protocol::{
     WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };
 
+use crate::agent_run::{AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession};
 use crate::config::{AgentDefinitionConfig, ExecutionTransportConfig, ServerConfig};
 #[cfg(test)]
 use crate::config::{ModelDefinitionConfig, ModelProviderConfig, SecretResolver};
@@ -51,6 +50,7 @@ use crate::request_scoped_provider::{
     AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
     RegistryCredentialSource, RenewableExternalSecretProvider,
 };
+use crate::storage::session::SessionStore;
 
 /// A configured run plus the metadata needed by protocol adapters.
 #[derive(Clone)]
@@ -400,7 +400,7 @@ impl ConfiguredAgent {
     pub(crate) async fn attach_authenticated_session(
         &self,
         session_id: sylvander_protocol::SessionId,
-        metadata: sylvander_agent::session::SessionMetadata,
+        metadata: crate::session::SessionMetadata,
     ) -> Result<AuthenticatedSession, AgentRunError> {
         let lease = self.session_issuer.issue(session_id, metadata)?;
         self.run.attach_authenticated_session(lease).await
@@ -872,8 +872,8 @@ fn validate_local_workspace_root(
 
 fn apply_server_run_settings(
     config: &ServerConfig,
-    mut builder: sylvander_agent::run::AgentRunBuilder,
-) -> sylvander_agent::run::AgentRunBuilder {
+    mut builder: crate::agent_run::AgentRunBuilder,
+) -> crate::agent_run::AgentRunBuilder {
     if let Some(path) = &config.server.workspace_journal {
         builder = builder.workspace_journal(path);
     }
@@ -888,9 +888,9 @@ fn apply_server_run_settings(
 
 fn apply_execution_targets(
     config: &ServerConfig,
-    mut builder: sylvander_agent::run::AgentRunBuilder,
+    mut builder: crate::agent_run::AgentRunBuilder,
     resolve: impl Fn(&crate::config::SecretRef) -> Result<crate::config::SecretValue, ()>,
-) -> Result<sylvander_agent::run::AgentRunBuilder, CompositionError> {
+) -> Result<crate::agent_run::AgentRunBuilder, CompositionError> {
     for target in &config.execution_targets {
         let executor: Arc<dyn WorkspaceExecutor> = match &target.transport {
             ExecutionTransportConfig::Ssh {

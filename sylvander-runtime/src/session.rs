@@ -1,4 +1,4 @@
-//! Session context — per-agent, per-session conversation state.
+//! Runtime-owned Session context and in-memory conversation state.
 //!
 //! Each [`SessionContext`](crate::session::SessionContext) holds the full message history for one agent
 //! in one session. Multiple agents in the same session each have their
@@ -6,14 +6,14 @@
 //! B's conversation.
 //!
 //! This value is the in-memory turn view. Durable ownership belongs to the
-//! injected [`crate::session_store::SessionStore`]; production Runtime uses
+//! injected [`crate::storage::session::SessionStore`]; production Runtime uses
 //! the SQLite implementation and rebuilds this view from persisted messages.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sylvander_llm_core::{ChatMessage, ModelResponse};
 
-use crate::spec::SessionId;
+use sylvander_agent::spec::SessionId;
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -432,7 +432,7 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn now_secs() -> i64 {
-    sylvander_agent::session::now_secs()
+    crate::session::now_secs()
 }
 
 #[cfg(test)]

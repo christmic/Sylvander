@@ -71,8 +71,8 @@ impl ToolContext {
     /// Construct an ordinary caller-owned tool context.
     ///
     /// This context has no relationship-memory authority even when the caller
-    /// later adds surface capabilities. Agent application code uses the
-    /// crate-private constructor below after resolving a real session.
+    /// later adds surface capabilities. Runtime uses [`Self::for_runtime`]
+    /// after resolving an authenticated execution.
     #[must_use]
     pub fn new(execution: AgentExecutionContext) -> Self {
         let memory_context = crate::tools::memory::MemoryExecutionContext::untrusted(&execution);
@@ -87,10 +87,13 @@ impl ToolContext {
         }
     }
 
+    /// Construct a context for a Runtime-authenticated execution.
+    ///
+    /// This is an application boundary API, never a model/tool input field.
     #[must_use]
-    pub(crate) fn application(execution: AgentExecutionContext) -> Self {
+    pub fn for_runtime(execution: AgentExecutionContext) -> Self {
         let memory_context =
-            crate::tools::memory::MemoryExecutionContext::application_worker(&execution);
+            crate::tools::memory::MemoryExecutionContext::for_runtime_worker(&execution);
         Self {
             execution: Arc::new(execution),
             budget: ExecutionBudget::default(),

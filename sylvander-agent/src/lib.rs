@@ -86,9 +86,8 @@
 
 #![doc(html_root_url = "https://docs.rs/sylvander-agent/0.1.0")]
 
-/// Approval request persistence, policy evaluation, and user decisions.
+/// Approval policy evaluation and user decisions inside one execution.
 pub mod approval;
-mod approval_store;
 /// One-shot AskUser prompt/answer gate for an Agent run.
 pub mod ask_user_gate;
 /// In-process message bus, stream events, and subscription filtering.
@@ -99,8 +98,6 @@ pub mod compress;
 pub mod conversation;
 /// Runtime-owned Guardian candidate and curated-context contracts.
 pub mod curated_memory;
-/// Per-session Agent run scheduling and lifecycle ownership.
-pub mod engine;
 /// Agent-loop error taxonomy.
 pub mod error;
 /// Fine-grained loop events for observers and tests.
@@ -122,12 +119,6 @@ pub mod prompt;
 pub mod request;
 /// Internal translation between Anthropic wire types and provider-neutral
 /// model contracts. This is a current adapter, not a fallback backend.
-/// Authenticated single-turn execution and durable transcript handling.
-pub mod run;
-/// Session context and runtime metadata carried by an Agent run.
-pub mod session;
-/// Durable session/transcript persistence contracts and SQLite implementation.
-pub mod session_store;
 /// Declarative Agent identity, model, tool, and workspace specification.
 pub mod spec;
 /// Restricted background-task lifecycle and result gate.
@@ -178,7 +169,6 @@ pub mod prelude {
         MemoryCandidateError, MemoryCandidateReceipt, MemoryCandidateSink,
         MemoryCandidateSubmission,
     };
-    pub use crate::engine::{AgentHandle, AgentRunEngine, EngineError, SessionMeta};
     pub use crate::error::AgentLoopError;
     pub use crate::event::{AgentEvent, ModelRetryCause};
     pub use crate::execution_context::{
@@ -190,11 +180,6 @@ pub mod prelude {
     pub use crate::outcome::AgentOutcome;
     pub use crate::plan_gate::PlanDecision;
     pub use crate::request::AgentTurnRequest;
-    pub use crate::run::{
-        AgentRun, AgentRunBuilder, AgentRunError, AgentSessionIssuer, AuthenticatedSession,
-        AuthenticatedSessionLease,
-    };
-    pub use crate::session::{SessionContext, SessionMetadata};
     pub use crate::spec::{
         AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig, MemoryStoreConfig,
         ModelConfig, PersonaConfig, SessionId, ToolRef,

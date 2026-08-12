@@ -1,4 +1,4 @@
-//! SQLite-backed [`SessionStore`].
+//! Runtime-owned SQLite-backed [`SessionStore`].
 //!
 //! One store owns one `rusqlite::Connection`, serialized by
 //! `tokio::sync::Mutex`. Every database operation runs through
@@ -30,7 +30,7 @@ use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::session::SessionMetadata;
-use crate::spec::{AgentId, SessionId};
+use sylvander_agent::spec::{AgentId, SessionId};
 
 use super::{
     MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch,
@@ -1501,5 +1501,5 @@ fn parse_priority(s: &str) -> rusqlite::Result<sylvander_protocol::session_conte
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../../tests/unit/session_store_sqlite.rs"]
+#[path = "../../../tests/unit/session_store_sqlite.rs"]
 mod tests;

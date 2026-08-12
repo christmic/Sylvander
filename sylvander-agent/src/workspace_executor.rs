@@ -776,13 +776,15 @@ impl WorkspaceExecutor for LocalExecutor {
     }
 }
 
+/// Fail-closed executor used when Runtime did not bind a workspace target.
 #[derive(Debug)]
-pub(crate) struct UnavailableExecutor {
+pub struct UnavailableExecutor {
     target_id: String,
 }
 
 impl UnavailableExecutor {
-    pub(crate) fn new(target_id: impl Into<String>) -> Self {
+    /// Create a sentinel that reports the unresolved target identifier.
+    pub fn new(target_id: impl Into<String>) -> Self {
         Self {
             target_id: target_id.into(),
         }

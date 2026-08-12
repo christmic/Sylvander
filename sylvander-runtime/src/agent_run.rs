@@ -1,6 +1,6 @@
-//! Agent runtime — the bridge between `AgentLoop` and the outside world.
+//! Runtime-owned Session orchestration around the Agent execution kernel.
 //!
-//! [`AgentRun`](crate::run::AgentRun) is a running agent instance. It is a cheap `Clone` handle
+//! [`AgentRun`](crate::agent_run::AgentRun) is a running agent instance. It is a cheap `Clone` handle
 //! to shared state (`AgentRunInner`).
 //!
 //! # Memory: mechanism first, tools second
@@ -8,7 +8,7 @@
 //! Memory is agent infrastructure. The read path is exposed as a tool so the
 //! model can autonomously retrieve context. Model-proposed writes enter the
 //! Runtime-owned Guardian candidate flow.
-//! [`AgentRun::remember`](crate::run::AgentRun::remember) is a separate,
+//! [`AgentRun::remember`](crate::agent_run::AgentRun::remember) is a separate,
 //! synchronous relationship-only API for trusted application observations.
 //!
 //! # Session: engineering layer, model-invisible
@@ -19,7 +19,7 @@
 //! # Approval (M12)
 //!
 //! Tool approval flows through the bus. When approval is needed, the
-//! loop pauses (via [`ApprovalGate`](crate::approval::ApprovalGate)) and the engine processes
+//! loop pauses (via [`ApprovalGate`](sylvander_agent::approval::ApprovalGate)) and the engine processes
 //! `ApproveTool` responses concurrently via spawned `handle_message`
 //! tasks. Per-session locks prevent concurrent execution on the same
 //! session.
@@ -45,61 +45,65 @@ use sylvander_protocol::{
     PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
 };
 
-use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::approval_store::{
     ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory, approval_policy_revision,
 };
-use crate::ask_user_gate::AskUserGate;
-use crate::bus::{
-    AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Sender, StreamEvent,
-    SubscriptionFilter, SystemMessage, ToolCallInfo,
-};
-use crate::compress::error::{CompactionError, CompactionFailureCode};
-use crate::compress::layer::CompressionLayer;
-use crate::conversation::ConversationSnapshot;
-use crate::curated_memory::{CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope};
-use crate::error::AgentLoopError;
-use crate::event::ModelRetryCause;
-use crate::execution_context::{AgentExecutionContext, ExecutionWorkspace};
-use crate::execution_ports::AgentExecutionPorts;
-use crate::loop_::{self, AgentLoop};
-use crate::plan_gate::{PlanDecision, PlanGate};
-use crate::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
-use crate::request::AgentTurnRequest;
 use crate::session::{SessionContext, SessionMetadata, now_secs};
-use crate::session_store::{
+use crate::storage::session::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
     SessionStoreError, StoredSession, TurnStart,
 };
-use crate::spec::{AgentId, AgentSpec, SessionId};
-use crate::task_gate::TaskGate;
-use crate::tool::{
+use sylvander_agent::approval::{
+    ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest,
+};
+use sylvander_agent::ask_user_gate::AskUserGate;
+use sylvander_agent::bus::{
+    AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Sender, StreamEvent,
+    SubscriptionFilter, SystemMessage, ToolCallInfo,
+};
+use sylvander_agent::compress::error::{CompactionError, CompactionFailureCode};
+use sylvander_agent::compress::layer::CompressionLayer;
+use sylvander_agent::conversation::ConversationSnapshot;
+use sylvander_agent::curated_memory::{
+    CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope,
+};
+use sylvander_agent::error::AgentLoopError;
+use sylvander_agent::event::ModelRetryCause;
+use sylvander_agent::execution_context::{AgentExecutionContext, ExecutionWorkspace};
+use sylvander_agent::execution_ports::AgentExecutionPorts;
+use sylvander_agent::loop_::{self, AgentLoop};
+use sylvander_agent::plan_gate::{PlanDecision, PlanGate};
+use sylvander_agent::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
+use sylvander_agent::request::AgentTurnRequest;
+use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
+use sylvander_agent::task_gate::TaskGate;
+use sylvander_agent::tool::{
     RegisteredTool, ToolRegistry, ToolSourceFeature, ToolSourceKind, ToolSourceStatus,
 };
-use crate::tool_context::{Cap, NetworkPolicy, ToolContext};
-use crate::tools::MemoryReadTool;
-use crate::tools::memory::{
+use sylvander_agent::tool_context::{Cap, NetworkPolicy, ToolContext};
+use sylvander_agent::tools::MemoryReadTool;
+use sylvander_agent::tools::memory::{
     MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
 };
-use crate::turn_context::{
+use sylvander_agent::turn_context::{
     TurnContextBudgets, TurnContextCandidate, TurnContextInputs, TurnContextLayerKind,
     TurnContextManifest, TurnContextProvenance, TurnContextSource, compose_turn_context,
     retrieve_relationship_context, retrieve_workspace_context,
 };
-use crate::workspace_executor::{
+use sylvander_agent::workspace_executor::{
     LocalExecutor, MountedWorkspace, UnavailableExecutor, WorkspaceExecutor, WorkspaceRouter,
     WorkspaceTarget,
 };
 
 #[path = "workspace_context.rs"]
 mod workspace_context;
-use crate::user_profile_prompt::{UserProfilePromptLayer, compose_user_profile_prompt};
-use crate::user_profile_provider::{UserProfileProvider, UserProfileSubject};
+use sylvander_agent::user_profile_prompt::{UserProfilePromptLayer, compose_user_profile_prompt};
+use sylvander_agent::user_profile_provider::{UserProfileProvider, UserProfileSubject};
 
-/// Translate an authenticated API decision at the temporary Runtime boundary.
+/// Translate an authenticated API decision into the Agent kernel decision.
 ///
-/// This mapping remains here only while `AgentRun` is migration debt inside
-/// the Agent crate. It moves unchanged to Runtime with the Session service.
+/// Protocol types terminate at this Runtime boundary; the Agent kernel only
+/// receives its provider-neutral domain decision.
 fn agent_plan_decision(decision: &sylvander_protocol::PlanDecision) -> PlanDecision {
     match decision {
         sylvander_protocol::PlanDecision::Approved => PlanDecision::Approved,
@@ -174,7 +178,7 @@ pub(crate) struct AgentRunInner {
     /// Stable tool catalog frozen separately for every execution.
     tools: ToolRegistry,
     /// Runtime-owned tool authorization and audit boundary.
-    invocation_gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
+    invocation_gateway: Arc<dyn sylvander_agent::tool_invocation::ToolInvocationGateway>,
     /// Mutable selection read once at the start of every turn. Active turns
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
@@ -187,7 +191,7 @@ pub(crate) struct AgentRunInner {
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
-    workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
+    workspace_journal: Option<Arc<sylvander_agent::workspace_journal::WorkspaceJournal>>,
     /// Server-owned executor adapters keyed by exact execution-target id.
     workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
     skill_features: std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
@@ -215,7 +219,7 @@ pub(crate) struct AgentRunInner {
     /// Whether bus-based approval is enabled (opt-in, off by default).
     approval_enabled: bool,
     /// Static approval rules (auto-approve/auto-reject).
-    approval_rules: Vec<crate::approval::ApprovalRule>,
+    approval_rules: Vec<sylvander_agent::approval::ApprovalRule>,
     /// Pending approval requests (shared with `BusApprovalGate`).
     pending_approvals: Arc<Mutex<HashMap<(SessionId, String), PendingApproval>>>,
     /// Agent-owned approval memory. Session grants are isolated by session;
@@ -245,7 +249,7 @@ struct PendingApproval {
     grant: ApprovalGrantKey,
     persistent_identity_authorized: bool,
     allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
-    sender: oneshot::Sender<crate::approval::ApprovalDecision>,
+    sender: oneshot::Sender<sylvander_agent::approval::ApprovalDecision>,
 }
 
 struct PendingAnswer {
@@ -525,7 +529,7 @@ impl AgentRun {
             .tools
             .iter()
             .filter_map(|tool| {
-                let crate::spec::ToolRef::McpServer(server) = tool else {
+                let sylvander_agent::spec::ToolRef::McpServer(server) = tool else {
                     return None;
                 };
                 Some(PlatformFeature {
@@ -748,7 +752,10 @@ impl AgentRun {
     async fn compact_session_typed(
         &self,
         session_id: &SessionId,
-    ) -> Result<sylvander_protocol::CompactionReport, crate::compress::error::CompactionError> {
+    ) -> Result<
+        sylvander_protocol::CompactionReport,
+        sylvander_agent::compress::error::CompactionError,
+    > {
         if self
             .inner
             .active_turns
@@ -793,22 +800,22 @@ impl AgentRun {
             input_tokens: u64::from(model.shadow.context_window),
             ..TokenUsage::default()
         };
-        let summarizer = crate::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
+        let summarizer = sylvander_agent::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
             self.inner.model_provider.clone(),
             model.exact.as_ref().unwrap_or(&model.shadow).clone(),
         );
-        let mut context = crate::compress::CompressContext {
+        let mut context = sylvander_agent::compress::CompressContext {
             messages: &mut history,
             last_usage: &usage,
             model_info: &model.shadow,
             auto_compact_llm: Some(&summarizer),
         };
-        let report = crate::compress::layers::auto_compact::AutoCompactLayer::new()
+        let report = sylvander_agent::compress::layers::auto_compact::AutoCompactLayer::new()
             .with_trigger_ratio(0.0)
             .apply(&mut context)
             .await;
         if let Some(error) =
-            crate::compress::layer::first_failure_error(std::slice::from_ref(&report))
+            sylvander_agent::compress::layer::first_failure_error(std::slice::from_ref(&report))
         {
             return Err(error);
         }
@@ -823,7 +830,7 @@ impl AgentRun {
     pub async fn preview_workspace_rollback(
         &self,
         session_id: &SessionId,
-    ) -> Result<crate::workspace_journal::RollbackPreview, String> {
+    ) -> Result<sylvander_agent::workspace_journal::RollbackPreview, String> {
         if self
             .inner
             .active_turns
@@ -847,7 +854,7 @@ impl AgentRun {
         &self,
         session_id: &SessionId,
         expected_turn_id: &str,
-    ) -> Result<crate::workspace_journal::RollbackReport, String> {
+    ) -> Result<sylvander_agent::workspace_journal::RollbackReport, String> {
         if self
             .inner
             .active_turns
@@ -1025,109 +1032,110 @@ impl AgentRun {
         while let Some(msg) = inbox.recv().await {
             match &msg.kind {
                 // -- System messages --
-                MessageKind::System(sys_msg) => match sys_msg {
-                    SystemMessage::Stop => {
-                        info!(agent_id = %self.inner.id, "received stop");
-                        let mut tasks = self.inner.background_tasks.lock().await;
-                        for (_, task) in tasks.drain() {
-                            let _ = task.cancel.send(());
-                        }
-                        break;
-                    }
-                    SystemMessage::JoinSession {
-                        session_id,
-                        metadata,
-                    } => {
-                        if self
-                            .inner
-                            .authenticated_session_authority_active
-                            .load(Ordering::Acquire)
-                        {
-                            continue;
-                        }
-                        let context = self
-                            .inner
-                            .restore_session_context(session_id, metadata)
-                            .await;
-                        match context {
-                            Ok(context) => {
-                                self.inner
-                                    .sessions
-                                    .write()
-                                    .await
-                                    .insert(session_id.clone(), context);
-                                info!(agent_id = %self.inner.id, %session_id, "joined session");
-                            }
-                            Err(error) => {
-                                warn!(
-                                    agent_id = %self.inner.id,
-                                    %session_id,
-                                    %error,
-                                    "failed to join persistent session"
-                                );
-                            }
-                        }
-                    }
-                    SystemMessage::LeaveSession { session_id } => {
-                        // Runtime-authenticated sessions can be revoked only
-                        // through the private issuer path, never by a bus
-                        // message that a transport or plugin could forge.
-                        if self
-                            .inner
-                            .authenticated_session_authority_active
-                            .load(Ordering::Acquire)
-                        {
-                            continue;
-                        }
-                        self.inner.sessions.write().await.remove(session_id);
-                        self.inner
-                            .authenticated_sessions
-                            .write()
-                            .await
-                            .remove(session_id);
-                        self.inner.context_usage.write().await.remove(session_id);
-                        self.inner
-                            .turn_context_manifests
-                            .write()
-                            .await
-                            .remove(session_id);
-                        self.inner
-                            .approval_memory
-                            .lock()
-                            .await
-                            .remove_session(session_id);
-                        let mut tasks = self.inner.background_tasks.lock().await;
-                        let task_ids = tasks
-                            .iter()
-                            .filter(|(_, task)| &task.session_id == session_id)
-                            .map(|(task_id, _)| task_id.clone())
-                            .collect::<Vec<_>>();
-                        for task_id in task_ids {
-                            if let Some(task) = tasks.remove(&task_id) {
+                MessageKind::System(sys_msg) => {
+                    match sys_msg {
+                        SystemMessage::Stop => {
+                            info!(agent_id = %self.inner.id, "received stop");
+                            let mut tasks = self.inner.background_tasks.lock().await;
+                            for (_, task) in tasks.drain() {
                                 let _ = task.cancel.send(());
                             }
+                            break;
                         }
-                        info!(agent_id = %self.inner.id, %session_id, "left session");
-                    }
-                    SystemMessage::StatusUpdate { .. } => {}
+                        SystemMessage::JoinSession {
+                            session_id,
+                            metadata,
+                        } => {
+                            if self
+                                .inner
+                                .authenticated_session_authority_active
+                                .load(Ordering::Acquire)
+                            {
+                                continue;
+                            }
+                            let context = self
+                                .inner
+                                .restore_session_context(session_id, metadata)
+                                .await;
+                            match context {
+                                Ok(context) => {
+                                    self.inner
+                                        .sessions
+                                        .write()
+                                        .await
+                                        .insert(session_id.clone(), context);
+                                    info!(agent_id = %self.inner.id, %session_id, "joined session");
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        agent_id = %self.inner.id,
+                                        %session_id,
+                                        %error,
+                                        "failed to join persistent session"
+                                    );
+                                }
+                            }
+                        }
+                        SystemMessage::LeaveSession { session_id } => {
+                            // Runtime-authenticated sessions can be revoked only
+                            // through the private issuer path, never by a bus
+                            // message that a transport or plugin could forge.
+                            if self
+                                .inner
+                                .authenticated_session_authority_active
+                                .load(Ordering::Acquire)
+                            {
+                                continue;
+                            }
+                            self.inner.sessions.write().await.remove(session_id);
+                            self.inner
+                                .authenticated_sessions
+                                .write()
+                                .await
+                                .remove(session_id);
+                            self.inner.context_usage.write().await.remove(session_id);
+                            self.inner
+                                .turn_context_manifests
+                                .write()
+                                .await
+                                .remove(session_id);
+                            self.inner
+                                .approval_memory
+                                .lock()
+                                .await
+                                .remove_session(session_id);
+                            let mut tasks = self.inner.background_tasks.lock().await;
+                            let task_ids = tasks
+                                .iter()
+                                .filter(|(_, task)| &task.session_id == session_id)
+                                .map(|(task_id, _)| task_id.clone())
+                                .collect::<Vec<_>>();
+                            for task_id in task_ids {
+                                if let Some(task) = tasks.remove(&task_id) {
+                                    let _ = task.cancel.send(());
+                                }
+                            }
+                            info!(agent_id = %self.inner.id, %session_id, "left session");
+                        }
+                        SystemMessage::StatusUpdate { .. } => {}
 
-                    // M12: forward approval response to the waiting task
-                    SystemMessage::ApproveTool {
-                        call_id,
-                        approved,
-                        scope,
-                        reason,
-                    } => {
-                        let request = self
-                            .inner
-                            .pending_approvals
-                            .lock()
-                            .await
-                            .remove(&(msg.session_id.clone(), call_id.clone()));
-                        if let Some(request) = request {
-                            let decision = if *approved {
-                                if request.allowed_scopes.contains(scope) {
-                                    match self
+                        // M12: forward approval response to the waiting task
+                        SystemMessage::ApproveTool {
+                            call_id,
+                            approved,
+                            scope,
+                            reason,
+                        } => {
+                            let request = self
+                                .inner
+                                .pending_approvals
+                                .lock()
+                                .await
+                                .remove(&(msg.session_id.clone(), call_id.clone()));
+                            if let Some(request) = request {
+                                let decision = if *approved {
+                                    if request.allowed_scopes.contains(scope) {
+                                        match self
                                         .inner
                                         .approval_memory
                                         .lock()
@@ -1140,62 +1148,63 @@ impl AgentRun {
                                         )
                                         .await
                                     {
-                                        Ok(()) => crate::approval::ApprovalDecision::Approved,
+                                        Ok(()) => sylvander_agent::approval::ApprovalDecision::Approved,
                                         Err(reason) => {
-                                            crate::approval::ApprovalDecision::Rejected { reason }
+                                            sylvander_agent::approval::ApprovalDecision::Rejected { reason }
+                                        }
+                                    }
+                                    } else {
+                                        sylvander_agent::approval::ApprovalDecision::Rejected {
+                                            reason: format!(
+                                                "approval scope `{scope:?}` is not permitted"
+                                            ),
                                         }
                                     }
                                 } else {
-                                    crate::approval::ApprovalDecision::Rejected {
-                                        reason: format!(
-                                            "approval scope `{scope:?}` is not permitted"
-                                        ),
+                                    sylvander_agent::approval::ApprovalDecision::Rejected {
+                                        reason: normalize_rejection_reason(reason.as_deref()),
                                     }
-                                }
-                            } else {
-                                crate::approval::ApprovalDecision::Rejected {
-                                    reason: normalize_rejection_reason(reason.as_deref()),
-                                }
-                            };
-                            let _ = request.sender.send(decision);
+                                };
+                                let _ = request.sender.send(decision);
+                            }
                         }
-                    }
 
-                    // M18: forward AskUser answer to the waiting gate
-                    SystemMessage::AnswerQuestion { call_id, answer } => {
-                        let mut pending = self.inner.pending_answers.lock().await;
-                        if let Some(request) =
-                            pending.remove(&(msg.session_id.clone(), call_id.clone()))
-                        {
-                            let _ = request.sender.send(vec![answer.clone()]);
+                        // M18: forward AskUser answer to the waiting gate
+                        SystemMessage::AnswerQuestion { call_id, answer } => {
+                            let mut pending = self.inner.pending_answers.lock().await;
+                            if let Some(request) =
+                                pending.remove(&(msg.session_id.clone(), call_id.clone()))
+                            {
+                                let _ = request.sender.send(vec![answer.clone()]);
+                            }
                         }
-                    }
 
-                    SystemMessage::InterruptTurn { session_id } => {
-                        self.inner.interrupt_turn(session_id).await;
-                    }
-                    SystemMessage::ResolvePlan { plan_id, decision } => {
-                        let mut pending = self.inner.pending_plans.lock().await;
-                        if let Some(request) =
-                            pending.remove(&(msg.session_id.clone(), plan_id.clone()))
-                        {
-                            let _ = request.sender.send(agent_plan_decision(decision));
+                        SystemMessage::InterruptTurn { session_id } => {
+                            self.inner.interrupt_turn(session_id).await;
+                        }
+                        SystemMessage::ResolvePlan { plan_id, decision } => {
+                            let mut pending = self.inner.pending_plans.lock().await;
+                            if let Some(request) =
+                                pending.remove(&(msg.session_id.clone(), plan_id.clone()))
+                            {
+                                let _ = request.sender.send(agent_plan_decision(decision));
+                            }
+                        }
+                        SystemMessage::CancelTask {
+                            session_id,
+                            task_id,
+                        } => {
+                            let mut tasks = self.inner.background_tasks.lock().await;
+                            if tasks
+                                .get(task_id)
+                                .is_some_and(|task| &task.session_id == session_id)
+                                && let Some(task) = tasks.remove(task_id)
+                            {
+                                let _ = task.cancel.send(());
+                            }
                         }
                     }
-                    SystemMessage::CancelTask {
-                        session_id,
-                        task_id,
-                    } => {
-                        let mut tasks = self.inner.background_tasks.lock().await;
-                        if tasks
-                            .get(task_id)
-                            .is_some_and(|task| &task.session_id == session_id)
-                            && let Some(task) = tasks.remove(task_id)
-                        {
-                            let _ = task.cancel.send(());
-                        }
-                    }
-                },
+                }
 
                 // -- Chat messages → spawn as task (M12) --
                 MessageKind::Chat => {
@@ -1296,7 +1305,7 @@ impl AgentRun {
             self.inner.id.0.clone(),
             session_id.0.clone(),
         );
-        Ok(MemoryExecutionContext::application_worker(&execution))
+        Ok(MemoryExecutionContext::for_runtime_worker(&execution))
     }
 
     /// Trusted application relationship write (NOT a model tool).
@@ -1343,7 +1352,7 @@ impl AgentRun {
             .user_profile_provider
             .as_ref()
             .ok_or(MemoryStoreError::AccessDenied)?;
-        let subject = UserProfileSubject::authenticated(
+        let subject = UserProfileSubject::from_authenticated_runtime(
             context
                 .user_id()
                 .cloned()
@@ -1556,7 +1565,7 @@ fn normalize_rejection_reason(reason: Option<&str>) -> String {
         )
 }
 
-fn compaction_summary(layers: &[crate::compress::layer::LayerReport]) -> Option<String> {
+fn compaction_summary(layers: &[sylvander_agent::compress::layer::LayerReport]) -> Option<String> {
     layers.iter().find_map(|layer| {
         layer
             .details
@@ -1569,13 +1578,13 @@ fn compaction_summary(layers: &[crate::compress::layer::LayerReport]) -> Option<
 
 fn public_compaction_report(
     automatic: bool,
-    layers: &[crate::compress::layer::LayerReport],
+    layers: &[sylvander_agent::compress::layer::LayerReport],
 ) -> sylvander_protocol::CompactionReport {
     sylvander_protocol::CompactionReport {
         automatic,
-        removed_messages: crate::compress::layer::total_removed(layers),
-        condensed_blocks: crate::compress::layer::total_condensed(layers),
-        freed_tokens: crate::compress::layer::total_freed(layers),
+        removed_messages: sylvander_agent::compress::layer::total_removed(layers),
+        condensed_blocks: sylvander_agent::compress::layer::total_condensed(layers),
+        freed_tokens: sylvander_agent::compress::layer::total_freed(layers),
         summary: compaction_summary(layers),
     }
 }
@@ -1820,26 +1829,30 @@ impl TaskGate for BusTaskGate {
                 };
                 let Some(event) = event else { break };
                 let public = match event {
-                    crate::event::AgentEvent::IterationStart { iteration } => {
+                    sylvander_agent::event::AgentEvent::IterationStart { iteration } => {
                         Some(StreamEvent::TaskProgress {
                             task_id: running_id.clone(),
                             message: format!("iteration {iteration}"),
                         })
                     }
-                    crate::event::AgentEvent::ToolCallStart { name, .. } => {
+                    sylvander_agent::event::AgentEvent::ToolCallStart { name, .. } => {
                         Some(StreamEvent::TaskProgress {
                             task_id: running_id.clone(),
                             message: format!("running {name}"),
                         })
                     }
-                    crate::event::AgentEvent::Done(outcome) => Some(StreamEvent::TaskCompleted {
-                        task_id: running_id.clone(),
-                        summary: outcome.final_response.text(),
-                    }),
-                    crate::event::AgentEvent::Error(error) => Some(StreamEvent::TaskFailed {
-                        task_id: running_id.clone(),
-                        error: error.to_string(),
-                    }),
+                    sylvander_agent::event::AgentEvent::Done(outcome) => {
+                        Some(StreamEvent::TaskCompleted {
+                            task_id: running_id.clone(),
+                            summary: outcome.final_response.text(),
+                        })
+                    }
+                    sylvander_agent::event::AgentEvent::Error(error) => {
+                        Some(StreamEvent::TaskFailed {
+                            task_id: running_id.clone(),
+                            error: error.to_string(),
+                        })
+                    }
                     _ => None,
                 };
                 let terminal = matches!(
@@ -1894,7 +1907,7 @@ impl AgentRunInner {
                 "session is not authenticated".into(),
             ));
         }
-        let subject = UserProfileSubject::authenticated(
+        let subject = UserProfileSubject::from_authenticated_runtime(
             sylvander_protocol::UserId::new(metadata.user_id.clone()),
             self.id.clone(),
             session_id.clone(),
@@ -1946,7 +1959,7 @@ impl AgentRunInner {
         &self,
         session_id: &SessionId,
         history: &[ChatMessage],
-        layers: &[crate::compress::layer::LayerReport],
+        layers: &[sylvander_agent::compress::layer::LayerReport],
     ) -> Result<(), AgentRunError> {
         let metadata = {
             let sessions = self.sessions.read().await;
@@ -2242,7 +2255,7 @@ impl AgentRunInner {
             if let Err(error @ AgentRunError::SessionPersistence { .. }) = &result {
                 self.publish_stream(
                     &session_id,
-                    crate::bus::StreamEvent::Error {
+                    sylvander_agent::bus::StreamEvent::Error {
                         message: error.to_string(),
                     },
                 )
@@ -2447,7 +2460,7 @@ impl AgentRunInner {
                 self.id.0.clone(),
                 session_id.0.clone(),
             );
-            let memory_context = MemoryExecutionContext::application_worker(&execution);
+            let memory_context = MemoryExecutionContext::for_runtime_worker(&execution);
             let relationship = retrieve_relationship_context(
                 memory.as_ref(),
                 &memory_context,
@@ -2591,7 +2604,7 @@ impl AgentRunInner {
         // 2. Build per-session approval gate and tool surface from one
         // immutable permission/capability snapshot. Changes made mid-turn
         // apply to the next turn and invalidate persistent grants there.
-        let (turn_tools, tool_surface_revision) = self.tools.freeze_with_revision();
+        let (turn_tools, tool_surface_revision) = self.tools.freeze_for_turn();
         let prompt_context_features = self
             .skill_features
             .read()
@@ -2629,7 +2642,7 @@ impl AgentRunInner {
             let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
                 bus_gate
             } else {
-                Arc::new(crate::approval::RuleBasedApprovalGate::new(
+                Arc::new(sylvander_agent::approval::RuleBasedApprovalGate::new(
                     self.approval_rules.clone(),
                     bus_gate,
                 ))
@@ -2737,7 +2750,7 @@ impl AgentRunInner {
                     self.cancel_pending_decisions(&session_id).await;
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::TurnInterrupted {
+                        sylvander_agent::bus::StreamEvent::TurnInterrupted {
                             reason: "interrupted by user".into(),
                         },
                     ).await;
@@ -2749,21 +2762,21 @@ impl AgentRunInner {
                 break;
             };
             match event {
-                crate::event::AgentEvent::TextChunk(text) => {
+                sylvander_agent::event::AgentEvent::TextChunk(text) => {
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::TextDelta { delta: text },
+                        sylvander_agent::bus::StreamEvent::TextDelta { delta: text },
                     )
                     .await;
                 }
-                crate::event::AgentEvent::ThinkingChunk(text) => {
+                sylvander_agent::event::AgentEvent::ThinkingChunk(text) => {
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::ThinkingDelta { delta: text },
+                        sylvander_agent::bus::StreamEvent::ThinkingDelta { delta: text },
                     )
                     .await;
                 }
-                crate::event::AgentEvent::ModelRetry {
+                sylvander_agent::event::AgentEvent::ModelRetry {
                     attempt,
                     max_attempts,
                     delay_ms,
@@ -2772,7 +2785,7 @@ impl AgentRunInner {
                 } => {
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::ModelRetry {
+                        sylvander_agent::bus::StreamEvent::ModelRetry {
                             attempt,
                             max_attempts,
                             delay_ms,
@@ -2782,7 +2795,7 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::ToolCallStart { id, name, input } => {
+                sylvander_agent::event::AgentEvent::ToolCallStart { id, name, input } => {
                     if matches!(
                         name.as_str(),
                         "present_plan" | "update_plan" | "start_background_task"
@@ -2791,7 +2804,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::ToolCall {
+                        sylvander_agent::bus::StreamEvent::ToolCall {
                             call_id: id,
                             tool_name: name,
                             input,
@@ -2799,10 +2812,10 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::ToolCallOutputDelta { id, name, delta } => {
+                sylvander_agent::event::AgentEvent::ToolCallOutputDelta { id, name, delta } => {
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::ToolOutputDelta {
+                        sylvander_agent::bus::StreamEvent::ToolOutputDelta {
                             call_id: id,
                             tool_name: name,
                             delta,
@@ -2810,7 +2823,7 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::ToolTimedOut {
+                sylvander_agent::event::AgentEvent::ToolTimedOut {
                     id,
                     name: _,
                     timeout_secs,
@@ -2826,7 +2839,7 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::ToolCallEnd {
+                sylvander_agent::event::AgentEvent::ToolCallEnd {
                     id,
                     name,
                     output,
@@ -2840,7 +2853,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::ToolResult {
+                        sylvander_agent::bus::StreamEvent::ToolResult {
                             call_id: id,
                             tool_name: name,
                             output,
@@ -2849,10 +2862,10 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::ToolRejected { id, name, reason } => {
+                sylvander_agent::event::AgentEvent::ToolRejected { id, name, reason } => {
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::ToolResult {
+                        sylvander_agent::bus::StreamEvent::ToolResult {
                             call_id: id,
                             tool_name: name,
                             output: reason,
@@ -2861,14 +2874,14 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::IterationStart { iteration } => {
+                sylvander_agent::event::AgentEvent::IterationStart { iteration } => {
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::IterationStart { iteration },
+                        sylvander_agent::bus::StreamEvent::IterationStart { iteration },
                     )
                     .await;
                 }
-                crate::event::AgentEvent::IterationEnd {
+                sylvander_agent::event::AgentEvent::IterationEnd {
                     iteration,
                     usage,
                     provider_usage,
@@ -2914,7 +2927,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::IterationEnd {
+                        sylvander_agent::bus::StreamEvent::IterationEnd {
                             iteration,
                             input_tokens: u32::try_from(input_tokens).unwrap_or(u32::MAX),
                             output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
@@ -2923,25 +2936,27 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::CompressionStarted => {
+                sylvander_agent::event::AgentEvent::CompressionStarted => {
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::CompactionStarted { automatic: true },
+                        sylvander_agent::bus::StreamEvent::CompactionStarted { automatic: true },
                     )
                     .await;
                 }
                 // `BusAskUserGate` publishes the request when it installs the
                 // pending answer. Forwarding the loop event too would stack
                 // two identical TUI modals for one question.
-                crate::event::AgentEvent::Compressed { .. }
-                | crate::event::AgentEvent::AskUser { .. }
-                | crate::event::AgentEvent::PlanProposed { .. }
-                | crate::event::AgentEvent::PlanResolved { .. } => {}
-                crate::event::AgentEvent::HistoryCompacted { layers, history } => {
-                    if let Some(error) = crate::compress::layer::first_failure_error(&layers) {
+                sylvander_agent::event::AgentEvent::Compressed { .. }
+                | sylvander_agent::event::AgentEvent::AskUser { .. }
+                | sylvander_agent::event::AgentEvent::PlanProposed { .. }
+                | sylvander_agent::event::AgentEvent::PlanResolved { .. } => {}
+                sylvander_agent::event::AgentEvent::HistoryCompacted { layers, history } => {
+                    if let Some(error) =
+                        sylvander_agent::compress::layer::first_failure_error(&layers)
+                    {
                         self.publish_stream(
                             &session_id,
-                            crate::bus::StreamEvent::CompactionFailed {
+                            sylvander_agent::bus::StreamEvent::CompactionFailed {
                                 automatic: true,
                                 reason: error.compatibility_reason().into(),
                             },
@@ -2955,7 +2970,7 @@ impl AgentRunInner {
                             Ok(()) => {
                                 self.publish_stream(
                                     &session_id,
-                                    crate::bus::StreamEvent::CompactionCompleted {
+                                    sylvander_agent::bus::StreamEvent::CompactionCompleted {
                                         report: public_compaction_report(true, &layers),
                                     },
                                 )
@@ -2964,10 +2979,10 @@ impl AgentRunInner {
                             Err(error) => {
                                 self.publish_stream(
                                     &session_id,
-                                    crate::bus::StreamEvent::CompactionFailed {
+                                    sylvander_agent::bus::StreamEvent::CompactionFailed {
                                         automatic: true,
-                                        reason: crate::compress::error::CompactionError::new(
-                                            crate::compress::error::CompactionFailureCode::Persistence,
+                                        reason: sylvander_agent::compress::error::CompactionError::new(
+                                            sylvander_agent::compress::error::CompactionFailureCode::Persistence,
                                         )
                                         .compatibility_reason()
                                         .into(),
@@ -2979,17 +2994,17 @@ impl AgentRunInner {
                         }
                     }
                 }
-                crate::event::AgentEvent::UserAnswer { call_id, answer } => {
+                sylvander_agent::event::AgentEvent::UserAnswer { call_id, answer } => {
                     self.publish_stream(
                         &session_id,
-                        crate::bus::StreamEvent::UserAnswer { call_id, answer },
+                        sylvander_agent::bus::StreamEvent::UserAnswer { call_id, answer },
                     )
                     .await;
                 }
-                crate::event::AgentEvent::Done(outcome) => {
+                sylvander_agent::event::AgentEvent::Done(outcome) => {
                     final_message = Some(outcome.final_response);
                 }
-                crate::event::AgentEvent::Error(e) => {
+                sylvander_agent::event::AgentEvent::Error(e) => {
                     self.publish_error(&session_id, &e).await;
                     return Err(AgentRunError::Loop(e));
                 }
@@ -3039,8 +3054,11 @@ impl AgentRunInner {
                 ctx.append_assistant_message(msg);
             }
             drop(sessions);
-            self.publish_stream(&session_id, crate::bus::StreamEvent::Done { text })
-                .await;
+            self.publish_stream(
+                &session_id,
+                sylvander_agent::bus::StreamEvent::Done { text },
+            )
+            .await;
         }
 
         Ok(())
@@ -3048,7 +3066,11 @@ impl AgentRunInner {
 
     // -- helpers --
 
-    async fn publish_stream(&self, session_id: &SessionId, event: crate::bus::StreamEvent) {
+    async fn publish_stream(
+        &self,
+        session_id: &SessionId,
+        event: sylvander_agent::bus::StreamEvent,
+    ) {
         let msg = BusMessage::stream_event(session_id.clone(), self.id.clone(), event);
         let _ = self.bus.publish(msg).await;
     }
@@ -3056,7 +3078,7 @@ impl AgentRunInner {
     async fn publish_error(&self, session_id: &SessionId, err: &AgentLoopError) {
         self.publish_stream(
             session_id,
-            crate::bus::StreamEvent::Error {
+            sylvander_agent::bus::StreamEvent::Error {
                 message: err.to_string(),
             },
         )
@@ -3075,7 +3097,7 @@ impl AgentRunInner {
         }
         for attachment in &msg.attachments {
             match &attachment.content {
-                crate::bus::AttachmentContent::Text { text } => {
+                sylvander_agent::bus::AttachmentContent::Text { text } => {
                     blocks.push(ContentBlock::Text {
                         text: format!(
                             "Attached {:?} `{}` ({}):\n{}",
@@ -3083,7 +3105,7 @@ impl AgentRunInner {
                         ),
                     });
                 }
-                crate::bus::AttachmentContent::Base64 { data } => {
+                sylvander_agent::bus::AttachmentContent::Base64 { data } => {
                     if matches!(attachment.mime_type.as_str(), "image/png" | "image/jpeg") {
                         blocks.push(ContentBlock::Text {
                             text: format!("Attached image `{}`:", attachment.name),
@@ -3119,7 +3141,7 @@ async fn workspace_turn_context(
     workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
     skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
     query: &str,
-    budget: crate::turn_context::TurnContextBudget,
+    budget: sylvander_agent::turn_context::TurnContextBudget,
 ) -> Result<WorkspaceTurnContext, AgentRunError> {
     let agent_focus = agent_workspace
         .and_then(|binding| binding.instruction_focus.clone())
@@ -3317,7 +3339,7 @@ fn tool_context_for_permissions(
     session_id: &SessionId,
     permissions: &sylvander_protocol::PermissionProfile,
     trusted_memory: bool,
-    workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
+    workspace_journal: Option<Arc<sylvander_agent::workspace_journal::WorkspaceJournal>>,
     turn_id: Option<&str>,
 ) -> ToolContext {
     let metadata = execution.metadata;
@@ -3349,7 +3371,7 @@ fn tool_context_for_permissions(
         agent_execution = agent_execution.with_trace_id(turn_id);
     }
     let mut context = if trusted_memory {
-        ToolContext::application(agent_execution)
+        ToolContext::for_runtime(agent_execution)
     } else {
         ToolContext::new(agent_execution)
     };
@@ -3466,7 +3488,7 @@ pub struct AgentRunBuilder {
     model: ModelInfo,
     bus: Option<Arc<dyn MessageBus>>,
     tool_overrides: Option<ToolRegistry>,
-    compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
+    compression_overrides: Option<sylvander_agent::compress::pipeline::CompressionPipeline>,
     memory: Option<Arc<dyn MemoryStore>>,
     session_store: Option<Arc<dyn SessionStore>>,
     available_provider_models: Vec<ModelInfo>,
@@ -3479,11 +3501,11 @@ pub struct AgentRunBuilder {
     curated_context_provider: Option<Arc<dyn CuratedContextProvider>>,
     turn_context_budgets: TurnContextBudgets,
     approval_enabled: bool,
-    approval_rules: Vec<crate::approval::ApprovalRule>,
+    approval_rules: Vec<sylvander_agent::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
     workspace_journal_path: Option<PathBuf>,
     workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
-    invocation_gateway: Option<Arc<dyn crate::tool_invocation::ToolInvocationGateway>>,
+    invocation_gateway: Option<Arc<dyn sylvander_agent::tool_invocation::ToolInvocationGateway>>,
 }
 
 impl AgentRunBuilder {
@@ -3550,7 +3572,7 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn invocation_gateway(
         mut self,
-        gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
+        gateway: Arc<dyn sylvander_agent::tool_invocation::ToolInvocationGateway>,
     ) -> Self {
         self.invocation_gateway = Some(gateway);
         self
@@ -3622,7 +3644,7 @@ impl AgentRunBuilder {
     /// Set static approval rules. Auto-approve/auto-reject matching tools
     /// before falling back to bus approval.
     #[must_use]
-    pub fn approval_rules(mut self, rules: Vec<crate::approval::ApprovalRule>) -> Self {
+    pub fn approval_rules(mut self, rules: Vec<sylvander_agent::approval::ApprovalRule>) -> Self {
         self.approval_enabled = true; // rules imply approval
         self.approval_rules = rules;
         self
@@ -3659,7 +3681,7 @@ impl AgentRunBuilder {
 
     pub fn override_compression(
         mut self,
-        pipeline: crate::compress::pipeline::CompressionPipeline,
+        pipeline: sylvander_agent::compress::pipeline::CompressionPipeline,
     ) -> Self {
         self.compression_overrides = Some(pipeline);
         self
@@ -3766,12 +3788,16 @@ impl AgentRunBuilder {
             .then(|| self.spec.persona.system_prompt.clone());
         let tools = self.tool_overrides.unwrap_or_default();
         let invocation_gateway = self.invocation_gateway.unwrap_or_else(|| {
-            crate::tool_invocation::RegistryBoundToolGateway::new(tools.invocation_descriptors())
+            sylvander_agent::tool_invocation::RegistryBoundToolGateway::new(
+                tools.invocation_descriptors(),
+            )
         });
 
-        let workspace_journal = self
-            .workspace_journal_path
-            .map(|path| Arc::new(crate::workspace_journal::WorkspaceJournal::new(path)));
+        let workspace_journal = self.workspace_journal_path.map(|path| {
+            Arc::new(sylvander_agent::workspace_journal::WorkspaceJournal::new(
+                path,
+            ))
+        });
         let session_authority = Arc::new(SessionAuthorityMarker);
         let issuer = AgentSessionIssuer {
             authority: session_authority.clone(),
@@ -3886,5 +3912,5 @@ impl AgentRunError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../tests/unit/run.rs"]
+#[path = "../tests/unit/agent_run.rs"]
 mod tests;

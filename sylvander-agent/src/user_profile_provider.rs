@@ -13,7 +13,13 @@ pub struct UserProfileSubject {
 }
 
 impl UserProfileSubject {
-    pub(crate) fn authenticated(user_id: UserId, agent_id: AgentId, session_id: SessionId) -> Self {
+    /// Build a lookup subject from Runtime-authenticated identity state.
+    #[must_use]
+    pub fn from_authenticated_runtime(
+        user_id: UserId,
+        agent_id: AgentId,
+        session_id: SessionId,
+    ) -> Self {
         Self {
             user: user_id,
             agent: agent_id,

@@ -1,11 +1,11 @@
-//! Execution-target-neutral workspace instruction and Skill discovery.
+//! Runtime workspace instruction and Skill discovery.
 
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::workspace_executor::{
+use sylvander_agent::workspace_executor::{
     WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListRequest,
     WorkspaceQueryLimits, WorkspaceTarget,
 };

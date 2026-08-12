@@ -970,7 +970,9 @@ impl ToolRegistry {
 
     /// Freeze dynamic sources once for an immutable turn and return the exact
     /// revision to which approval grants must bind.
-    pub(crate) fn freeze_with_revision(&self) -> (Self, String) {
+    /// Freeze dynamic sources at the Runtime turn boundary.
+    #[must_use]
+    pub fn freeze_for_turn(&self) -> (Self, String) {
         let frozen = Self {
             tools: self.unhooked_snapshot(),
             dynamic_sources: Vec::new(),

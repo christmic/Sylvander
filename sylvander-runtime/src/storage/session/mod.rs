@@ -1,4 +1,4 @@
-//! Session persistence — `SQLite` backend.
+//! Runtime Session persistence contract and `SQLite` backend.
 //!
 //! The current schema owns session metadata, Agent membership, ordered
 //! messages, cumulative usage, and immutable per-turn configuration
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::session::SessionMetadata;
-use crate::spec::{AgentId, SessionId};
+use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_protocol::types::{SessionConfigOverrides, SessionEffectiveConfig, UserId};
 
 // ---------------------------------------------------------------------------

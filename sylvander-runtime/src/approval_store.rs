@@ -1,4 +1,4 @@
-//! Durable, content-safe grants for tool approval.
+//! Runtime-owned durable, content-safe grants for tool approval.
 //!
 //! A persistent grant is valid only for one stable user, Agent, policy
 //! revision, capability revision, operation, and resource fingerprint. The
@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::approval::{ApprovalRule, RuleAction, ToolUseRequest};
-use crate::spec::{AgentId, SessionId};
+use sylvander_agent::approval::{ApprovalRule, RuleAction, ToolUseRequest};
+use sylvander_agent::spec::{AgentId, SessionId};
 
 const STORE_SCHEMA_VERSION: u32 = 1;
 const MAX_STORE_BYTES: u64 = 16 * 1024 * 1024;
