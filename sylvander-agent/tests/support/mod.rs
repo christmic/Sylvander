@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use sylvander_agent::compress::disk::{DiskHandle, ToolResultDisk};
+use sylvander_agent::execution_context::AgentExecutionContext;
 use sylvander_agent::prelude::{AgentLoop, AgentLoopBuilder};
 use sylvander_agent::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
@@ -86,7 +87,7 @@ pub(crate) fn workspace_tool_context(
     capabilities: impl IntoIterator<Item = sylvander_agent::tool_context::Cap>,
 ) -> ToolContext {
     capabilities.into_iter().fold(
-        ToolContext::new(sylvander_protocol::SessionContext::new(
+        ToolContext::new(AgentExecutionContext::restricted_for(
             "test-user",
             "test-agent",
             "test-session",

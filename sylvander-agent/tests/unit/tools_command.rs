@@ -1,14 +1,11 @@
 use std::sync::{Arc, Mutex};
 
-use sylvander_protocol::{AgentId, SessionContext, SessionId, UserId};
-
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 
 fn context(root: &std::path::Path) -> ToolContext {
-    ToolContext::new(SessionContext::new(
-        UserId::new("user"),
-        AgentId::new("agent"),
-        SessionId::new("session"),
+    ToolContext::new(AgentExecutionContext::restricted_for(
+        "user", "agent", "session",
     ))
     .with_fs_root(root)
     .with_capability(Cap::Spawn)

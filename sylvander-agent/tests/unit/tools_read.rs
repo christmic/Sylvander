@@ -1,4 +1,5 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tool_context::ToolContext;
 use std::fs;
 #[cfg(unix)]
@@ -6,7 +7,7 @@ use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 
 fn ctx(root: &std::path::Path) -> ToolContext {
-    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_fs_root(root)
         .with_capability(crate::tool_context::Cap::Read)
         .with_capability(crate::tool_context::Cap::Write)
@@ -174,7 +175,7 @@ fn name_description_schema() {
 
 #[tokio::test]
 async fn empty_workspace_fails_closed_without_a_constructor_fallback() {
-    let context = ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    let context = ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_capability(crate::tool_context::Cap::Read);
     let output = ReadTool::new()
         .execute(&context, json!({"file_path": "Cargo.toml"}))

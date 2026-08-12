@@ -1,15 +1,12 @@
 use std::sync::Arc;
 
-use sylvander_protocol::{AgentId, SessionContext, SessionId, UserId};
-
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::workspace_executor::{LocalExecutor, WorkspaceTarget};
 
 fn context(root: &Path, read_only: bool) -> ToolContext {
-    ToolContext::new(SessionContext::new(
-        UserId::new("user"),
-        AgentId::new("agent"),
-        SessionId::new("session"),
+    ToolContext::new(AgentExecutionContext::restricted_for(
+        "user", "agent", "session",
     ))
     .with_executor(
         Arc::new(LocalExecutor),
@@ -101,7 +98,10 @@ async fn diff_rejects_shell_arguments_and_parent_paths() {
 #[tokio::test]
 async fn requires_both_read_and_git_capabilities() {
     let dir = tempfile::tempdir().unwrap();
-    let base = ToolContext::new(SessionContext::new("user", "agent", "session")).with_executor(
+    let base = ToolContext::new(AgentExecutionContext::restricted_for(
+        "user", "agent", "session",
+    ))
+    .with_executor(
         Arc::new(LocalExecutor),
         WorkspaceTarget::local(dir.path(), true),
     );

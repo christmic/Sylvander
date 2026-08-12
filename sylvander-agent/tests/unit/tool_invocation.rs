@@ -41,11 +41,13 @@ fn turn_snapshot_distinguishes_executable_routes_from_prompt_only_skills() {
 async fn standalone_gateway_rejects_unknown_route_and_forged_owner_input() {
     let gateway =
         RegistryBoundToolGateway::new(vec![descriptor("command", ToolInvocationClass::Terminal)]);
-    let context = crate::tool_context::ToolContext::new(sylvander_protocol::SessionContext::new(
-        "alice",
-        "agent-a",
-        "session-a",
-    ));
+    let context = crate::tool_context::ToolContext::new(
+        crate::execution_context::AgentExecutionContext::restricted_for(
+            "alice",
+            "agent-a",
+            "session-a",
+        ),
+    );
     let snapshot = gateway.snapshot();
 
     let unknown = ToolInvocationRequest::new(

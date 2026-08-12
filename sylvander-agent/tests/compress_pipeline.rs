@@ -229,7 +229,7 @@ async fn l0_offloads_oversized_tool_result() {
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .tool_context(
-            ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+            ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
                 .with_fs_root(tmp.path())
                 .with_capability(sylvander_agent::tool_context::Cap::Read),
         )

@@ -1,4 +1,5 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::test_support::MockTool;
 use crate::tool_context::ToolContext;
 use serde_json::json;
@@ -56,7 +57,7 @@ impl ToolExecutor for ChangedDeferredWeatherTool {
 }
 
 fn ctx() -> ToolContext {
-    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_capability(crate::tool_context::Cap::Read)
         .with_capability(crate::tool_context::Cap::Write)
         .with_capability(crate::tool_context::Cap::MemoryRead)

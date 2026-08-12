@@ -3,11 +3,13 @@
 mod support;
 
 use serde_json::json;
-use sylvander_agent::prelude::{AgentLoopError, MessageParam, ToolContext, run};
+use sylvander_agent::prelude::{
+    AgentExecutionContext, AgentLoopError, MessageParam, ToolContext, run,
+};
 use sylvander_agent::tool::{ToolHookConfig, ToolRegistry};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
-use sylvander_protocol::{AgentHookPhase, SessionContext};
+use sylvander_protocol::AgentHookPhase;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -45,8 +47,10 @@ async fn blocking_before_turn_hook_prevents_the_model_request() {
     let loop_ = qualified_anthropic_loop_builder(client(&server), model())
         .tools(hooks)
         .tool_context(
-            ToolContext::new(SessionContext::new("user", "agent", "session"))
-                .with_fs_root(workspace.path()),
+            ToolContext::new(AgentExecutionContext::restricted_for(
+                "user", "agent", "session",
+            ))
+            .with_fs_root(workspace.path()),
         )
         .build()
         .expect("loop build");
@@ -107,8 +111,10 @@ async fn successful_turn_runs_before_and_after_hooks_once() {
     let loop_ = qualified_anthropic_loop_builder(client(&server), model())
         .tools(hooks)
         .tool_context(
-            ToolContext::new(SessionContext::new("user", "agent", "session"))
-                .with_fs_root(workspace.path()),
+            ToolContext::new(AgentExecutionContext::restricted_for(
+                "user", "agent", "session",
+            ))
+            .with_fs_root(workspace.path()),
         )
         .build()
         .expect("loop build");

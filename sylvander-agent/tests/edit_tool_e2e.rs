@@ -35,7 +35,7 @@ fn test_model() -> ModelInfo {
 }
 
 fn edit_context(root: &std::path::Path) -> ToolContext {
-    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_fs_root(root)
         .with_capability(sylvander_agent::tool_context::Cap::Read)
         .with_capability(sylvander_agent::tool_context::Cap::Write)

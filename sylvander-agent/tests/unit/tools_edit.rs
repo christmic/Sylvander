@@ -1,10 +1,11 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use std::fs;
 use tempfile::TempDir;
 
 use crate::tool_context::ToolContext;
 fn ctx(root: &std::path::Path) -> ToolContext {
-    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_fs_root(root)
         .with_capability(crate::tool_context::Cap::Read)
         .with_capability(crate::tool_context::Cap::Write)
@@ -48,7 +49,7 @@ async fn edit_is_recorded_by_the_workspace_journal() {
     fs::write(&file, "hello world").unwrap();
     let journal = std::sync::Arc::new(crate::workspace_journal::WorkspaceJournal::new(data.path()));
     let context = ToolContext::new(
-        sylvander_protocol::SessionContext::new("u", "a", "s").with_trace_id("turn-1"),
+        AgentExecutionContext::restricted_for("u", "a", "s").with_trace_id("turn-1"),
     )
     .with_fs_root(dir.path())
     .with_capability(crate::tool_context::Cap::Write)
