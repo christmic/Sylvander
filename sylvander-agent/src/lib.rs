@@ -227,7 +227,5 @@ pub mod prelude {
     pub use sylvander_llm_core::{
         ChatMessage, ChatRole, ContentBlock, InputSchema, ModelResponse, StopReason, TokenUsage,
     };
-    /// Compatibility name for callers migrating from protocol-specific messages.
-    pub type MessageParam = ChatMessage;
     pub use sylvander_protocol::types::UserId;
 }

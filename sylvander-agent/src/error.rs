@@ -43,10 +43,6 @@ pub enum AgentLoopError {
     /// request shape).
     #[error("validation error: {0}")]
     Validation(String),
-
-    /// Builder was incomplete (required field not set).
-    #[error("builder error: {0}")]
-    Builder(String),
 }
 
 impl AgentLoopError {
@@ -63,8 +59,7 @@ impl AgentLoopError {
             | Self::IncompatibleModel(_)
             | Self::Tool(_)
             | Self::Compression(_)
-            | Self::Validation(_)
-            | Self::Builder(_) => false,
+            | Self::Validation(_) => false,
         }
     }
 

@@ -145,9 +145,9 @@ pub enum MessageRole {
 
 /// One persisted message.
 ///
-/// `content` is wire-format JSON matching Anthropic's `MessageParam` /
-/// `Message` shape, so the stored history can be fed back into a new
-/// `AgentLoop::run` call after a restart without re-serialization.
+/// `content` is the Runtime storage encoding for provider-neutral conversation
+/// content. Runtime reconstructs an Agent `ConversationSnapshot` explicitly;
+/// persisted JSON is never passed to a provider adapter as executable input.
 ///
 /// Storage layout (`SQLite` `session_messages`):
 /// - `seq` is auto-assigned (next integer in session).
@@ -176,7 +176,7 @@ pub struct StoredMessage {
     pub priority: Option<sylvander_protocol::session_context::Priority>,
     pub seq: u32,
     pub role: MessageRole,
-    /// Wire-format JSON. Matches Anthropic's `MessageParam` shape:
+    /// Provider-neutral conversation JSON:
     /// - user:      `{"role":"user","content":"hi"}` or `{"role":"user","content":[...]}`
     /// - assistant: `{"role":"assistant","content":[TextBlock|ToolUseBlock|...]}`
     /// - tool:      `{"role":"user","content":[{"type":"tool_result",...}]}`

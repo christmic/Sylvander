@@ -67,10 +67,7 @@ async fn default_pipeline_runs_cleanly_against_wiremock() {
         .build()
         .expect("build");
 
-    let run = loop_
-        .run(vec![MessageParam::user("hi")])
-        .await
-        .expect("run");
+    let run = loop_.run(vec![ChatMessage::user("hi")]).await.expect("run");
     assert_eq!(run.iterations, 1);
 }
 
@@ -141,7 +138,7 @@ async fn default_pipeline_drop_orphans_in_tool_calling_scenario() {
         .expect("build");
 
     let _run = loop_
-        .run_with_events(vec![MessageParam::user("Read notes.md")], move |event| {
+        .run_with_events(vec![ChatMessage::user("Read notes.md")], move |event| {
             events_clone.lock().unwrap().push(event);
         })
         .await
@@ -239,7 +236,7 @@ async fn l0_offloads_oversized_tool_result() {
         .expect("build");
 
     let _run = loop_
-        .run_with_events(vec![MessageParam::user("Read big.txt")], move |event| {
+        .run_with_events(vec![ChatMessage::user("Read big.txt")], move |event| {
             events_clone.lock().unwrap().push(event);
         })
         .await
@@ -292,10 +289,7 @@ async fn l1_runs_before_l2_in_default_pipeline() {
         .build()
         .expect("build");
 
-    let run = loop_
-        .run(vec![MessageParam::user("hi")])
-        .await
-        .expect("run");
+    let run = loop_.run(vec![ChatMessage::user("hi")]).await.expect("run");
     assert_eq!(run.iterations, 1);
 }
 
@@ -333,10 +327,7 @@ async fn l2_keeps_recent_tool_results_intact() {
         .build()
         .expect("build");
 
-    let run = loop_
-        .run(vec![MessageParam::user("hi")])
-        .await
-        .expect("run");
+    let run = loop_.run(vec![ChatMessage::user("hi")]).await.expect("run");
     assert_eq!(run.iterations, 1);
 }
 
@@ -379,10 +370,7 @@ async fn l3_trims_old_thinking_blocks_in_tool_calling_scenario() {
         .build()
         .expect("build");
 
-    let run = loop_
-        .run(vec![MessageParam::user("hi")])
-        .await
-        .expect("run");
+    let run = loop_.run(vec![ChatMessage::user("hi")]).await.expect("run");
     assert_eq!(run.iterations, 1);
 }
 
@@ -438,7 +426,7 @@ async fn l4_summarizes_when_usage_exceeds_threshold() {
     // fire here. The wiremock receiving a /v1/messages request
     // for "the summary" call would prove L4 fired.
     let _ = loop_
-        .run(vec![MessageParam::user("hi")])
+        .run(vec![ChatMessage::user("hi")])
         .await
         .expect("run should succeed even with high usage");
 }
@@ -489,7 +477,7 @@ async fn full_pipeline_l1_l2_l3_l4_handles_tool_calling() {
         .expect("build");
 
     let run = loop_
-        .run(vec![MessageParam::user("summarize")])
+        .run(vec![ChatMessage::user("summarize")])
         .await
         .expect("run");
     assert_eq!(run.iterations, 1);

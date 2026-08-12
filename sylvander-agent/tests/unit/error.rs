@@ -109,9 +109,3 @@ fn validation_error_not_retryable() {
     let err = AgentLoopError::Validation("messages empty".into());
     assert!(!err.is_retryable());
 }
-
-#[test]
-fn builder_error_not_retryable() {
-    let err = AgentLoopError::Builder("missing client".into());
-    assert!(!err.is_retryable());
-}

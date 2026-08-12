@@ -11,8 +11,6 @@ use sylvander_llm_core::{
     SystemInstruction, TokenUsage, ToolResultContent,
 };
 
-type MessageParam = ChatMessage;
-
 type ProviderOpen = Result<Vec<Result<ModelStreamEvent, ProviderError>>, ProviderError>;
 
 struct ScriptedProvider {
@@ -164,7 +162,7 @@ fn prompt_cache_hints_follow_the_selected_model_capability() {
             "read a file",
             crate::tool::ToolOutput::ok("done"),
         ));
-        let mut request = turn_request(model, tools, vec![MessageParam::user("go")]);
+        let mut request = turn_request(model, tools, vec![ChatMessage::user("go")]);
         request.system_instructions = vec![SystemInstruction {
             text: "stable instructions".into(),
             cache_hint: enabled.then_some(CacheHint::Ephemeral),
@@ -178,7 +176,7 @@ fn prompt_cache_hints_follow_the_selected_model_capability() {
 #[test]
 fn provider_neutral_message_builds_without_protocol_translation() {
     let provider = Arc::new(ScriptedProvider::new(Vec::<ProviderOpen>::new()));
-    let messages = [MessageParam::user("neutral-text")];
+    let messages = [ChatMessage::user("neutral-text")];
     let turn = turn_request(
         provider_model(),
         crate::tool::ToolRegistry::new(),
@@ -406,7 +404,7 @@ async fn provider_backend_runs_tool_then_text_with_qualified_requests() {
     ]));
     let tool = MockTool::new("echo", "echo input", crate::tool::ToolOutput::ok("7"));
     let tools = crate::tool::ToolRegistry::new().register(tool.clone());
-    let request = turn_request(provider_model(), tools, vec![MessageParam::user("start")]);
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
     let ports = turn_ports(provider.clone(), &request);
     let result = run(&kernel(), request, ports).await.unwrap();
     assert_eq!(result.iterations, 2);
@@ -445,7 +443,7 @@ async fn provider_open_retry_and_stream_protocol_are_typed() {
     let request = turn_request(
         provider_model(),
         crate::tool::ToolRegistry::new(),
-        vec![MessageParam::user("retry")],
+        vec![ChatMessage::user("retry")],
     );
     let ports = turn_ports(provider.clone(), &request);
     assert!(run(&loop_, request, ports).await.is_ok());
@@ -499,7 +497,7 @@ fn reasoning_effort_builds_a_capability_checked_budget() {
     let mut turn = turn_request(
         model,
         crate::tool::ToolRegistry::new(),
-        vec![MessageParam::user("think")],
+        vec![ChatMessage::user("think")],
     );
     turn.reasoning = Some(sylvander_llm_core::ReasoningConfig {
         budget_tokens: Some(16_384),

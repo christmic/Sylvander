@@ -10,9 +10,9 @@
 //! complete `SQLite` object set exactly; Sylvander does not repair or migrate an
 //! older, newer, unmanaged, or damaged session database.
 //!
-//! Current transcript encoding: `content_json` stores the exact JSON shape
-//! used by `MessageParam` / `Message`, so history can be fed straight back
-//! into `AgentLoop::run` after a restart without a migration or fallback.
+//! Current transcript encoding stores provider-neutral conversation JSON.
+//! Runtime validates and reconstructs the Agent conversation when restoring a
+//! Session; storage bytes are not a provider wire request.
 
 use std::collections::HashSet;
 use std::ops::Range;

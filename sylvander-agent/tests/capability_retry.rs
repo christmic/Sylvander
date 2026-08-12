@@ -42,7 +42,7 @@ async fn tools_set_without_tool_use_capability_errors() {
         .build()
         .expect("build");
 
-    let result = loop_.run(vec![MessageParam::user("hi")]).await;
+    let result = loop_.run(vec![ChatMessage::user("hi")]).await;
     assert!(matches!(
         result,
         Err(AgentLoopError::IncompatibleModel(ref msg)) if msg.contains("tool_use")
@@ -96,7 +96,7 @@ async fn llm_400_and_401_propagate_after_one_request() {
         .max_retries(3)
         .build()
         .expect("build");
-        let result = loop_.run(vec![MessageParam::user("hi")]).await;
+        let result = loop_.run(vec![ChatMessage::user("hi")]).await;
         assert!(matches!(
             result,
             Err(AgentLoopError::Provider { attempts: 1, .. })
@@ -125,7 +125,7 @@ async fn invalid_buffered_response_does_not_trigger_a_second_request() {
     .max_retries(3)
     .build()
     .expect("build");
-    let result = loop_.run(vec![MessageParam::user("hi")]).await;
+    let result = loop_.run(vec![ChatMessage::user("hi")]).await;
 
     assert!(matches!(
         result,
@@ -167,7 +167,7 @@ async fn truncated_stream_reports_once_without_replaying_visible_delta() {
     let observed = Arc::new(Mutex::new((Vec::new(), 0usize)));
     let events = observed.clone();
     let result = loop_
-        .run_with_events(vec![MessageParam::user("hi")], move |event| match event {
+        .run_with_events(vec![ChatMessage::user("hi")], move |event| match event {
             AgentEvent::TextChunk(text) => events.lock().unwrap().0.push(text),
             AgentEvent::ModelRetry { .. } => events.lock().unwrap().1 += 1,
             _ => {}
@@ -206,7 +206,7 @@ async fn llm_5xx_retries_then_propagates_after_max() {
     let retries = Arc::new(Mutex::new(Vec::new()));
     let observed = retries.clone();
     let result = loop_
-        .run_with_events(vec![MessageParam::user("hi")], move |event| {
+        .run_with_events(vec![ChatMessage::user("hi")], move |event| {
             if let AgentEvent::ModelRetry { attempt, .. } = event {
                 observed.lock().unwrap().push(attempt);
             }
@@ -261,7 +261,7 @@ async fn llm_5xx_succeeds_after_retry() {
     let retries = Arc::new(Mutex::new(Vec::new()));
     let observed = retries.clone();
     let run = loop_
-        .run_with_events(vec![MessageParam::user("hi")], move |event| {
+        .run_with_events(vec![ChatMessage::user("hi")], move |event| {
             if let AgentEvent::ModelRetry {
                 attempt,
                 max_attempts,
@@ -319,7 +319,7 @@ async fn llm_429_retries_and_succeeds() {
     let retries = Arc::new(Mutex::new(Vec::new()));
     let observed = retries.clone();
     let run = loop_
-        .run_with_events(vec![MessageParam::user("hi")], move |event| {
+        .run_with_events(vec![ChatMessage::user("hi")], move |event| {
             if let AgentEvent::ModelRetry { attempt, .. } = event {
                 observed.lock().unwrap().push(attempt);
             }
@@ -350,7 +350,7 @@ async fn zero_max_retries_means_no_retry() {
         .build()
         .expect("build");
 
-    let result = loop_.run(vec![MessageParam::user("hi")]).await;
+    let result = loop_.run(vec![ChatMessage::user("hi")]).await;
     match result {
         Err(AgentLoopError::Provider { attempts, .. }) => assert_eq!(attempts, 1),
         other => panic!("expected provider error, got {other:?}"),
@@ -384,10 +384,7 @@ async fn tool_use_capability_passes_validation() {
         .build()
         .expect("build");
 
-    let run = loop_
-        .run(vec![MessageParam::user("hi")])
-        .await
-        .expect("run");
+    let run = loop_.run(vec![ChatMessage::user("hi")]).await.expect("run");
     assert_eq!(run.final_response.id, "msg_cap");
 }
 
@@ -418,9 +415,6 @@ async fn thinking_capability_passes_validation() {
     // Cannot easily set thinking via builder — would need raw request.
     // Skip the thinking setup, just verify no validation error when
     // capability is present but not used.
-    let run = loop_
-        .run(vec![MessageParam::user("hi")])
-        .await
-        .expect("run");
+    let run = loop_.run(vec![ChatMessage::user("hi")]).await.expect("run");
     assert_eq!(run.final_response.id, "msg_thinking");
 }

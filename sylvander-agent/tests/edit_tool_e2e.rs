@@ -107,7 +107,7 @@ async fn edit_tool_e2e() {
 
     let _run = loop_
         .run_with_events(
-            vec![MessageParam::user("change foo to bar in file.txt")],
+            vec![ChatMessage::user("change foo to bar in file.txt")],
             move |event| events_clone.lock().unwrap().push(event),
         )
         .await
@@ -203,7 +203,7 @@ async fn edit_tool_with_ambiguous_match_returns_error() {
 
     let _run = loop_
         .run_with_events(
-            vec![MessageParam::user("replace x in file.txt")],
+            vec![ChatMessage::user("replace x in file.txt")],
             move |event| events_clone.lock().unwrap().push(event),
         )
         .await

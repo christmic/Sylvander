@@ -122,7 +122,7 @@ async fn read_e2e_wiremock() {
 
     let run = loop_
         .run_with_events(
-            vec![MessageParam::user("Read notes.md and summarize")],
+            vec![ChatMessage::user("Read notes.md and summarize")],
             move |event| {
                 events_clone.lock().unwrap().push(event);
             },
@@ -209,7 +209,7 @@ async fn read_e2e_wiremock_missing_file() {
         .expect("build");
 
     let run = loop_
-        .run(vec![MessageParam::user("Read missing.txt")])
+        .run(vec![ChatMessage::user("Read missing.txt")])
         .await
         .expect("run should succeed even with file-not-found error");
 
@@ -298,7 +298,7 @@ async fn read_e2e_real_api_single_iteration() {
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
     let result = loop_
-        .run_with_events(vec![MessageParam::user(prompt)], move |event| {
+        .run_with_events(vec![ChatMessage::user(prompt)], move |event| {
             events_clone.lock().unwrap().push(event);
         })
         .await;

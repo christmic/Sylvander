@@ -18,8 +18,8 @@
 //! `assistant_message_from_response`) to
 //! `UserContentBlock::Other(json)` with `type: "tool_use"` and
 //! `id: <tool_use_id>`. L1 reads those via that JSON shape, not via
-//! `ContentBlock` directly — because by the time L1 sees the
-//! messages, they've already been re-fed as `MessageParam`.
+//! `ContentBlock` directly because L1 operates on the normalized, re-feedable
+//! conversation representation.
 
 use std::collections::HashSet;
 use std::future::Future;
