@@ -197,7 +197,7 @@ async fn runtime_boot_uses_external_acquire_renew_rotation_and_failure() {
         .map(|request| {
             request
                 .headers
-                .get("authorization")
+                .get("x-api-key")
                 .and_then(|value| value.to_str().ok())
                 .unwrap()
                 .to_owned()
@@ -205,10 +205,7 @@ async fn runtime_boot_uses_external_acquire_renew_rotation_and_failure() {
         .collect::<Vec<_>>();
     assert_eq!(
         keys,
-        [
-            "Bearer external-key-one".to_owned(),
-            "Bearer external-key-two".to_owned()
-        ]
+        ["external-key-one".to_owned(), "external-key-two".to_owned()]
     );
 
     provider.fail_renew.store(true, Ordering::SeqCst);

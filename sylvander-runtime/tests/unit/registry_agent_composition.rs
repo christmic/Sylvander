@@ -150,7 +150,7 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
 async fn expect_request(server: &MockServer, key: &str) {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(header("authorization", format!("Bearer {key}")))
+        .and(header("x-api-key", key))
         .and(body_partial_json(json!({"model": "model-a"})))
         .respond_with(ResponseTemplate::new(200).set_body_raw(TEXT_STREAM, "text/event-stream"))
         .expect(1)
@@ -317,7 +317,7 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
     for key in ["alpha-first-key", "alpha-second-key"] {
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
-            .and(header("authorization", format!("Bearer {key}")))
+            .and(header("x-api-key", key))
             .and(body_partial_json(json!({"model": "shared"})))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -329,7 +329,7 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
     }
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(header("authorization", "Bearer beta-key"))
+        .and(header("x-api-key", "beta-key"))
         .and(body_partial_json(json!({"model": "shared"})))
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({
             "type": "error",
@@ -512,7 +512,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     let success_stream = TEXT_STREAM.replace("model-a", "shared");
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(header("authorization", "Bearer alpha-key"))
+        .and(header("x-api-key", "alpha-key"))
         .and(body_partial_json(json!({"model": "shared"})))
         .respond_with(ResponseTemplate::new(200).set_body_raw(success_stream, "text/event-stream"))
         .expect(1)
@@ -520,7 +520,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         .await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(header("authorization", "Bearer beta-key"))
+        .and(header("x-api-key", "beta-key"))
         .and(body_partial_json(json!({"model": "shared"})))
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({
             "type": "error",
