@@ -61,6 +61,9 @@ Design notes for the platform, terminal substrate, and brand.
 
 - [sylvander-agent-platform.md](sylvander-agent-platform.md) — agent
   loop, tool/skill/MCP surface, supervisor layout.
+- [tool-execution-architecture.md](tool-execution-architecture.md) — pinned
+  upstream evidence and the implemented tool preparation, execution, and
+  fail-closed sandbox boundary.
 - [sylvander-tui-ux-design.md](sylvander-tui-ux-design.md) — terminal
   UI composition, focus, responsive dock, decision surfaces.
 - [sylvander-brand-system.md](sylvander-brand-system.md) — brand
