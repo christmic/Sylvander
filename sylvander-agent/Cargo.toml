@@ -1,6 +1,6 @@
 [package]
 name = "sylvander-agent"
-description = "Sylvander v2 Agent Loop — async reactive driver for the Anthropic Messages API"
+description = "Sylvander v2 provider-neutral asynchronous Agent loop"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,6 @@ license.workspace = true
 
 [dependencies]
 sylvander-llm-core = { path = "../sylvander-llm-core" }
-sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-protocol = { path = "../sylvander-protocol" }
 tokio = { workspace = true, features = ["fs", "io-util", "process"] }
 futures = { workspace = true }
@@ -29,6 +28,7 @@ reqwest = { workspace = true, features = ["blocking"] }
 rusqlite = { version = "0.40", features = ["backup", "bundled", "functions"] }
 
 [dev-dependencies]
+sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 wiremock = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "time"] }
 tempfile = "3"

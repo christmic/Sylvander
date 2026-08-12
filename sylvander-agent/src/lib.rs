@@ -6,7 +6,7 @@
 //!
 //! ## Scope
 //!
-//! - Provider-neutral model execution with an Anthropic wire adapter
+//! - Provider-neutral model execution through `sylvander-llm-core`
 //! - Reactive event stream (`AgentEvent` + `run_stream()`)
 //! - Governed built-in, MCP, and embedding-supplied tools
 //! - Durable sessions, typed prompt/context composition, and memory
@@ -19,42 +19,24 @@
 //! use std::sync::Arc;
 //!
 //! use sylvander_agent::{
-//!     prelude::{AgentLoop, MessageParam, ToolContext},
+//!     prelude::{AgentLoop, ChatMessage, ToolContext},
 //!     tool_context::Cap,
 //! };
-//! use sylvander_llm_anthropic::{
-//!     AnthropicProvider,
-//!     api::{
-//!         client::AnthropicClient,
-//!         model::{ModelCapabilities, ModelInfo},
-//!     },
-//! };
 //! use sylvander_llm_core::{
-//!     ModelCapabilities as ProviderCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+//!     ModelCapabilities, ModelInfo, ModelProvider, ModelRef,
 //! };
 //!
+//! # fn build_provider() -> Arc<dyn ModelProvider> { unimplemented!() }
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-//! // Caller builds their own model registry (per C11 architecture).
-//! let model = ModelInfo::builder()
-//!     .id("claude-sonnet-5-20260601")
-//!     .context_window(200_000)
-//!     .max_output_tokens(32_000)
-//!     .capability(ModelCapabilities::TOOL_USE)
-//!     .build()
-//!     .unwrap();
-//!
-//! let client = AnthropicClient::builder()
-//!     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
-//!     .build()?;
-//! let exact_model = ProviderModelInfo {
-//!     reference: ModelRef::new("anthropic", model.id.clone()),
-//!     context_window: model.context_window,
-//!     max_output_tokens: model.max_output_tokens,
-//!     capabilities: ProviderCapabilities::TOOL_USE,
+//! let exact_model = ModelInfo {
+//!     reference: ModelRef::new("configured-provider", "selected-model"),
+//!     context_window: 200_000,
+//!     max_output_tokens: 32_000,
+//!     capabilities: ModelCapabilities::TOOL_USE,
 //! };
 //!
 //! let loop_ = AgentLoop::builder()
-//!     .qualified_router(Arc::new(AnthropicProvider::new("anthropic", client)))
+//!     .qualified_router(build_provider())
 //!     .provider_model(exact_model)
 //!     .tool_context(
 //!         ToolContext::new(sylvander_protocol::SessionContext::new(
@@ -66,7 +48,7 @@
 //!     .max_iterations(50)
 //!     .build()?;
 //!
-//! let initial = vec![MessageParam::user("List files in /tmp")];
+//! let initial = vec![ChatMessage::user("List files in /tmp")];
 //!
 //! // Await full completion
 //! let run = sylvander_agent::prelude::run(&loop_, initial).await?;
@@ -124,7 +106,6 @@ pub mod plan_gate;
 pub mod prompt;
 /// Internal translation between Anthropic wire types and provider-neutral
 /// model contracts. This is a current adapter, not a fallback backend.
-mod provider_adapter;
 /// Authenticated single-turn execution and durable transcript handling.
 pub mod run;
 /// Session context and runtime metadata carried by an Agent run.
@@ -215,6 +196,8 @@ pub mod prelude {
         WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
         WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
     };
-    pub use sylvander_llm_anthropic::prelude::*;
+    pub use sylvander_llm_core::{
+        ChatMessage, ChatRole, ContentBlock, ModelResponse, StopReason, TokenUsage,
+    };
     pub use sylvander_protocol::types::UserId;
 }
