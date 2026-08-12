@@ -11,7 +11,11 @@ use serde_json::{Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
 use crate::curated_memory::{CuratedMemoryScope, MemoryCandidateSink, MemoryCandidateSubmission};
-use crate::tool::{Tool, ToolError, ToolOutput};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use crate::tool_context::ToolContext;
 
 use super::memory::{MemoryAppend, MemoryStore};
@@ -20,10 +24,12 @@ use super::memory::{MemoryAppend, MemoryStore};
 ///
 /// The model decides *when* and *what* to propose. Runtime and Guardian retain
 /// authority over ownership, policy, confirmation, and persistence.
+#[derive(Clone)]
 pub struct MemoryWriteTool {
     target: MemoryWriteTarget,
 }
 
+#[derive(Clone)]
 enum MemoryWriteTarget {
     /// Explicit synchronous relationship-memory product path. Runtime
     /// composition uses `Candidate`; this path remains for trusted embedded
@@ -51,21 +57,8 @@ impl MemoryWriteTool {
     }
 }
 
-#[async_trait]
-impl Tool for MemoryWriteTool {
-    fn name(&self) -> &'static str {
-        "write_memory"
-    }
-
-    fn description(&self) -> &'static str {
-        "Propose information for governed long-term memory. \
-         Use this for user preferences, important decisions, or project facts \
-         that may be useful across conversations. Runtime derives the owner, \
-         and policy may reject the proposal or require user confirmation. \
-         Each proposal can have optional categorization tags."
-    }
-
-    fn input_schema(&self) -> InputSchema {
+impl ToolDefinition for MemoryWriteTool {
+    fn spec(&self) -> ToolSpec {
         let mut schema = InputSchema::new_with_properties(
             serde_json::json!({
                 "content": {
@@ -86,18 +79,31 @@ impl Tool for MemoryWriteTool {
             &["content"],
         );
         schema.schema["additionalProperties"] = JsonValue::Bool(false);
-        schema
+        ToolSpec::strict(
+            "write_memory",
+            "Propose information for governed long-term memory. \
+         Use this for user preferences, important decisions, or project facts \
+         that may be useful across conversations. Runtime derives the owner, \
+         and policy may reject the proposal or require user confirmation. \
+         Each proposal can have optional categorization tags.",
+            schema.schema,
+            crate::tool_invocation::ToolInvocationClass::MemoryCandidate,
+        )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::MemoryCandidate
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for MemoryWriteTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
+        let input = call.input();
         if !ctx.has_cap(crate::tool_context::Cap::MemoryWrite) {
             return Ok(ToolOutput::err("memory write capability not granted"));
         }
-        reject_unknown_fields(&input, &["content", "tags", "scope"])?;
+        reject_unknown_fields(input, &["content", "tags", "scope"])?;
         let content = input["content"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'content' field".into()))?;

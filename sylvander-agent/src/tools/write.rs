@@ -12,7 +12,11 @@ use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use crate::tool_context::ToolContext;
 
 /// Write a file into the invocation's explicit workspace.
@@ -28,48 +32,49 @@ impl WriteTool {
     }
 }
 
-#[async_trait]
-impl Tool for WriteTool {
-    fn name(&self) -> &'static str {
-        "Write"
-    }
-
-    fn description(&self) -> &'static str {
-        "Write content to a file at the given path (relative to the current workspace). \
-         Creates parent directories if needed. Overwrites the file if it already exists."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            json!({
-                "file_path": {
-                    "type": "string",
-                    "description": "Path to the file, relative to the current workspace"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The full file content to write"
-                }
-            }),
-            &["file_path", "content"],
+impl ToolDefinition for WriteTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "Write",
+            "Write content to a file at the given path (relative to the current workspace). Creates parent directories if needed. Overwrites the file if it already exists.",
+            InputSchema::new_with_properties(
+                json!({
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to the current workspace"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The full file content to write"
+                    }
+                }),
+                &["file_path", "content"],
+            )
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::FilesystemMutation,
         )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::FilesystemMutation
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for WriteTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::Write) {
             return Ok(ToolOutput::err(
                 "write capability not granted for this invocation",
             ));
         }
-        let path_str = input
+        let path_str = call
+            .input()
             .get("file_path")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `file_path`".into()))?;
-        let content = input
+        let content = call
+            .input()
             .get("content")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `content`".into()))?;

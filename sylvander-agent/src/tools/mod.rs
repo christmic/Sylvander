@@ -1,6 +1,6 @@
 //! Built-in tool implementations.
 //!
-//! Runtime tools implement the shared [`crate::tool::Tool`] contract. Test
+//! Runtime tools implement the shared definition and executor contracts. Test
 //! doubles are kept in the crate's `tests/` tree.
 
 pub mod ask_user;

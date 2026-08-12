@@ -4,7 +4,11 @@ use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use crate::tool_context::{Cap, ToolContext};
 use crate::workspace_executor::{
     MAX_QUERY_RESULTS, WorkspaceEntryKind, WorkspaceListRequest, WorkspaceQueryLimits,
@@ -21,18 +25,12 @@ impl ListTool {
     }
 }
 
-#[async_trait]
-impl Tool for ListTool {
-    fn name(&self) -> &'static str {
-        "List"
-    }
-
-    fn description(&self) -> &'static str {
-        "List files and directories in the current workspace without invoking a shell. Returns compact JSON with path, kind, size, and an explicit truncated flag."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::from_json_value(json!({
+impl ToolDefinition for ListTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "List",
+            "List files and directories in the current workspace without invoking a shell. Returns compact JSON with path, kind, size, and an explicit truncated flag.",
+            InputSchema::from_json_value(json!({
             "type": "object",
             "properties": {
                 "path": {
@@ -51,20 +49,26 @@ impl Tool for ListTool {
                 }
             },
             "additionalProperties": false
-        }))
+            }))
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::Read,
+        )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::Read
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for ListTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(Cap::Read) {
             return Ok(ToolOutput::err(
                 "list capability not granted for this invocation",
             ));
         }
-        let object = strict_object(&input, &["path", "recursive", "max_results"])?;
+        let object = strict_object(call.input(), &["path", "recursive", "max_results"])?;
         let path = optional_string(object.get("path"), "path")?.unwrap_or(".");
         let recursive = optional_bool(object.get("recursive"), "recursive")?.unwrap_or(false);
         let max_results = parse_max_results(object.get("max_results"))?;

@@ -13,7 +13,11 @@ use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use crate::tool_context::ToolContext;
 
 const MAX_EDIT_FILE_BYTES: usize = 8 * 1024 * 1024;
@@ -30,66 +34,67 @@ impl EditTool {
     }
 }
 
-#[async_trait]
-impl Tool for EditTool {
-    fn name(&self) -> &'static str {
-        "Edit"
-    }
-
-    fn description(&self) -> &'static str {
-        "Replace a string in a file with a new string. By default, \
-         the old_string must appear exactly once in the file (so the \
-         replacement is unambiguous). Set replace_all to true to \
-         replace every occurrence. Paths are relative to the current workspace."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            json!({
-                "file_path": {
-                    "type": "string",
-                    "description": "Path to the file, relative to the current workspace"
-                },
-                "old_string": {
-                    "type": "string",
-                    "description": "The exact text to find and replace (must match exactly)"
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "The text to replace it with"
-                },
-                "replace_all": {
-                    "type": "boolean",
-                    "description": "Replace every occurrence instead of requiring a unique match (default false)"
-                }
-            }),
-            &["file_path", "old_string", "new_string"],
+impl ToolDefinition for EditTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "Edit",
+            "Replace a string in a file with a new string. By default, the old_string must appear exactly once in the file (so the replacement is unambiguous). Set replace_all to true to replace every occurrence. Paths are relative to the current workspace.",
+            InputSchema::new_with_properties(
+                json!({
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to the current workspace"
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "The exact text to find and replace (must match exactly)"
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "The text to replace it with"
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace every occurrence instead of requiring a unique match (default false)"
+                    }
+                }),
+                &["file_path", "old_string", "new_string"],
+            )
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::FilesystemMutation,
         )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::FilesystemMutation
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for EditTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::Write) {
             return Ok(ToolOutput::err(
                 "write capability not granted for this invocation",
             ));
         }
-        let path_str = input
+        let path_str = call
+            .input()
             .get("file_path")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `file_path`".into()))?;
-        let old_string = input
+        let old_string = call
+            .input()
             .get("old_string")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `old_string`".into()))?;
-        let new_string = input
+        let new_string = call
+            .input()
             .get("new_string")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `new_string`".into()))?;
-        let replace_all = input
+        let replace_all = call
+            .input()
             .get("replace_all")
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);

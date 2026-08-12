@@ -1,10 +1,11 @@
 //! `present_plan` marker tool intercepted by the Agent loop.
 
 use async_trait::async_trait;
-use serde_json::Value as JsonValue;
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use crate::tool_context::ToolContext;
 
 #[derive(Default)]
@@ -17,38 +18,34 @@ impl PresentPlanTool {
     }
 }
 
-#[async_trait]
-impl Tool for PresentPlanTool {
-    fn name(&self) -> &'static str {
-        "present_plan"
-    }
-
-    fn description(&self) -> &'static str {
-        "Present an ordered implementation plan for explicit user review before proceeding."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            serde_json::json!({
-                "steps": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": { "type": "string" },
-                    "description": "Ordered, concrete implementation steps."
-                }
-            }),
-            &["steps"],
+impl ToolDefinition for PresentPlanTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "present_plan",
+            "Present an ordered implementation plan for explicit user review before proceeding.",
+            InputSchema::new_with_properties(
+                serde_json::json!({
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": { "type": "string" },
+                        "description": "Ordered, concrete implementation steps."
+                    }
+                }),
+                &["steps"],
+            )
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::Control,
         )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::Control
-    }
-
-    async fn execute(
+#[async_trait]
+impl ToolExecutor for PresentPlanTool {
+    async fn handle(
         &self,
         _ctx: &ToolContext,
-        _input: JsonValue,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         Err(ToolError::Other(
             "present_plan must be intercepted at the loop level".into(),

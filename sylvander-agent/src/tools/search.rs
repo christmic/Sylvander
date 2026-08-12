@@ -1,10 +1,14 @@
 //! Structured workspace text search.
 
 use async_trait::async_trait;
-use serde_json::{Value as JsonValue, json};
+use serde_json::json;
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use crate::tool_context::{Cap, ToolContext};
 use crate::workspace_executor::{MAX_QUERY_RESULTS, WorkspaceQueryLimits, WorkspaceSearchRequest};
 
@@ -21,18 +25,12 @@ impl SearchTool {
     }
 }
 
-#[async_trait]
-impl Tool for SearchTool {
-    fn name(&self) -> &'static str {
-        "Search"
-    }
-
-    fn description(&self) -> &'static str {
-        "Search UTF-8 workspace files without invoking a shell. Returns compact JSON matches with path, line number, line text, and an explicit truncated flag."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::from_json_value(json!({
+impl ToolDefinition for SearchTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "Search",
+            "Search UTF-8 workspace files without invoking a shell. Returns compact JSON matches with path, line number, line text, and an explicit truncated flag.",
+            InputSchema::from_json_value(json!({
             "type": "object",
             "properties": {
                 "query": {
@@ -53,20 +51,26 @@ impl Tool for SearchTool {
             },
             "required": ["query"],
             "additionalProperties": false
-        }))
+            }))
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::Read,
+        )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::Read
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for SearchTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(Cap::Read) {
             return Ok(ToolOutput::err(
                 "search capability not granted for this invocation",
             ));
         }
-        let object = strict_object(&input, &["query", "path", "max_results"])?;
+        let object = strict_object(call.input(), &["query", "path", "max_results"])?;
         let query = optional_string(object.get("query"), "query")?
             .filter(|query| !query.is_empty())
             .ok_or_else(|| ToolError::Other("missing non-empty required field `query`".into()))?;

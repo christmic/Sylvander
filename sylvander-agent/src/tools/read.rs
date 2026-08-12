@@ -13,11 +13,16 @@
 //! surfaced to the caller.
 
 use async_trait::async_trait;
-use serde_json::{Value as JsonValue, json};
+use serde_json::{Value, json};
 
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput, ToolProgressSink};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolProgressSink,
+    ToolSpec,
+};
 use crate::tool_context::ToolContext;
 
 const MAX_READ_FILE_BYTES: usize = 1024 * 1024;
@@ -34,41 +39,41 @@ impl ReadTool {
     }
 }
 
-#[async_trait]
-impl Tool for ReadTool {
-    fn name(&self) -> &'static str {
-        "Read"
-    }
-
-    fn description(&self) -> &'static str {
-        "Read the contents of a file at the given path (relative to the current workspace). \
-         Returns the file's text content. Rejects paths that escape the workspace."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            json!({
-                "file_path": {
-                    "type": "string",
-                    "description": "Path to the file, relative to the current workspace"
-                }
-            }),
-            &["file_path"],
+impl ToolDefinition for ReadTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "Read",
+            "Read the contents of a file at the given path (relative to the current workspace). Returns the file's text content. Rejects paths that escape the workspace.",
+            InputSchema::new_with_properties(
+                json!({
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to the current workspace"
+                    }
+                }),
+                &["file_path"],
+            )
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::Read,
         )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::Read
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for ReadTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::Read) {
             return Ok(ToolOutput::err(
                 "read capability not granted for this invocation",
             ));
         }
 
-        let path_str = input
+        let path_str = call
+            .input()
             .get("file_path")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `file_path`".into()))?;
@@ -110,13 +115,13 @@ impl Tool for ReadTool {
         Ok(ToolOutput::ok(content))
     }
 
-    async fn execute_streaming(
+    async fn handle_streaming(
         &self,
         ctx: &ToolContext,
-        input: JsonValue,
+        call: &PreparedToolCall,
         progress: ToolProgressSink,
     ) -> Result<ToolOutput, ToolError> {
-        let output = self.execute(ctx, input).await?;
+        let output = self.handle(ctx, call).await?;
         if !output.is_error {
             for delta in output_chunks(&output.content, 4096) {
                 progress.emit(delta);
@@ -147,10 +152,6 @@ fn output_chunks(text: &str, max_chars: usize) -> Vec<String> {
     }
     chunks
 }
-
-// Bring `as_str` into scope as a method on `serde_json::Value` (the
-// `Value` alias is in the prelude; the method comes from the trait).
-use serde_json::Value;
 
 #[cfg(test)]
 #[path = "../../tests/unit/tools_read.rs"]

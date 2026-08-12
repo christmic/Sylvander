@@ -9,7 +9,12 @@ use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput, ToolProgressSink};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolProgressSink,
+    ToolSpec,
+};
 use crate::tool_context::{Cap, ToolContext};
 use crate::workspace_executor::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 
@@ -30,52 +35,69 @@ impl CommandTool {
     }
 }
 
-#[async_trait]
-impl Tool for CommandTool {
-    fn name(&self) -> &'static str {
-        "Command"
-    }
-
-    fn description(&self) -> &'static str {
-        "Run a shell command in the current workspace. Use it for builds, tests, formatting, search, and git inspection. Returns exit status, stdout, and stderr."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            json!({
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to run"
-                },
-                "workspace": {
-                    "type": "string",
-                    "description": "Optional logical workspace reference without the @ prefix"
-                },
-                "environment": {
-                    "type": "object",
-                    "description": "Optional command-scoped environment overrides",
-                    "additionalProperties": { "type": "string" }
-                }
-            }),
-            &["command"],
+impl ToolDefinition for CommandTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "Command",
+            "Run a shell command in the current workspace. Use it for builds, tests, formatting, search, and git inspection. Returns exit status, stdout, and stderr.",
+            InputSchema::new_with_properties(
+                json!({
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run"
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Optional logical workspace reference without the @ prefix"
+                    },
+                    "environment": {
+                        "type": "object",
+                        "description": "Optional command-scoped environment overrides",
+                        "additionalProperties": { "type": "string" }
+                    }
+                }),
+                &["command"],
+            )
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::Terminal,
         )
     }
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::Terminal
+    fn prepare(
+        &self,
+        input: JsonValue,
+    ) -> Result<crate::tool::ToolPreparation, crate::tool::ToolPrepareError> {
+        let preparation = crate::tool::prepare_from_spec(&self.spec(), input.clone())?;
+        if input
+            .get("command")
+            .and_then(JsonValue::as_str)
+            .is_none_or(|command| command.trim().is_empty())
+        {
+            return Err(crate::tool::ToolPrepareError::InvalidInput(
+                "`command` must not be blank".into(),
+            ));
+        }
+        Ok(preparation)
     }
+}
 
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
-        self.execute_inner(ctx, input, None).await
-    }
-
-    async fn execute_streaming(
+#[async_trait]
+impl ToolExecutor for CommandTool {
+    async fn handle(
         &self,
         ctx: &ToolContext,
-        input: JsonValue,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute_inner(ctx, call.input(), None).await
+    }
+
+    async fn handle_streaming(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
         progress: ToolProgressSink,
     ) -> Result<ToolOutput, ToolError> {
-        self.execute_inner(ctx, input, Some(progress)).await
+        self.execute_inner(ctx, call.input(), Some(progress)).await
     }
 }
 
@@ -83,7 +105,7 @@ impl CommandTool {
     async fn execute_inner(
         &self,
         ctx: &ToolContext,
-        input: JsonValue,
+        input: &JsonValue,
         progress: Option<ToolProgressSink>,
     ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(Cap::Spawn) {

@@ -7,7 +7,12 @@ use async_trait::async_trait;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutionMode, ToolExecutionPolicy,
+    ToolExecutor, ToolOutput, ToolPreparation, ToolPrepareError, ToolSpec,
+};
 use crate::tool_context::{Cap, ToolContext};
 use crate::workspace_executor::WorkspaceExecutorError;
 
@@ -31,63 +36,73 @@ impl GitTool {
     }
 }
 
-#[async_trait]
-impl Tool for GitTool {
-    fn name(&self) -> &'static str {
-        "Git"
-    }
-
-    fn description(&self) -> &'static str {
-        "Inspect the current Git repository with structured read-only operations: status, diff, and log. This tool cannot modify the repository."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            json!({
-                "operation": {
-                    "type": "string",
-                    "enum": ["status", "diff", "log"],
-                    "description": "Read-only Git operation to perform"
-                },
-                "staged": {
-                    "type": "boolean",
-                    "description": "For diff only: inspect staged changes"
-                },
-                "stat": {
-                    "type": "boolean",
-                    "description": "For diff only: show the summary instead of the patch"
-                },
-                "path": {
-                    "type": "string",
-                    "description": "For diff or log only: repository-relative path filter"
-                },
-                "max_count": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_LOG_COUNT,
-                    "description": "For log only: maximum number of commits"
-                },
-                "workspace": {
-                    "type": "string",
-                    "description": "Optional logical workspace reference without the @ prefix"
-                }
-            }),
-            &["operation"],
+impl ToolDefinition for GitTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "Git",
+            "Inspect the current Git repository with structured read-only operations: status, diff, and log. This tool cannot modify the repository.",
+            InputSchema::new_with_properties(
+                json!({
+                    "operation": {
+                        "type": "string",
+                        "enum": ["status", "diff", "log"],
+                        "description": "Read-only Git operation to perform"
+                    },
+                    "staged": {
+                        "type": "boolean",
+                        "description": "For diff only: inspect staged changes"
+                    },
+                    "stat": {
+                        "type": "boolean",
+                        "description": "For diff only: show the summary instead of the patch"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "For diff or log only: repository-relative path filter"
+                    },
+                    "max_count": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_LOG_COUNT,
+                        "description": "For log only: maximum number of commits"
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Optional logical workspace reference without the @ prefix"
+                    }
+                }),
+                &["operation"],
+            )
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::Terminal,
         )
     }
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::Terminal
+    fn prepare(&self, input: JsonValue) -> Result<ToolPreparation, ToolPrepareError> {
+        Ok(
+            crate::tool::prepare_from_spec(&self.spec(), input)?.with_execution(
+                ToolExecutionMode::Parallel,
+                ToolExecutionPolicy::read_only_process(),
+            ),
+        )
     }
+}
 
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for GitTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(Cap::Read) || !ctx.has_cap(Cap::Git) {
             return Ok(ToolOutput::err(
                 "read-only Git inspection is not enabled for this workspace",
             ));
         }
 
-        let object = input
+        let object = call
+            .input()
             .as_object()
             .ok_or_else(|| ToolError::Other("Git input must be an object".into()))?;
         let operation = required_string(object, "operation")?;

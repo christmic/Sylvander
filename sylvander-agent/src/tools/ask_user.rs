@@ -5,10 +5,11 @@
 //! the user responds via the bus.
 
 use async_trait::async_trait;
-use serde_json::Value as JsonValue;
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use crate::tool_context::ToolContext;
 
 #[derive(Default)]
@@ -21,49 +22,45 @@ impl AskUserTool {
     }
 }
 
-#[async_trait]
-impl Tool for AskUserTool {
-    fn name(&self) -> &'static str {
-        "ask_user"
-    }
-
-    fn description(&self) -> &'static str {
-        "Pause and ask the user a clarifying question. Use this when you need \
+impl ToolDefinition for AskUserTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::strict(
+            "ask_user",
+            "Pause and ask the user a clarifying question. Use this when you need \
          a decision, confirmation, or additional information. \
          Set `options` to constrain answers to a fixed set. Omit `options` \
          for free-text input. Set `multi_select: true` to allow multiple \
-         options to be chosen."
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            serde_json::json!({
-                "question": {
-                    "type": "string",
-                    "description": "The question to ask the user."
-                },
-                "options": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional list of choices. Omit for free-text input."
-                },
-                "multi_select": {
-                    "type": "boolean",
-                    "description": "If true, allow selecting multiple options. Default false."
-                }
-            }),
-            &["question"],
+         options to be chosen.",
+            InputSchema::new_with_properties(
+                serde_json::json!({
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask the user."
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of choices. Omit for free-text input."
+                    },
+                    "multi_select": {
+                        "type": "boolean",
+                        "description": "If true, allow selecting multiple options. Default false."
+                    }
+                }),
+                &["question"],
+            )
+            .schema,
+            crate::tool_invocation::ToolInvocationClass::Control,
         )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::Control
-    }
-
-    async fn execute(
+#[async_trait]
+impl ToolExecutor for AskUserTool {
+    async fn handle(
         &self,
         _ctx: &ToolContext,
-        _input: JsonValue,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         // Intercepted at the loop level — this should never run.
         Err(ToolError::Other(

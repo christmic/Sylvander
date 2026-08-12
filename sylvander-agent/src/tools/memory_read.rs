@@ -10,7 +10,11 @@ use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_core::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use crate::tool_context::ToolContext;
 
 use super::memory::MemoryStore;
@@ -20,6 +24,7 @@ use super::memory::MemoryStore;
 /// The model decides *when* to read memory — it's not injected into
 /// the system prompt. This keeps the prompt lean and gives the model
 /// agency over what context it retrieves.
+#[derive(Clone)]
 pub struct MemoryReadTool {
     store: Arc<dyn MemoryStore>,
 }
@@ -32,21 +37,8 @@ impl MemoryReadTool {
     }
 }
 
-#[async_trait]
-impl Tool for MemoryReadTool {
-    fn name(&self) -> &'static str {
-        "read_memory"
-    }
-
-    fn description(&self) -> &'static str {
-        "Search your long-term memory for relevant information. \
-         Use this when you need to recall user preferences, \
-         project-specific context, or past decisions that are not \
-         in the current conversation. \
-         The results are returned as a JSON array of matching entries."
-    }
-
-    fn input_schema(&self) -> InputSchema {
+impl ToolDefinition for MemoryReadTool {
+    fn spec(&self) -> ToolSpec {
         let mut schema = InputSchema::new_with_properties(
             serde_json::json!({
                 "query": {
@@ -69,18 +61,31 @@ impl Tool for MemoryReadTool {
             &["query"],
         );
         schema.schema["additionalProperties"] = JsonValue::Bool(false);
-        schema
+        ToolSpec::strict(
+            "read_memory",
+            "Search your long-term memory for relevant information. \
+         Use this when you need to recall user preferences, \
+         project-specific context, or past decisions that are not \
+         in the current conversation. \
+         The results are returned as a JSON array of matching entries.",
+            schema.schema,
+            crate::tool_invocation::ToolInvocationClass::Read,
+        )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::Read
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for MemoryReadTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
+        let input = call.input();
         if !ctx.has_cap(crate::tool_context::Cap::MemoryRead) {
             return Ok(ToolOutput::err("memory read capability not granted"));
         }
-        reject_unknown_fields(&input, &["query", "limit", "kind", "min_importance"])?;
+        reject_unknown_fields(input, &["query", "limit", "kind", "min_importance"])?;
         let query = input["query"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'query' field".into()))?;
