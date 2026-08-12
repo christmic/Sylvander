@@ -1,46 +1,37 @@
 use super::*;
-use sylvander_llm_anthropic::api::model::ModelInfo;
-use sylvander_llm_anthropic::api::types::{MessageParam, Usage};
+use sylvander_llm_core::{
+    ChatMessage, ChatRole, ContentBlock, ModelCapabilities, ModelInfo, ModelRef,
+    OpaqueProviderState, TokenUsage,
+};
 
 fn model() -> ModelInfo {
-    ModelInfo::builder()
-        .id("test")
-        .context_window(200_000)
-        .max_output_tokens(8192)
-        .build()
-        .unwrap()
-}
-
-fn usage() -> Usage {
-    Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
+    ModelInfo {
+        reference: ModelRef::new("test", "test"),
+        context_window: 200_000,
+        max_output_tokens: 8192,
+        capabilities: ModelCapabilities::empty(),
     }
 }
 
-fn assistant_with_thinking(thinking: &str) -> MessageParam {
-    MessageParam {
-        role: MessageRole::Assistant,
-        content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
-            "type": "thinking",
-            "thinking": thinking,
-            "signature": "sig_xyz"
-        }))]),
-    }
+fn usage() -> TokenUsage {
+    TokenUsage::default()
 }
 
-fn extract_thinking(msg: &MessageParam) -> Option<String> {
-    let UserContent::Blocks(blocks) = &msg.content else {
+fn assistant_with_thinking(thinking: &str) -> ChatMessage {
+    ChatMessage::assistant(vec![ContentBlock::Reasoning {
+        text: thinking.into(),
+        opaque_state: Some(OpaqueProviderState {
+            provider: "test".into(),
+            data: json!({"signature": "sig_xyz"}),
+        }),
+    }])
+}
+
+fn extract_thinking(msg: &ChatMessage) -> Option<String> {
+    let ContentBlock::Reasoning { text, .. } = msg.content.first()? else {
         return None;
     };
-    let UserContentBlock::Other(j) = blocks.first()? else {
-        return None;
-    };
-    j.get("thinking")
-        .and_then(JsonValue::as_str)
-        .map(str::to_string)
+    Some(text.clone())
 }
 
 #[tokio::test]
@@ -112,23 +103,20 @@ async fn preserves_signature_field() {
     };
 
     layer.apply(&mut ctx).await;
-    let UserContent::Blocks(blocks) = &messages[0].content else {
+    let ContentBlock::Reasoning {
+        opaque_state: Some(state),
+        ..
+    } = &messages[0].content[0]
+    else {
         panic!();
     };
-    let UserContentBlock::Other(j) = &blocks[0] else {
-        panic!();
-    };
-    assert_eq!(
-        j.get("signature").and_then(JsonValue::as_str),
-        Some("sig_xyz")
-    );
-    assert_eq!(j.get("type").and_then(JsonValue::as_str), Some("thinking"));
+    assert_eq!(state.data["signature"], "sig_xyz");
 }
 
 #[tokio::test]
 async fn empty_conversation_is_noop() {
     let layer = ContextCollapseLayer::new();
-    let mut messages: Vec<MessageParam> = vec![];
+    let mut messages: Vec<ChatMessage> = vec![];
     let mut ctx = CompressContext {
         messages: &mut messages,
         last_usage: &usage(),
@@ -149,14 +137,13 @@ async fn user_messages_with_other_content_untouched() {
     let layer = ContextCollapseLayer::new()
         .with_keep_last_n(0)
         .with_max_thinking_chars(50);
-    let mut messages = vec![MessageParam {
-        role: MessageRole::User,
-        content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
-            "type": "tool_use",
-            "id": "toolu_x",
-            "name": "fake",
-            "input": {}
-        }))]),
+    let mut messages = vec![ChatMessage {
+        role: ChatRole::User,
+        content: vec![ContentBlock::ToolCall {
+            id: "toolu_x".into(),
+            name: "fake".into(),
+            arguments: json!({}),
+        }],
     }];
     let mut ctx = CompressContext {
         messages: &mut messages,
@@ -168,11 +155,8 @@ async fn user_messages_with_other_content_untouched() {
     let report = layer.apply(&mut ctx).await;
     assert_eq!(report.condensed_count, 0);
     // The tool_use block is intact.
-    let UserContent::Blocks(blocks) = &messages[0].content else {
-        panic!();
-    };
-    let UserContentBlock::Other(j) = &blocks[0] else {
-        panic!();
-    };
-    assert_eq!(j.get("type").and_then(JsonValue::as_str), Some("tool_use"));
+    assert!(matches!(
+        messages[0].content[0],
+        ContentBlock::ToolCall { .. }
+    ));
 }

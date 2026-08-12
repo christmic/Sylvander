@@ -1,48 +1,38 @@
 use super::*;
 use crate::test_support::InMemoryToolResultDisk;
-use sylvander_llm_anthropic::api::model::ModelInfo;
-use sylvander_llm_anthropic::api::types::{
-    MessageParam, MessageRole, ToolResultBlock, Usage, UserContent, UserContentBlock,
+use sylvander_llm_core::{
+    ChatMessage, ContentBlock, ModelCapabilities, ModelInfo, ModelRef, TokenUsage,
+    ToolResultContent,
 };
 
 fn model() -> ModelInfo {
-    ModelInfo::builder()
-        .id("test")
-        .context_window(200_000)
-        .max_output_tokens(8192)
-        .build()
-        .unwrap()
-}
-
-fn usage() -> Usage {
-    Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
+    ModelInfo {
+        reference: ModelRef::new("test", "test"),
+        context_window: 200_000,
+        max_output_tokens: 8192,
+        capabilities: ModelCapabilities::empty(),
     }
 }
 
-fn user_msg_with_tool_result(tool_use_id: &str, body: &str) -> MessageParam {
-    MessageParam {
-        role: MessageRole::User,
-        content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
-            tool_use_id,
-            body,
-        ))]),
-    }
+fn usage() -> TokenUsage {
+    TokenUsage::default()
 }
 
-fn extract_string_body(msg: &MessageParam) -> Option<String> {
-    let UserContent::Blocks(blocks) = &msg.content else {
+fn user_msg_with_tool_result(tool_use_id: &str, body: &str) -> ChatMessage {
+    ChatMessage::user_blocks(vec![ContentBlock::tool_result_text(
+        tool_use_id,
+        body,
+        false,
+    )])
+}
+
+fn extract_string_body(msg: &ChatMessage) -> Option<String> {
+    let ContentBlock::ToolResult { content, .. } = msg.content.first()? else {
         return None;
     };
-    let UserContentBlock::ToolResult(trb) = blocks.first()? else {
-        return None;
-    };
-    match trb.content.as_ref()? {
-        ToolResultContent::String(s) => Some(s.clone()),
-        ToolResultContent::Blocks(_) => None,
+    match content.first()? {
+        ToolResultContent::Text { text } => Some(text.clone()),
+        _ => None,
     }
 }
 
@@ -134,12 +124,9 @@ async fn preserves_is_error_and_tool_use_id() {
         .with_preview_chars(20);
 
     let big = "y".repeat(200);
-    let mut trb = ToolResultBlock::new("toolu_err", &big);
-    trb = trb.as_error();
-    let mut messages = vec![MessageParam {
-        role: MessageRole::User,
-        content: UserContent::Blocks(vec![UserContentBlock::ToolResult(trb)]),
-    }];
+    let mut messages = vec![ChatMessage::user_blocks(vec![
+        ContentBlock::tool_result_text("toolu_err", &big, true),
+    ])];
     let mut ctx = CompressContext {
         messages: &mut messages,
         last_usage: &usage(),
@@ -151,12 +138,12 @@ async fn preserves_is_error_and_tool_use_id() {
     assert_eq!(report.condensed_count, 1);
 
     // Pull out the block and check its flags.
-    let UserContent::Blocks(blocks) = &messages[0].content else {
-        panic!("expected blocks");
-    };
-    let UserContentBlock::ToolResult(trb) = &blocks[0] else {
+    let ContentBlock::ToolResult {
+        call_id, is_error, ..
+    } = &messages[0].content[0]
+    else {
         panic!("expected tool_result");
     };
-    assert_eq!(trb.tool_use_id, "toolu_err");
-    assert!(trb.is_error, "is_error must be preserved");
+    assert_eq!(call_id, "toolu_err");
+    assert!(*is_error, "is_error must be preserved");
 }

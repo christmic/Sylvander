@@ -1,4 +1,5 @@
 use super::*;
+use sylvander_llm_core::{ChatMessage, ModelCapabilities, ModelInfo, ModelRef, TokenUsage};
 
 /// A trivial layer that always returns a no-op report. Used to
 /// verify the trait is object-safe and dyn-compatible.
@@ -23,19 +24,14 @@ async fn trait_is_object_safe_and_dispatchable() {
     assert_eq!(layer.name(), "noop");
 
     // Build a minimal context with an empty messages vec.
-    let mut messages: Vec<sylvander_llm_anthropic::api::types::MessageParam> = vec![];
-    let usage = sylvander_llm_anthropic::api::types::Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
+    let mut messages: Vec<ChatMessage> = vec![];
+    let usage = TokenUsage::default();
+    let model = ModelInfo {
+        reference: ModelRef::new("test", "test"),
+        context_window: 200_000,
+        max_output_tokens: 8192,
+        capabilities: ModelCapabilities::empty(),
     };
-    let model = sylvander_llm_anthropic::api::model::ModelInfo::builder()
-        .id("test")
-        .context_window(200_000)
-        .max_output_tokens(8192)
-        .build()
-        .unwrap();
     let mut ctx = CompressContext {
         messages: &mut messages,
         last_usage: &usage,

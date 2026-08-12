@@ -1,30 +1,29 @@
 use super::*;
 use crate::compress::auto_compact_llm::tests::MockAutoCompactLlm;
-use sylvander_llm_anthropic::api::model::ModelInfo;
-use sylvander_llm_anthropic::api::types::Usage;
+use sylvander_llm_core::{
+    ChatMessage, ContentBlock, ModelCapabilities, ModelInfo, ModelRef, TokenUsage,
+};
 
 fn model_info() -> ModelInfo {
-    ModelInfo::builder()
-        .id("test")
-        .context_window(1000)
-        .max_output_tokens(100)
-        .build()
-        .unwrap()
+    ModelInfo {
+        reference: ModelRef::new("test", "test"),
+        context_window: 1000,
+        max_output_tokens: 100,
+        capabilities: ModelCapabilities::empty(),
+    }
 }
 
-fn usage_with(input: u32) -> Usage {
-    Usage {
+fn usage_with(input: u64) -> TokenUsage {
+    TokenUsage {
         input_tokens: input,
-        output_tokens: 0,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
+        ..TokenUsage::default()
     }
 }
 
 #[tokio::test]
 async fn no_op_when_below_threshold() {
     let layer = AutoCompactLayer::new();
-    let mut messages: Vec<MessageParam> = vec![MessageParam::user("hi")];
+    let mut messages: Vec<ChatMessage> = vec![ChatMessage::user("hi")];
     let usage = usage_with(100);
     let mut ctx = CompressContext {
         messages: &mut messages,
@@ -41,8 +40,8 @@ async fn no_op_when_below_threshold() {
 #[tokio::test]
 async fn records_failure_when_llm_not_configured() {
     let layer = AutoCompactLayer::new();
-    let mut messages: Vec<MessageParam> = (0..10)
-        .map(|i| MessageParam::user(format!("msg {i}")))
+    let mut messages: Vec<ChatMessage> = (0..10)
+        .map(|i| ChatMessage::user(format!("msg {i}")))
         .collect();
     let usage = usage_with(950);
     let mut ctx = CompressContext {
@@ -67,15 +66,14 @@ async fn summarizes_and_replaces_when_above_threshold() {
         .with_trigger_ratio(0.5)
         .with_keep_last_n_turns(1);
     let mock = MockAutoCompactLlm::new("the concise summary");
-    let mut messages: Vec<MessageParam> = (0..6)
+    let mut messages: Vec<ChatMessage> = (0..6)
         .map(|i| {
             if i % 2 == 0 {
-                MessageParam::user(format!("user {i}"))
+                ChatMessage::user(format!("user {i}"))
             } else {
-                MessageParam {
-                    role: MessageRole::Assistant,
-                    content: UserContent::String(format!("asst {i}")),
-                }
+                ChatMessage::assistant(vec![ContentBlock::Text {
+                    text: format!("asst {i}"),
+                }])
             }
         })
         .collect();
@@ -92,12 +90,12 @@ async fn summarizes_and_replaces_when_above_threshold() {
     assert!(report.freed_tokens > 0);
 
     assert_eq!(ctx.messages.len(), 3);
-    let UserContent::String(s) = &ctx.messages[0].content else {
+    let [ContentBlock::Text { text: s }] = ctx.messages[0].content.as_slice() else {
         panic!("expected string");
     };
     assert!(s.contains("the concise summary"));
     // messages[1] = the first kept message = user 4
-    if let UserContent::String(s) = &ctx.messages[1].content {
+    if let [ContentBlock::Text { text: s }] = ctx.messages[1].content.as_slice() {
         assert!(s.contains("user 4"));
     } else {
         panic!("expected string");

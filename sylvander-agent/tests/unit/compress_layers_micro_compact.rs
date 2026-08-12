@@ -1,54 +1,41 @@
 use super::*;
-use sylvander_llm_anthropic::api::model::ModelInfo;
-use sylvander_llm_anthropic::api::types::{
-    MessageParam, ToolResultBlock, Usage, UserContent, UserContentBlock,
+use sylvander_llm_core::{
+    ChatMessage, ContentBlock, ModelCapabilities, ModelInfo, ModelRef, TokenUsage,
+    ToolResultContent,
 };
 
 fn model() -> ModelInfo {
-    ModelInfo::builder()
-        .id("test")
-        .context_window(200_000)
-        .max_output_tokens(8192)
-        .build()
-        .unwrap()
-}
-
-fn usage() -> Usage {
-    Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
+    ModelInfo {
+        reference: ModelRef::new("test", "test"),
+        context_window: 200_000,
+        max_output_tokens: 8192,
+        capabilities: ModelCapabilities::empty(),
     }
 }
 
-fn user_msg_text(text: &str) -> MessageParam {
-    MessageParam {
-        role: MessageRole::User,
-        content: UserContent::String(text.to_string()),
-    }
+fn usage() -> TokenUsage {
+    TokenUsage::default()
 }
 
-fn user_msg_with_tool_result(tool_use_id: &str, body: &str) -> MessageParam {
-    MessageParam {
-        role: MessageRole::User,
-        content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
-            tool_use_id,
-            body,
-        ))]),
-    }
+fn user_msg_text(text: &str) -> ChatMessage {
+    ChatMessage::user(text)
 }
 
-fn first_tool_result_body(msg: &MessageParam) -> Option<String> {
-    let UserContent::Blocks(blocks) = &msg.content else {
+fn user_msg_with_tool_result(tool_use_id: &str, body: &str) -> ChatMessage {
+    ChatMessage::user_blocks(vec![ContentBlock::tool_result_text(
+        tool_use_id,
+        body,
+        false,
+    )])
+}
+
+fn first_tool_result_body(msg: &ChatMessage) -> Option<String> {
+    let ContentBlock::ToolResult { content, .. } = msg.content.first()? else {
         return None;
     };
-    let UserContentBlock::ToolResult(trb) = blocks.first()? else {
-        return None;
-    };
-    match trb.content.as_ref()? {
-        ToolResultContent::String(s) => Some(s.clone()),
-        ToolResultContent::Blocks(_) => None,
+    match content.first()? {
+        ToolResultContent::Text { text } => Some(text.clone()),
+        _ => None,
     }
 }
 
@@ -95,7 +82,7 @@ async fn does_not_affect_user_text_messages() {
     let report = layer.apply(&mut ctx).await;
     assert_eq!(report.condensed_count, 0);
     // User text is unchanged.
-    let UserContent::String(s) = &messages[0].content else {
+    let [ContentBlock::Text { text: s }] = messages[0].content.as_slice() else {
         panic!("expected string");
     };
     assert_eq!(s, "user plain text");
@@ -123,7 +110,7 @@ async fn zero_keep_condenses_all_tool_results() {
 #[tokio::test]
 async fn empty_conversation_is_noop() {
     let layer = MicroCompactLayer::new();
-    let mut messages: Vec<MessageParam> = vec![];
+    let mut messages: Vec<ChatMessage> = vec![];
     let mut ctx = CompressContext {
         messages: &mut messages,
         last_usage: &usage(),

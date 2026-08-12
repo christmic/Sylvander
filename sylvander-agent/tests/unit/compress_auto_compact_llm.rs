@@ -1,10 +1,11 @@
 //! Test-only mock LLM exposed for downstream test modules.
 use super::*;
+use sylvander_llm_core::{ChatMessage, ModelInfo};
 
 /// Mock LLM that returns a canned summary, recording the input.
 #[derive(Default)]
 pub struct MockAutoCompactLlm {
-    pub last_messages: std::sync::Mutex<Vec<MessageParam>>,
+    pub last_messages: std::sync::Mutex<Vec<ChatMessage>>,
     pub canned_response: std::sync::Mutex<String>,
 }
 
@@ -18,7 +19,7 @@ impl MockAutoCompactLlm {
     }
 
     #[must_use]
-    pub fn last_messages(&self) -> Vec<MessageParam> {
+    pub fn last_messages(&self) -> Vec<ChatMessage> {
         self.last_messages.lock().unwrap().clone()
     }
 }
@@ -26,7 +27,7 @@ impl MockAutoCompactLlm {
 impl AutoCompactLlm for MockAutoCompactLlm {
     fn summarize<'a>(
         &'a self,
-        messages: &'a [MessageParam],
+        messages: &'a [ChatMessage],
         _model: &'a ModelInfo,
     ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>> {
         Box::pin(async move {
@@ -95,9 +96,8 @@ async fn provider_summary_is_qualified_text_only_and_minimal() {
         }]),
     ))]);
     let llm = ProviderAutoCompactLlm::new(provider.clone(), provider_model());
-    let wire_model = crate::provider_adapter::model_metadata_from_core(&provider_model());
     let summary = llm
-        .summarize(&[MessageParam::user("old context")], &wire_model)
+        .summarize(&[ChatMessage::user("old context")], &provider_model())
         .await
         .unwrap();
     assert_eq!(summary, "summary");
@@ -149,11 +149,10 @@ async fn provider_summary_rejects_missing_late_and_non_text_completion() {
             }]),
         ))],
     ];
-    let wire_model = crate::provider_adapter::model_metadata_from_core(&provider_model());
     for events in cases {
         let llm = ProviderAutoCompactLlm::new(provider(events), provider_model());
         assert!(matches!(
-            llm.summarize(&[MessageParam::user("old")], &wire_model).await,
+            llm.summarize(&[ChatMessage::user("old")], &provider_model()).await,
             Err(AgentLoopError::Provider { source, .. })
                 if source.kind == sylvander_llm_core::ProviderErrorKind::Protocol
         ));

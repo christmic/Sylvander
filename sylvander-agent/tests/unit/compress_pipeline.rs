@@ -4,25 +4,21 @@ use crate::compress::layers::context_collapse::ContextCollapseLayer;
 use crate::compress::layers::orphan_snip::OrphanSnipLayer;
 use std::future::Future;
 use std::pin::Pin;
-use sylvander_llm_anthropic::api::model::ModelInfo;
-use sylvander_llm_anthropic::api::types::{MessageParam, Usage};
+use sylvander_llm_core::{
+    ChatMessage, ContentBlock, ModelCapabilities, ModelInfo, ModelRef, TokenUsage,
+};
 
 fn model() -> ModelInfo {
-    ModelInfo::builder()
-        .id("test")
-        .context_window(200_000)
-        .max_output_tokens(8192)
-        .build()
-        .unwrap()
+    ModelInfo {
+        reference: ModelRef::new("test", "test"),
+        context_window: 200_000,
+        max_output_tokens: 8192,
+        capabilities: ModelCapabilities::empty(),
+    }
 }
 
-fn usage() -> Usage {
-    Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
-    }
+fn usage() -> TokenUsage {
+    TokenUsage::default()
 }
 
 /// Test layer that records its index in execution order.
@@ -66,7 +62,7 @@ impl CompressionLayer for FailingLayer {
 #[tokio::test]
 async fn empty_pipeline_runs_no_layers() {
     let pipeline = CompressionPipeline::builder().build();
-    let mut messages: Vec<MessageParam> = vec![];
+    let mut messages: Vec<ChatMessage> = vec![];
     let mut ctx = CompressContext {
         messages: &mut messages,
         last_usage: &usage(),
@@ -98,7 +94,7 @@ async fn layers_run_in_order() {
         })
         .build();
 
-    let mut messages: Vec<MessageParam> = vec![];
+    let mut messages: Vec<ChatMessage> = vec![];
     let mut ctx = CompressContext {
         messages: &mut messages,
         last_usage: &usage(),
@@ -124,7 +120,7 @@ async fn failure_in_one_layer_does_not_stop_others() {
         })
         .build();
 
-    let mut messages: Vec<MessageParam> = vec![];
+    let mut messages: Vec<ChatMessage> = vec![];
     let mut ctx = CompressContext {
         messages: &mut messages,
         last_usage: &usage(),
@@ -159,18 +155,11 @@ async fn default_for_model_contains_l1_l2_l3_l4() {
 async fn default_for_model_actually_drops_orphans() {
     // Sanity: the default pipeline actually does its job on a
     // synthetic conversation with an orphan tool_result.
-    use sylvander_llm_anthropic::api::types::{
-        MessageRole, ToolResultBlock, UserContent, UserContentBlock,
-    };
     let pipeline = CompressionPipeline::default_for_model(&model());
 
-    let mut messages = vec![MessageParam {
-        role: MessageRole::User,
-        content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
-            "orphan",
-            "stale result",
-        ))]),
-    }];
+    let mut messages = vec![ChatMessage::user_blocks(vec![
+        ContentBlock::tool_result_text("orphan", "stale result", false),
+    ])];
     let mut ctx = CompressContext {
         messages: &mut messages,
         last_usage: &usage(),
@@ -180,10 +169,7 @@ async fn default_for_model_actually_drops_orphans() {
     let reports = pipeline.run_all(&mut ctx).await;
     // L1 dropped the orphan.
     assert!(reports.iter().any(|r| r.condensed_count == 1));
-    let UserContent::Blocks(blocks) = &messages[0].content else {
-        panic!("expected blocks");
-    };
-    assert!(blocks.is_empty());
+    assert!(messages[0].content.is_empty());
 }
 
 #[test]
