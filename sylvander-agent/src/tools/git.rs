@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
-use sylvander_llm_anthropic::api::types::InputSchema;
+use sylvander_llm_core::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::{Cap, ToolContext};

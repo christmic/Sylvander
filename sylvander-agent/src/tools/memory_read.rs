@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 
-use sylvander_llm_anthropic::api::types::InputSchema;
+use sylvander_llm_core::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;

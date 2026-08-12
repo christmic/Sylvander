@@ -16,8 +16,7 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use sylvander_llm_anthropic::api::types::InputSchema;
-use sylvander_llm_core::{CacheHint, ToolDefinition};
+use sylvander_llm_core::{CacheHint, InputSchema, ToolDefinition};
 use sylvander_protocol::AgentHookPhase;
 
 use crate::tool_context::ToolContext;

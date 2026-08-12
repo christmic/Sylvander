@@ -19,7 +19,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-use sylvander_llm_anthropic::api::types::InputSchema;
+use sylvander_llm_core::InputSchema;
 
 use crate::spec::McpServerConfig;
 use crate::tool::{DynamicToolSource, Tool, ToolError, ToolOutput};
