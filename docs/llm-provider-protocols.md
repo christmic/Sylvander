@@ -66,7 +66,7 @@ Initial feature vocabulary:
 | Anthropic Messages | none; typed core capabilities and reasoning settings determine the official request shape |
 | OpenAI Responses | `enable_thinking` |
 | OpenAI Chat Completions | `enable_thinking`, `max_completion_tokens`, `reasoning_content` |
-| DashScope Generation | `enable_thinking`, `thinking_budget`, `parallel_tool_calls`, `reasoning_content`, `response_format` |
+| DashScope Generation | `enable_thinking`, `thinking_budget`, `parallel_tool_calls`, `reasoning_content` |
 
 A feature switch only permits its wire behavior; request conversion must still
 check the selected model's declared capabilities. Protocol-specific typed
@@ -87,6 +87,18 @@ tokens. Native DashScope Generation preserves its reported cached prompt and
 reasoning token details. An absent optional field means the provider omitted it
 and is distinct from a reported zero. Adapter tests must assert both totals and
 details.
+
+OpenAI Chat Completions always requests the official streaming usage tail with
+`stream_options.include_usage=true`; a completed stream without that requested
+usage fails closed. OpenAI Responses treats both `response.completed` and
+`response.incomplete` as terminal response events. Native DashScope preserves
+SSE `event:error` status and request identity instead of interpreting an error
+payload as empty output.
+
+DashScope Generation does not advertise `vision`, `document_input`, or
+`structured_output`: those capabilities require a different native API or a
+stronger schema contract than Generation provides. They must not be inferred
+from a permissive SDK dictionary parameter.
 
 Provider-specific non-token usage metadata, including Anthropic service tier,
 inference geography, and server-tool request counts, remains typed in the

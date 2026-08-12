@@ -1,88 +1,171 @@
-use serde_json::{Map, Value, json};
+//! Conversion boundary between neutral calls and native Generation wire types.
+
 use sylvander_llm_core::{
-    ChatMessage, ChatRole, ContentBlock, MediaSource, ModelRequest, ProviderError,
-    ProviderErrorKind, ProviderErrorPhase, ToolResultContent,
+    ChatMessage, ChatRole, ContentBlock, ModelRef, ModelRequest, ModelResponse, ProviderError,
+    ProviderErrorKind, ProviderErrorPhase, ReasoningEffort, StopReason, TokenUsage,
+    TokenUsageDetails, ToolResultContent,
 };
 
-use crate::{DashScopeFeatures, error};
+use crate::DashScopeFeatures;
+use crate::api::{
+    DashScopeError, GenerationCompletion, GenerationFunctionCallParam,
+    GenerationFunctionDefinition, GenerationFunctionTool, GenerationInput, GenerationMessageParam,
+    GenerationParameters, GenerationRequest, GenerationToolCallParam, GenerationToolKind,
+    GenerationUsage,
+};
 
 pub(crate) fn request(
     features: &DashScopeFeatures,
     input: &ModelRequest,
-) -> Result<Value, ProviderError> {
+) -> Result<GenerationRequest, ProviderError> {
+    if input.output_schema.is_some() {
+        return Err(unsupported(
+            "DashScope Generation json_object mode cannot enforce a JSON Schema",
+        ));
+    }
     let mut messages = input
         .system
         .iter()
-        .map(|instruction| json!({"role": "system", "content": instruction.text}))
+        .map(|instruction| GenerationMessageParam::System {
+            content: instruction.text.clone(),
+        })
         .collect::<Vec<_>>();
     for message in &input.messages {
         append_message(message, features, &mut messages)?;
     }
-    let mut parameters = Map::new();
-    parameters.insert("result_format".into(), json!("message"));
-    parameters.insert("incremental_output".into(), Value::Bool(true));
-    parameters.insert("max_tokens".into(), json!(input.max_output_tokens));
-    if let Some(reasoning) = input.reasoning {
-        if features.contains("enable_thinking") {
-            parameters.insert("enable_thinking".into(), Value::Bool(true));
+    let (enable_thinking, thinking_budget) = reasoning(features, input)?;
+    let tools = input
+        .tools
+        .iter()
+        .map(|tool| GenerationFunctionTool {
+            kind: GenerationToolKind::Function,
+            function: GenerationFunctionDefinition {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: tool.input_schema.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
+    Ok(GenerationRequest {
+        model: input.model.model.clone(),
+        input: GenerationInput { messages },
+        parameters: GenerationParameters {
+            result_format: "message".into(),
+            incremental_output: true,
+            max_tokens: input.max_output_tokens,
+            enable_thinking,
+            thinking_budget,
+            parallel_tool_calls: (features.contains("parallel_tool_calls") && !tools.is_empty())
+                .then_some(true),
+            tools,
+        },
+    })
+}
+
+fn reasoning(
+    features: &DashScopeFeatures,
+    input: &ModelRequest,
+) -> Result<(Option<bool>, Option<u32>), ProviderError> {
+    let Some(reasoning) = input.reasoning else {
+        return Ok((None, None));
+    };
+    if matches!(reasoning.effort, Some(ReasoningEffort::Disabled)) {
+        return Ok((features.contains("enable_thinking").then_some(false), None));
+    }
+    if !features.contains("enable_thinking") {
+        return Err(unsupported(
+            "DashScope reasoning requires enable_thinking support",
+        ));
+    }
+    if reasoning.budget_tokens.is_none() && reasoning.effort.is_some() {
+        return Err(unsupported(
+            "DashScope Generation cannot represent qualitative reasoning effort",
+        ));
+    }
+    let budget = match reasoning.budget_tokens {
+        Some(value) if features.contains("thinking_budget") => Some(value),
+        Some(_) => {
+            return Err(unsupported(
+                "DashScope reasoning budget requires thinking_budget support",
+            ));
         }
-        if features.contains("thinking_budget")
-            && let Some(budget) = reasoning.budget_tokens
-        {
-            parameters.insert("thinking_budget".into(), json!(budget));
-        }
-    }
-    if features.contains("parallel_tool_calls") && !input.tools.is_empty() {
-        parameters.insert("parallel_tool_calls".into(), Value::Bool(true));
-    }
-    if let Some(schema) = &input.output_schema
-        && features.contains("response_format")
-    {
-        parameters.insert(
-            "response_format".into(),
-            json!({"type": "json_object", "schema": schema}),
-        );
-    }
-    if !input.tools.is_empty() {
-        parameters.insert(
-            "tools".into(),
-            Value::Array(
-                input
-                    .tools
-                    .iter()
-                    .map(|tool| {
-                        json!({
-                            "type": "function",
-                            "function": {
-                                "name": tool.name,
-                                "description": tool.description,
-                                "parameters": tool.input_schema,
-                            }
-                        })
-                    })
-                    .collect(),
-            ),
-        );
-    }
-    Ok(json!({
-        "model": input.model.model,
-        "input": {"messages": messages},
-        "parameters": parameters,
-    }))
+        None => None,
+    };
+    Ok((Some(true), budget))
 }
 
 fn append_message(
     message: &ChatMessage,
     features: &DashScopeFeatures,
-    output: &mut Vec<Value>,
+    output: &mut Vec<GenerationMessageParam>,
 ) -> Result<(), ProviderError> {
-    let role = match message.role {
-        ChatRole::User => "user",
-        ChatRole::Assistant => "assistant",
-    };
+    let tool_results = message
+        .content
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        .count();
+    if tool_results > 0 {
+        if message.role != ChatRole::User || tool_results != message.content.len() {
+            return Err(invalid(
+                "DashScope requires tool results in dedicated user messages",
+            ));
+        }
+        for block in &message.content {
+            let ContentBlock::ToolResult {
+                call_id, content, ..
+            } = block
+            else {
+                unreachable!("validated tool-result-only message")
+            };
+            output.push(GenerationMessageParam::Tool {
+                tool_call_id: call_id.clone(),
+                content: result_text(content)?,
+            });
+        }
+        return Ok(());
+    }
+    match message.role {
+        ChatRole::User => append_user(message, output),
+        ChatRole::Assistant => append_assistant(message, features, output),
+    }
+}
+
+fn append_user(
+    message: &ChatMessage,
+    output: &mut Vec<GenerationMessageParam>,
+) -> Result<(), ProviderError> {
+    let mut text = String::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text: value } => text.push_str(value),
+            ContentBlock::Image { .. } => {
+                return Err(unsupported(
+                    "images use DashScope MultiModalConversation, not Generation",
+                ));
+            }
+            ContentBlock::Document { .. } => {
+                return Err(unsupported(
+                    "documents are not native Generation message content",
+                ));
+            }
+            ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => {
+                return Err(invalid("DashScope user message contains assistant content"));
+            }
+            ContentBlock::ToolResult { .. } => unreachable!("handled above"),
+        }
+    }
+    output.push(GenerationMessageParam::User { content: text });
+    Ok(())
+}
+
+fn append_assistant(
+    message: &ChatMessage,
+    features: &DashScopeFeatures,
+    output: &mut Vec<GenerationMessageParam>,
+) -> Result<(), ProviderError> {
     let mut text = String::new();
     let mut reasoning = String::new();
-    let mut tool_calls = Vec::new();
+    let mut tools = Vec::new();
     for block in &message.content {
         match block {
             ContentBlock::Text { text: value } => text.push_str(value),
@@ -91,73 +174,151 @@ fn append_message(
             {
                 reasoning.push_str(value);
             }
+            ContentBlock::Reasoning { .. } => {
+                return Err(unsupported(
+                    "DashScope reasoning replay requires reasoning_content support",
+                ));
+            }
             ContentBlock::ToolCall {
                 id,
                 name,
                 arguments,
-            } => tool_calls.push(json!({
-                "id": id,
-                "type": "function",
-                "function": {"name": name, "arguments": arguments.to_string()},
-            })),
-            ContentBlock::ToolResult {
-                call_id, content, ..
-            } if message.role == ChatRole::User => output.push(json!({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": result_text(content)?,
-            })),
-            ContentBlock::Image { image } if message.role == ChatRole::User => {
-                output.push(json!({
-                    "role": "user",
-                    "content": [{"image": media_url(&image.source)}],
-                }));
+            } => tools.push(GenerationToolCallParam {
+                id: id.clone(),
+                kind: GenerationToolKind::Function,
+                function: GenerationFunctionCallParam {
+                    name: name.clone(),
+                    arguments: arguments.to_string(),
+                },
+            }),
+            ContentBlock::ToolResult { .. }
+            | ContentBlock::Image { .. }
+            | ContentBlock::Document { .. } => {
+                return Err(invalid("DashScope assistant message contains user content"));
             }
-            ContentBlock::Reasoning { .. } => {}
-            _ => return Err(invalid("unsupported DashScope message content")),
         }
     }
-    if !text.is_empty() || !reasoning.is_empty() || !tool_calls.is_empty() {
-        let mut value = Map::new();
-        value.insert("role".into(), json!(role));
-        value.insert("content".into(), json!(text));
-        if !reasoning.is_empty() {
-            value.insert("reasoning_content".into(), json!(reasoning));
-        }
-        if !tool_calls.is_empty() {
-            value.insert("tool_calls".into(), Value::Array(tool_calls));
-        }
-        output.push(Value::Object(value));
-    }
+    output.push(GenerationMessageParam::Assistant {
+        content: text,
+        reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
+        tool_calls: tools,
+    });
     Ok(())
 }
 
 fn result_text(content: &[ToolResultContent]) -> Result<String, ProviderError> {
-    let mut result = String::new();
+    let mut output = String::new();
     for item in content {
         match item {
-            ToolResultContent::Text { text } => result.push_str(text),
-            _ => {
-                return Err(invalid(
-                    "DashScope Generation requires textual tool results",
+            ToolResultContent::Text { text } => output.push_str(text),
+            ToolResultContent::Image { .. } | ToolResultContent::Document { .. } => {
+                return Err(unsupported(
+                    "DashScope Generation tool results must be textual",
                 ));
             }
         }
     }
-    Ok(result)
+    Ok(output)
 }
 
-fn media_url(source: &MediaSource) -> String {
-    match source {
-        MediaSource::Url { url } => url.clone(),
-        MediaSource::Base64 { media_type, data } => format!("data:{media_type};base64,{data}"),
+pub(crate) fn response(
+    provider: &str,
+    model: &str,
+    response: GenerationCompletion,
+) -> Result<ModelResponse, ProviderError> {
+    let mut content = Vec::new();
+    if !response.reasoning_content.is_empty() {
+        content.push(ContentBlock::Reasoning {
+            text: response.reasoning_content,
+            opaque_state: None,
+        });
+    }
+    if !response.content.is_empty() {
+        content.push(ContentBlock::Text {
+            text: response.content,
+        });
+    }
+    for tool in response.tool_calls {
+        content.push(ContentBlock::ToolCall {
+            id: tool.id,
+            name: tool.name,
+            arguments: serde_json::from_str(&tool.arguments)
+                .map_err(|_| protocol("DashScope tool arguments are invalid JSON"))?,
+        });
+    }
+    let stop_reason = match response.finish_reason.as_str() {
+        "tool_calls" => StopReason::ToolUse,
+        "length" => StopReason::MaxOutputTokens,
+        "stop" => StopReason::EndTurn,
+        value => StopReason::Other(value.into()),
+    };
+    Ok(ModelResponse {
+        id: response.request_id,
+        model: ModelRef::new(provider, model),
+        content,
+        stop_reason,
+        usage: usage(response.usage),
+    })
+}
+
+fn usage(value: GenerationUsage) -> TokenUsage {
+    TokenUsage {
+        input_tokens: value.input_tokens,
+        output_tokens: value.output_tokens,
+        cache_read_tokens: value
+            .prompt_tokens_details
+            .and_then(|details| details.cached_tokens),
+        details: TokenUsageDetails {
+            reported_total_tokens: value.total_tokens,
+            reasoning_tokens: value
+                .output_tokens_details
+                .and_then(|details| details.reasoning_tokens),
+            ..TokenUsageDetails::default()
+        },
+        ..TokenUsage::default()
     }
 }
 
+pub(crate) fn error(error: DashScopeError, phase: ProviderErrorPhase) -> ProviderError {
+    let kind = match &error {
+        DashScopeError::Http(source) if source.is_timeout() => ProviderErrorKind::Timeout,
+        DashScopeError::Http(_) => ProviderErrorKind::Transport,
+        DashScopeError::Api { status: 401, .. } => ProviderErrorKind::Authentication,
+        DashScopeError::Api { status: 403, .. } => ProviderErrorKind::PermissionDenied,
+        DashScopeError::Api { status: 404, .. } => ProviderErrorKind::ModelNotFound,
+        DashScopeError::Api { status: 429, .. } => ProviderErrorKind::RateLimited,
+        DashScopeError::Api { status, .. } if *status >= 500 => ProviderErrorKind::Unavailable,
+        DashScopeError::Api { .. } => ProviderErrorKind::InvalidRequest,
+        DashScopeError::Json(_) | DashScopeError::Sse(_) | DashScopeError::Protocol(_) => {
+            ProviderErrorKind::Protocol
+        }
+    };
+    let mut output = ProviderError::new(kind, phase, "DashScope provider request failed");
+    output.status = error.status();
+    output.request_id = error.request_id().map(str::to_owned);
+    output
+}
+
 fn invalid(message: &'static str) -> ProviderError {
-    error(
+    ProviderError::new(
         ProviderErrorKind::InvalidRequest,
         ProviderErrorPhase::Open,
+        message,
+    )
+}
+
+fn unsupported(message: &'static str) -> ProviderError {
+    ProviderError::new(
+        ProviderErrorKind::Unsupported,
+        ProviderErrorPhase::Open,
+        message,
+    )
+}
+
+fn protocol(message: &'static str) -> ProviderError {
+    ProviderError::new(
+        ProviderErrorKind::Protocol,
+        ProviderErrorPhase::Stream,
         message,
     )
 }

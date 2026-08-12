@@ -284,7 +284,6 @@ fn validate_features(provider: &ProviderDefinition) -> Result<(), ProviderFactor
             "enable_thinking",
             "parallel_tool_calls",
             "reasoning_content",
-            "response_format",
             "thinking_budget",
         ],
         _ => return Err(ProviderFactoryError::UnsupportedKind),
@@ -307,7 +306,10 @@ fn protocol_supports(kind: &str, capability: CanonicalModelCapability) -> bool {
         ),
         "dashscope_generation" => !matches!(
             capability,
-            CanonicalModelCapability::PromptCaching | CanonicalModelCapability::DocumentInput
+            CanonicalModelCapability::PromptCaching
+                | CanonicalModelCapability::StructuredOutput
+                | CanonicalModelCapability::Vision
+                | CanonicalModelCapability::DocumentInput
         ),
         _ => false,
     }

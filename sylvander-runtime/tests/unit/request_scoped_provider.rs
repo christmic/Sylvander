@@ -282,7 +282,11 @@ async fn factory_routes_each_provider_kind_to_its_protocol_endpoint() {
         "openai_chat_completions",
         "/v1/chat/completions",
         "deepseek-chat",
-        "data: {\"id\":\"chat_1\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        concat!(
+            "data: {\"id\":\"chat_1\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+            "data: {\"id\":\"chat_1\",\"model\":\"deepseek-chat\",\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+            "data: [DONE]\n\n"
+        ),
     )
     .await;
     assert_protocol_route(
@@ -549,6 +553,24 @@ fn model_preflight_accepts_exactly_the_adapter_capability_surface() {
 
     let historical = stored_model("anthropic", &["reasoning"]);
     factory.preflight(&provider, &historical).unwrap();
+}
+
+#[test]
+fn dashscope_generation_rejects_capabilities_owned_by_other_native_apis() {
+    let factory: &dyn ProviderAdapterFactory = &AnthropicProviderFactory;
+    let provider = stored_provider(4, "dashscope_generation", "https://example.invalid".into());
+    factory
+        .preflight(
+            &provider,
+            &stored_model("anthropic", &["extended_thinking", "tool_use"]),
+        )
+        .expect("native Generation capabilities");
+    for capability in ["vision", "document_input", "structured_output"] {
+        let error = factory
+            .preflight(&provider, &stored_model("anthropic", &[capability]))
+            .unwrap_err();
+        assert_eq!(error, ProviderFactoryError::UnsupportedModelCapability);
+    }
 }
 
 #[test]
