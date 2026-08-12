@@ -434,10 +434,7 @@ async fn hooks_report_lifecycle_and_block_before_tool_execution() {
     assert!(lifecycle.contains("hook policy · before_tool · blocked · exit 7"));
     let features = registry.platform_features();
     assert_eq!(features.len(), 2);
-    assert_eq!(
-        features[1].status,
-        sylvander_protocol::PlatformFeatureStatus::Configured
-    );
+    assert_eq!(features[1].status, ToolSourceStatus::Configured);
     assert_eq!(features[1].capabilities, ["before_tool"]);
     assert!(features[1].reloadable);
 }

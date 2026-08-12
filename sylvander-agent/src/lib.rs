@@ -201,7 +201,8 @@ pub mod prelude {
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
         ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
         ToolExposure, ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput, ToolPreparation,
-        ToolPrepareError, ToolProgressSink, ToolRegistry, ToolSpec,
+        ToolPrepareError, ToolProgressSink, ToolRegistry, ToolSourceFeature, ToolSourceKind,
+        ToolSourceStatus, ToolSpec,
     };
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{

@@ -19,19 +19,15 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-use sylvander_llm_core::InputSchema;
-use sylvander_protocol::{
-    PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
-};
-
 use crate::spec::McpServerConfig;
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     DynamicToolSource, PreparedToolCall, RegisteredTool, ToolDefinition, ToolError, ToolExecutor,
-    ToolOutput, ToolSpec,
+    ToolOutput, ToolSourceFeature, ToolSourceKind, ToolSourceStatus, ToolSpec,
 };
 use crate::tool_context::ToolContext;
+use sylvander_llm_core::InputSchema;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -691,19 +687,19 @@ impl DynamicToolSource for McpStdioClient {
         tools
     }
 
-    fn platform_feature(&self) -> Option<sylvander_protocol::PlatformFeature> {
+    fn platform_feature(&self) -> Option<ToolSourceFeature> {
         let status = match self.inner.health.load(Ordering::Acquire) {
-            MCP_HEALTH_ACTIVE => PlatformFeatureStatus::Active,
-            MCP_HEALTH_DEGRADED => PlatformFeatureStatus::Degraded,
-            _ => PlatformFeatureStatus::Unavailable,
+            MCP_HEALTH_ACTIVE => ToolSourceStatus::Active,
+            MCP_HEALTH_DEGRADED => ToolSourceStatus::Degraded,
+            _ => ToolSourceStatus::Unavailable,
         };
         let tool_count = self.inner.tool_definitions.read().unwrap().len();
         let resource_count = self.inner.resource_definitions.read().unwrap().len();
         let generation = self.inner.generation.load(Ordering::Acquire);
         let reconnects = self.inner.reconnect_count.load(Ordering::Acquire);
         let cancellations = self.inner.cancellation_count.load(Ordering::Acquire);
-        Some(PlatformFeature {
-            kind: PlatformFeatureKind::Mcp,
+        Some(ToolSourceFeature {
+            kind: ToolSourceKind::Mcp,
             name: self.inner.server_name.clone(),
             status,
             summary: format!(
@@ -714,12 +710,7 @@ impl DynamicToolSource for McpStdioClient {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .map(str::to_string),
-            trust: Some(PlatformTrust::External),
-            auth: if self.inner.config.envs.is_empty() {
-                PlatformAuthStatus::NotRequired
-            } else {
-                PlatformAuthStatus::Configured
-            },
+            requires_authentication: !self.inner.config.envs.is_empty(),
             capabilities: if self.inner.supports_resources.load(Ordering::Acquire) {
                 vec!["tools".into(), "resources".into()]
             } else {

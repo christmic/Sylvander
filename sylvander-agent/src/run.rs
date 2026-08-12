@@ -73,7 +73,9 @@ use crate::session_store::{
 };
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::task_gate::TaskGate;
-use crate::tool::{RegisteredTool, ToolRegistry};
+use crate::tool::{
+    RegisteredTool, ToolRegistry, ToolSourceFeature, ToolSourceKind, ToolSourceStatus,
+};
 use crate::tool_context::{Cap, NetworkPolicy, ToolContext};
 use crate::tools::MemoryReadTool;
 use crate::tools::memory::{
@@ -118,6 +120,37 @@ fn public_retry_cause(cause: ModelRetryCause) -> sylvander_protocol::RetryCause 
         ModelRetryCause::Network => sylvander_protocol::RetryCause::Network,
         ModelRetryCause::Stream => sylvander_protocol::RetryCause::Stream,
         ModelRetryCause::Other => sylvander_protocol::RetryCause::Other,
+    }
+}
+
+/// Translate Agent execution facts to Runtime's current public inspection DTO.
+fn public_tool_feature(feature: ToolSourceFeature) -> PlatformFeature {
+    PlatformFeature {
+        kind: match feature.kind {
+            ToolSourceKind::Mcp => PlatformFeatureKind::Mcp,
+            ToolSourceKind::Hook => PlatformFeatureKind::Hook,
+            ToolSourceKind::Extension => PlatformFeatureKind::Extension,
+        },
+        name: feature.name,
+        status: match feature.status {
+            ToolSourceStatus::Active => PlatformFeatureStatus::Active,
+            ToolSourceStatus::Configured => PlatformFeatureStatus::Configured,
+            ToolSourceStatus::Degraded => PlatformFeatureStatus::Degraded,
+            ToolSourceStatus::Unavailable => PlatformFeatureStatus::Unavailable,
+        },
+        summary: feature.summary,
+        source: feature.source,
+        trust: Some(match feature.kind {
+            ToolSourceKind::Hook => PlatformTrust::User,
+            ToolSourceKind::Mcp | ToolSourceKind::Extension => PlatformTrust::External,
+        }),
+        auth: if feature.requires_authentication {
+            PlatformAuthStatus::Configured
+        } else {
+            PlatformAuthStatus::NotRequired
+        },
+        capabilities: feature.capabilities,
+        reloadable: feature.reloadable,
     }
 }
 
@@ -516,7 +549,13 @@ impl AgentRun {
             })
             .collect::<Vec<_>>();
 
-        for runtime_feature in self.inner.tools.platform_features() {
+        for runtime_feature in self
+            .inner
+            .tools
+            .platform_features()
+            .into_iter()
+            .map(public_tool_feature)
+        {
             if let Some(existing) = features.iter_mut().find(|feature| {
                 feature.kind == runtime_feature.kind && feature.name == runtime_feature.name
             }) {

@@ -132,10 +132,7 @@ async fn real_process_handshake_discovery_call_and_shutdown() {
     assert_eq!(spec.description, "Echo an input value");
     assert_eq!(spec.input_schema["type"], "object");
     let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
-    assert_eq!(
-        feature.status,
-        sylvander_protocol::PlatformFeatureStatus::Active
-    );
+    assert_eq!(feature.status, ToolSourceStatus::Active);
     assert!(feature.summary.contains("1 tools"));
     assert!(feature.summary.contains("1 resources"));
     assert!(feature.capabilities.contains(&"resources".to_owned()));
@@ -330,10 +327,7 @@ async fn reconnect_atomically_refreshes_the_dynamic_tool_catalog() {
         ]
     );
     let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
-    assert_eq!(
-        feature.status,
-        sylvander_protocol::PlatformFeatureStatus::Active
-    );
+    assert_eq!(feature.status, ToolSourceStatus::Active);
     assert!(feature.summary.contains("generation 2"));
     assert!(feature.summary.contains("1 reconnects"));
 
@@ -342,7 +336,7 @@ async fn reconnect_atomically_refreshes_the_dynamic_tool_catalog() {
         DynamicToolSource::platform_feature(&client)
             .expect("MCP health")
             .status,
-        sylvander_protocol::PlatformFeatureStatus::Unavailable
+        ToolSourceStatus::Unavailable
     );
 }
 

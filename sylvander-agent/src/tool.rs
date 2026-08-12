@@ -43,6 +43,39 @@ pub enum AgentHookPhase {
     AfterTurn,
 }
 
+/// Runtime state reported by a dynamic tool source without UI protocol types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSourceStatus {
+    Active,
+    Configured,
+    Degraded,
+    Unavailable,
+}
+
+/// Execution-domain class of a tool capability source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSourceKind {
+    Mcp,
+    Hook,
+    Extension,
+}
+
+/// Redacted execution-domain fact contributed by a dynamic tool source.
+///
+/// Runtime maps this value to its public inspection API. Keeping credentials
+/// and raw command arguments absent makes the contract safe to aggregate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolSourceFeature {
+    pub kind: ToolSourceKind,
+    pub name: String,
+    pub status: ToolSourceStatus,
+    pub summary: String,
+    pub source: Option<String>,
+    pub requires_authentication: bool,
+    pub capabilities: Vec<String>,
+    pub reloadable: bool,
+}
+
 /// Whether a tool schema is sent on every model request or discovered on demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolExposure {
@@ -713,7 +746,7 @@ pub trait DynamicToolSource: Send + Sync {
     fn snapshot(&self) -> Vec<Arc<dyn RegisteredTool>>;
 
     /// Optional redacted runtime state for UI inspection.
-    fn platform_feature(&self) -> Option<sylvander_protocol::PlatformFeature> {
+    fn platform_feature(&self) -> Option<ToolSourceFeature> {
         None
     }
 }
@@ -854,34 +887,29 @@ impl ToolRegistry {
 
     /// Redacted runtime state contributed by dynamic capability sources.
     #[must_use]
-    pub fn platform_features(&self) -> Vec<sylvander_protocol::PlatformFeature> {
+    pub fn platform_features(&self) -> Vec<ToolSourceFeature> {
         let mut features = self
             .dynamic_sources
             .iter()
             .filter_map(|source| source.platform_feature())
             .collect::<Vec<_>>();
-        features.extend(
-            self.hooks
-                .iter()
-                .map(|hook| sylvander_protocol::PlatformFeature {
-                    kind: sylvander_protocol::PlatformFeatureKind::Hook,
-                    name: hook.name.clone(),
-                    status: sylvander_protocol::PlatformFeatureStatus::Configured,
-                    summary: if hook.blocking {
-                        format!("{} · blocking", hook_phase_name(hook.phase))
-                    } else {
-                        format!("{} · advisory", hook_phase_name(hook.phase))
-                    },
-                    source: None,
-                    trust: Some(sylvander_protocol::PlatformTrust::User),
-                    auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
-                    capabilities: vec![hook_phase_name(hook.phase).into()],
-                    // Hook changes are installed only through a validated Agent
-                    // revision. Runtime re-composes that revision before CAS
-                    // activation; frozen sessions keep their prior revision.
-                    reloadable: true,
-                }),
-        );
+        features.extend(self.hooks.iter().map(|hook| ToolSourceFeature {
+            kind: ToolSourceKind::Hook,
+            name: hook.name.clone(),
+            status: ToolSourceStatus::Configured,
+            summary: if hook.blocking {
+                format!("{} · blocking", hook_phase_name(hook.phase))
+            } else {
+                format!("{} · advisory", hook_phase_name(hook.phase))
+            },
+            source: None,
+            requires_authentication: false,
+            capabilities: vec![hook_phase_name(hook.phase).into()],
+            // Hook changes are installed only through a validated Agent
+            // revision. Runtime re-composes that revision before CAS
+            // activation; frozen sessions keep their prior revision.
+            reloadable: true,
+        }));
         features
     }
 
