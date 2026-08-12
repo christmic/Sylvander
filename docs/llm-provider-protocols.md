@@ -39,6 +39,7 @@ A protocol kind identifies a wire contract. A provider ID identifies an
 independently configured service using that contract. They are not aliases.
 The supported protocol kinds are:
 
+- `anthropic_compatible` (legacy spelling retained for stored configuration)
 - `anthropic_messages`
 - `openai_responses`
 - `openai_chat_completions`
@@ -62,15 +63,20 @@ Initial feature vocabulary:
 
 | Protocol | Feature switches |
 | --- | --- |
-| Anthropic Messages | `adaptive_thinking`, `prompt_caching`, `structured_outputs` |
-| OpenAI Responses | `reasoning`, `prompt_caching`, `parallel_tool_calls`, `strict_tools` |
-| OpenAI Chat Completions | `developer_role`, `reasoning`, `prompt_caching`, `parallel_tool_calls`, `stream_usage`, `strict_tools` |
-| DashScope Generation | `incremental_output`, `thinking`, `preserve_thinking`, `parallel_tool_calls`, `structured_output` |
+| Anthropic Messages | none; typed core capabilities and reasoning settings determine the official request shape |
+| OpenAI Responses | `enable_thinking` |
+| OpenAI Chat Completions | `enable_thinking`, `max_completion_tokens`, `reasoning_content` |
+| DashScope Generation | `enable_thinking`, `thinking_budget`, `parallel_tool_calls`, `reasoning_content`, `response_format` |
 
 A feature switch only permits its wire behavior; request conversion must still
 check the selected model's declared capabilities. Protocol-specific typed
 feature structures are constructed from the persisted names before any HTTP
 request is made. Arbitrary provider JSON is not accepted as a feature switch.
+
+The runtime routes exclusively from `ProviderDefinition.kind`; it does not
+guess a protocol from a provider name, model name, or URL. `sylvander-agent`
+receives only the provider-neutral `ModelProvider` contract and its normal
+dependency graph contains only `sylvander-llm-core` among LLM crates.
 
 ## Usage preservation
 
