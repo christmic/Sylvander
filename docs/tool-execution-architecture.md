@@ -78,8 +78,11 @@ Runtime diagnostics report each target without paths, hosts, images, commands,
 or credentials. The report includes adapter kind, static filesystem/network/
 resource isolation truth, and a derived `sandbox_enforced` flag. Local is
 immediately ready because it has no remote reachability dependency. SSH and
-OCI are currently reported `unverified` until a bounded background probe
-exists; construction alone is not described as runtime health.
+OCI begin `unverified`; the Runtime-owned worker probes them concurrently every
+30 seconds with a five-second deadline. SSH uses the same strict OpenSSH route
+and a fixed `true`; OCI uses a fixed `image inspect`. Output is discarded, and
+only success/failure counters affect `ready` or `degraded` state. Construction
+alone is never described as successful reachability.
 
 This release does not claim native Seatbelt, bubblewrap, Windows token/WFP, or
 approved-network proxy support. `ToolNetworkPolicy::FullAfterApproval` remains

@@ -101,8 +101,9 @@ crate without retaining a second production path.
   reports no sandbox isolation. Runtime boot builds one immutable exact-target
   execution service and reuses it for initial and lazy Agent revisions;
   unknown targets never inherit the built-in `local` adapter. Operational
-  diagnostics expose only target ID, adapter kind, `ready/unverified`, and
-  static isolation facts. Active remote/container probes remain future work.
+  diagnostics expose only target ID, adapter kind, health state, probe count,
+  and static isolation facts. One owned worker performs bounded SSH/OCI probes,
+  marks degradation unready, retries, and joins during shutdown.
 - `storage::memory` owns the closed SQLite relationship-memory backend,
   authenticated file/HTTP integrity anchors, finite retention, evidence
   checkpoints, backup rotation, and offline restore. Agent owns only the

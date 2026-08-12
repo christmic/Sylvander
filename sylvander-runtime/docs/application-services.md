@@ -40,9 +40,17 @@ explicit unavailable executor; they never fall back to `local`. Worktree
 lifecycle is still a neighboring Runtime service rather than part of this
 registry. The operational snapshot exposes a deterministic content-free target
 list with adapter kind, `ready` or `unverified` status, each enforced isolation
-property, and the derived full-sandbox result. Active SSH/container probes and
-sticky execution failures remain incomplete; `unverified` is never presented
+property, and the derived full-sandbox result. `Unverified` is never presented
 as successful reachability.
+
+Runtime now owns one bounded health worker for that service. Every 30 seconds
+it probes SSH targets with the executor's exact BatchMode, strict known-host,
+identity, and control-socket arguments and a fixed remote `true`; OCI targets
+use a fixed `image inspect` for the configured runtime and exact image. Probes
+run concurrently with a five-second hard timeout, discard all output, retain
+only the last success bit and a saturating failure count, and are joined during
+shutdown. A failed probe marks the target degraded and Runtime unready; a later
+successful probe restores readiness without erasing the historical count.
 
 ## Unified storage
 

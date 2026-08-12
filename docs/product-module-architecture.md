@@ -101,8 +101,11 @@ Implementation status: Runtime composes one immutable exact-target service and
 shares it across every Agent revision. The named built-in `local` target and
 configured SSH/OCI targets are resolved only by exact ID; missing IDs fail
 closed. Runtime exposes redacted adapter kind, static isolation truth, and an
-honest `ready/unverified` status. Active reachability probes, sticky adapter
-failure state, and execution-resource observations remain follow-up work.
+honest `ready/unverified/degraded` status. One Runtime-owned worker performs
+concurrent five-second SSH/OCI probes every 30 seconds through the exact
+configured adapter route, stores only a success bit and failure count, affects
+readiness on degradation, and joins on shutdown. Per-operation latency and
+resource observations remain follow-up work.
 
 ### Authorization service
 
