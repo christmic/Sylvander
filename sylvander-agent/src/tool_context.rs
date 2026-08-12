@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::execution_context::{AgentExecutionContext, ExecutionActor};
+use crate::execution_context::AgentExecutionContext;
 use crate::workspace_executor::{
     LocalExecutor, UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget,
 };
@@ -65,12 +65,6 @@ pub struct ToolContext {
     /// Runtime-derived identity used by every memory-store operation. It is
     /// intentionally not replaceable through a public builder or model input.
     memory_context: crate::tools::memory::MemoryExecutionContext,
-
-    /// `AgentRun` needs an `AgentLoop` value before any session exists. That
-    /// construction-only template is deliberately unusable: `run_stream`
-    /// rejects it before hooks, model requests, or tools can execute. Every
-    /// real turn replaces it with a Runtime-derived context.
-    inert_agent_run_template: bool,
 }
 
 impl ToolContext {
@@ -90,7 +84,6 @@ impl ToolContext {
             execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
-            inert_agent_run_template: false,
         }
     }
 
@@ -106,35 +99,7 @@ impl ToolContext {
             execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
-            inert_agent_run_template: false,
         }
-    }
-
-    /// Create the construction-only context stored by `AgentRun` before a
-    /// session turn resolves its authenticated identity and workspace.
-    ///
-    /// This stays crate-private so embeddings cannot opt into a placeholder
-    /// identity. `AgentLoop::run_stream` refuses to run with this sentinel.
-    #[must_use]
-    pub(crate) fn inert_agent_run_template() -> Self {
-        let mut context = Self::new(AgentExecutionContext::restricted(ExecutionActor::new(
-            "__system_user__",
-            "__system_agent__",
-            "__system_session__",
-        )));
-        context.executor = Arc::new(UnavailableExecutor::new("__inert_agent_run_template__"));
-        context.execution_target = WorkspaceTarget {
-            id: "__inert_agent_run_template__".into(),
-            workspace_path: PathBuf::new(),
-            read_only: true,
-        };
-        context.inert_agent_run_template = true;
-        context
-    }
-
-    #[must_use]
-    pub(crate) fn is_inert_agent_run_template(&self) -> bool {
-        self.inert_agent_run_template
     }
 
     /// Builder-style: attach a file-system root to the surface.

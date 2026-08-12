@@ -1,15 +1,15 @@
 //! # sylvander-agent
 //!
 //! Sylvander Agent execution core — an asynchronous reactive driver that
-//! calls a selected model provider, executes governed tools, persists turn
-//! state, re-feeds results, and emits typed events as work progresses.
+//! calls a selected model provider, executes governed tools, re-feeds results,
+//! and emits typed events as work progresses.
 //!
 //! ## Scope
 //!
 //! - Provider-neutral model execution through `sylvander-llm-core`
 //! - Reactive event stream (`AgentEvent` + `run_stream()`)
 //! - Governed built-in, MCP, and embedding-supplied tools
-//! - Durable sessions, typed prompt/context composition, and memory
+//! - Immutable turn requests and Runtime-supplied execution ports
 //! - Multi-layer context compression and bounded tool-result handling
 //! - Retry, cancellation, approval, capability, and iteration controls
 //!
@@ -19,8 +19,11 @@
 //! use std::sync::Arc;
 //!
 //! use sylvander_agent::{
-//!     prelude::{AgentLoop, ChatMessage, ToolContext},
-//!     tool_context::Cap,
+//!     prelude::{
+//!         AgentExecutionContext, AgentExecutionPorts, AgentLoop, AgentTurnRequest,
+//!         ChatMessage, ConversationSnapshot, ToolContext, ToolRegistry,
+//!     },
+//!     tool_invocation::{RegistryBoundToolGateway, ToolInvocationGateway as _},
 //! };
 //! use sylvander_llm_core::{
 //!     ModelCapabilities, ModelInfo, ModelProvider, ModelRef,
@@ -35,23 +38,27 @@
 //!     capabilities: ModelCapabilities::TOOL_USE,
 //! };
 //!
-//! let loop_ = AgentLoop::builder()
-//!     .qualified_router(build_provider())
-//!     .provider_model(exact_model)
-//!     .tool_context(
-//!         ToolContext::new(AgentExecutionContext::restricted_for(
-//!             "user", "agent", "session",
-//!         ))
-//!         .with_fs_root("/tmp")
-//!         .with_capability(Cap::Read),
-//!     )
-//!     .max_iterations(50)
-//!     .build()?;
-//!
-//! let initial = vec![ChatMessage::user("List files in /tmp")];
+//! let kernel = AgentLoop::builder().max_iterations(50).build();
+//! let execution = AgentExecutionContext::restricted_for("user", "agent", "execution");
+//! let tools = ToolRegistry::new();
+//! let gateway = RegistryBoundToolGateway::new(tools.invocation_descriptors());
+//! let request = AgentTurnRequest {
+//!     conversation: ConversationSnapshot::new(vec![ChatMessage::user("Say hello")]),
+//!     model: exact_model,
+//!     system_instructions: Vec::new(),
+//!     reasoning: None,
+//!     tools,
+//!     execution: execution.clone(),
+//! };
+//! let ports = AgentExecutionPorts::new(
+//!     build_provider(),
+//!     ToolContext::new(execution),
+//!     gateway.clone(),
+//!     gateway.snapshot(),
+//! );
 //!
 //! // Await full completion
-//! let run = sylvander_agent::prelude::run(&loop_, initial).await?;
+//! let run = sylvander_agent::prelude::run(&kernel, request, ports).await?;
 //! println!("finished after {} iterations", run.iterations);
 //! # Ok(())
 //! # }

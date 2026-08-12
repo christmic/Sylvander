@@ -17,7 +17,7 @@ use crate::plan_gate::PlanGate;
 use crate::request::AgentTurnRequest;
 use crate::task_gate::TaskGate;
 use crate::tool_context::ToolContext;
-use crate::tool_invocation::ToolInvocationGateway;
+use crate::tool_invocation::{ToolInvocationGateway, ToolInvocationSnapshot};
 
 /// Runtime-selected service implementations pinned for one Agent turn.
 ///
@@ -32,6 +32,8 @@ pub struct AgentExecutionPorts {
     pub(crate) tool_context: ToolContext,
     /// Central authorization and audit boundary for executable tools.
     pub(crate) invocation_gateway: Arc<dyn ToolInvocationGateway>,
+    /// Exact executable and prompt-context capability revision for this turn.
+    pub(crate) invocation_snapshot: ToolInvocationSnapshot,
     /// Optional interactive approval port.
     pub(crate) approval_gate: Option<Arc<dyn ApprovalGate>>,
     /// Optional structured user-question port.
@@ -49,11 +51,13 @@ impl AgentExecutionPorts {
         model: Arc<dyn ModelProvider>,
         tool_context: ToolContext,
         invocation_gateway: Arc<dyn ToolInvocationGateway>,
+        invocation_snapshot: ToolInvocationSnapshot,
     ) -> Self {
         Self {
             model,
             tool_context,
             invocation_gateway,
+            invocation_snapshot,
             approval_gate: None,
             ask_user_gate: None,
             plan_gate: None,
@@ -107,10 +111,15 @@ impl AgentExecutionPorts {
             ));
         }
 
-        let expected = crate::tool_invocation::ToolInvocationSnapshot::from_descriptors(
-            &request.tools.invocation_descriptors(),
-        );
-        if !expected.has_same_executable_surface(&self.invocation_gateway.snapshot()) {
+        let requested_tools = request.tools.invocation_descriptors();
+        if requested_tools
+            .iter()
+            .any(|tool| !self.invocation_snapshot.authorizes(&tool.name, tool.class))
+            || !self
+                .invocation_gateway
+                .snapshot()
+                .has_same_executable_surface(&self.invocation_snapshot)
+        {
             return Err(AgentLoopError::Validation(
                 "turn tools and invocation gateway expose different executable surfaces".into(),
             ));
@@ -124,7 +133,7 @@ impl std::fmt::Debug for AgentExecutionPorts {
         formatter
             .debug_struct("AgentExecutionPorts")
             .field("tool_context", &self.tool_context)
-            .field("invocation_snapshot", &self.invocation_gateway.snapshot())
+            .field("invocation_snapshot", &self.invocation_snapshot)
             .field("approval_gate", &self.approval_gate.is_some())
             .field("ask_user_gate", &self.ask_user_gate.is_some())
             .field("plan_gate", &self.plan_gate.is_some())

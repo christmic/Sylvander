@@ -28,48 +28,30 @@ use tracing::{Instrument as _, warn};
 
 use sylvander_llm_core::{
     ChatMessage, ContentBlock, ModelCapabilities, ModelEventStream, ModelInfo, ModelProvider,
-    ModelRequest, ModelResponse, ProviderErrorKind, ReasoningConfig,
-    ReasoningEffort as ProviderReasoningEffort, StopReason, TokenUsage,
+    ModelRequest, ModelResponse, ProviderErrorKind, StopReason, TokenUsage,
 };
-use sylvander_protocol::{AgentHookPhase, ModelSelection};
+use sylvander_protocol::AgentHookPhase;
 
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
+use super::execution_ports::AgentExecutionPorts;
 use super::outcome::AgentOutcome;
+use super::request::AgentTurnRequest;
 use super::tool::ToolRegistry;
-use super::tool_context::ToolContext;
 use crate::conversation::ConversationSnapshot;
 
-/// The agent loop. Holds the LLM client, resolved model, tools, and
-/// configuration. Iteration logic is in the free functions [`run`],
-/// [`run_stream`], and [`run_with_events`].
+/// Stable policy for the provider-neutral Agent execution kernel.
+///
+/// Model choice, transcript, tools, authority, and service implementations are
+/// deliberately absent: Runtime freezes those volatile values into one
+/// [`AgentTurnRequest`] and one [`AgentExecutionPorts`] value per execution.
+/// Keeping only retry, iteration, and compression policy here prevents reused
+/// kernels from leaking one Session's state or authority into another.
 #[derive(Clone)]
 pub struct AgentLoop {
-    router: Arc<dyn ModelProvider>,
-    provider_model: ModelInfo,
-    pub(crate) model: ModelInfo,
-    pub(crate) reasoning_effort: sylvander_protocol::ReasoningEffort,
-    pub(crate) tools: ToolRegistry,
-    pub(crate) compression_pipeline: Arc<super::compress::pipeline::CompressionPipeline>,
+    pub(crate) compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
     pub(crate) max_iterations: u32,
     pub(crate) max_retries: u32,
-    /// Optional system prompt (set via `AgentLoopBuilder::system_prompt`).
-    pub(crate) system_prompt: Option<String>,
-    /// Optional approval gate — called before tool execution (M12).
-    pub(crate) approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
-    /// Optional `AskUser` gate — called for `ask_user` tool (M18).
-    pub(crate) ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
-    /// Optional plan gate — called for the `present_plan` marker tool.
-    pub(crate) plan_gate: Option<Arc<dyn crate::plan_gate::PlanGate>>,
-    /// Optional isolated background-task executor.
-    pub(crate) task_gate: Option<Arc<dyn crate::task_gate::TaskGate>>,
-    /// Invocation context handed to every tool call.
-    pub(crate) tool_context: ToolContext,
-    /// Central authorization/audit gateway. Every ordinary executable tool
-    /// enters through this boundary after approval and before execution.
-    pub(crate) invocation_gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
-    /// Immutable executable + prompt-context feature truth for this turn.
-    pub(crate) invocation_snapshot: crate::tool_invocation::ToolInvocationSnapshot,
 }
 
 struct LoopModelStream {
@@ -80,9 +62,7 @@ struct LoopModelStream {
 impl std::fmt::Debug for AgentLoop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentLoop")
-            .field("model", &self.model)
-            .field("reasoning_effort", &self.reasoning_effort)
-            .field("tools", &self.tools)
+            .field("custom_compression", &self.compression_pipeline.is_some())
             .field("max_iterations", &self.max_iterations)
             .field("max_retries", &self.max_retries)
             .finish_non_exhaustive()
@@ -95,39 +75,17 @@ impl std::fmt::Debug for AgentLoop {
 
 /// Builder for [`AgentLoop`].
 pub struct AgentLoopBuilder {
-    router: Option<Arc<dyn ModelProvider>>,
-    provider_model: Option<ModelInfo>,
-    reasoning_effort: sylvander_protocol::ReasoningEffort,
-    tools: ToolRegistry,
     compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
     max_iterations: u32,
     max_retries: u32,
-    system_prompt: Option<String>,
-    approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
-    ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
-    plan_gate: Option<Arc<dyn crate::plan_gate::PlanGate>>,
-    task_gate: Option<Arc<dyn crate::task_gate::TaskGate>>,
-    tool_context: Option<ToolContext>,
-    invocation_gateway: Option<Arc<dyn crate::tool_invocation::ToolInvocationGateway>>,
 }
 
 impl Default for AgentLoopBuilder {
     fn default() -> Self {
         Self {
-            router: None,
-            provider_model: None,
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
-            tools: ToolRegistry::new(),
             compression_pipeline: None,
             max_iterations: 50,
             max_retries: 3,
-            system_prompt: None,
-            approval_gate: None,
-            ask_user_gate: None,
-            plan_gate: None,
-            task_gate: None,
-            tool_context: None,
-            invocation_gateway: None,
         }
     }
 }
@@ -135,9 +93,7 @@ impl Default for AgentLoopBuilder {
 impl std::fmt::Debug for AgentLoopBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentLoopBuilder")
-            .field("qualified_router_set", &self.router.is_some())
-            .field("provider_model", &self.provider_model)
-            .field("tools", &self.tools)
+            .field("custom_compression", &self.compression_pipeline.is_some())
             .field("max_iterations", &self.max_iterations)
             .field("max_retries", &self.max_retries)
             .finish_non_exhaustive()
@@ -151,43 +107,6 @@ impl AgentLoopBuilder {
         Self::default()
     }
 
-    /// Set a provider-neutral router that accepts exact qualified models.
-    ///
-    /// The router remains responsible for enforcing its immutable qualified
-    /// allowlist; the loop never falls back to another route.
-    #[must_use]
-    pub fn qualified_router(mut self, router: Arc<dyn ModelProvider>) -> Self {
-        self.router = Some(router);
-        self
-    }
-
-    /// Set provider-qualified model metadata.
-    #[must_use]
-    pub fn provider_model(mut self, model: ModelInfo) -> Self {
-        self.provider_model = Some(model);
-        self
-    }
-
-    #[must_use]
-    pub fn reasoning_effort(mut self, effort: sylvander_protocol::ReasoningEffort) -> Self {
-        self.reasoning_effort = effort;
-        self
-    }
-
-    /// Set the tool registry (replaces any previously set tools).
-    #[must_use]
-    pub fn tools(mut self, tools: ToolRegistry) -> Self {
-        self.tools = tools;
-        self
-    }
-
-    /// Register a single tool (builder-style chaining).
-    #[must_use]
-    pub fn tool<T: super::tool::RegisteredTool + 'static>(mut self, tool: T) -> Self {
-        self.tools = self.tools.register(tool);
-        self
-    }
-
     /// Set the compression pipeline. If not called, defaults to
     /// [`CompressionPipeline::default_for_model`](crate::compress::pipeline::CompressionPipeline::default_for_model) (L1 + L2 + L3).
     /// Opt in to L0 or L4 by building a custom pipeline.
@@ -197,15 +116,6 @@ impl AgentLoopBuilder {
         pipeline: super::compress::pipeline::CompressionPipeline,
     ) -> Self {
         self.compression_pipeline = Some(Arc::new(pipeline));
-        self
-    }
-
-    /// Set the system prompt. Sent on every LLM request as the
-    /// `system` field. If not set, the request omits `system`
-    /// (provider default).
-    #[must_use]
-    pub fn system_prompt(mut self, system: impl Into<String>) -> Self {
-        self.system_prompt = Some(system.into());
         self
     }
 
@@ -224,102 +134,14 @@ impl AgentLoopBuilder {
         self
     }
 
-    /// Set the approval gate (M12). If set, the loop calls
-    /// [`ApprovalGate::check_batch`](crate::approval::ApprovalGate::check_batch)
-    /// before executing each batch of tool calls.
+    /// Build the stable loop policy.
     #[must_use]
-    pub fn approval_gate(mut self, gate: Arc<dyn crate::approval::ApprovalGate>) -> Self {
-        self.approval_gate = Some(gate);
-        self
-    }
-
-    /// Set the `AskUser` gate (M18). If set, the loop intercepts
-    /// `ask_user` tool calls and routes through the gate.
-    #[must_use]
-    pub fn ask_user_gate(mut self, gate: Arc<dyn crate::ask_user_gate::AskUserGate>) -> Self {
-        self.ask_user_gate = Some(gate);
-        self
-    }
-
-    /// Set the typed plan-review gate. The marker tool is never executed.
-    #[must_use]
-    pub fn plan_gate(mut self, gate: Arc<dyn crate::plan_gate::PlanGate>) -> Self {
-        self.plan_gate = Some(gate);
-        self
-    }
-
-    #[must_use]
-    pub fn task_gate(mut self, gate: Arc<dyn crate::task_gate::TaskGate>) -> Self {
-        self.task_gate = Some(gate);
-        self
-    }
-
-    /// Build the [`AgentLoop`].
-    ///
-    /// # Errors
-    /// Returns [`AgentLoopError::Builder`] when the exact qualified route is
-    /// incomplete or no explicit tool context was supplied.
-    pub fn build(self) -> Result<AgentLoop, AgentLoopError> {
-        let router = self
-            .router
-            .ok_or_else(|| AgentLoopError::Builder("qualified router is required".into()))?;
-        let provider_model = self
-            .provider_model
-            .ok_or_else(|| AgentLoopError::Builder("provider model is required".into()))?;
-        let model = provider_model.clone();
-        // Default pipeline = L1 + L2 + L3 (cheap, no LLM cost).
-        // Opt-in to L0 (disk offload) or L4 (LLM summary) by
-        // building a custom pipeline.
-        let compression_pipeline = self.compression_pipeline.unwrap_or_else(|| {
-            Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&model))
-        });
-
-        let tool_context = self
-            .tool_context
-            .ok_or_else(|| AgentLoopError::Builder("tool context is required".into()))?;
-        let invocation_gateway = self.invocation_gateway.unwrap_or_else(|| {
-            crate::tool_invocation::RegistryBoundToolGateway::new(
-                self.tools.invocation_descriptors(),
-            )
-        });
-        let invocation_snapshot = invocation_gateway.snapshot();
-
-        Ok(AgentLoop {
-            router,
-            provider_model,
-            model,
-            reasoning_effort: self.reasoning_effort,
-            tools: self.tools,
-            compression_pipeline,
+    pub fn build(self) -> AgentLoop {
+        AgentLoop {
+            compression_pipeline: self.compression_pipeline,
             max_iterations: self.max_iterations,
             max_retries: self.max_retries,
-            system_prompt: self.system_prompt,
-            approval_gate: self.approval_gate,
-            ask_user_gate: self.ask_user_gate,
-            plan_gate: self.plan_gate,
-            task_gate: self.task_gate,
-            tool_context,
-            invocation_gateway,
-            invocation_snapshot,
-        })
-    }
-
-    /// Set the explicit tool invocation context.
-    #[must_use]
-    pub fn tool_context(mut self, ctx: ToolContext) -> Self {
-        self.tool_context = Some(ctx);
-        self
-    }
-
-    /// Replace the standalone exact-route gateway with a Runtime-owned,
-    /// actor-aware implementation.
-    #[must_use]
-    pub fn invocation_gateway(
-        mut self,
-        gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
-    ) -> Self {
-        self.invocation_gateway = Some(gateway);
-        self
+        }
     }
 }
 
@@ -332,23 +154,6 @@ impl AgentLoop {
     #[must_use]
     pub fn builder() -> AgentLoopBuilder {
         AgentLoopBuilder::new()
-    }
-
-    /// Borrow the resolved model metadata.
-    #[must_use]
-    pub fn model(&self) -> &ModelInfo {
-        &self.model
-    }
-
-    #[must_use]
-    pub fn reasoning_effort(&self) -> sylvander_protocol::ReasoningEffort {
-        self.reasoning_effort
-    }
-
-    /// Borrow the tool registry.
-    #[must_use]
-    pub fn tools(&self) -> &ToolRegistry {
-        &self.tools
     }
 
     /// Configured max iterations.
@@ -386,27 +191,26 @@ impl AgentLoop {
 /// terminates the stream.
 pub fn run_stream(
     config: &AgentLoop,
-    initial_messages: Vec<ChatMessage>,
+    request: AgentTurnRequest,
+    ports: AgentExecutionPorts,
 ) -> impl Stream<Item = AgentEvent> + Send + '_ {
+    let compression_pipeline = config.compression_pipeline.clone().unwrap_or_else(|| {
+        Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&request.model))
+    });
     async_stream::stream! {
-        // `AgentRun` stores a construction-only template before a session
-        // exists. A turn must replace it with authenticated identity and an
-        // explicit workspace before *any* hook, model request, or tool runs.
-        if config.tool_context.is_inert_agent_run_template() {
-            yield AgentEvent::Error(AgentLoopError::Tool(
-                "agent run tool context was not initialized for this turn".into(),
-            ));
+        if let Err(error) = ports.validate_for(&request) {
+            yield AgentEvent::Error(error);
             return;
         }
-        let mut messages = initial_messages;
+        let mut messages = request.conversation.messages().to_vec();
         let mut cumulative_usage = TokenUsage::default();
         let mut last_provider_usage = cumulative_usage;
         let mut final_message: Option<ModelResponse> = None;
         let mut completed_iterations = 0;
 
-        if let Err(blocked) = config
+        if let Err(blocked) = request
             .tools
-            .run_turn_hooks(AgentHookPhase::BeforeTurn, &config.tool_context)
+            .run_turn_hooks(AgentHookPhase::BeforeTurn, &ports.tool_context)
             .await
         {
             yield AgentEvent::Error(AgentLoopError::Tool(blocked.to_string()));
@@ -418,23 +222,20 @@ pub fn run_stream(
 
             // 1. Compression (pipeline: layers run in order, async)
             {
-                let auto_threshold = (config.model.context_window as f32
+                let auto_threshold = (request.model.context_window as f32
                     * super::compress::layers::auto_compact::DEFAULT_TRIGGER_RATIO)
                     as u64;
                 if last_provider_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
                     yield AgentEvent::CompressionStarted;
                 }
-                let auto_llm = config.auto_compact_llm();
+                let auto_llm = auto_compact_llm(&request, &ports);
                 let mut compress_ctx = super::compress::CompressContext {
                     messages: &mut messages,
                     last_usage: &last_provider_usage,
-                    model_info: &config.model,
+                    model_info: &request.model,
                     auto_compact_llm: Some(&auto_llm),
                 };
-                let reports = config
-                    .compression_pipeline
-                    .run_all(&mut compress_ctx)
-                    .await;
+                let reports = compression_pipeline.run_all(&mut compress_ctx).await;
                 // Filter out no-op reports (every layer runs every
                 // iteration even when there's nothing to do — only
                 // emit a Compressed event when at least one layer
@@ -460,13 +261,18 @@ pub fn run_stream(
             }
 
             // 2. Build and validate one exact provider-qualified request.
-            let provider_request = config.build_provider_request(&messages);
+            let provider_request = AgentLoop::build_provider_request(&request, &messages);
 
             // 4. Open the provider stream. This is the only retry owner;
             //    provider adapters never retry and a failed streaming
             //    request is never replayed as a buffered request.
             let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel();
-            let call = config.call_model_with_retry(provider_request, retry_tx);
+            let call = config.call_model_with_retry(
+                provider_request,
+                retry_tx,
+                ports.model.as_ref(),
+                &request.model,
+            );
             tokio::pin!(call);
             let call_result = loop {
                 tokio::select! {
@@ -562,12 +368,12 @@ pub fn run_stream(
                 .collect();
 
             if !tool_blocks.is_empty() {
-                let tool_timeout = config.tool_context.budget.timeout;
+                let tool_timeout = ports.tool_context.budget.timeout;
 
                 // Check approval gate before executing tools.
                 // The loop PAUSES here if the gate waits for external input.
                 let decisions: Vec<crate::approval::ApprovalDecision> =
-                    if let Some(gate) = &config.approval_gate {
+                    if let Some(gate) = &ports.approval_gate {
                         // `present_plan` is itself the consent UI. Requiring a
                         // tool approval before showing it would create two
                         // consecutive prompts for one decision.
@@ -652,7 +458,7 @@ pub fn run_stream(
                                     multi_select,
                                 };
 
-                                let answer = if let Some(gate) = &config.ask_user_gate {
+                                let answer = if let Some(gate) = &ports.ask_user_gate {
                                     gate.ask(
                                         &tool_use.id,
                                         &question,
@@ -699,7 +505,7 @@ pub fn run_stream(
                                     plan_id: plan_id.clone(),
                                     steps: steps.clone(),
                                 };
-                                let decision = if let Some(gate) = &config.plan_gate {
+                                let decision = if let Some(gate) = &ports.plan_gate {
                                     gate.review(&plan_id, steps.clone()).await
                                 } else {
                                     sylvander_protocol::PlanDecision::Approved
@@ -747,7 +553,7 @@ pub fn run_stream(
                                     .as_str()
                                     .unwrap_or("")
                                     .to_string();
-                                let result = if let Some(gate) = &config.task_gate {
+                                let result = if let Some(gate) = &ports.task_gate {
                                     gate.start(purpose, prompt).await
                                 } else {
                                     Err("background task runtime is unavailable".into())
@@ -790,7 +596,7 @@ pub fn run_stream(
                                 let (output, is_error): (String, bool) =
                                     if plan_id.is_empty() || steps.is_empty() {
                                     ("plan_id and at least one step are required".into(), true)
-                                } else if let Some(gate) = &config.plan_gate {
+                                } else if let Some(gate) = &ports.plan_gate {
                                     gate.update(&plan_id, steps, current).await;
                                     ("Visible plan progress updated.".into(), false)
                                 } else {
@@ -810,7 +616,7 @@ pub fn run_stream(
 
                             let input = tool_use.input.clone();
                             let name = tool_use.name.clone();
-                            let prepared_call = config.tools.prepare(&name, input);
+                            let prepared_call = request.tools.prepare(&name, input);
                             let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
                                 crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
                             );
@@ -823,9 +629,9 @@ pub fn run_stream(
                             let execution = execute_registered_tool(
                                 RegisteredToolExecutionRequest {
                                     prepared_call,
-                                    invocation_gateway: config.invocation_gateway.clone(),
-                                    invocation_snapshot: config.invocation_snapshot.clone(),
-                                    tool_context: config.tool_context.clone(),
+                                    invocation_gateway: ports.invocation_gateway.clone(),
+                                    invocation_snapshot: ports.invocation_snapshot.clone(),
+                                    tool_context: ports.tool_context.clone(),
                                     call_id: tool_use.id.clone(),
                                     route: name.clone(),
                                     timeout: tool_timeout,
@@ -920,15 +726,15 @@ pub fn run_stream(
                         let name = tool_use.name.clone();
                         let input = tool_use.input.clone();
                         let decision = decision.clone();
-                        let prepared_call = config.tools.prepare(&name, input);
+                        let prepared_call = request.tools.prepare(&name, input);
                         let execution_mode = prepared_call.as_ref().map_or(
                             crate::tool::ToolExecutionMode::Exclusive,
                             crate::tool::PreparedToolCall::execution_mode,
                         );
                         let execution_coordination = execution_coordination.clone();
-                        let invocation_gateway = config.invocation_gateway.clone();
-                        let invocation_snapshot = config.invocation_snapshot.clone();
-                        let context = config.tool_context.clone();
+                        let invocation_gateway = ports.invocation_gateway.clone();
+                        let invocation_snapshot = ports.invocation_snapshot.clone();
+                        let context = ports.tool_context.clone();
                         let progress_id = id.clone();
                         let progress_name = name.clone();
                         let progress_tx = progress_tx.clone();
@@ -1079,7 +885,7 @@ pub fn run_stream(
             final_message = Some(ModelResponse {
                 id: response_id,
                 content: final_message_content,
-                model: config.model.reference.clone(),
+                model: request.model.reference.clone(),
                 stop_reason: response_stop_reason.clone(),
                 usage: cumulative_usage,
             });
@@ -1102,9 +908,9 @@ pub fn run_stream(
         // otherwise publish Done or MaxIterationsReached.
         match final_message {
             Some(msg) => {
-                match config
+                match request
                     .tools
-                    .run_turn_hooks(AgentHookPhase::AfterTurn, &config.tool_context)
+                    .run_turn_hooks(AgentHookPhase::AfterTurn, &ports.tool_context)
                     .await
                 {
                     Ok(()) => yield AgentEvent::Done(AgentOutcome {
@@ -1138,10 +944,11 @@ pub fn run_stream(
 ///   capability the model doesn't have
 pub async fn run(
     config: &AgentLoop,
-    initial_messages: Vec<ChatMessage>,
+    request: AgentTurnRequest,
+    ports: AgentExecutionPorts,
 ) -> Result<AgentOutcome, AgentLoopError> {
     let max_iterations = config.max_iterations;
-    consume_stream_to_run(max_iterations, run_stream(config, initial_messages)).await
+    consume_stream_to_run(max_iterations, run_stream(config, request, ports)).await
 }
 
 /// Convenience wrapper around [`run_stream`] that fires every event
@@ -1150,14 +957,15 @@ pub async fn run(
 /// value rather than fired to the callback.
 pub async fn run_with_events<F>(
     config: &AgentLoop,
-    initial_messages: Vec<ChatMessage>,
+    request: AgentTurnRequest,
+    ports: AgentExecutionPorts,
     mut on_event: F,
 ) -> Result<AgentOutcome, AgentLoopError>
 where
     F: FnMut(AgentEvent) + Send,
 {
     let max_iterations = config.max_iterations;
-    let mut stream = Box::pin(run_stream(config, initial_messages));
+    let mut stream = Box::pin(run_stream(config, request, ports));
     let mut outcome: Option<AgentOutcome> = None;
 
     while let Some(event) = stream.next().await {
@@ -1394,46 +1202,17 @@ async fn consume_provider_stream(
     Ok(*response)
 }
 
+fn auto_compact_llm(
+    request: &AgentTurnRequest,
+    ports: &AgentExecutionPorts,
+) -> super::compress::auto_compact_llm::ProviderAutoCompactLlm {
+    super::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
+        ports.model.clone(),
+        request.model.clone(),
+    )
+}
+
 impl AgentLoop {
-    pub(crate) fn auto_compact_llm(
-        &self,
-    ) -> super::compress::auto_compact_llm::ProviderAutoCompactLlm {
-        super::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
-            self.router.clone(),
-            self.provider_model.clone(),
-        )
-    }
-
-    /// Apply one exact qualified model to an immutable turn snapshot.
-    ///
-    /// The exact provider metadata and Anthropic-shaped internal shadow must
-    /// identify the same model. The qualified router remains the only route
-    /// and never performs fallback.
-    pub(crate) fn apply_runtime_model(
-        &mut self,
-        selection: &ModelSelection,
-        shadow: &ModelInfo,
-        exact: Option<&ModelInfo>,
-    ) -> Result<(), AgentLoopError> {
-        let exact = exact.ok_or_else(|| {
-            AgentLoopError::IncompatibleModel(
-                "provider-backed model selection lacks exact metadata".into(),
-            )
-        })?;
-        let exact_matches = exact.reference.provider == selection.provider_id
-            && exact.reference.model == selection.model_id
-            && shadow.reference == exact.reference;
-        if !exact_matches {
-            return Err(AgentLoopError::IncompatibleModel(format!(
-                "model `{}/{}` is not routed by this Agent",
-                selection.provider_id, selection.model_id
-            )));
-        }
-        self.provider_model = exact.clone();
-        self.model = shadow.clone();
-        Ok(())
-    }
-
     /// Call the exact qualified router with retry/backoff on transient open
     /// failures. A failed streaming request is never replayed through another
     /// provider or transport.
@@ -1441,21 +1220,22 @@ impl AgentLoop {
         &self,
         provider_request: ModelRequest,
         retry_events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+        provider: &dyn ModelProvider,
+        model: &ModelInfo,
     ) -> Result<LoopModelStream, AgentLoopError> {
         sylvander_llm_core::validate_model_request_capabilities(
             &provider_request,
-            self.provider_model.capabilities,
+            model.capabilities,
         )
         .map_err(|error| AgentLoopError::IncompatibleModel(error.to_string()))?;
         let max_attempts = self.max_retries + 1;
         for attempt in 0..max_attempts {
-            let result = self
-                .router
+            let result = provider
                 .complete_stream(provider_request.clone())
                 .await
                 .map(|stream| LoopModelStream {
                     stream,
-                    expected_model: self.provider_model.reference.clone(),
+                    expected_model: model.reference.clone(),
                 })
                 .map_err(|source| AgentLoopError::Provider {
                     attempts: attempt + 1,
@@ -1492,42 +1272,24 @@ impl AgentLoop {
         unreachable!("retry loop always returns success or the final error")
     }
 
-    fn build_provider_request(&self, messages: &[ChatMessage]) -> ModelRequest {
-        let tools = tool_definitions_for_model(&self.tools, &self.model);
+    fn build_provider_request(
+        request: &AgentTurnRequest,
+        messages: &[ChatMessage],
+    ) -> ModelRequest {
+        let tools = tool_definitions_for_model(&request.tools, &request.model);
         ModelRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
-            model: self.provider_model.reference.clone(),
-            system: self
-                .system_prompt
-                .iter()
-                .map(|text| sylvander_llm_core::SystemInstruction {
-                    text: text.clone(),
-                    cache_hint: self
-                        .model
-                        .capabilities
-                        .contains(ModelCapabilities::PROMPT_CACHING)
-                        .then_some(sylvander_llm_core::CacheHint::Ephemeral),
-                })
-                .collect(),
+            model: request.model.reference.clone(),
+            system: request.system_instructions.clone(),
             messages: messages.to_vec(),
             tools,
-            max_output_tokens: self.provider_model.max_output_tokens,
-            reasoning: self
-                .reasoning_effort
-                .budget_tokens()
-                .map(|budget_tokens| ReasoningConfig {
-                    budget_tokens: Some(budget_tokens.min(self.provider_model.max_output_tokens)),
-                    effort: Some(match self.reasoning_effort {
-                        sylvander_protocol::ReasoningEffort::Low => ProviderReasoningEffort::Low,
-                        sylvander_protocol::ReasoningEffort::Medium => {
-                            ProviderReasoningEffort::Medium
-                        }
-                        sylvander_protocol::ReasoningEffort::High => ProviderReasoningEffort::High,
-                        sylvander_protocol::ReasoningEffort::Off => unreachable!(
-                            "disabled reasoning has no budget and cannot enter this mapping"
-                        ),
-                    }),
-                }),
+            max_output_tokens: request.model.max_output_tokens,
+            reasoning: request.reasoning.map(|mut reasoning| {
+                reasoning.budget_tokens = reasoning
+                    .budget_tokens
+                    .map(|budget| budget.min(request.model.max_output_tokens));
+                reasoning
+            }),
             output_schema: None,
         }
     }

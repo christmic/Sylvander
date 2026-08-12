@@ -37,8 +37,9 @@ use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{Instrument as _, info, warn};
 
 use sylvander_llm_core::{
-    ChatMessage, ChatRole, ContentBlock, ImageContent, MediaSource, ModelCapabilities, ModelInfo,
-    ModelProvider, ModelResponse, TokenUsage,
+    CacheHint, ChatMessage, ChatRole, ContentBlock, ImageContent, MediaSource, ModelCapabilities,
+    ModelInfo, ModelProvider, ModelResponse, ReasoningConfig,
+    ReasoningEffort as ProviderReasoningEffort, SystemInstruction, TokenUsage,
 };
 use sylvander_protocol::{
     PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
@@ -55,12 +56,15 @@ use crate::bus::{
 };
 use crate::compress::error::{CompactionError, CompactionFailureCode};
 use crate::compress::layer::CompressionLayer;
+use crate::conversation::ConversationSnapshot;
 use crate::curated_memory::{CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope};
 use crate::error::AgentLoopError;
 use crate::execution_context::{AgentExecutionContext, ExecutionWorkspace};
+use crate::execution_ports::AgentExecutionPorts;
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
 use crate::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
+use crate::request::AgentTurnRequest;
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::session_store::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
@@ -102,6 +106,14 @@ pub(crate) struct AgentRunInner {
     spec: AgentSpec,
     /// The pre-built loop configuration.
     loop_config: AgentLoop,
+    /// Provider-neutral exact-model router injected by Runtime.
+    model_provider: Arc<dyn ModelProvider>,
+    /// Agent-definition prompt before per-turn context composition.
+    system_prompt: Option<String>,
+    /// Stable tool catalog frozen separately for every execution.
+    tools: ToolRegistry,
+    /// Runtime-owned tool authorization and audit boundary.
+    invocation_gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
     /// Mutable selection read once at the start of every turn. Active turns
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
@@ -419,8 +431,7 @@ impl AgentRun {
                 selection.provider_id, selection.model_id
             )
         })?;
-        self.inner
-            .prepare_loop_snapshot(&model, reasoning_effort)
+        AgentRunInner::validate_turn_model(&model, reasoning_effort)
             .map_err(|error| error.to_string())?;
         if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
             && !model
@@ -477,7 +488,7 @@ impl AgentRun {
             })
             .collect::<Vec<_>>();
 
-        for runtime_feature in self.inner.loop_config.tools.platform_features() {
+        for runtime_feature in self.inner.tools.platform_features() {
             if let Some(existing) = features.iter_mut().find(|feature| {
                 feature.kind == runtime_feature.kind && feature.name == runtime_feature.name
             }) {
@@ -636,7 +647,7 @@ impl AgentRun {
                 items: conversation_items,
             });
         }
-        let tool_count = self.inner.loop_config.tools.len();
+        let tool_count = self.inner.tools.len();
         if tool_count > 0 {
             sources.push(sylvander_protocol::ContextSource {
                 kind: sylvander_protocol::ContextSourceKind::Tools,
@@ -715,7 +726,10 @@ impl AgentRun {
             input_tokens: u64::from(model.shadow.context_window),
             ..TokenUsage::default()
         };
-        let summarizer = self.inner.loop_config.auto_compact_llm();
+        let summarizer = crate::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
+            self.inner.model_provider.clone(),
+            model.exact.as_ref().unwrap_or(&model.shadow).clone(),
+        );
         let mut context = crate::compress::CompressContext {
             messages: &mut history,
             last_usage: &usage,
@@ -1654,7 +1668,9 @@ struct BusTaskGate {
     bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     session_id: SessionId,
-    loop_config: AgentLoop,
+    kernel: AgentLoop,
+    request: AgentTurnRequest,
+    ports: AgentExecutionPorts,
     tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
 }
 
@@ -1689,12 +1705,14 @@ impl TaskGate for BusTaskGate {
         let bus = self.bus.clone();
         let agent_id = self.agent_id.clone();
         let session_id = self.session_id.clone();
-        let loop_config = self.loop_config.clone();
+        let kernel = self.kernel.clone();
+        let mut request = self.request.clone();
+        let ports = self.ports.clone();
         let tasks = self.tasks.clone();
         let running_id = task_id.clone();
         tokio::spawn(async move {
-            let history = vec![ChatMessage::user(prompt)];
-            let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
+            request.conversation = ConversationSnapshot::new(vec![ChatMessage::user(prompt)]);
+            let mut stream = Box::pin(loop_::run_stream(&kernel, request, ports));
             let deadline = tokio::time::sleep(std::time::Duration::from_mins(10));
             tokio::pin!(deadline);
             loop {
@@ -1825,11 +1843,10 @@ impl AgentRunInner {
             .transpose()
     }
 
-    fn prepare_loop_snapshot(
-        &self,
+    fn validate_turn_model(
         model: &RuntimeModel,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
-    ) -> Result<AgentLoop, AgentRunError> {
+    ) -> Result<ModelInfo, AgentRunError> {
         if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
             && !model
                 .shadow
@@ -1841,12 +1858,21 @@ impl AgentRunInner {
                 model.selection.model_id
             )));
         }
-        let mut snapshot = self.loop_config.clone();
-        snapshot
-            .apply_runtime_model(&model.selection, &model.shadow, model.exact.as_ref())
-            .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-        snapshot.reasoning_effort = reasoning_effort;
-        Ok(snapshot)
+        let exact = model.exact.as_ref().ok_or_else(|| {
+            AgentRunError::Configuration(
+                "provider-backed model selection lacks exact metadata".into(),
+            )
+        })?;
+        if exact.reference.provider != model.selection.provider_id
+            || exact.reference.model != model.selection.model_id
+            || exact.reference != model.shadow.reference
+        {
+            return Err(AgentRunError::Configuration(format!(
+                "model `{}/{}` is not routed by this Agent",
+                model.selection.provider_id, model.selection.model_id
+            )));
+        }
+        Ok(exact.clone())
     }
 
     async fn apply_compacted_history(
@@ -1982,11 +2008,7 @@ impl AgentRunInner {
             kind: sylvander_protocol::SessionConfigSourceKind::AgentDefault,
             reference: Some("direct-agent".into()),
         };
-        let prompt = self
-            .loop_config
-            .system_prompt
-            .as_deref()
-            .unwrap_or_default();
+        let prompt = self.system_prompt.as_deref().unwrap_or_default();
         let resolved_prompt = self
             .prompt_resolver
             .as_ref()
@@ -2238,7 +2260,8 @@ impl AgentRunInner {
                     .map_or(runtime.reasoning_effort, |config| config.reasoning_effort),
             )
         };
-        let mut loop_config = self.prepare_loop_snapshot(&selected_model, selected_effort)?;
+        let selected_exact_model = Self::validate_turn_model(&selected_model, selected_effort)?;
+        let loop_config = self.loop_config.clone();
         let selected_pricing = selected_model.pricing;
         let session_metadata = {
             let sessions = self.sessions.read().await;
@@ -2286,7 +2309,7 @@ impl AgentRunInner {
                         ),
                     ),
                 );
-                if let Some(prompt) = loop_config.system_prompt.take()
+                if let Some(prompt) = self.system_prompt.clone()
                     && !prompt.is_empty()
                 {
                     inputs.push_required(
@@ -2438,7 +2461,7 @@ impl AgentRunInner {
 
         let composed = compose_turn_context(context_inputs, &self.turn_context_budgets, now_secs())
             .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-        loop_config.system_prompt = Some(composed.system_prompt().to_owned());
+        let system_prompt = composed.system_prompt().to_owned();
         let context_manifest = composed.manifest;
 
         // 1. Persist the immutable turn boundary before provider or tool work.
@@ -2501,8 +2524,7 @@ impl AgentRunInner {
         // 2. Build per-session approval gate and tool surface from one
         // immutable permission/capability snapshot. Changes made mid-turn
         // apply to the next turn and invalidate persistent grants there.
-        let (turn_tools, tool_surface_revision) = loop_config.tools.freeze_with_revision();
-        loop_config.tools = turn_tools;
+        let (turn_tools, tool_surface_revision) = self.tools.freeze_with_revision();
         let prompt_context_features = self
             .skill_features
             .read()
@@ -2510,17 +2532,17 @@ impl AgentRunInner {
             .iter()
             .map(|feature| feature.name.clone())
             .collect::<Vec<_>>();
-        let invocation_snapshot = loop_config
+        let invocation_snapshot = self
             .invocation_gateway
             .snapshot()
             .for_turn(&tool_surface_revision, prompt_context_features);
         let capability_revision = invocation_snapshot.revision().to_owned();
-        loop_config.invocation_snapshot = invocation_snapshot;
         let identity_authorized = self
             .authenticated_sessions
             .read()
             .await
             .contains(&session_id);
+        let mut approval_gate: Option<Arc<dyn ApprovalGate>> = None;
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Ask {
             let grant_context = ApprovalGrantContext::new(
                 session_metadata.user_id.clone(),
@@ -2545,10 +2567,10 @@ impl AgentRunInner {
                     bus_gate,
                 ))
             };
-            loop_config.approval_gate = Some(gate);
+            approval_gate = Some(gate);
         }
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
-            loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
+            approval_gate = Some(Arc::new(DenyAllApprovalGate));
         }
         let tool_context = tool_context_for_permissions(
             ToolSessionExecution {
@@ -2563,36 +2585,81 @@ impl AgentRunInner {
             self.workspace_journal.clone(),
             Some(turn_id),
         );
-        loop_config.tool_context = tool_context.clone();
-        loop_config.ask_user_gate = Some(Arc::new(BusAskUserGate {
+        let ask_user_gate: Arc<dyn AskUserGate> = Arc::new(BusAskUserGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
             session_id: session_id.clone(),
             pending_answers: self.pending_answers.clone(),
-        }));
-        loop_config.plan_gate = Some(Arc::new(BusPlanGate {
+        });
+        let plan_gate: Arc<dyn PlanGate> = Arc::new(BusPlanGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
             session_id: session_id.clone(),
             pending_plans: self.pending_plans.clone(),
-        }));
-        let mut background_loop = loop_config.clone();
-        background_loop.tool_context = tool_context;
-        background_loop.tools = background_loop.tools.retain_named(&["read", "memory_read"]);
-        background_loop.approval_gate = None;
-        background_loop.ask_user_gate = None;
-        background_loop.plan_gate = None;
-        background_loop.task_gate = None;
-        loop_config.task_gate = Some(Arc::new(BusTaskGate {
+        });
+        let reasoning = selected_effort
+            .budget_tokens()
+            .map(|budget_tokens| ReasoningConfig {
+                budget_tokens: Some(budget_tokens.min(selected_exact_model.max_output_tokens)),
+                effort: Some(match selected_effort {
+                    sylvander_protocol::ReasoningEffort::Low => ProviderReasoningEffort::Low,
+                    sylvander_protocol::ReasoningEffort::Medium => ProviderReasoningEffort::Medium,
+                    sylvander_protocol::ReasoningEffort::High => ProviderReasoningEffort::High,
+                    sylvander_protocol::ReasoningEffort::Off => {
+                        unreachable!("disabled reasoning cannot carry a token budget")
+                    }
+                }),
+            });
+        let system_instructions = vec![SystemInstruction {
+            text: system_prompt,
+            cache_hint: selected_exact_model
+                .capabilities
+                .contains(ModelCapabilities::PROMPT_CACHING)
+                .then_some(CacheHint::Ephemeral),
+        }];
+        let request = AgentTurnRequest {
+            conversation: ConversationSnapshot::new(history),
+            model: selected_exact_model,
+            system_instructions,
+            reasoning,
+            tools: turn_tools,
+            execution: tool_context.execution.as_ref().clone(),
+        };
+        let mut background_request = request.clone();
+        background_request.conversation = ConversationSnapshot::default();
+        background_request.tools = background_request
+            .tools
+            .retain_named(&["read", "memory_read"]);
+        let background_ports = AgentExecutionPorts::new(
+            self.model_provider.clone(),
+            tool_context.clone(),
+            self.invocation_gateway.clone(),
+            invocation_snapshot.clone(),
+        );
+        let task_gate: Arc<dyn TaskGate> = Arc::new(BusTaskGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
             session_id: session_id.clone(),
-            loop_config: background_loop,
+            kernel: loop_config.clone(),
+            request: background_request,
+            ports: background_ports,
             tasks: self.background_tasks.clone(),
-        }));
+        });
+        let mut ports = AgentExecutionPorts::new(
+            self.model_provider.clone(),
+            tool_context,
+            self.invocation_gateway.clone(),
+            invocation_snapshot,
+        )
+        .with_ask_user_gate(ask_user_gate)
+        .with_plan_gate(plan_gate)
+        .with_task_gate(task_gate);
+        if let Some(gate) = approval_gate {
+            ports = ports.with_approval_gate(gate);
+        }
 
         // 3. Run loop with streaming
-        let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
+        let mut stream = Box::pin(loop_::run_stream(&loop_config, request, ports));
         tokio::pin!(interrupted);
         let mut final_message: Option<ModelResponse> = None;
 
@@ -3622,32 +3689,18 @@ impl AgentRunBuilder {
         };
 
         let mut loop_builder = AgentLoop::builder()
-            .qualified_router(self.router)
-            .provider_model(self.model)
-            // `AgentRun` is built before a session exists. This inert template
-            // is rejected by `run_stream`; `handle_message_interruptible`
-            // replaces it with the authenticated per-turn context before the
-            // loop is ever polled.
-            .tool_context(ToolContext::inert_agent_run_template())
             .max_iterations(self.spec.behavior.max_iterations)
             .max_retries(self.spec.behavior.max_retries);
-
-        if !self.spec.persona.system_prompt.is_empty() {
-            loop_builder = loop_builder.system_prompt(&self.spec.persona.system_prompt);
-        }
-        if let Some(tools) = self.tool_overrides {
-            loop_builder = loop_builder.tools(tools);
-        }
-        if let Some(gateway) = self.invocation_gateway {
-            loop_builder = loop_builder.invocation_gateway(gateway);
-        }
         if let Some(pipeline) = self.compression_overrides {
             loop_builder = loop_builder.compression_pipeline(pipeline);
         }
-
-        let loop_config = loop_builder
-            .build()
-            .map_err(|e| AgentRunError::Build(format!("loop build failed: {e}")))?;
+        let loop_config = loop_builder.build();
+        let system_prompt = (!self.spec.persona.system_prompt.is_empty())
+            .then(|| self.spec.persona.system_prompt.clone());
+        let tools = self.tool_overrides.unwrap_or_default();
+        let invocation_gateway = self.invocation_gateway.unwrap_or_else(|| {
+            crate::tool_invocation::RegistryBoundToolGateway::new(tools.invocation_descriptors())
+        });
 
         let workspace_journal = self
             .workspace_journal_path
@@ -3661,6 +3714,10 @@ impl AgentRunBuilder {
                 id,
                 spec: self.spec,
                 loop_config,
+                model_provider: self.router,
+                system_prompt,
+                tools,
+                invocation_gateway,
                 runtime_models: RwLock::new(runtime_models),
                 runtime_permissions: RwLock::new(runtime_permissions),
                 prompt_resolver: self.prompt_resolver,

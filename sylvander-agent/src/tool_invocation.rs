@@ -143,7 +143,7 @@ impl ToolInvocationSnapshot {
                 .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(_))))
     }
 
-    fn authorizes(&self, name: &str, class: ToolInvocationClass) -> bool {
+    pub(crate) fn authorizes(&self, name: &str, class: ToolInvocationClass) -> bool {
         self.features.contains(&CapabilityFeature {
             name: name.to_owned(),
             kind: CapabilityFeatureKind::Executable(class),
@@ -282,13 +282,15 @@ pub trait ToolInvocationGateway: Send + Sync {
 /// Runtime production composition always replaces this with its actor-aware,
 /// durably audited implementation. This fallback still fails closed for
 /// unknown routes, class changes, owner selectors, and snapshot drift.
-pub(crate) struct RegistryBoundToolGateway {
+pub struct RegistryBoundToolGateway {
     descriptors: BTreeMap<String, ToolInvocationDescriptor>,
     snapshot: ToolInvocationSnapshot,
 }
 
 impl RegistryBoundToolGateway {
-    pub(crate) fn new(descriptors: Vec<ToolInvocationDescriptor>) -> Arc<Self> {
+    /// Construct a fail-closed in-process gateway for a fixed tool surface.
+    #[must_use]
+    pub fn new(descriptors: Vec<ToolInvocationDescriptor>) -> Arc<Self> {
         let snapshot = ToolInvocationSnapshot::from_descriptors(&descriptors);
         let descriptors = descriptors
             .into_iter()
