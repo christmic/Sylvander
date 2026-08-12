@@ -22,6 +22,8 @@
 pub mod agent_admin;
 /// Authenticated ingress context and content-safe boundary failures.
 pub mod boundary;
+/// Evidence-bound user feedback DTOs.
+pub mod feedback;
 /// Stable public Agent, Session, and User identifiers.
 pub mod identity;
 /// Link-code protocol for mapping trusted transport identities to users.
@@ -45,6 +47,7 @@ pub mod user_profile;
 
 pub use agent_admin::*;
 pub use boundary::*;
+pub use feedback::*;
 pub use identity::*;
 pub use identity_binding::*;
 pub use memory_confirmation::*;
