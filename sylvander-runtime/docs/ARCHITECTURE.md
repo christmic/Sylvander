@@ -23,6 +23,15 @@ The server binary supplies configuration and process lifetime only. Individual
 channels own their native protocol adapters; the Agent crate owns one run;
 Runtime owns the binding between them.
 
+More precisely, Runtime owns the product Session and constructs one immutable
+Agent turn from its durable snapshot. Agent owns only the bounded inference and
+tool state machine. The normative target dependency graph and Session
+vocabulary are in
+[`../../docs/agent-runtime-api-boundaries.md`](../../docs/agent-runtime-api-boundaries.md).
+During migration, `AgentRun`, `AgentRunEngine`, Session persistence, bus
+publication, and public event mapping move from `sylvander-agent` into this
+crate without retaining a second production path.
+
 ## Module responsibilities
 
 - `config` validates latest-version configuration, resolves declarative

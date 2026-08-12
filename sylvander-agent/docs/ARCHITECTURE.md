@@ -1,23 +1,30 @@
 # `sylvander-agent` architecture
 
-`sylvander-agent` owns the deterministic per-session Agent execution loop. It
-turns an authenticated Runtime-issued session into model requests, tool calls,
-stream events, durable transcript entries, and bounded background work. It is
-not a server composition root and it does not expose network listeners.
+`sylvander-agent` is being reduced to the deterministic execution kernel for
+one bounded Agent turn. It owns model/tool iteration and an in-memory
+conversation snapshot, not the product Session that supplied that snapshot.
+Runtime owns authentication, Session lifecycle and persistence, scheduling,
+public stream events, and concrete infrastructure.
+
+The normative target and migration rules are documented in
+[`../../docs/agent-runtime-api-boundaries.md`](../../docs/agent-runtime-api-boundaries.md).
+The remaining `AgentRun`, engine, bus, persistence, MCP, and concrete adapter
+modules in this crate are migration debt, not the intended boundary.
 
 ## Internal layers
 
 ```text
-AgentRun / AgentRunEngine
-  -> prompt composition + session snapshot
-  -> provider-neutral AgentLoop
+Runtime Agent service
+  -> immutable AgentTurnRequest + conversation snapshot
+  -> provider-neutral Agent execution kernel
   -> ToolRegistry / ToolContext / approval & AskUser gates
-  -> workspace executor, Skills, MCP, memory
-  -> StreamEvent + durable session history
+  -> injected execution ports
+  -> AgentEvent + AgentOutcome
 ```
 
-- `run` owns a single authenticated turn, cancellation, transcript persistence,
-  prompt construction, and tool-result re-feeding.
+- `run` and `engine` currently mix Runtime-owned Session orchestration with the
+  Agent kernel. They move to Runtime; only model/tool execution and
+  tool-result re-feeding remain here.
 - `turn_context` composes the immutable Safety/Agent/User Profile/
   Relationship Memory/Workspace Knowledge/Session precedence chain. It applies
   per-layer byte, token-estimate, and item budgets and records content-safe

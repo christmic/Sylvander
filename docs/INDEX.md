@@ -61,6 +61,9 @@ Design notes for the platform, terminal substrate, and brand.
 
 - [sylvander-agent-platform.md](sylvander-agent-platform.md) — agent
   loop, tool/skill/MCP surface, supervisor layout.
+- [agent-runtime-api-boundaries.md](agent-runtime-api-boundaries.md) — normative
+  ownership, Session vocabulary, dependency direction, and migration order for
+  Agent, Runtime, API, and Channels.
 - [tool-execution-architecture.md](tool-execution-architecture.md) — pinned
   upstream evidence and the implemented tool preparation, execution, and
   fail-closed sandbox boundary.
