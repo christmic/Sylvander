@@ -198,10 +198,10 @@ pub mod prelude {
         ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
     pub use crate::tool::{
-        PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition, ToolEnvironmentError,
-        ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor, ToolExposure,
-        ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput, ToolPreparation, ToolPrepareError,
-        ToolProgressSink, ToolRegistry, ToolSpec,
+        AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
+        ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
+        ToolExposure, ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput, ToolPreparation,
+        ToolPrepareError, ToolProgressSink, ToolRegistry, ToolSpec,
     };
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{

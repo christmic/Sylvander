@@ -30,7 +30,6 @@ use sylvander_llm_core::{
     ChatMessage, ContentBlock, ModelCapabilities, ModelEventStream, ModelInfo, ModelProvider,
     ModelRequest, ModelResponse, ProviderErrorKind, StopReason, TokenUsage,
 };
-use sylvander_protocol::AgentHookPhase;
 
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
@@ -39,7 +38,7 @@ use super::execution_ports::AgentExecutionPorts;
 use super::outcome::AgentOutcome;
 use super::plan_gate::PlanDecision;
 use super::request::AgentTurnRequest;
-use super::tool::ToolRegistry;
+use super::tool::{AgentHookPhase, ToolRegistry};
 use crate::conversation::ConversationSnapshot;
 
 /// Stable policy for the provider-neutral Agent execution kernel.

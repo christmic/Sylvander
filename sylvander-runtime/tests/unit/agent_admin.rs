@@ -52,7 +52,12 @@ pub(crate) fn draft_from_definition(
             .iter()
             .map(|hook| AgentHookDraft {
                 name: hook.name.clone(),
-                phase: hook.phase,
+                phase: match hook.phase {
+                    AgentHookPhase::BeforeTool => sylvander_protocol::AgentHookPhase::BeforeTool,
+                    AgentHookPhase::AfterTool => sylvander_protocol::AgentHookPhase::AfterTool,
+                    AgentHookPhase::BeforeTurn => sylvander_protocol::AgentHookPhase::BeforeTurn,
+                    AgentHookPhase::AfterTurn => sylvander_protocol::AgentHookPhase::AfterTurn,
+                },
                 command: hook.command.clone(),
                 timeout_secs: hook.timeout_secs,
                 blocking: hook.blocking,

@@ -13,7 +13,7 @@ use sylvander_agent::spec::{
     AgentSpec, BehaviorConfig, McpServerConfig, MemoryStoreConfig, ModelConfig, PersonaConfig,
     ToolPresentationConfig, ToolRef, UiCommandConfig,
 };
-use sylvander_agent::tool::ToolHookConfig;
+use sylvander_agent::tool::{AgentHookPhase, ToolHookConfig};
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AgentBehaviorDraft, AgentDefinitionDraft, AgentRevisionView, AgentSecretReference,
@@ -257,7 +257,16 @@ pub(crate) fn definition_from_draft(
                 .into_iter()
                 .map(|hook| ToolHookConfig {
                     name: hook.name,
-                    phase: hook.phase,
+                    phase: match hook.phase {
+                        sylvander_protocol::AgentHookPhase::BeforeTool => {
+                            AgentHookPhase::BeforeTool
+                        }
+                        sylvander_protocol::AgentHookPhase::AfterTool => AgentHookPhase::AfterTool,
+                        sylvander_protocol::AgentHookPhase::BeforeTurn => {
+                            AgentHookPhase::BeforeTurn
+                        }
+                        sylvander_protocol::AgentHookPhase::AfterTurn => AgentHookPhase::AfterTurn,
+                    },
                     command: hook.command,
                     timeout_secs: hook.timeout_secs,
                     blocking: hook.blocking,
@@ -372,7 +381,16 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
                 .iter()
                 .map(|hook| RedactedAgentHook {
                     name: hook.name.clone(),
-                    phase: hook.phase,
+                    phase: match hook.phase {
+                        AgentHookPhase::BeforeTool => {
+                            sylvander_protocol::AgentHookPhase::BeforeTool
+                        }
+                        AgentHookPhase::AfterTool => sylvander_protocol::AgentHookPhase::AfterTool,
+                        AgentHookPhase::BeforeTurn => {
+                            sylvander_protocol::AgentHookPhase::BeforeTurn
+                        }
+                        AgentHookPhase::AfterTurn => sylvander_protocol::AgentHookPhase::AfterTurn,
+                    },
                     timeout_secs: hook.timeout_secs,
                     blocking: hook.blocking,
                 })

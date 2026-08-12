@@ -17,7 +17,6 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use sylvander_llm_core::{CacheHint, InputSchema, ToolDefinition as LlmToolDefinition};
-use sylvander_protocol::AgentHookPhase;
 
 use crate::tool_context::ToolContext;
 use crate::tool_invocation::{ToolInvocationClass, ToolInvocationDescriptor};
@@ -29,6 +28,20 @@ pub(crate) const TOOL_PROGRESS_OMITTED_MARKER: &str =
 const TOOL_SEARCH_NAME: &str = "tool_search";
 const MAX_TOOL_SEARCH_MATCHES: usize = 8;
 const MAX_TOOL_SEARCH_RESULT_BYTES: usize = 64 * 1024;
+
+/// Agent-owned lifecycle boundary for an executable hook.
+///
+/// Hook timing changes execution behavior and therefore belongs beside the
+/// tool state machine. Runtime maps versioned configuration DTOs into this
+/// enum while composing an Agent revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentHookPhase {
+    BeforeTool,
+    AfterTool,
+    BeforeTurn,
+    AfterTurn,
+}
 
 /// Whether a tool schema is sent on every model request or discovered on demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

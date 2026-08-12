@@ -4,10 +4,9 @@ mod support;
 
 use serde_json::json;
 use sylvander_agent::prelude::{AgentExecutionContext, AgentLoopError, MessageParam, ToolContext};
-use sylvander_agent::tool::{ToolHookConfig, ToolRegistry};
+use sylvander_agent::tool::{AgentHookPhase, ToolHookConfig, ToolRegistry};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
-use sylvander_protocol::AgentHookPhase;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

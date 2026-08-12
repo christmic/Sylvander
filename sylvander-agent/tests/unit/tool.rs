@@ -115,7 +115,7 @@ fn restrictive_registry_clone_drops_executable_hooks() {
         .register(MockTool::new("write", "write", ToolOutput::ok("")))
         .with_hooks(vec![ToolHookConfig {
             name: "side-channel".into(),
-            phase: sylvander_protocol::AgentHookPhase::BeforeTurn,
+            phase: AgentHookPhase::BeforeTurn,
             command: "touch escaped".into(),
             timeout_secs: 5,
             blocking: true,
@@ -308,14 +308,14 @@ fn capability_revision_tracks_tool_contract_and_hooks() {
     ));
     let hooked = base.clone().with_hooks(vec![ToolHookConfig {
         name: "policy".into(),
-        phase: sylvander_protocol::AgentHookPhase::BeforeTool,
+        phase: AgentHookPhase::BeforeTool,
         command: "exit 0".into(),
         timeout_secs: 5,
         blocking: true,
     }]);
     let rephased = base.clone().with_hooks(vec![ToolHookConfig {
         name: "policy".into(),
-        phase: sylvander_protocol::AgentHookPhase::AfterTool,
+        phase: AgentHookPhase::AfterTool,
         command: "exit 0".into(),
         timeout_secs: 5,
         blocking: true,
@@ -395,14 +395,14 @@ async fn hooks_report_lifecycle_and_block_before_tool_execution() {
     let registry = ToolRegistry::new().register(inner).with_hooks(vec![
         ToolHookConfig {
             name: "lint".into(),
-            phase: sylvander_protocol::AgentHookPhase::BeforeTool,
+            phase: AgentHookPhase::BeforeTool,
             command: "printf 'checked'".into(),
             timeout_secs: 5,
             blocking: false,
         },
         ToolHookConfig {
             name: "policy".into(),
-            phase: sylvander_protocol::AgentHookPhase::BeforeTool,
+            phase: AgentHookPhase::BeforeTool,
             command: "exit 7".into(),
             timeout_secs: 5,
             blocking: true,
@@ -451,7 +451,7 @@ async fn advisory_hook_failure_does_not_hide_the_tool_result() {
         .register(inner)
         .with_hooks(vec![ToolHookConfig {
             name: "optional-check".into(),
-            phase: sylvander_protocol::AgentHookPhase::BeforeTool,
+            phase: AgentHookPhase::BeforeTool,
             command: "exit 2".into(),
             timeout_secs: 5,
             blocking: false,
@@ -476,7 +476,7 @@ async fn blocking_after_tool_hook_rejects_an_already_executed_result() {
         .register(inner)
         .with_hooks(vec![ToolHookConfig {
             name: "verify-result".into(),
-            phase: sylvander_protocol::AgentHookPhase::AfterTool,
+            phase: AgentHookPhase::AfterTool,
             command: "exit 9".into(),
             timeout_secs: 5,
             blocking: true,
@@ -504,14 +504,14 @@ async fn turn_hook_entry_runs_only_the_requested_phase() {
     let registry = ToolRegistry::new().with_hooks(vec![
         ToolHookConfig {
             name: "before".into(),
-            phase: sylvander_protocol::AgentHookPhase::BeforeTurn,
+            phase: AgentHookPhase::BeforeTurn,
             command: "printf before > before-turn".into(),
             timeout_secs: 5,
             blocking: true,
         },
         ToolHookConfig {
             name: "after".into(),
-            phase: sylvander_protocol::AgentHookPhase::AfterTurn,
+            phase: AgentHookPhase::AfterTurn,
             command: "printf after > after-turn".into(),
             timeout_secs: 5,
             blocking: true,
@@ -520,7 +520,7 @@ async fn turn_hook_entry_runs_only_the_requested_phase() {
     let context = ctx().with_fs_root(directory.path());
 
     registry
-        .run_turn_hooks(sylvander_protocol::AgentHookPhase::BeforeTurn, &context)
+        .run_turn_hooks(AgentHookPhase::BeforeTurn, &context)
         .await
         .unwrap();
 
