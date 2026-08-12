@@ -200,6 +200,48 @@ pub struct SystemInstruction {
     pub cache_hint: Option<CacheHint>,
 }
 
+/// Provider-neutral JSON Schema for tool-call arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputSchema {
+    /// Complete JSON Schema value.
+    #[serde(flatten)]
+    pub schema: Value,
+}
+
+impl Default for InputSchema {
+    fn default() -> Self {
+        Self {
+            schema: serde_json::json!({"type": "object"}),
+        }
+    }
+}
+
+impl InputSchema {
+    #[must_use]
+    /// Construct an object schema without declared properties.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    /// Preserve a complete caller-supplied JSON Schema.
+    pub fn from_json_value(schema: Value) -> Self {
+        Self { schema }
+    }
+
+    #[must_use]
+    /// Construct an object schema from properties and required names.
+    pub fn new_with_properties(properties: Value, required: &[&str]) -> Self {
+        Self {
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            }),
+        }
+    }
+}
+
 /// Tool schema advertised to a model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolDefinition {

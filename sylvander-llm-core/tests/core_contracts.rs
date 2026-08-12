@@ -4,8 +4,8 @@ use std::sync::Arc;
 use futures_util::{StreamExt, stream};
 use serde_json::json;
 use sylvander_llm_core::{
-    CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent, ImageContent, MediaSource,
-    ModelCapabilities, ModelEventStream, ModelProvider, ModelRef, ModelRequest,
+    CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent, ImageContent, InputSchema,
+    MediaSource, ModelCapabilities, ModelEventStream, ModelProvider, ModelRef, ModelRequest,
     ModelRequestCapabilityError, ModelRequestFeature, ModelResponse, ModelStreamEvent,
     OpaqueProviderState, ProviderErrorKind, ProviderFuture, ReasoningConfig,
     RequiredModelCapability, StopReason, SystemInstruction, TokenUsage, TokenUsageDetails,
@@ -31,6 +31,18 @@ fn provider_error_retryability_is_owned_by_neutral_classification() {
     ] {
         assert!(!kind.is_retryable());
     }
+}
+
+#[test]
+fn input_schema_builder_preserves_required_properties() {
+    let schema = InputSchema::new_with_properties(
+        serde_json::json!({"path": {"type": "string"}}),
+        &["path"],
+    );
+
+    assert_eq!(schema.schema["type"], "object");
+    assert_eq!(schema.schema["required"], serde_json::json!(["path"]));
+    assert_eq!(schema.schema["properties"]["path"]["type"], "string");
 }
 
 #[test]

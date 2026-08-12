@@ -21,9 +21,10 @@ pub use error::{ProviderError, ProviderErrorKind, ProviderErrorPhase};
 pub use model::{ModelCapabilities, ModelInfo, ModelRef};
 pub use provider::{ModelCatalogFuture, ModelEventStream, ModelProvider, ProviderFuture};
 pub use types::{
-    CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent, ImageContent, MediaSource,
-    ModelRequest, ModelResponse, ModelStreamEvent, OpaqueProviderState, ReasoningConfig,
-    ReasoningEffort, StopReason, SystemInstruction, ToolDefinition, ToolResultContent,
+    CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent, ImageContent, InputSchema,
+    MediaSource, ModelRequest, ModelResponse, ModelStreamEvent, OpaqueProviderState,
+    ReasoningConfig, ReasoningEffort, StopReason, SystemInstruction, ToolDefinition,
+    ToolResultContent,
 };
 pub use usage::{TokenUsage, TokenUsageDetails};
 pub use validation::*;
