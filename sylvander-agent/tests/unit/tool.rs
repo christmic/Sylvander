@@ -4,6 +4,63 @@ use crate::tool_context::ToolContext;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
+struct DeferredWeatherTool;
+struct ChangedDeferredWeatherTool;
+
+#[async_trait]
+impl Tool for DeferredWeatherTool {
+    fn name(&self) -> &str {
+        "mcp_weather_forecast"
+    }
+
+    fn description(&self) -> &str {
+        "Get a weather forecast for one city"
+    }
+
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::new_with_properties(json!({"city": {"type": "string"}}), &["city"])
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Deferred
+    }
+
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::ok("sunny"))
+    }
+}
+
+#[async_trait]
+impl Tool for ChangedDeferredWeatherTool {
+    fn name(&self) -> &str {
+        "mcp_weather_forecast"
+    }
+
+    fn description(&self) -> &str {
+        "Get a detailed weather forecast for one city"
+    }
+
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::new_with_properties(json!({"city": {"type": "string"}}), &["city"])
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Deferred
+    }
+
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::ok("sunny"))
+    }
+}
+
 fn ctx() -> ToolContext {
     ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
         .with_capability(crate::tool_context::Cap::Read)
@@ -84,6 +141,57 @@ fn registry_definitions_for_llm() {
     assert_eq!(defs.len(), 1);
     assert_eq!(defs[0].name, "Read");
     assert_eq!(defs[0].description, "Read a file");
+}
+
+#[tokio::test]
+async fn deferred_tools_are_searchable_without_eager_schema_exposure() {
+    let registry = ToolRegistry::new().register(DeferredWeatherTool);
+    let definitions = registry.definitions();
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].name, TOOL_SEARCH_NAME);
+    assert!(registry.get("mcp_weather_forecast").is_some());
+
+    let output = registry
+        .get(TOOL_SEARCH_NAME)
+        .expect("search tool")
+        .execute(&ctx(), json!({"query": "weather city"}))
+        .await
+        .expect("search execution");
+    let result: JsonValue = serde_json::from_str(&output.content).expect("search JSON");
+    assert_eq!(result["total_matches"], 1);
+    assert_eq!(result["returned_matches"], 1);
+    assert_eq!(result["matches"][0]["name"], "mcp_weather_forecast");
+    assert_eq!(
+        result["matches"][0]["input_schema"]["required"],
+        json!(["city"])
+    );
+}
+
+#[test]
+fn deferred_contract_changes_invalidate_the_capability_revision() {
+    let original = ToolRegistry::new().register(DeferredWeatherTool);
+    let changed = ToolRegistry::new().register(ChangedDeferredWeatherTool);
+    assert_ne!(
+        original.capability_revision(),
+        changed.capability_revision()
+    );
+}
+
+#[test]
+fn execution_mode_defaults_are_conservative_for_side_effects() {
+    let input = json!({});
+    assert_eq!(
+        DeferredWeatherTool.execution_mode(&input),
+        ToolExecutionMode::Parallel
+    );
+    assert_eq!(
+        crate::tools::WriteTool::new().execution_mode(&input),
+        ToolExecutionMode::Exclusive
+    );
+    assert_eq!(
+        crate::tools::CommandTool::new().execution_mode(&input),
+        ToolExecutionMode::Exclusive
+    );
 }
 
 #[test]

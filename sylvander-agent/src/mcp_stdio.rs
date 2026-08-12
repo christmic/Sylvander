@@ -25,7 +25,7 @@ use sylvander_protocol::{
 };
 
 use crate::spec::McpServerConfig;
-use crate::tool::{DynamicToolSource, Tool, ToolError, ToolOutput};
+use crate::tool::{DynamicToolSource, Tool, ToolError, ToolExposure, ToolOutput};
 use crate::tool_context::ToolContext;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -816,6 +816,10 @@ impl Tool for McpTool {
 
     fn input_schema(&self) -> InputSchema {
         self.input_schema.clone()
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Deferred
     }
 
     fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {

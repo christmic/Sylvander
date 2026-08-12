@@ -323,11 +323,17 @@ async fn reconnect_atomically_refreshes_the_dynamic_tool_catalog() {
     assert_eq!(
         names,
         [
-            "mcp__fake__echo_v2",
             "mcp__fake__list_resources",
-            "mcp__fake__read_resource"
+            "mcp__fake__read_resource",
+            "tool_search"
         ]
     );
+    let search = registry.get("tool_search").expect("deferred search");
+    let found = search
+        .execute(&context, json!({"query": "echo v2"}))
+        .await
+        .expect("search");
+    assert!(found.content.contains("mcp__fake__echo_v2"));
     let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
     assert_eq!(
         feature.status,

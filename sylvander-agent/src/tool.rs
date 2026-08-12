@@ -26,6 +26,28 @@ use crate::workspace_executor::{WorkspaceCommandProgressSink, WorkspaceCommandSt
 pub(crate) const TOOL_PROGRESS_CHANNEL_CAPACITY: usize = 64;
 pub(crate) const TOOL_PROGRESS_OMITTED_MARKER: &str =
     "\n… intermediate tool output omitted because the progress buffer was full …\n";
+const TOOL_SEARCH_NAME: &str = "tool_search";
+const MAX_TOOL_SEARCH_MATCHES: usize = 8;
+const MAX_TOOL_SEARCH_RESULT_BYTES: usize = 64 * 1024;
+
+/// Whether a tool schema is sent on every model request or discovered on demand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExposure {
+    /// Include the complete schema in the ordinary model tool list.
+    Immediate,
+    /// Keep the executable route authorized but expose its schema through
+    /// `tool_search` only.
+    Deferred,
+}
+
+/// Coordination required when multiple tool calls occur in one model batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecutionMode {
+    /// The call may overlap other parallel calls from the same batch.
+    Parallel,
+    /// The call must not overlap any other executable call from the batch.
+    Exclusive,
+}
 
 /// Bounded interface for a tool to expose user-visible output while it runs.
 /// The Agent owns transport and call identity; tools only emit text deltas.
@@ -144,12 +166,41 @@ pub trait Tool: Send + Sync {
     /// in the wire format.
     fn input_schema(&self) -> InputSchema;
 
+    /// Decide whether the complete schema is sent eagerly to the model.
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Immediate
+    }
+
+    /// Short searchable text used when this tool is deferred.
+    fn search_hint(&self) -> &str {
+        self.description()
+    }
+
     /// Security class used by the Runtime invocation gateway.
     ///
     /// New browser, host-control, terminal, and MCP adapters must override
     /// this method. Generic extensions remain isolated in their own class.
     fn invocation_class(&self) -> ToolInvocationClass {
         ToolInvocationClass::Extension
+    }
+
+    /// Decide batch coordination from the concrete invocation input.
+    ///
+    /// The input parameter permits command- or operation-aware policies. The
+    /// conservative defaults prevent mutation, terminal, host, browser, and
+    /// arbitrary MCP calls from racing one another.
+    fn execution_mode(&self, _input: &JsonValue) -> ToolExecutionMode {
+        match self.invocation_class() {
+            ToolInvocationClass::Read
+            | ToolInvocationClass::Control
+            | ToolInvocationClass::Extension => ToolExecutionMode::Parallel,
+            ToolInvocationClass::FilesystemMutation
+            | ToolInvocationClass::Terminal
+            | ToolInvocationClass::Browser
+            | ToolInvocationClass::HostControl
+            | ToolInvocationClass::ArbitraryMcp
+            | ToolInvocationClass::MemoryCandidate => ToolExecutionMode::Exclusive,
+        }
     }
 
     /// Execute the tool with the given input and invocation context.
@@ -287,6 +338,17 @@ impl ToolRegistry {
                 tools.insert(tool.name().to_string(), tool);
             }
         }
+        let deferred = tools
+            .values()
+            .filter(|tool| tool.exposure() == ToolExposure::Deferred)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !deferred.is_empty() {
+            tools.insert(
+                TOOL_SEARCH_NAME.into(),
+                Arc::new(ToolSearchTool { deferred }) as Arc<dyn Tool>,
+            );
+        }
         tools
     }
 
@@ -365,9 +427,26 @@ impl ToolRegistry {
     /// value so a catalog or hook change cannot reuse an older grant.
     #[must_use]
     pub fn capability_revision(&self) -> String {
-        let definitions = build_definitions(self);
+        let mut surface = self
+            .snapshot()
+            .into_values()
+            .map(|tool| {
+                serde_json::json!({
+                    "name": tool.name(),
+                    "description": tool.description(),
+                    "input_schema": tool.input_schema().schema,
+                    "class": invocation_class_name(tool.invocation_class()),
+                    "exposure": match tool.exposure() {
+                        ToolExposure::Immediate => "immediate",
+                        ToolExposure::Deferred => "deferred",
+                    },
+                    "search_hint": tool.search_hint(),
+                })
+            })
+            .collect::<Vec<_>>();
+        surface.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
         let revision = serde_json::json!({
-            "definitions": definitions,
+            "surface": surface,
             "hooks": self.hooks,
         });
         let mut hasher = Sha256::new();
@@ -426,6 +505,20 @@ impl ToolRegistry {
             dynamic_sources: Vec::new(),
             hooks: Vec::new(),
         }
+    }
+}
+
+const fn invocation_class_name(class: ToolInvocationClass) -> &'static str {
+    match class {
+        ToolInvocationClass::Read => "read",
+        ToolInvocationClass::FilesystemMutation => "filesystem_mutation",
+        ToolInvocationClass::Terminal => "terminal",
+        ToolInvocationClass::Browser => "browser",
+        ToolInvocationClass::HostControl => "host_control",
+        ToolInvocationClass::ArbitraryMcp => "arbitrary_mcp",
+        ToolInvocationClass::MemoryCandidate => "memory_candidate",
+        ToolInvocationClass::Control => "control",
+        ToolInvocationClass::Extension => "extension",
     }
 }
 
@@ -558,6 +651,18 @@ impl Tool for HookedTool {
         self.inner.invocation_class()
     }
 
+    fn exposure(&self) -> ToolExposure {
+        self.inner.exposure()
+    }
+
+    fn search_hint(&self) -> &str {
+        self.inner.search_hint()
+    }
+
+    fn execution_mode(&self, input: &JsonValue) -> ToolExecutionMode {
+        self.inner.execution_mode(input)
+    }
+
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         self.execute_streaming(ctx, input, ToolProgressSink::new(|_| {}))
             .await
@@ -606,7 +711,11 @@ impl Tool for HookedTool {
 /// `ephemeral` `cache_control` breakpoint so the entire tools
 /// block is cached across iterations.
 pub fn build_definitions(tools: &ToolRegistry) -> Vec<ToolDefinition> {
-    let mut tools = tools.snapshot().into_values().collect::<Vec<_>>();
+    let mut tools = tools
+        .snapshot()
+        .into_values()
+        .filter(|tool| tool.exposure() == ToolExposure::Immediate)
+        .collect::<Vec<_>>();
     tools.sort_by(|left, right| left.name().cmp(right.name()));
     let mut defs: Vec<_> = tools
         .into_iter()
@@ -621,6 +730,99 @@ pub fn build_definitions(tools: &ToolRegistry) -> Vec<ToolDefinition> {
         last.cache_hint = Some(CacheHint::Ephemeral);
     }
     defs
+}
+
+struct ToolSearchTool {
+    deferred: Vec<Arc<dyn Tool>>,
+}
+
+#[async_trait]
+impl Tool for ToolSearchTool {
+    fn name(&self) -> &str {
+        TOOL_SEARCH_NAME
+    }
+
+    fn description(&self) -> &str {
+        "Search deferred tools by capability, then call an exact returned tool name with its JSON schema."
+    }
+
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::from_json_value(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "description": "Capability words to match against deferred tool names and descriptions"
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        }))
+    }
+
+    fn invocation_class(&self) -> ToolInvocationClass {
+        ToolInvocationClass::Read
+    }
+
+    async fn execute(&self, _ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+        let query = input
+            .get("query")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty() && query.len() <= 256)
+            .ok_or_else(|| ToolError::Other("query must contain 1 to 256 bytes".into()))?;
+        let terms = query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
+        let mut candidates = self
+            .deferred
+            .iter()
+            .filter(|tool| {
+                let searchable = format!(
+                    "{} {} {}",
+                    tool.name(),
+                    tool.description(),
+                    tool.search_hint()
+                )
+                .to_lowercase();
+                terms.iter().all(|term| searchable.contains(term))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.name().cmp(right.name()));
+        let total_matches = candidates.len();
+        let mut matches = Vec::new();
+        for tool in candidates.into_iter().take(MAX_TOOL_SEARCH_MATCHES) {
+            let candidate = serde_json::json!({
+                "name": tool.name(),
+                "description": tool.description(),
+                "input_schema": tool.input_schema().schema,
+            });
+            let mut proposed = matches.clone();
+            proposed.push(candidate.clone());
+            let envelope = serde_json::json!({
+                "matches": proposed,
+                "total_matches": total_matches,
+            });
+            if serde_json::to_vec(&envelope)
+                .is_ok_and(|bytes| bytes.len() <= MAX_TOOL_SEARCH_RESULT_BYTES)
+            {
+                matches.push(candidate);
+            } else {
+                break;
+            }
+        }
+        Ok(ToolOutput::ok(
+            serde_json::json!({
+                "matches": matches,
+                "total_matches": total_matches,
+                "returned_matches": matches.len(),
+            })
+            .to_string(),
+        ))
+    }
 }
 
 impl ToolRegistry {

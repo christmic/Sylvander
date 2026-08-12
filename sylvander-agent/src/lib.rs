@@ -175,7 +175,10 @@ pub mod prelude {
         AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig, MemoryStoreConfig,
         ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
-    pub use crate::tool::{Tool, ToolError, ToolOutput, ToolProgressSink, ToolRegistry};
+    pub use crate::tool::{
+        Tool, ToolError, ToolExecutionMode, ToolExposure, ToolOutput, ToolProgressSink,
+        ToolRegistry,
+    };
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, ListTool, MemoryActorKind, MemoryAppend,
