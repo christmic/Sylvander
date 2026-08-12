@@ -40,10 +40,38 @@ and creates `AgentTurnRequest`. The Agent may mutate a private working copy of
 the conversation while executing. It returns the completed snapshot to
 Runtime, which commits or rejects it as one product transaction.
 
+The request contains immutable domain data. Runtime-selected implementations
+of model access, authorization, interaction, filesystem, process execution,
+and context retrieval are injected through a separate immutable execution-port
+snapshot. This distinction prevents a request value from becoming a service
+locator while still pinning every dependency for the duration of one turn.
+
 The current `AgentLoop` builder and `AgentRun` modules still contain the old
 ownership arrangement. Migration removes those fields from long-lived Agent
 configuration and makes the request above the sole per-turn input. No alias for
 the removed API is retained.
+
+## Local source evidence
+
+The boundary is based on inspected local source, not API-shape inference:
+
+- Codex commit `16fbfe557446a1af94da81e1144029ccc1311ad0`,
+  `codex-rs/core/src/session/turn_context.rs`: `TurnContext` freezes the model,
+  provider, environment snapshot, telemetry, and per-turn configuration while
+  `session/session.rs` retains thread lifecycle and services. We keep the
+  per-turn snapshot idea but move product Session ownership to Runtime.
+- pi commit `11b5403fade1502a9a58a9cd4e9f983a3d1d734e`,
+  `packages/agent/src/agent-loop.ts` and `types.ts`: the low-level loop receives
+  an explicit `AgentContext` plus `AgentLoopConfig`, clones conversation state,
+  and returns newly produced messages. We keep the explicit input/output shape
+  but use typed Rust ports instead of callback-heavy configuration.
+- Goose commit `9d166ecee97628eced28051e7566d024f9654466`,
+  `crates/goose/src/execution/manager.rs`: runtime context is supplied by the
+  execution manager rather than inferred inside a tool. We keep that direction
+  of dependency while requiring fail-closed prepared execution policies.
+
+These projects are design evidence, not specifications. Sylvander's normative
+contracts remain its own documented types and tests.
 
 ## Execution authority invariants
 

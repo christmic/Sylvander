@@ -100,6 +100,7 @@ pub mod error;
 pub mod event;
 /// Trusted, non-wire authority for one Agent execution.
 pub mod execution_context;
+pub mod execution_ports;
 /// Provider-compatible iterative model/tool execution loop.
 pub mod loop_;
 /// Managed MCP stdio client, discovery, and tool adapter.
@@ -174,6 +175,7 @@ pub mod prelude {
     pub use crate::execution_context::{
         AgentExecutionContext, ExecutionActor, ExecutionCapability, ExecutionWorkspace,
     };
+    pub use crate::execution_ports::AgentExecutionPorts;
     pub use crate::loop_::{
         AgentLoop, AgentLoopBuilder, AgentLoopResult, run, run_stream, run_with_events,
     };

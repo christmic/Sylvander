@@ -8,9 +8,8 @@ use crate::execution_context::{AgentExecutionContext, ExecutionActor};
 use crate::request::AgentTurnRequest;
 use crate::tool::ToolRegistry;
 
-#[test]
-fn request_is_provider_neutral_and_contains_no_product_session_record() {
-    let request = AgentTurnRequest {
+fn request_fixture() -> AgentTurnRequest {
+    AgentTurnRequest {
         conversation: ConversationSnapshot::new(vec![ChatMessage::user("hello")]),
         model: ModelInfo {
             reference: ModelRef::new("openai", "gpt-5.6"),
@@ -28,7 +27,12 @@ fn request_is_provider_neutral_and_contains_no_product_session_record() {
         }),
         tools: ToolRegistry::new(),
         execution: AgentExecutionContext::restricted(ExecutionActor::new("u", "a", "s")),
-    };
+    }
+}
+
+#[test]
+fn request_is_provider_neutral_and_contains_no_product_session_record() {
+    let request = request_fixture();
 
     let cloned = request.clone();
     assert_eq!(cloned.model.reference, ModelRef::new("openai", "gpt-5.6"));

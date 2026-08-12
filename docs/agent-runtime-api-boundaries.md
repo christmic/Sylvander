@@ -155,7 +155,7 @@ Channel/API request
 The Agent-level lifecycle remains:
 
 ```text
-AgentTurnRequest
+AgentTurnRequest + immutable AgentExecutionPorts snapshot
   -> build provider-neutral request
   -> model stream
   -> prepare tool call
@@ -182,6 +182,12 @@ sylvander-agent/src/
 ```
 
 Concrete persistence and transport implementations are intentionally absent.
+
+`AgentTurnRequest` carries immutable domain input. `AgentExecutionPorts`
+carries Runtime-selected implementations needed to perform that input. Both
+are frozen for one execution, but they remain distinct so request construction
+does not become dependency lookup and ports cannot be serialized as client
+authority.
 
 ## Migration order
 
