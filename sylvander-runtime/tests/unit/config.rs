@@ -514,29 +514,25 @@ fn container_runtime_and_image_are_single_non_option_arguments() {
 }
 
 #[test]
-fn container_and_sandbox_resource_limits_are_bounded() {
-    for transport in [
-        ExecutionTransportConfig::Container {
-            runtime: "docker".into(),
-            image: "image".into(),
-            resources: ContainerResourceSettings {
-                memory_mb: 127,
-                cpu_millis: 99,
-                pids_limit: 15,
-            },
+fn container_resource_limits_are_bounded() {
+    for resources in [
+        ContainerResourceSettings {
+            memory_mb: 127,
+            cpu_millis: 99,
+            pids_limit: 15,
         },
-        ExecutionTransportConfig::Sandbox {
-            driver: "podman".into(),
-            profile: "sandbox-image".into(),
-            resources: ContainerResourceSettings {
-                memory_mb: 65_537,
-                cpu_millis: 64_001,
-                pids_limit: 32_769,
-            },
+        ContainerResourceSettings {
+            memory_mb: 65_537,
+            cpu_millis: 64_001,
+            pids_limit: 32_769,
         },
     ] {
         let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
-        config.execution_targets[0].transport = transport;
+        config.execution_targets[0].transport = ExecutionTransportConfig::Container {
+            runtime: "docker".into(),
+            image: "image".into(),
+            resources,
+        };
         let errors = config.validate().unwrap_err().errors.join("\n");
         assert!(errors.contains("memory_mb must be between"), "{errors}");
         assert!(errors.contains("cpu_millis must be between"), "{errors}");

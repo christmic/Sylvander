@@ -13,6 +13,9 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReade
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+
 /// A workspace mounted on an execution target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceTarget {
@@ -199,6 +202,39 @@ pub struct WorkspaceSearchResult {
     pub truncated: bool,
 }
 
+/// OS controls enforced for process trees launched by an executor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessIsolation {
+    pub filesystem: bool,
+    pub network_denied: bool,
+    pub resource_limits: bool,
+}
+
+impl ProcessIsolation {
+    #[must_use]
+    pub const fn unavailable() -> Self {
+        Self {
+            filesystem: false,
+            network_denied: false,
+            resource_limits: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn restricted() -> Self {
+        Self {
+            filesystem: true,
+            network_denied: true,
+            resource_limits: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn enforces_sandbox(self) -> bool {
+        self.filesystem && self.network_denied && self.resource_limits
+    }
+}
+
 /// Transport-neutral operations needed by the built-in coding tools.
 ///
 /// Operation futures are cancellation boundaries. Implementations that spawn a
@@ -206,6 +242,14 @@ pub struct WorkspaceSearchResult {
 /// so interrupting an Agent turn does not leave the command running detached.
 #[async_trait]
 pub trait WorkspaceExecutor: Send + Sync + Debug {
+    /// Describe process isolation enforced by this concrete executor.
+    ///
+    /// The default is deliberately unconfined. Executors must opt in only
+    /// when the operating system or container runtime enforces every claim.
+    fn process_isolation(&self) -> ProcessIsolation {
+        ProcessIsolation::unavailable()
+    }
+
     fn select_mount_target(
         &self,
         target: &WorkspaceTarget,

@@ -618,12 +618,6 @@ pub enum ExecutionTransportConfig {
         #[serde(default)]
         resources: ContainerResourceSettings,
     },
-    Sandbox {
-        driver: String,
-        profile: String,
-        #[serde(default)]
-        resources: ContainerResourceSettings,
-    },
 }
 
 const fn default_ssh_port() -> u16 {
@@ -1271,15 +1265,6 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
                     target.id
                 ));
             }
-            validate_container_resources(target, resources, errors);
-        }
-        ExecutionTransportConfig::Sandbox {
-            driver,
-            profile,
-            resources,
-        } => {
-            require_text("sandbox driver", driver, errors);
-            require_text("sandbox profile", profile, errors);
             validate_container_resources(target, resources, errors);
         }
     }

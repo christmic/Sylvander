@@ -927,21 +927,6 @@ fn apply_execution_targets(
                     })
                     .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
             ),
-            ExecutionTransportConfig::Sandbox {
-                driver,
-                profile,
-                resources,
-            } => Arc::new(
-                ContainerExecutor::new(driver, profile)
-                    .and_then(|executor| {
-                        executor.with_resource_policy(ContainerResourcePolicy {
-                            memory_mb: resources.memory_mb,
-                            cpu_millis: resources.cpu_millis,
-                            pids_limit: resources.pids_limit,
-                        })
-                    })
-                    .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
-            ),
             ExecutionTransportConfig::Local { .. } => continue,
         };
         builder = builder.workspace_executor(target.id.clone(), executor);

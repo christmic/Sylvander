@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -196,9 +198,7 @@ async fn persisted_session_with_overrides(
 
 #[cfg(unix)]
 #[tokio::test]
-async fn configured_sandbox_executor_supplies_workspace_context_to_the_agent() {
-    use std::os::unix::fs::PermissionsExt;
-
+async fn configured_container_executor_supplies_workspace_context_to_the_agent() {
     let directory = tempdir().unwrap();
     let secret = directory.path().join("secret");
     std::fs::write(&secret, "test-key\n").unwrap();
@@ -243,15 +243,15 @@ exec "$@"
     expect_request(&server, "test-key").await;
     let mut config = config(&server.uri(), &secret);
     config.execution_targets.push(ExecutionTargetConfig {
-        id: "sandbox:test".into(),
-        transport: ExecutionTransportConfig::Sandbox {
-            driver: runtime.display().to_string(),
-            profile: "test/sandbox:latest".into(),
+        id: "container:test".into(),
+        transport: ExecutionTransportConfig::Container {
+            runtime: runtime.display().to_string(),
+            image: "test/sandbox:latest".into(),
             resources: crate::config::ContainerResourceSettings::default(),
         },
     });
     config.agents[0].agent_workspace = Some(WorkspaceBindingConfig {
-        execution_target: "sandbox:test".into(),
+        execution_target: "container:test".into(),
         path: workspace.display().to_string(),
         read_only: true,
         instruction_focus: None,
@@ -274,7 +274,7 @@ exec "$@"
         "sandbox",
         SessionConfigOverrides {
             user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
-                execution_target: "sandbox:test".into(),
+                execution_target: "container:test".into(),
                 path: workspace,
                 read_only: true,
                 instruction_focus: None,

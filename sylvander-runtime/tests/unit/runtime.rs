@@ -1,14 +1,19 @@
 use super::*;
+#[cfg(unix)]
+use crate::execution::container::ContainerExecutor;
 use serde_json::json;
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use sylvander_agent::tool::Tool;
-use sylvander_agent::tool_context::{Cap, ToolContext};
 use sylvander_agent::tools::memory::MemoryFilter;
-use sylvander_agent::tools::{CommandTool, MemoryActorKind, MemoryAppend, MemoryProvenanceSource};
-use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
-use sylvander_protocol::SessionContext;
+use sylvander_agent::tools::{MemoryActorKind, MemoryAppend, MemoryProvenanceSource};
+use sylvander_agent::workspace_executor::{LocalExecutor, WorkspaceExecutor, WorkspaceTarget};
+use sylvander_protocol::{
+    SessionWorkspaceBinding, SessionWorkspaceMount, WorkspaceCapabilityPolicy, WorkspaceMountRole,
+};
 use tokio::sync::Notify;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -54,11 +59,6 @@ fn host_backed_targets_support_local_worktree_isolation() {
 
 #[test]
 fn additional_writable_remote_mount_requires_an_independent_worktree_transaction() {
-    use sylvander_protocol::{
-        SessionWorkspaceBinding, SessionWorkspaceMount, WorkspaceCapabilityPolicy,
-        WorkspaceMountRole,
-    };
-
     let binding = |path: &str, read_only| SessionWorkspaceBinding {
         execution_target: "ssh".into(),
         path: path.into(),
@@ -282,7 +282,6 @@ fn configured_memory_test_config(
     let anchor_dir = directory.path().join("integrity-anchor");
     std::fs::create_dir_all(&anchor_dir).unwrap();
     let agents = agent_ids.iter().fold(String::new(), |mut output, id| {
-        use std::fmt::Write as _;
         write!(
             output,
             r#"
@@ -512,8 +511,6 @@ async fn wait_for_guardian_events(
 
 #[cfg(unix)]
 fn fake_container_runtime(directory: &std::path::Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let executable = directory.join("fake-container-runtime");
     std::fs::write(
         &executable,
@@ -813,21 +810,20 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
         .clone();
     assert_ne!(worktree, repository);
 
-    let tool_context = ToolContext::new(SessionContext::new(
-        UserId::new("workspace-owner"),
-        AgentId::new("assistant"),
-        created.session_id.clone(),
-    ))
-    .with_fs_root(&worktree)
-    .with_capability(Cap::Spawn);
-    let output = CommandTool::new()
-            .execute(
-                &tool_context,
-                json!({"command": "printf 'accepted\\n' > tracked.txt; printf 'generated\\n' > generated.txt"}),
-            )
-            .await
-            .unwrap();
-    assert!(!output.is_error, "{}", output.content);
+    let local_target = WorkspaceTarget {
+        id: "local".into(),
+        workspace_path: worktree.clone(),
+        read_only: false,
+    };
+    let output = LocalExecutor
+        .run_command(
+            &local_target,
+            "printf 'accepted\\n' > tracked.txt; printf 'generated\\n' > generated.txt",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert!(output.success);
     assert_eq!(
         std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
         "before\n"
@@ -881,14 +877,15 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
     assert!(clean.status.is_empty());
     assert!(clean.patch.is_empty());
 
-    let output = CommandTool::new()
-        .execute(
-            &tool_context,
-            json!({"command": "printf 'discarded\\n' > tracked.txt"}),
+    let output = LocalExecutor
+        .run_command(
+            &local_target,
+            "printf 'discarded\\n' > tracked.txt",
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
-    assert!(!output.is_error, "{}", output.content);
+    assert!(output.success);
     let pending = sylvander_channel::UiService::inspect_coding_session(
         restarted.ui_service.as_ref(),
         &boundary,
@@ -923,8 +920,6 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
 #[cfg(unix)]
 #[tokio::test]
 async fn container_coding_session_runs_in_worktree_and_survives_restart() {
-    use crate::execution::container::ContainerExecutor;
-
     let directory = tempfile::tempdir().unwrap();
     let repository = directory.path().join("project");
     std::fs::create_dir(&repository).unwrap();

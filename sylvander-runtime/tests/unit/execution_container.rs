@@ -219,6 +219,16 @@ fn runtime_and_image_cannot_be_interpreted_as_options() {
     assert!(ContainerExecutor::new("runtime", "image with space").is_err());
 }
 
+#[test]
+fn container_reports_the_isolation_it_actually_enforces() {
+    let fake = FakeRuntime::new();
+    let isolation = fake.executor().process_isolation();
+    assert!(isolation.filesystem);
+    assert!(isolation.network_denied);
+    assert!(isolation.resource_limits);
+    assert!(isolation.enforces_sandbox());
+}
+
 #[tokio::test]
 async fn dropping_an_operation_force_removes_its_named_container() {
     let fake = FakeRuntime::new();

@@ -13,11 +13,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use sylvander_agent::workspace_executor::{
-    COMMAND_OUTPUT_HEAD_BYTES, MAX_COMMAND_OUTPUT_BYTES_PER_STREAM, WorkspaceCommandOutput,
-    WorkspaceCommandProgressSink, WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor,
-    WorkspaceExecutorError, WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult,
-    WorkspaceQueryLimits, WorkspaceReadResult, WorkspaceSearchMatch, WorkspaceSearchRequest,
-    WorkspaceSearchResult, WorkspaceTarget,
+    COMMAND_OUTPUT_HEAD_BYTES, MAX_COMMAND_OUTPUT_BYTES_PER_STREAM, ProcessIsolation,
+    WorkspaceCommandOutput, WorkspaceCommandProgressSink, WorkspaceCommandStream,
+    WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListEntry,
+    WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits, WorkspaceReadResult,
+    WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -420,6 +420,10 @@ impl ContainerExecutor {
 
 #[async_trait]
 impl WorkspaceExecutor for ContainerExecutor {
+    fn process_isolation(&self) -> ProcessIsolation {
+        ProcessIsolation::restricted()
+    }
+
     async fn read_file(
         &self,
         target: &WorkspaceTarget,

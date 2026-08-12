@@ -139,17 +139,17 @@ Every operation is also started with a read-only root filesystem, a private
 memory, CPU, and process ceilings. Resource values are validated at startup;
 the defaults shown above apply when `resources` is omitted.
 
-A managed sandbox uses the same disposable, restricted OCI execution contract
-but gives the executable and image policy-oriented names:
+Container execution is the supported process sandbox. Configure the concrete
+OCI runtime and immutable image explicitly:
 
 ```toml
 [[execution_targets]]
-id = "review-sandbox"
+id = "review-container"
 
 [execution_targets.transport]
-kind = "sandbox"
-driver = "podman"
-profile = "sylvander/review-sandbox:latest"
+kind = "container"
+runtime = "podman"
+image = "sylvander/review-sandbox:latest"
 
 [execution_targets.transport.resources]
 memory_mb = 4096
@@ -157,7 +157,7 @@ cpu_millis = 4000
 pids_limit = 768
 ```
 
-`driver` is one OCI-compatible executable and `profile` is one immutable image
+`runtime` is one OCI-compatible executable and `image` is one immutable image
 reference. Sylvander deliberately does not reuse containers between
 operations: disposable environments prevent session state and credentials
 from leaking into a later Agent operation. Writable Git coding sessions retain

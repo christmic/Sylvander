@@ -2539,7 +2539,6 @@ fn execution_target_supports_host_worktree(
         Some(
             config::ExecutionTransportConfig::Local { .. }
                 | config::ExecutionTransportConfig::Container { .. }
-                | config::ExecutionTransportConfig::Sandbox { .. }
         )
     )
 }
@@ -2620,8 +2619,7 @@ fn build_coding_worktree_service(
                     .map_err(RuntimeError::Config)?;
             }
             config::ExecutionTransportConfig::Local { .. }
-            | config::ExecutionTransportConfig::Container { .. }
-            | config::ExecutionTransportConfig::Sandbox { .. } => {
+            | config::ExecutionTransportConfig::Container { .. } => {
                 explicit_local |= target.id == "local";
                 service
                     .register_local(target.id.clone())
