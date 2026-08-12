@@ -193,9 +193,11 @@ authority.
 
 Migration is performed without compatibility aliases:
 
-1. Introduce Agent-owned conversation, execution-authority, request, outcome,
-   and event vocabulary.
-2. Make the provider/tool state machine consume that immutable request.
+1. **Complete:** introduce Agent-owned conversation, execution-authority,
+   request, outcome, and event vocabulary.
+2. **Complete:** make the provider/tool state machine consume immutable
+   `AgentTurnRequest` and `AgentExecutionPorts`. `AgentLoop` now contains only
+   stable retry, iteration, and compression policy.
 3. Move `AgentRun`, `AgentRunEngine`, Session persistence, and public event
    mapping into Runtime.
 4. Remove Agent's Protocol dependency and move concrete infrastructure below

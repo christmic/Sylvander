@@ -1,367 +1,150 @@
 # sylvander-agent
 
-Sylvander Agent Loop — async reactive driver that calls one exact
-provider-qualified model route, executes tools, re-feeds results, and emits
-events as the loop progresses.
+`sylvander-agent` 是 provider-neutral 的 Agent 执行内核：接收一个已经解析并冻结的
+执行请求，调用 `sylvander-llm-core` 模型端口，执行受治理的工具，将工具结果回灌，
+并返回完整执行结果。
 
-This crate is the Agent execution layer. It builds on the provider-neutral
-model contract and contains the iterative model/tool loop, authenticated run
-lifecycle, durable session store, prompt composition, tools, workspace
-executors, Skills, and supervised MCP stdio.
+## 它是什么
 
-## Current scope
+稳定的执行策略由 `AgentLoop` 表示。每次执行的易变数据和能力必须分别进入：
 
-- `AgentLoop` for provider-qualified iterative generation and tool re-feeding
-- `AgentRun` / `AgentRunEngine` for authenticated per-session execution
-- `ToolRegistry`, concrete workspace/memory/plan/task tools, and approvals
-- durable SQLite sessions, composition, compression, Skills, and MCP stdio
-- location-neutral workspace executors and isolated local worktree journaling
+- `AgentTurnRequest`：会话快照、精确模型元数据、系统指令、推理参数、工具快照和
+  可信执行身份；
+- `AgentExecutionPorts`：模型提供者、工具环境、调用授权网关及交互门；
+- `AgentOutcome`：更新后的对话、最终模型响应、迭代数和累计用量。
 
-The authoritative ownership and extension rules are in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); this README keeps direct Rust
-usage examples.
+这种分离保证可复用的循环策略不会携带某次 Session 的模型、工具、工作区或权限，
+也禁止把可反序列化的客户端请求直接变成可执行能力。
 
-## Usage
+## 它不是什么
 
-Add to `Cargo.toml`:
+Agent 不是产品 Session、服务协议或基础设施组合根：
 
-```toml
-[dependencies]
-sylvander-agent = { path = "../sylvander-agent" }
-sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
-sylvander-llm-core = { path = "../sylvander-llm-core" }
-```
+- Runtime 负责认证、Session 生命周期、模型与凭据解析、持久化、可观测性、沙箱和
+  具体文件系统/进程实现；
+- API/Protocol 只定义稳定的客户端线协议；
+- provider crate 只负责官方协议的 wire 编解码；
+- Channel/TUI/Desktop 通过 Runtime 的应用端口工作，不直接读取 Agent 存储。
 
-### Quickstart
+仓库仍有 `AgentRun`、Session SQLite、具体 workspace executor 和 MCP stdio 位于本
+crate，这是已记录的迁移状态，不是目标所有权。迁移顺序见
+[`docs/agent-runtime-api-boundaries.md`](../docs/agent-runtime-api-boundaries.md)。
+
+## 最小执行
 
 ```rust,no_run
 use std::sync::Arc;
 
 use sylvander_agent::{
-    prelude::{AgentLoop, MessageParam, ToolContext},
-    tool_context::Cap,
-};
-use sylvander_llm_anthropic::{
-    AnthropicProvider,
-    api::{
-        client::AnthropicClient,
-        model::{ModelCapabilities, ModelInfo},
+    prelude::{
+        AgentExecutionContext, AgentExecutionPorts, AgentLoop, AgentTurnRequest, ChatMessage,
+        ConversationSnapshot, ToolContext, ToolRegistry,
     },
+    tool_invocation::{RegistryBoundToolGateway, ToolInvocationGateway as _},
 };
 use sylvander_llm_core::{
-    ModelCapabilities as ProviderCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+    ModelCapabilities, ModelInfo, ModelProvider, ModelRef,
 };
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Caller builds their own model registry (per C11 architecture).
-    let model = ModelInfo::builder()
-        .id("claude-sonnet-5-20260601")
-        .context_window(200_000)
-        .max_output_tokens(32_000)
-        .capability(ModelCapabilities::TOOL_USE)
-        .build()
-        .unwrap();
-
-    let client = AnthropicClient::builder()
-        .api_key(std::env::var("ANTHROPIC_API_KEY")?)
-        .build()?;
-    let exact_model = ProviderModelInfo {
-        reference: ModelRef::new("anthropic", model.id.clone()),
-        context_window: model.context_window,
-        max_output_tokens: model.max_output_tokens,
-        capabilities: ProviderCapabilities::TOOL_USE,
-    };
-
-    let mut loop_ = AgentLoop::builder()
-        .qualified_router(Arc::new(AnthropicProvider::new("anthropic", client)))
-        .provider_model(exact_model)
-        .tool_context(
-            ToolContext::new(sylvander_protocol::SessionContext::new(
-                "user", "agent", "session",
-            ))
-            .with_fs_root("/tmp")
-            .with_capability(Cap::Read),
-        )
-        .max_iterations(50)
-        .build()?;
-
-    let run = loop_.run(vec![MessageParam::user("List files in /tmp")]).await?;
-    println!("finished after {} iterations", run.iterations);
-    Ok(())
-}
-```
-
-### Reactive event stream
-
-Use `run_with_events` to react to events as they happen (text chunks,
-tool calls, compression, etc.):
-
-```rust,no_run
-use sylvander_agent::prelude::*;
-
-# async fn example(loop_: AgentLoop) -> Result<(), Box<dyn std::error::Error>> {
-let mut loop_ = loop_;
-let run = loop_.run_with_events(
-    vec![MessageParam::user("hi")],
-    |event| match event {
-        AgentEvent::TextChunk(t) => print!("{t}"),
-        AgentEvent::ToolCallStart { name, .. } => eprintln!("\n[tool] {name}"),
-        AgentEvent::Compressed { layers } => {
-            eprintln!(
-                "[compressed, dropped {} messages]",
-                total_removed(&layers)
-            )
-        }
-        _ => {}
-    },
-).await?;
-# Ok(())
-# }
-```
-
-`run_with_events` fires **non-terminal** events into the callback
-(`IterationStart`, `TextChunk`, `ToolCallStart`, `ToolCallEnd`,
-`Compressed`, `IterationEnd`). The terminal `Done` event is
-extracted into the returned `AgentRun`; terminal `Error` is
-returned as the `Err` variant. This avoids double-handling.
-
-### Pull from a stream directly
-
-For `select!`, timeout cancellation, or merging multiple agents,
-pull from `run_stream()`:
-
-```rust,no_run
-use futures_util::StreamExt;
-use sylvander_agent::prelude::*;
-
-# async fn example(loop_: AgentLoop) -> Result<(), Box<dyn std::error::Error>> {
-let mut loop_ = loop_;
-let mut stream = Box::pin(loop_.run_stream(vec![MessageParam::user("hi")]));
-while let Some(event) = stream.next().await {
-    // Full control — including `select!` over other futures
-    # let _ = event;
-}
-# Ok(())
-# }
-```
-
-### Custom tools
-
-Implement the separate `ToolDefinition` and `ToolExecutor` contracts. The
-definition publishes one stable, provider-neutral JSON Schema and prepares the
-immutable call before authorization. The executor receives only that prepared
-call plus the Runtime-derived `ToolContext`:
-
-```rust,ignore
-struct ProjectSummary;
-
-impl ToolDefinition for ProjectSummary {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec::immediate(
-            "project_summary",
-            "Read the bounded project summary",
-            json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-            ToolInvocationClass::Read,
-        )
-    }
-}
-
-#[async_trait]
-impl ToolExecutor for ProjectSummary {
-    async fn handle(
-        &self,
-        ctx: &ToolContext,
-        _call: &PreparedToolCall,
-    ) -> Result<ToolOutput, ToolError> {
-        if !ctx.has_cap(Cap::Read) {
-            return Ok(ToolOutput::err("read capability not granted"));
-        }
-        let bytes = ctx.executor
-            .read_file(&ctx.execution_target, "PROJECT.md")
-            .await
-            .map_err(|error| ToolError::Other(error.to_string()))?;
-        let content = String::from_utf8(bytes)
-            .map_err(|error| ToolError::Other(error.to_string()))?;
-        Ok(ToolOutput::ok(content))
-    }
-}
-
-let mut loop_ = AgentLoop::builder()
-    .qualified_router(router)
-    .provider_model(exact_model)
-    .tool_context(
-        ToolContext::new(sylvander_protocol::SessionContext::new(
-            "user", "agent", "session",
-        ))
-        .with_fs_root("/workspace")
-        .with_capability(sylvander_agent::tool_context::Cap::Read),
-    )
-    .tool(ProjectSummary)
-    .build()?;
-```
-
-Preparation precedes authorization and freezes the normalized input,
-coordination mode, and execution policy. Structured workspace reads and writes
-remain bounded by `WorkspaceExecutor`. Tools that launch processes must request
-a required sandbox policy; today only an explicitly configured OCI `container`
-executor reports the complete filesystem, denied-network, and resource-limit
-isolation required to run them. Local and SSH executors fail those calls closed.
-
-Standalone `AgentLoop` embeddings receive an exact-registry gateway. Production
-`Runtime` replaces it with the actor-aware policy and durable audit gateway.
-Built-ins, dynamic MCP tools, browser/host adapters, and extensions therefore
-share one authorization entry immediately before execution.
-
-### Custom compression pipeline
-
-```rust,ignore
-let pipeline = CompressionPipeline::builder()
-    .layer(MyCompressionLayer)
+# fn model_provider() -> Arc<dyn ModelProvider> { unimplemented!() }
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let kernel = AgentLoop::builder()
+    .max_iterations(50)
+    .max_retries(3)
     .build();
+let execution = AgentExecutionContext::restricted_for("user", "agent", "execution");
+let tools = ToolRegistry::new();
+let gateway = RegistryBoundToolGateway::new(tools.invocation_descriptors());
+let request = AgentTurnRequest {
+    conversation: ConversationSnapshot::new(vec![ChatMessage::user("Say hello")]),
+    model: ModelInfo {
+        reference: ModelRef::new("configured-provider", "selected-model"),
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        capabilities: ModelCapabilities::empty(),
+    },
+    system_instructions: Vec::new(),
+    reasoning: None,
+    tools,
+    execution: execution.clone(),
+};
+let ports = AgentExecutionPorts::new(
+    model_provider(),
+    ToolContext::new(execution),
+    gateway.clone(),
+    gateway.snapshot(),
+);
 
-let loop_ = AgentLoop::builder()
-    .qualified_router(router)
-    .provider_model(exact_model)
-    .tool_context(ToolContext::new(
-        sylvander_protocol::SessionContext::new("user", "agent", "session"),
-    ))
-    .compression_pipeline(pipeline)
-    .build()?;
+let outcome = sylvander_agent::prelude::run(&kernel, request, ports).await?;
+println!("finished after {} iterations", outcome.iterations);
+# Ok(())
+# }
 ```
 
-Custom layers implement the object-safe `CompressionLayer` contract and return
-a typed `LayerReport`. A layer records a bounded failure instead of aborting
-later layers in the pipeline.
+`run_stream` 提供完整事件流；`run_with_events` 将非终止事件交给回调并返回同一个
+`AgentOutcome`。终止成功由 `AgentEvent::Done(AgentOutcome)` 表示，失败由返回的
+`AgentLoopError` 表示。
 
-## Architecture
+## 工具契约
 
-Runtime contracts:
+工具定义与执行分离：
 
-- [Skill package format, activation, and health](docs/skills.md)
-- [MCP supervision, cancellation, and inspection](docs/mcp.md)
-- [Workspace executor and coding-tool contract](docs/workspace-execution.md)
+- `ToolDefinition::spec` 返回稳定、provider-neutral 的 JSON Schema 和执行策略；
+- `ToolRegistry::prepare` 在授权前验证并规范化模型输入；
+- `ToolInvocationGateway` 是所有可执行工具共同的授权与审计边界；
+- `ToolExecutor::handle` 只接收不可变的 `PreparedToolCall` 和 Runtime 构造的
+  `ToolContext`；
+- 模型可见错误使用 `ToolOutput { is_error: true }`，系统致命错误使用 `ToolError`。
 
-The detailed source ownership map is maintained in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Tests live under `tests/`;
-production modules contain only path-qualified test-module declarations.
+工具执行前，`AgentExecutionPorts::validate_for` 会验证请求身份、工具快照和网关的
+可执行表面一致；不一致时在模型、hook 或工具工作开始前失败关闭。
 
-### Iteration loop
+进程工具必须声明强制沙箱要求。只有能证明文件系统隔离、默认拒绝网络及资源限制
+均已生效的 executor 才能执行；本地或 SSH executor 不会冒充完整沙箱。Agent 本身
+是可信控制平面并运行在沙箱外，只有工具进程进入沙箱数据平面。
+
+## 循环语义
 
 ```text
-run() {
-    for iteration in 1..=max_iterations {
-        emit(IterationStart { iteration });
-
-        // 1. Compose typed, budgeted context with provenance.
-        // 2. Freeze the exact tool/Skill/MCP capability revision.
-        // 3. Build and validate the provider-neutral model request.
-        // 4. Stream through the selected provider with bounded retry.
-        // 5. Emit TextChunk / ThinkingChunk from response content.
-        // 6. Re-feed the assistant message.
-        // 7. stop_reason match:
-        //    EndTurn / StopSequence / MaxTokens / Refusal / PauseTurn → break
-        //    ToolUse → approval → policy/audit gateway → execute
-        //              → terminal audit → re-feed bounded tool_result blocks
-
-        emit(IterationEnd { iteration, usage });
-    }
-
-    if no end → MaxIterationsReached
-    emit(Done);
-}
+Runtime freezes AgentTurnRequest + AgentExecutionPorts
+  -> Agent validates model capabilities and execution authority
+  -> compresses the model-visible conversation when required
+  -> opens the exact provider-qualified model route
+  -> emits bounded typed streaming events
+  -> prepares, authorizes and executes tool calls
+  -> re-feeds bounded tool results
+  -> returns AgentOutcome to Runtime for atomic persistence
 ```
 
-### Event types
+模型打开失败可按稳定策略重试；已产生可见流内容后不会自动重放。模型能力在 dispatch
+前检查，工具、图片、文档、推理、结构化输出和 prompt cache 不支持时均失败关闭。
 
-```text
-IterationStart { iteration }           loop starting this iteration
-TextChunk(String)                     text delta from model
-ThinkingChunk(String)                 thinking delta (when enabled)
-ToolCallStart { id, name, input }     tool about to execute
-ToolCallEnd { id, name, output, is_error }
-Compressed { layers: Vec<LayerReport> }     compression pipeline reported work
-IterationEnd { iteration, usage }     iteration done
-Done(Message)                         loop terminated cleanly
-Error(String)                         loop terminated with error
-```
+## 代码风格
 
-## API Reference
+- `use` 必须位于模块顶部；函数或代码块内部不引入普通 `use`，除非有明确、记录的
+  特殊原因；
+- 公共模块、类型和安全边界注释必须同时说明“是什么”和“为什么”；
+- provider-specific 类型不得进入工具和 Agent 公共契约；
+- 不保留无批准迁移方案的兼容 fallback；
+- Runtime 独占身份、持久化、基础设施和凭据组合权。
 
-| Method | Signature | Description |
-|---|---|---|
-| `run(initial)` | `async` | Drive loop, return `Result<AgentLoopResult, _>` — convenience over `run_stream` |
-| `run_with_events(initial, callback)` | `async` | Drive loop, fire non-terminal events into callback, return final `AgentLoopResult` |
-| `run_stream(initial)` | `-> impl Stream<Item = AgentEvent>` | Core API — drive loop, yield events as they happen |
-| `model()` | `-> &ModelInfo` | Resolved model metadata |
-| `tools()` | `-> &ToolRegistry` | Configured tool registry |
-| `max_iterations()` | `-> u32` | Configured cap |
-| `max_retries()` | `-> u32` | Configured retry count |
-
-### Builder methods
-
-| Builder method | Default | Description |
-|---|---|---|
-| `qualified_router(router)` | required | Immutable provider-qualified model router |
-| `provider_model(model_info)` | required | Exact `(provider, model)` metadata and capabilities |
-| `tool(tool)` | none | Register a single tool (chainable) |
-| `tools(registry)` | empty | Replace tool registry |
-| `compression_pipeline(pipeline)` | model default | Replace the ordered compression pipeline |
-| `max_iterations(n)` | 50 | Iteration cap |
-| `max_retries(n)` | 3 | Retry transient provider-open failures on the same exact route; 0 = disable |
-
-`AgentLoopResult { final_message, iterations, total_usage }`.
-
-## Error types
-
-| Variant | When |
-|---|---|
-| `MaxIterationsReached(u32)` | Loop hit the iteration cap |
-| `IncompatibleModel(String)` | Request requires capability the model lacks |
-| `Provider { attempts, source }` | Qualified provider route failed after the recorded attempts |
-| `Tool(String)` | Non-recoverable tool failure |
-| `Compression(String)` | Compressor reported an error |
-| `Validation(String)` | Bad request shape |
-| `Builder(String)` | Builder field missing |
-
-`is_retryable()` delegates only to the provider-neutral `ProviderError`
-classification; the other variants are deterministic caller or execution
-contract failures.
-
-## Workspace rollback journal
-
-When `AgentRunBuilder::workspace_journal` is configured, successful built-in
-`Write` and `Edit` calls record durable pre/post snapshots grouped by Agent
-turn. `preview_workspace_rollback` performs conflict checks without mutation;
-`rollback_workspace_latest` requires that previewed turn id and restores the
-whole group in reverse order. The journal rejects path escapes, symlink hops,
-oversized files, active turns, stale confirmations, and external changes. It
-does not claim to capture shell commands or user edits.
-
-## Tests
+## 验证
 
 ```bash
 cargo test -p sylvander-agent --locked
-cargo test -p sylvander-agent --all-targets --locked
 cargo clippy -p sylvander-agent --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-agent --no-deps --locked
 ```
 
-Unit, contract, fixture-provider, and opt-in real-provider journeys are all
-owned by `tests/`; CI does not depend on live provider credentials.
+单元、契约、fixture provider 和选择性真实 provider 测试均位于 `tests/`。普通 CI 不
+依赖真实凭据；真实协议测试必须显式提供对应 provider 环境变量。
 
-## Conventions
+更完整的产品分层、工具执行和沙箱设计见：
 
-- Async and streaming first; cancellation is part of the execution contract.
-- Runtime owns identity, workspace routing, durable stores, and authority.
-- Model compatibility is validated before dispatch.
-- Tool output, context, and evidence have explicit size and content policies.
-- No compatibility fallback is retained unless an approved migration names
-  its source schema and transition.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/agent-runtime-api-boundaries.md`](../docs/agent-runtime-api-boundaries.md)
+- [`docs/product-module-architecture.md`](../docs/product-module-architecture.md)
+- [`docs/tool-execution-architecture.md`](../docs/tool-execution-architecture.md)
 
 ## License
 

@@ -30,13 +30,11 @@ Runtime Agent service
   per-layer byte, token-estimate, and item budgets and records content-safe
   provenance plus digests for every included item.
 - `engine` serializes work per session and exposes run lifecycle to Runtime.
-- `loop_` exposes only provider-qualified production composition:
-  `qualified_router` plus exact `provider_model` metadata. Direct-client and
-  unqualified constructors do not exist. Standalone builders must also provide
-  an explicit `ToolContext`; no model-derived user/session placeholder exists.
-  The internal
-  Anthropic wire adapter translates transcript/tool shapes without becoming a
-  second route or fallback.
+- `loop_` contains only stable execution policy and the provider-neutral
+  model/tool state machine. `AgentLoop` does not retain provider, model,
+  transcript, tools, workspace, or authority. Runtime freezes those values in
+  `AgentTurnRequest` and `AgentExecutionPorts`; the loop validates that both
+  snapshots describe the same executable surface before work starts.
 - `tool` and `tool_context` define the invocation boundary. Tools receive
   Runtime-derived identity, workspace, capability, and execution-budget data;
   model arguments are never authority.
@@ -82,6 +80,9 @@ Runtime Agent service
 7. Runtime pins an exact `(provider_id, model_id)` before building a turn.
    Agent execution never falls back to a direct client, an unqualified model
    name, or a second provider when the selected route fails.
+8. `AgentOutcome` contains the updated conversation and cumulative usage.
+   Runtime, not the Agent kernel, decides when that result becomes durable or
+   visible through the public API.
 
 ## Extension points
 
