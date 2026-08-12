@@ -71,7 +71,7 @@ fn provenance(source: TurnContextSource, reference: &str) -> TurnContextProvenan
 
 #[test]
 fn prompt_resolver_maps_model_profile_and_agent_definition_into_one_typed_layer() {
-    let selection = sylvander_protocol::ModelSelection {
+    let selection = crate::prompt::PromptModelSelection {
         provider_id: "provider".into(),
         model_id: "model".into(),
     };

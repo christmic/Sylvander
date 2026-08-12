@@ -27,9 +27,10 @@ use crate::config::{
     AgentAccessConfig, AgentDefinitionConfig, PromptProfileConfig, ServerConfig,
     WorkspaceBindingConfig,
 };
+use crate::prompt_contract::validate_public_prompt_selectors;
 use sylvander_agent::prompt::{
-    MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_profile_selectors,
-    validate_prompt, validate_unique_identities,
+    MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_prompt,
+    validate_unique_identities,
 };
 
 pub(crate) const MAX_REVISION_PAGE_SIZE: u16 = 100;
@@ -682,7 +683,7 @@ fn validate_prompt_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminE
         .and_then(|()| {
             for profile in &draft.prompt_profiles {
                 validate_prompt(&profile.system_prompt)?;
-                validate_profile_selectors(&profile.qualified_models)?;
+                validate_public_prompt_selectors(&profile.qualified_models)?;
             }
             Ok(())
         });

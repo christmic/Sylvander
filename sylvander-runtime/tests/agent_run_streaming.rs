@@ -10,6 +10,10 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sylvander_agent::prelude::*;
+use sylvander_agent::prompt::{
+    PromptLayerKind as AgentPromptLayerKind, PromptManifest as AgentPromptManifest,
+    PromptModelSelection,
+};
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
@@ -31,6 +35,34 @@ use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use support::MockTool;
+
+fn protocol_prompt_manifest(manifest: AgentPromptManifest) -> sylvander_protocol::PromptManifest {
+    sylvander_protocol::PromptManifest {
+        layers: manifest
+            .layers
+            .into_iter()
+            .map(|layer| sylvander_protocol::PromptLayerDigest {
+                kind: match layer.kind {
+                    AgentPromptLayerKind::SharedSafety => {
+                        sylvander_protocol::PromptLayerKind::SharedSafety
+                    }
+                    AgentPromptLayerKind::ProviderModelProfile => {
+                        sylvander_protocol::PromptLayerKind::ProviderModelProfile
+                    }
+                    AgentPromptLayerKind::Agent => sylvander_protocol::PromptLayerKind::Agent,
+                    AgentPromptLayerKind::SessionInput => {
+                        sylvander_protocol::PromptLayerKind::SessionInput
+                    }
+                },
+                reference: layer.reference,
+                sha256: layer.sha256,
+                byte_count: layer.byte_count,
+            })
+            .collect(),
+        aggregate_sha256: manifest.aggregate_sha256,
+        total_bytes: manifest.total_bytes,
+    }
+}
 
 // --- helpers ---
 
@@ -614,7 +646,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
             spec.persona.system_prompt.clone(),
             vec![sylvander_agent::prompt::PromptProfile {
                 id: "session".into(),
-                qualified_models: vec![sylvander_protocol::ModelSelection {
+                qualified_models: vec![PromptModelSelection {
                     provider_id: spec.model.provider.clone(),
                     model_id: spec.model.model_name.clone(),
                 }],
@@ -627,7 +659,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
     );
     let composed = prompt_policy
         .resolve(
-            &sylvander_protocol::ModelSelection {
+            &PromptModelSelection {
                 provider_id: spec.model.provider.clone(),
                 model_id: spec.model.model_name.clone(),
             },
@@ -646,7 +678,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         permissions: PermissionProfile::default(),
         prompt_profile: Some("session".into()),
         system_prompt_sha256: composed.system_prompt_sha256,
-        prompt_manifest: composed.manifest,
+        prompt_manifest: protocol_prompt_manifest(composed.manifest),
         agent_workspace: None,
         user_workspace: None,
         workspace_mounts: Vec::new(),

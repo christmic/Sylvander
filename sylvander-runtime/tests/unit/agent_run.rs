@@ -892,12 +892,16 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
     );
     stored.config_overrides.system_prompt = Some("respond with evidence".into());
     let prompt_snapshot = resolver
-        .resolve(&selection, None, Some("respond with evidence"))
+        .resolve(
+            &agent_model_selection(&selection),
+            None,
+            Some("respond with evidence"),
+        )
         .unwrap();
     let mut effective = run.inner.direct_session_config(&metadata).await;
     effective.agent_revision = 3;
     effective.system_prompt_sha256 = prompt_snapshot.system_prompt_sha256;
-    effective.prompt_manifest = prompt_snapshot.manifest;
+    effective.prompt_manifest = public_prompt_manifest(prompt_snapshot.manifest);
     stored.effective_config = Some(effective);
     store.save(&stored).await.unwrap();
 
@@ -987,7 +991,11 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
             .expect("prompt resolver"),
         );
         let prompt_snapshot = resolver
-            .resolve(&selection, None, Some("private prompt sentinel"))
+            .resolve(
+                &agent_model_selection(&selection),
+                None,
+                Some("private prompt sentinel"),
+            )
             .expect("resolved prompt");
         let provider = Arc::new(RecordingProvider::default());
         let model = ProviderModelInfo {
@@ -1018,7 +1026,7 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
         let mut effective = run.inner.direct_session_config(&metadata).await;
         effective.agent_revision = 1;
         effective.system_prompt_sha256 = prompt_snapshot.system_prompt_sha256;
-        effective.prompt_manifest = prompt_snapshot.manifest;
+        effective.prompt_manifest = public_prompt_manifest(prompt_snapshot.manifest);
         match tamper {
             Tamper::SenderIdentity => {}
             Tamper::SystemHash => effective.system_prompt_sha256 = "tampered".into(),

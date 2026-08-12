@@ -50,6 +50,7 @@ use crate::approval_store::{
     ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory, approval_policy_revision,
 };
 use crate::execution::LocalExecutor;
+use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::storage::session::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
@@ -2092,10 +2093,11 @@ impl AgentRunInner {
             reference: Some("direct-agent".into()),
         };
         let prompt = self.system_prompt.as_deref().unwrap_or_default();
-        let resolved_prompt = self
-            .prompt_resolver
-            .as_ref()
-            .and_then(|resolver| resolver.resolve(&runtime.current, None, None).ok());
+        let resolved_prompt = self.prompt_resolver.as_ref().and_then(|resolver| {
+            resolver
+                .resolve(&agent_model_selection(&runtime.current), None, None)
+                .ok()
+        });
         let (prompt_profile, system_prompt_sha256, prompt_manifest) = resolved_prompt.map_or_else(
             || {
                 let sha256 = format!("{:x}", Sha256::digest(prompt.as_bytes()));
@@ -2118,7 +2120,7 @@ impl AgentRunInner {
                 (
                     resolved.profile_id,
                     resolved.system_prompt_sha256,
-                    resolved.manifest,
+                    public_prompt_manifest(resolved.manifest),
                 )
             },
         );
@@ -2362,19 +2364,20 @@ impl AgentRunInner {
                 let prompt_policy = self.inner_prompt_resolver()?;
                 let resolved_prompt = prompt_policy
                     .resolve(
-                        &selected_model.selection,
+                        &agent_model_selection(&selected_model.selection),
                         stored.config_overrides.prompt_profile.as_deref(),
                         stored.config_overrides.system_prompt.as_deref(),
                     )
                     .map_err(|_| prompt_integrity_error())?;
                 if effective.system_prompt_sha256 != resolved_prompt.system_prompt_sha256
-                    || effective.prompt_manifest != resolved_prompt.manifest
+                    || effective.prompt_manifest
+                        != public_prompt_manifest(resolved_prompt.manifest.clone())
                 {
                     return Err(prompt_integrity_error());
                 }
                 prompt_policy
                     .turn_context_inputs(
-                        &selected_model.selection,
+                        &agent_model_selection(&selected_model.selection),
                         stored.config_overrides.prompt_profile.as_deref(),
                         stored.config_overrides.system_prompt.as_deref(),
                         user_profile.as_ref(),

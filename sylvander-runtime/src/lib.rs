@@ -81,6 +81,7 @@ pub mod principal_binding;
 #[cfg(test)]
 #[path = "../tests/unit/principal_binding.rs"]
 mod principal_binding_tests;
+mod prompt_contract;
 /// Controlled synchronization of provider model catalogs into the registry.
 pub mod provider_catalog_sync;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches

@@ -1,7 +1,7 @@
 use super::*;
 
-fn selection(provider: &str, model: &str) -> ModelSelection {
-    ModelSelection {
+fn selection(provider: &str, model: &str) -> PromptModelSelection {
+    PromptModelSelection {
         provider_id: provider.into(),
         model_id: model.into(),
     }

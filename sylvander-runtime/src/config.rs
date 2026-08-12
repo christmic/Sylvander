@@ -8,11 +8,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::agent_definition::AgentSpec;
+use crate::prompt_contract::validate_public_prompt_selectors;
 use serde::{Deserialize, Serialize};
 
 use sylvander_agent::prompt::{
-    MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_profile_selectors,
-    validate_prompt, validate_unique_identities,
+    MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_prompt,
+    validate_unique_identities,
 };
 
 mod secret;
@@ -1382,7 +1383,7 @@ fn validate_agent_prompts(agent: &AgentDefinitionConfig, errors: &mut Vec<String
         .and_then(|()| {
             for profile in &agent.prompt_profiles {
                 validate_prompt(&profile.system_prompt)?;
-                validate_profile_selectors(&profile.qualified_models)?;
+                validate_public_prompt_selectors(&profile.qualified_models)?;
             }
             Ok(())
         });

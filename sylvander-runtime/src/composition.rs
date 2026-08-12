@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::agent_definition::{AgentSpec, ToolRef};
 use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
+use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use sylvander_agent::curated_memory::MemoryCandidateSink;
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::tool::ToolRegistry;
@@ -484,7 +485,7 @@ pub fn resolve_session_config(
     let resolved_prompt = agent
         .prompt_resolver
         .resolve(
-            &selection,
+            &agent_model_selection(&selection),
             overrides.prompt_profile.as_deref(),
             overrides.system_prompt.as_deref(),
         )
@@ -557,7 +558,7 @@ pub fn resolve_session_config(
         permissions,
         prompt_profile: resolved_prompt.profile_id,
         system_prompt_sha256: resolved_prompt.system_prompt_sha256,
-        prompt_manifest: resolved_prompt.manifest,
+        prompt_manifest: public_prompt_manifest(resolved_prompt.manifest),
         agent_workspace,
         user_workspace,
         workspace_mounts,
@@ -815,7 +816,11 @@ fn configured_prompt_resolver(
             .iter()
             .map(|profile| PromptProfile {
                 id: profile.id.clone(),
-                qualified_models: profile.qualified_models.clone(),
+                qualified_models: profile
+                    .qualified_models
+                    .iter()
+                    .map(agent_model_selection)
+                    .collect(),
                 system_prompt: profile.system_prompt.clone(),
             })
             .collect(),
@@ -1077,14 +1082,16 @@ fn apply_default_prompt(
     selection: &ModelSelection,
     spec: &mut AgentSpec,
 ) -> Result<(), CompositionError> {
-    let composed = resolver.resolve(selection, None, None).map_err(|error| {
-        map_prompt_error(
-            error,
-            definition,
-            selection,
-            &SessionConfigOverrides::default(),
-        )
-    })?;
+    let composed = resolver
+        .resolve(&agent_model_selection(selection), None, None)
+        .map_err(|error| {
+            map_prompt_error(
+                error,
+                definition,
+                selection,
+                &SessionConfigOverrides::default(),
+            )
+        })?;
     spec.persona.system_prompt = composed.system_prompt;
     Ok(())
 }
