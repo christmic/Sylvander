@@ -1,6 +1,8 @@
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -465,7 +467,6 @@ fn file_revision(value: &[u8]) -> MemoryAnchorRevision {
 
 #[cfg(unix)]
 fn secure_file(path: &Path) -> Result<(), MemoryAnchorError> {
-    use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|_| MemoryAnchorError::Unavailable)
 }

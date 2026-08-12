@@ -25,6 +25,7 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
+use sylvander_protocol::session_context::Priority;
 use tokio::sync::Mutex;
 use tokio::task;
 
@@ -1471,7 +1472,6 @@ fn sqlite_err(e: rusqlite::Error) -> SessionStoreError {
 // ---------------------------------------------------------------------------
 
 fn priority_str(p: sylvander_protocol::session_context::Priority) -> String {
-    use sylvander_protocol::session_context::Priority;
     match p {
         Priority::Low => "low",
         Priority::Normal => "normal",
@@ -1482,7 +1482,6 @@ fn priority_str(p: sylvander_protocol::session_context::Priority) -> String {
 }
 
 fn parse_priority(s: &str) -> rusqlite::Result<sylvander_protocol::session_context::Priority> {
-    use sylvander_protocol::session_context::Priority;
     Ok(match s {
         "low" => Priority::Low,
         "normal" => Priority::Normal,

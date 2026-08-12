@@ -1,6 +1,8 @@
 use std::fmt::Write as FmtWrite;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write as IoWrite};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension};
@@ -474,7 +476,6 @@ fn reject_live_sidecars(path: &Path) -> Result<(), MemoryStoreError> {
 
 #[cfg(unix)]
 fn secure_file(path: &Path) -> Result<(), MemoryStoreError> {
-    use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|_| backup_error())
 }

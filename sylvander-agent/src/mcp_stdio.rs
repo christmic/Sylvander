@@ -20,6 +20,9 @@ use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use sylvander_llm_core::InputSchema;
+use sylvander_protocol::{
+    PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
+};
 
 use crate::spec::McpServerConfig;
 use crate::tool::{DynamicToolSource, Tool, ToolError, ToolOutput};
@@ -684,11 +687,6 @@ impl DynamicToolSource for McpStdioClient {
     }
 
     fn platform_feature(&self) -> Option<sylvander_protocol::PlatformFeature> {
-        use sylvander_protocol::{
-            PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus,
-            PlatformTrust,
-        };
-
         let status = match self.inner.health.load(Ordering::Acquire) {
             MCP_HEALTH_ACTIVE => PlatformFeatureStatus::Active,
             MCP_HEALTH_DEGRADED => PlatformFeatureStatus::Degraded,

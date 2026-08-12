@@ -6,6 +6,9 @@
 //! revisions and fingerprints cross the process boundary.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write as _;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 
@@ -285,8 +288,6 @@ async fn persist_approval_grants(
 }
 
 fn persist_approval_grants_sync(path: &Path, grants: Vec<ApprovalGrantKey>) -> Result<(), String> {
-    use std::io::Write as _;
-
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create approval store directory: {error}"))?;
@@ -302,7 +303,6 @@ fn persist_approval_grants_sync(path: &Path, grants: Vec<ApprovalGrantKey>) -> R
         options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
         let mut file = options

@@ -159,9 +159,9 @@ use sylvander_protocol::{
     ModelSelection, RegistryAdminError, RegistryAdminErrorCode, RegistryAdminRequest,
     RegistryAdminResponse, RunFeedback, SessionConfigOverrides, SessionConfigState,
     SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig,
-    SessionRevisionPinError, USER_PROFILE_PROTOCOL_VERSION, UserId, UserProfileAction,
-    UserProfileCapabilities, UserProfileError, UserProfileErrorCode, UserProfileOperation,
-    UserProfileRequest, UserProfileResponse,
+    SessionRevisionPinError, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage as ClientMessage,
+    UserId, UserProfileAction, UserProfileCapabilities, UserProfileError, UserProfileErrorCode,
+    UserProfileOperation, UserProfileRequest, UserProfileResponse,
 };
 
 use crate::agent_admin::{
@@ -1482,8 +1482,6 @@ impl sylvander_channel::UiService for RuntimeUiService {
         boundary: &sylvander_protocol::BoundaryContext,
         message: sylvander_protocol::UiClientMessage,
     ) -> Result<(), sylvander_protocol::BoundaryError> {
-        use sylvander_protocol::UiClientMessage as ClientMessage;
-
         let session_id = ui_session_id(&message)
             .map(SessionId::new)
             .ok_or_else(|| boundary_failure(boundary, "submit_control", "session is required"))?;
@@ -3201,75 +3199,73 @@ const fn registry_admin_error_code(code: RegistryAdminErrorCode) -> &'static str
 }
 
 fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
-    use sylvander_protocol::UiClientMessage as Message;
     match message {
-        Message::Hello { .. } => "hello",
-        Message::Chat { .. } => "chat",
-        Message::Approve { .. } => "approve",
-        Message::Answer { .. } => "answer",
-        Message::Interrupt { .. } => "interrupt",
-        Message::ResolvePlan { .. } => "resolve_plan",
-        Message::CancelTask { .. } => "cancel_task",
-        Message::DiscoverAgents => "discover_agents",
-        Message::CreateSession { .. } => "create_session",
-        Message::GetSessionConfig { .. } => "get_session_config",
-        Message::UpdateSessionConfig { .. } => "update_session_config",
-        Message::SubmitFeedback { .. } => "submit_feedback",
-        Message::MemoryConfirmation { request } => request.operation(),
-        Message::AgentAdmin { .. } => "agent_admin",
-        Message::RegistryAdmin { .. } => "registry_admin",
-        Message::UserProfile { .. } => "user_profile",
-        Message::IdentityBinding { .. } => "identity_binding",
-        Message::ListSessions => "list_sessions",
-        Message::LoadSession { .. } => "load_session",
-        Message::ReattachSession { .. } => "reattach_session",
-        Message::RenameSession { .. } => "rename_session",
-        Message::ArchiveSession { .. } => "archive_session",
-        Message::RestoreSession { .. } => "restore_session",
-        Message::DeleteSession { .. } => "delete_session",
-        Message::ForkSession { .. } => "fork_session",
-        Message::GetRuntimeInfo => "get_runtime_info",
-        Message::GetContext { .. } => "get_context",
-        Message::Compact { .. } => "compact",
-        Message::PreviewWorkspaceRollback { .. } => "preview_workspace_rollback",
-        Message::RollbackWorkspace { .. } => "rollback_workspace",
-        Message::InspectCodingSession { .. } => "inspect_coding_session",
-        Message::AcceptCodingSession { .. } => "accept_coding_session",
-        Message::DiscardCodingSession { .. } => "discard_coding_session",
-        Message::SelectModel { .. } => "select_model",
-        Message::SelectPermissions { .. } => "select_permissions",
-        Message::Ping => "ping",
+        ClientMessage::Hello { .. } => "hello",
+        ClientMessage::Chat { .. } => "chat",
+        ClientMessage::Approve { .. } => "approve",
+        ClientMessage::Answer { .. } => "answer",
+        ClientMessage::Interrupt { .. } => "interrupt",
+        ClientMessage::ResolvePlan { .. } => "resolve_plan",
+        ClientMessage::CancelTask { .. } => "cancel_task",
+        ClientMessage::DiscoverAgents => "discover_agents",
+        ClientMessage::CreateSession { .. } => "create_session",
+        ClientMessage::GetSessionConfig { .. } => "get_session_config",
+        ClientMessage::UpdateSessionConfig { .. } => "update_session_config",
+        ClientMessage::SubmitFeedback { .. } => "submit_feedback",
+        ClientMessage::MemoryConfirmation { request } => request.operation(),
+        ClientMessage::AgentAdmin { .. } => "agent_admin",
+        ClientMessage::RegistryAdmin { .. } => "registry_admin",
+        ClientMessage::UserProfile { .. } => "user_profile",
+        ClientMessage::IdentityBinding { .. } => "identity_binding",
+        ClientMessage::ListSessions => "list_sessions",
+        ClientMessage::LoadSession { .. } => "load_session",
+        ClientMessage::ReattachSession { .. } => "reattach_session",
+        ClientMessage::RenameSession { .. } => "rename_session",
+        ClientMessage::ArchiveSession { .. } => "archive_session",
+        ClientMessage::RestoreSession { .. } => "restore_session",
+        ClientMessage::DeleteSession { .. } => "delete_session",
+        ClientMessage::ForkSession { .. } => "fork_session",
+        ClientMessage::GetRuntimeInfo => "get_runtime_info",
+        ClientMessage::GetContext { .. } => "get_context",
+        ClientMessage::Compact { .. } => "compact",
+        ClientMessage::PreviewWorkspaceRollback { .. } => "preview_workspace_rollback",
+        ClientMessage::RollbackWorkspace { .. } => "rollback_workspace",
+        ClientMessage::InspectCodingSession { .. } => "inspect_coding_session",
+        ClientMessage::AcceptCodingSession { .. } => "accept_coding_session",
+        ClientMessage::DiscardCodingSession { .. } => "discard_coding_session",
+        ClientMessage::SelectModel { .. } => "select_model",
+        ClientMessage::SelectPermissions { .. } => "select_permissions",
+        ClientMessage::Ping => "ping",
     }
 }
 
 fn ui_session_id(message: &sylvander_protocol::UiClientMessage) -> Option<&str> {
-    use sylvander_protocol::UiClientMessage as Message;
     match message {
-        Message::Chat { session_id, .. }
-        | Message::GetContext { session_id }
-        | Message::SelectModel { session_id, .. }
-        | Message::SelectPermissions { session_id, .. } => session_id.as_deref(),
-        Message::Approve { session_id, .. }
-        | Message::Answer { session_id, .. }
-        | Message::Interrupt { session_id }
-        | Message::ResolvePlan { session_id, .. }
-        | Message::CancelTask { session_id, .. }
-        | Message::GetSessionConfig { session_id }
-        | Message::LoadSession { session_id }
-        | Message::ReattachSession { session_id }
-        | Message::RenameSession { session_id, .. }
-        | Message::ArchiveSession { session_id }
-        | Message::RestoreSession { session_id }
-        | Message::DeleteSession { session_id }
-        | Message::ForkSession { session_id, .. }
-        | Message::Compact { session_id }
-        | Message::PreviewWorkspaceRollback { session_id }
-        | Message::RollbackWorkspace { session_id, .. }
-        | Message::InspectCodingSession { session_id }
-        | Message::AcceptCodingSession { session_id }
-        | Message::DiscardCodingSession { session_id } => Some(session_id),
-        Message::UpdateSessionConfig { request } => Some(&request.session_id.0),
-        Message::MemoryConfirmation { request } => Some(request.session_id()),
+        ClientMessage::Chat { session_id, .. }
+        | ClientMessage::GetContext { session_id }
+        | ClientMessage::SelectModel { session_id, .. }
+        | ClientMessage::SelectPermissions { session_id, .. } => session_id.as_deref(),
+        ClientMessage::Approve { session_id, .. }
+        | ClientMessage::Answer { session_id, .. }
+        | ClientMessage::Interrupt { session_id }
+        | ClientMessage::ResolvePlan { session_id, .. }
+        | ClientMessage::CancelTask { session_id, .. }
+        | ClientMessage::GetSessionConfig { session_id }
+        | ClientMessage::LoadSession { session_id }
+        | ClientMessage::ReattachSession { session_id }
+        | ClientMessage::RenameSession { session_id, .. }
+        | ClientMessage::ArchiveSession { session_id }
+        | ClientMessage::RestoreSession { session_id }
+        | ClientMessage::DeleteSession { session_id }
+        | ClientMessage::ForkSession { session_id, .. }
+        | ClientMessage::Compact { session_id }
+        | ClientMessage::PreviewWorkspaceRollback { session_id }
+        | ClientMessage::RollbackWorkspace { session_id, .. }
+        | ClientMessage::InspectCodingSession { session_id }
+        | ClientMessage::AcceptCodingSession { session_id }
+        | ClientMessage::DiscardCodingSession { session_id } => Some(session_id),
+        ClientMessage::UpdateSessionConfig { request } => Some(&request.session_id.0),
+        ClientMessage::MemoryConfirmation { request } => Some(request.session_id()),
         _ => None,
     }
 }
