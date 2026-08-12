@@ -519,21 +519,21 @@ fn retry_cause_distinguishes_rate_limit_server_and_stream_failures() {
             ProviderErrorKind::RateLimited,
             ProviderErrorPhase::Open,
         )),
-        sylvander_protocol::RetryCause::RateLimit
+        ModelRetryCause::RateLimit
     );
     assert_eq!(
         provider_retry_cause(&provider_error(
             ProviderErrorKind::Unavailable,
             ProviderErrorPhase::Open,
         )),
-        sylvander_protocol::RetryCause::Server
+        ModelRetryCause::Server
     );
     assert_eq!(
         provider_retry_cause(&provider_error(
             ProviderErrorKind::Protocol,
             ProviderErrorPhase::Stream,
         )),
-        sylvander_protocol::RetryCause::Stream
+        ModelRetryCause::Stream
     );
 }
 

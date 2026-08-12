@@ -178,7 +178,7 @@ pub mod prelude {
     };
     pub use crate::engine::{AgentHandle, AgentRunEngine, EngineError, SessionMeta};
     pub use crate::error::AgentLoopError;
-    pub use crate::event::AgentEvent;
+    pub use crate::event::{AgentEvent, ModelRetryCause};
     pub use crate::execution_context::{
         AgentExecutionContext, ExecutionActor, ExecutionCapability, ExecutionWorkspace,
     };
@@ -186,6 +186,7 @@ pub mod prelude {
     pub use crate::loop_::{AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events};
     pub use crate::mcp_stdio::{McpError, McpStdioClient, McpTool};
     pub use crate::outcome::AgentOutcome;
+    pub use crate::plan_gate::PlanDecision;
     pub use crate::request::AgentTurnRequest;
     pub use crate::run::{
         AgentRun, AgentRunBuilder, AgentRunError, AgentSessionIssuer, AuthenticatedSession,

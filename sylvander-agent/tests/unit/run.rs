@@ -1578,7 +1578,7 @@ async fn plan_timeout_rejects_and_clears_the_pending_review() {
 
     assert!(matches!(
         task.await.unwrap(),
-        crate::bus::PlanDecision::Rejected { reason } if reason == "plan review timed out"
+        PlanDecision::Rejected { reason } if reason == "plan review timed out"
     ));
     assert!(pending.lock().await.is_empty());
     assert!(matches!(
@@ -2211,7 +2211,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
         ApprovalDecision::Rejected { reason } if reason == "session A rejected"
     ));
     assert_eq!(answer_a_rx.await.unwrap(), ["session A answer"]);
-    assert_eq!(plan_a_rx.await.unwrap(), crate::bus::PlanDecision::Approved);
+    assert_eq!(plan_a_rx.await.unwrap(), PlanDecision::Approved);
     assert!(matches!(
         approval_b_rx.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)

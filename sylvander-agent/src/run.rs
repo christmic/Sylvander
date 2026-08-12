@@ -59,10 +59,11 @@ use crate::compress::layer::CompressionLayer;
 use crate::conversation::ConversationSnapshot;
 use crate::curated_memory::{CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope};
 use crate::error::AgentLoopError;
+use crate::event::ModelRetryCause;
 use crate::execution_context::{AgentExecutionContext, ExecutionWorkspace};
 use crate::execution_ports::AgentExecutionPorts;
 use crate::loop_::{self, AgentLoop};
-use crate::plan_gate::PlanGate;
+use crate::plan_gate::{PlanDecision, PlanGate};
 use crate::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
 use crate::request::AgentTurnRequest;
 use crate::session::{SessionContext, SessionMetadata, now_secs};
@@ -92,6 +93,33 @@ use crate::workspace_executor::{
 mod workspace_context;
 use crate::user_profile_prompt::{UserProfilePromptLayer, compose_user_profile_prompt};
 use crate::user_profile_provider::{UserProfileProvider, UserProfileSubject};
+
+/// Translate an authenticated API decision at the temporary Runtime boundary.
+///
+/// This mapping remains here only while `AgentRun` is migration debt inside
+/// the Agent crate. It moves unchanged to Runtime with the Session service.
+fn agent_plan_decision(decision: &sylvander_protocol::PlanDecision) -> PlanDecision {
+    match decision {
+        sylvander_protocol::PlanDecision::Approved => PlanDecision::Approved,
+        sylvander_protocol::PlanDecision::Revised { steps } => PlanDecision::Revised {
+            steps: steps.clone(),
+        },
+        sylvander_protocol::PlanDecision::Rejected { reason } => PlanDecision::Rejected {
+            reason: reason.clone(),
+        },
+    }
+}
+
+/// Translate an internal retry classification into the versioned public API.
+fn public_retry_cause(cause: ModelRetryCause) -> sylvander_protocol::RetryCause {
+    match cause {
+        ModelRetryCause::RateLimit => sylvander_protocol::RetryCause::RateLimit,
+        ModelRetryCause::Server => sylvander_protocol::RetryCause::Server,
+        ModelRetryCause::Network => sylvander_protocol::RetryCause::Network,
+        ModelRetryCause::Stream => sylvander_protocol::RetryCause::Stream,
+        ModelRetryCause::Other => sylvander_protocol::RetryCause::Other,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AgentRun (Arc-based, cheap clone)
@@ -194,7 +222,7 @@ struct PendingAnswer {
 
 struct PendingPlan {
     session_id: SessionId,
-    sender: oneshot::Sender<crate::bus::PlanDecision>,
+    sender: oneshot::Sender<PlanDecision>,
 }
 
 struct ActiveBackgroundTask {
@@ -1112,7 +1140,7 @@ impl AgentRun {
                         if let Some(request) =
                             pending.remove(&(msg.session_id.clone(), plan_id.clone()))
                         {
-                            let _ = request.sender.send(decision.clone());
+                            let _ = request.sender.send(agent_plan_decision(decision));
                         }
                     }
                     SystemMessage::CancelTask {
@@ -1596,7 +1624,7 @@ struct BusPlanGate {
 
 #[async_trait::async_trait]
 impl PlanGate for BusPlanGate {
-    async fn review(&self, plan_id: &str, steps: Vec<String>) -> crate::bus::PlanDecision {
+    async fn review(&self, plan_id: &str, steps: Vec<String>) -> PlanDecision {
         let (tx, rx) = oneshot::channel();
         self.pending_plans.lock().await.insert(
             (self.session_id.clone(), plan_id.to_string()),
@@ -1633,7 +1661,7 @@ impl PlanGate for BusPlanGate {
                 sylvander_protocol::TimeoutRecovery::RetryRequest,
             )
             .await;
-            crate::bus::PlanDecision::Rejected {
+            PlanDecision::Rejected {
                 reason: "plan review timed out".into(),
             }
         };
@@ -2125,7 +2153,7 @@ impl AgentRunInner {
         let mut plans = self.pending_plans.lock().await;
         for plan_id in plan_ids {
             if let Some(request) = plans.remove(&plan_id) {
-                let _ = request.sender.send(crate::bus::PlanDecision::Rejected {
+                let _ = request.sender.send(PlanDecision::Rejected {
                     reason: "turn interrupted by user".into(),
                 });
             }
@@ -2710,7 +2738,7 @@ impl AgentRunInner {
                             max_attempts,
                             delay_ms,
                             reason,
-                            cause,
+                            cause: public_retry_cause(cause),
                         },
                     )
                     .await;

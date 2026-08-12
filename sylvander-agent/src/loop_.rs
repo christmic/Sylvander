@@ -34,8 +34,10 @@ use sylvander_protocol::AgentHookPhase;
 
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
+use super::event::ModelRetryCause;
 use super::execution_ports::AgentExecutionPorts;
 use super::outcome::AgentOutcome;
+use super::plan_gate::PlanDecision;
 use super::request::AgentTurnRequest;
 use super::tool::ToolRegistry;
 use crate::conversation::ConversationSnapshot;
@@ -508,7 +510,7 @@ pub fn run_stream(
                                 let decision = if let Some(gate) = &ports.plan_gate {
                                     gate.review(&plan_id, steps.clone()).await
                                 } else {
-                                    sylvander_protocol::PlanDecision::Approved
+                                    PlanDecision::Approved
                                 };
                                 yield AgentEvent::PlanResolved {
                                     plan_id: plan_id.clone(),
@@ -516,18 +518,18 @@ pub fn run_stream(
                                 };
 
                                 let (output, is_error) = match decision {
-                                    sylvander_protocol::PlanDecision::Approved => (
+                                    PlanDecision::Approved => (
                                         "Plan approved. Continue with the proposed steps.".into(),
                                         false,
                                     ),
-                                    sylvander_protocol::PlanDecision::Revised { steps } => (
+                                    PlanDecision::Revised { steps } => (
                                         format!(
                                             "Plan revised by the user. Continue with these steps:\n- {}",
                                             steps.join("\n- ")
                                         ),
                                         false,
                                     ),
-                                    sylvander_protocol::PlanDecision::Rejected { reason } => (
+                                    PlanDecision::Rejected { reason } => (
                                         format!("Plan rejected by the user: {reason}"),
                                         true,
                                     ),
@@ -1139,17 +1141,13 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
 // Internal helpers on AgentLoop (private methods used by run_stream)
 // =====================================================================
 
-fn provider_retry_cause(
-    error: &sylvander_llm_core::ProviderError,
-) -> sylvander_protocol::RetryCause {
+fn provider_retry_cause(error: &sylvander_llm_core::ProviderError) -> ModelRetryCause {
     match error.kind {
-        ProviderErrorKind::RateLimited => sylvander_protocol::RetryCause::RateLimit,
-        ProviderErrorKind::Unavailable => sylvander_protocol::RetryCause::Server,
-        ProviderErrorKind::Transport | ProviderErrorKind::Timeout => {
-            sylvander_protocol::RetryCause::Network
-        }
-        ProviderErrorKind::Protocol => sylvander_protocol::RetryCause::Stream,
-        _ => sylvander_protocol::RetryCause::Other,
+        ProviderErrorKind::RateLimited => ModelRetryCause::RateLimit,
+        ProviderErrorKind::Unavailable => ModelRetryCause::Server,
+        ProviderErrorKind::Transport | ProviderErrorKind::Timeout => ModelRetryCause::Network,
+        ProviderErrorKind::Protocol => ModelRetryCause::Stream,
+        _ => ModelRetryCause::Other,
     }
 }
 
@@ -1256,7 +1254,7 @@ impl AgentLoop {
                     );
                     let cause = match &e {
                         AgentLoopError::Provider { source, .. } => provider_retry_cause(source),
-                        _ => sylvander_protocol::RetryCause::Other,
+                        _ => ModelRetryCause::Other,
                     };
                     let _ = retry_events.send(AgentEvent::ModelRetry {
                         attempt: attempt + 1,

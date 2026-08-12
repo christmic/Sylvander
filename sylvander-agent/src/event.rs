@@ -18,6 +18,22 @@ use sylvander_llm_core::{ChatMessage, TokenUsage};
 use crate::compress::layer::LayerReport;
 use crate::error::AgentLoopError;
 use crate::outcome::AgentOutcome;
+use crate::plan_gate::PlanDecision;
+
+/// Provider-neutral reason for retrying a model request.
+///
+/// The Agent owns retry semantics because retry is part of its execution state
+/// machine. Runtime translates this value to a public API event; keeping the
+/// wire enum out of this contract prevents UI protocol versions from changing
+/// kernel behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelRetryCause {
+    RateLimit,
+    Server,
+    Network,
+    Stream,
+    Other,
+}
 
 /// Events emitted by the agent loop. All consumption paths
 /// (`run()`, `run_with_events()`, `run_stream()`) consume the same
@@ -47,7 +63,7 @@ pub enum AgentEvent {
         delay_ms: u64,
         /// Sanitized provider error suitable for diagnostics and UI.
         reason: String,
-        cause: sylvander_protocol::RetryCause,
+        cause: ModelRetryCause,
     },
 
     /// The model invoked a tool — about to execute it.
@@ -157,6 +173,6 @@ pub enum AgentEvent {
     },
     PlanResolved {
         plan_id: String,
-        decision: sylvander_protocol::PlanDecision,
+        decision: PlanDecision,
     },
 }
