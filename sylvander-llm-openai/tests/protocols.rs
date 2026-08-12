@@ -58,10 +58,10 @@ async fn responses_matches_official_sdk_shape_for_gpt_model() {
         })))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
             concat!(
-                "data: {\"type\":\"response.text.delta\",\"delta\":\"hi\"}\n\n",
+                "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"sequence_number\":1,\"logprobs\":[],\"delta\":\"hi\"}\n\n",
                 "data: {\"type\":\"response.completed\",\"response\":{",
                 "\"id\":\"resp_1\",\"model\":\"gpt-5.6\",\"status\":\"completed\",",
-                "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],",
+                "\"output\":[{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\",\"annotations\":[]}]}],",
                 "\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10,",
                 "\"input_tokens_details\":{\"cached_tokens\":2,\"cache_write_tokens\":1},",
                 "\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n"
@@ -146,12 +146,14 @@ async fn chat_completions_assembles_deepseek_reasoning_and_tools() {
         .and(body_partial_json(json!({
             "model": "deepseek-reasoner",
             "stream": true,
+            "stream_options": {"include_usage": true},
             "max_tokens": 512
         })))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
             concat!(
                 "data: {\"id\":\"chat_1\",\"model\":\"deepseek-reasoner\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"think\"},\"finish_reason\":null}]}\n\n",
-                "data: {\"id\":\"chat_1\",\"model\":\"deepseek-reasoner\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"id\\\":1}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":4,\"total_tokens\":9,\"completion_tokens_details\":{\"reasoning_tokens\":2}}}\n\n",
+                "data: {\"id\":\"chat_1\",\"model\":\"deepseek-reasoner\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"id\\\":1}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":null}\n\n",
+                "data: {\"id\":\"chat_1\",\"model\":\"deepseek-reasoner\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":4,\"total_tokens\":9,\"completion_tokens_details\":{\"reasoning_tokens\":2},\"prompt_tokens_details\":{\"cached_tokens\":1}}}\n\n",
                 "data: [DONE]\n\n"
             ),
             "text/event-stream",
@@ -196,7 +198,11 @@ async fn qwen_chat_uses_configured_max_completion_tokens_feature() {
             "max_completion_tokens": 512
         })))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            "data: {\"id\":\"chat_q\",\"model\":\"qwen-plus\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            concat!(
+                "data: {\"id\":\"chat_q\",\"model\":\"qwen-plus\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+                "data: {\"id\":\"chat_q\",\"model\":\"qwen-plus\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n",
+                "data: [DONE]\n\n"
+            ),
             "text/event-stream",
         ))
         .mount(&server)
@@ -237,7 +243,11 @@ async fn gpt_chat_keeps_text_and_image_in_one_official_user_message() {
             }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            "data: {\"id\":\"chat_image\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            concat!(
+                "data: {\"id\":\"chat_image\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+                "data: {\"id\":\"chat_image\",\"model\":\"gpt-4.1\",\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":1,\"total_tokens\":13}}\n\n",
+                "data: [DONE]\n\n"
+            ),
             "text/event-stream",
         ))
         .mount(&server)
