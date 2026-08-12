@@ -29,6 +29,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::message::now_secs;
 use crate::types::{AgentId, SessionId, UserId};
 
 // ===========================================================================
@@ -280,7 +281,7 @@ impl SessionContext {
             },
             origin: Origin::default(),
             request: RequestMeta {
-                created_at: crate::types::now_secs(),
+                created_at: now_secs(),
                 trace_id: None,
                 priority: Priority::default(),
             },
@@ -295,7 +296,7 @@ impl SessionContext {
             identity: Identity::system(),
             origin: Origin::default(),
             request: RequestMeta {
-                created_at: crate::types::now_secs(),
+                created_at: now_secs(),
                 trace_id: None,
                 priority: Priority::Normal,
             },

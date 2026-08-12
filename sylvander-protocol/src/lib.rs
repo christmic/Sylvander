@@ -26,6 +26,8 @@ pub mod boundary;
 pub mod identity_binding;
 /// Versioned, owner-bound Guardian memory confirmation protocol.
 pub mod memory_confirmation;
+/// Versioned message envelopes and transient Runtime event DTOs.
+pub mod message;
 /// Versioned administrative messages for provider and credential registries.
 pub mod registry_admin;
 /// JSON Schema generation for UI and boundary protocol types.
@@ -43,6 +45,7 @@ pub use agent_admin::*;
 pub use boundary::*;
 pub use identity_binding::*;
 pub use memory_confirmation::*;
+pub use message::*;
 pub use registry_admin::*;
 pub use session_context::*;
 pub use types::*;
