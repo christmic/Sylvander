@@ -31,6 +31,10 @@ OCI、MCP stdio、SQLite、变更 manifest、崩溃恢复及文件系统产物�
 实现和选择。剩余边界迁移以
 [`docs/agent-runtime-api-boundaries.md`](../docs/agent-runtime-api-boundaries.md) 为准。
 
+Agent 不再再导出服务消息总线类型；Runtime 与 Channel 必须从 API/Protocol 边界消费
+当前契约。逻辑 workspace mount 使用 Agent 自己的 `WorkspaceCapabilities`，Runtime
+必须从已认证的会话配置显式映射，不能把可反序列化的 API 权限对象直接注入工具。
+
 ## 最小执行
 
 ```rust,no_run

@@ -228,10 +228,13 @@ Migration is performed without compatibility aliases:
    two-phase port with Runtime-owned manifests, crash recovery, and rollback;
    oversized tool-result persistence is likewise an Agent port with a
    Runtime-owned, explicitly rooted filesystem adapter. The remaining work in
-   this step is the Agent's Protocol dependency and any residual infrastructure
-   selected outside Runtime.
+   this step is the Agent's prompt-manifest, identity/memory, User Profile, and
+   Agent-definition Protocol coupling. The Agent bus re-export is deleted, and
+   workspace routing now consumes an Agent-owned capability value mapped by
+   Runtime.
 5. Move `MessageBus` and `InProcessMessageBus` out of Protocol; split the large
-   wire `types` module by API domain.
+   wire `types` module by API domain. Runtime and Channels already consume the
+   current bus contract directly instead of reaching it through Agent.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with
    `ChannelHost`.
 7. Rename the pure wire crate to `sylvander-api` and add dependency-graph
