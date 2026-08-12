@@ -29,7 +29,7 @@ pub enum AgentLoopError {
 
     /// Tool execution failed in a non-recoverable way (panic caught,
     /// unrecoverable runtime error, etc.). Note: tools that return
-    /// `is_error: true` from `Tool::execute` are NOT this — those
+    /// `is_error: true` from a tool executor is NOT this — those
     /// flow through the loop normally as a model-visible error.
     #[error("tool execution failed: {0}")]
     Tool(String),

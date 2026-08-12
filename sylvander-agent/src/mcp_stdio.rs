@@ -1,4 +1,4 @@
-//! Minimal MCP stdio transport and [`Tool`](crate::tool::Tool) adapter.
+//! Minimal MCP stdio transport and registered-tool adapter.
 //!
 //! The transport owns one server process and serializes JSON-RPC requests over
 //! newline-delimited JSON-RPC on stdin/stdout. Composition code can connect once,
@@ -25,7 +25,12 @@ use sylvander_protocol::{
 };
 
 use crate::spec::McpServerConfig;
-use crate::tool::{DynamicToolSource, Tool, ToolError, ToolOutput};
+#[cfg(test)]
+use crate::tool::ToolTestExt as _;
+use crate::tool::{
+    DynamicToolSource, PreparedToolCall, RegisteredTool, ToolDefinition, ToolError, ToolExecutor,
+    ToolOutput, ToolSpec,
+};
 use crate::tool_context::ToolContext;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -338,14 +343,14 @@ impl McpStdioClient {
             .collect()
     }
 
-    fn resource_tools(&self) -> Vec<Arc<dyn Tool>> {
+    fn resource_tools(&self) -> Vec<Arc<dyn RegisteredTool>> {
         if !self.inner.supports_resources.load(Ordering::Acquire) {
             return Vec::new();
         }
         [McpResourceOperation::List, McpResourceOperation::Read]
             .into_iter()
             .map(|operation| {
-                Arc::new(McpResourceTool::new(self.clone(), operation)) as Arc<dyn Tool>
+                Arc::new(McpResourceTool::new(self.clone(), operation)) as Arc<dyn RegisteredTool>
             })
             .collect()
     }
@@ -676,11 +681,11 @@ fn spawn_health_monitor(client: &McpStdioClient) {
 }
 
 impl DynamicToolSource for McpStdioClient {
-    fn snapshot(&self) -> Vec<Arc<dyn Tool>> {
+    fn snapshot(&self) -> Vec<Arc<dyn RegisteredTool>> {
         let mut tools = self
             .current_tools()
             .into_iter()
-            .map(|tool| Arc::new(tool) as Arc<dyn Tool>)
+            .map(|tool| Arc::new(tool) as Arc<dyn RegisteredTool>)
             .collect::<Vec<_>>();
         tools.extend(self.resource_tools());
         tools
@@ -804,29 +809,28 @@ impl McpTool {
     }
 }
 
+impl ToolDefinition for McpTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            self.name.clone(),
+            self.description.clone(),
+            self.input_schema.schema.clone(),
+            crate::tool_invocation::ToolInvocationClass::ArbitraryMcp,
+        )
+    }
+}
+
 #[async_trait]
-impl Tool for McpTool {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        self.input_schema.clone()
-    }
-
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::ArbitraryMcp
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+impl ToolExecutor for McpTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         self.client
             .call_tool(
                 &self.remote_name,
-                input,
+                call.input().clone(),
                 &ctx.user_id().0,
                 &ctx.session_id().0,
             )
@@ -866,23 +870,15 @@ impl McpResourceTool {
     }
 }
 
-#[async_trait]
-impl Tool for McpResourceTool {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        match self.operation {
+impl ToolDefinition for McpResourceTool {
+    fn spec(&self) -> ToolSpec {
+        let description = match self.operation {
             McpResourceOperation::List => "List resources currently advertised by this MCP server.",
             McpResourceOperation::Read => {
                 "Read one MCP resource by its exact URI. Use list_resources first when needed."
             }
-        }
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        match self.operation {
+        };
+        let input_schema = match self.operation {
             McpResourceOperation::List => InputSchema::from_json_value(json!({
                 "type": "object",
                 "properties": {},
@@ -899,14 +895,23 @@ impl Tool for McpResourceTool {
                 "required": ["uri"],
                 "additionalProperties": false
             })),
-        }
+        };
+        ToolSpec::immediate(
+            self.name.clone(),
+            description,
+            input_schema.schema,
+            crate::tool_invocation::ToolInvocationClass::ArbitraryMcp,
+        )
     }
+}
 
-    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
-        crate::tool_invocation::ToolInvocationClass::ArbitraryMcp
-    }
-
-    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+#[async_trait]
+impl ToolExecutor for McpResourceTool {
+    async fn handle(
+        &self,
+        ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         match self.operation {
             McpResourceOperation::List => {
                 self.client
@@ -919,7 +924,8 @@ impl Tool for McpResourceTool {
                 )))
             }
             McpResourceOperation::Read => {
-                let uri = input
+                let uri = call
+                    .input()
                     .get("uri")
                     .and_then(JsonValue::as_str)
                     .filter(|uri| !uri.is_empty())

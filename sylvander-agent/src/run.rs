@@ -67,7 +67,7 @@ use crate::session_store::{
 };
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::task_gate::TaskGate;
-use crate::tool::{Tool, ToolRegistry};
+use crate::tool::{RegisteredTool, ToolRegistry};
 use crate::tool_context::{Cap, NetworkPolicy, ToolContext};
 use crate::tools::MemoryReadTool;
 use crate::tools::memory::{
@@ -1185,7 +1185,7 @@ impl AgentRun {
 
     /// Return memory access tools (read only).
     #[must_use]
-    pub fn memory_tools(&self) -> Vec<Arc<dyn Tool>> {
+    pub fn memory_tools(&self) -> Vec<Arc<dyn RegisteredTool>> {
         match &self.inner.memory {
             Some(store) => vec![Arc::new(MemoryReadTool::new(store.clone()))],
             None => vec![],

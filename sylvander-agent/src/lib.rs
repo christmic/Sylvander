@@ -176,8 +176,10 @@ pub mod prelude {
         ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
     pub use crate::tool::{
-        Tool, ToolError, ToolExecutionMode, ToolExposure, ToolOutput, ToolProgressSink,
-        ToolRegistry,
+        PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition, ToolEnvironmentError,
+        ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor, ToolExposure,
+        ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput, ToolPreparation, ToolPrepareError,
+        ToolProgressSink, ToolRegistry, ToolSpec,
     };
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
@@ -194,7 +196,7 @@ pub mod prelude {
         TurnContextBudget, TurnContextBudgets, TurnContextLayerKind, TurnContextManifest,
     };
     pub use crate::workspace_executor::{
-        LocalExecutor, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
+        LocalExecutor, ProcessIsolation, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
         WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
         WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
         WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,

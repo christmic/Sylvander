@@ -193,7 +193,7 @@ impl AgentLoopBuilder {
 
     /// Register a single tool (builder-style chaining).
     #[must_use]
-    pub fn tool<T: super::tool::Tool + 'static>(mut self, tool: T) -> Self {
+    pub fn tool<T: super::tool::RegisteredTool + 'static>(mut self, tool: T) -> Self {
         self.tools = self.tools.register(tool);
         self
     }
@@ -817,9 +817,9 @@ pub fn run_stream(
                                 continue;
                             }
 
-                            let tool = config.tools.get(tool_use.name.as_str());
                             let input = tool_use.input.clone();
                             let name = tool_use.name.clone();
+                            let prepared_call = config.tools.prepare(&name, input);
                             let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
                                 crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
                             );
@@ -831,11 +831,10 @@ pub fn run_stream(
                                 });
                             let execution = execute_registered_tool(
                                 RegisteredToolExecutionRequest {
-                                    tool,
+                                    prepared_call,
                                     invocation_gateway: config.invocation_gateway.clone(),
                                     invocation_snapshot: config.invocation_snapshot.clone(),
                                     tool_context: config.tool_context.clone(),
-                                    input,
                                     call_id: tool_use.id.clone(),
                                     route: name.clone(),
                                     timeout: tool_timeout,
@@ -930,10 +929,10 @@ pub fn run_stream(
                         let name = tool_use.name.clone();
                         let input = tool_use.input.clone();
                         let decision = decision.clone();
-                        let tool = config.tools.get(&name);
-                        let execution_mode = tool.as_ref().map_or(
+                        let prepared_call = config.tools.prepare(&name, input);
+                        let execution_mode = prepared_call.as_ref().map_or(
                             crate::tool::ToolExecutionMode::Exclusive,
-                            |tool| tool.execution_mode(&input),
+                            crate::tool::PreparedToolCall::execution_mode,
                         );
                         let execution_coordination = execution_coordination.clone();
                         let invocation_gateway = config.invocation_gateway.clone();
@@ -960,11 +959,10 @@ pub fn run_stream(
                                             let _guard = execution_coordination.read().await;
                                             execute_registered_tool(
                                                 RegisteredToolExecutionRequest {
-                                                    tool,
+                                                    prepared_call,
                                                     invocation_gateway,
                                                     invocation_snapshot,
                                                     tool_context: context,
-                                                    input,
                                                     call_id: id.clone(),
                                                     route: name.clone(),
                                                     timeout: tool_timeout,
@@ -976,11 +974,10 @@ pub fn run_stream(
                                             let _guard = execution_coordination.write().await;
                                             execute_registered_tool(
                                             RegisteredToolExecutionRequest {
-                                                tool,
+                                                prepared_call,
                                                 invocation_gateway,
                                                 invocation_snapshot,
                                                 tool_context: context,
-                                                input,
                                                 call_id: id.clone(),
                                                 route: name.clone(),
                                                 timeout: tool_timeout,
@@ -1210,11 +1207,10 @@ struct ToolExecutionOutcome {
 }
 
 struct RegisteredToolExecutionRequest {
-    tool: Option<Arc<dyn crate::tool::Tool>>,
+    prepared_call: Result<crate::tool::PreparedToolCall, crate::tool::ToolPrepareError>,
     invocation_gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
     invocation_snapshot: crate::tool_invocation::ToolInvocationSnapshot,
     tool_context: crate::tool_context::ToolContext,
-    input: serde_json::Value,
     call_id: String,
     route: String,
     timeout: Option<std::time::Duration>,
@@ -1223,11 +1219,10 @@ struct RegisteredToolExecutionRequest {
 
 async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> ToolExecutionOutcome {
     let RegisteredToolExecutionRequest {
-        tool,
+        prepared_call,
         invocation_gateway,
         invocation_snapshot,
         tool_context,
-        input,
         call_id,
         route,
         timeout,
@@ -1241,12 +1236,23 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         .as_deref()
         .unwrap_or("");
     tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, "tool execution started");
+    let prepared_call = match prepared_call {
+        Ok(call) => call,
+        Err(error) => {
+            warn!(%session_id, %trace_id, %call_id, tool = %route, %error, "tool preparation failed");
+            return ToolExecutionOutcome {
+                output: error.to_string(),
+                is_error: true,
+                timed_out_after: None,
+            };
+        }
+    };
     let request = crate::tool_invocation::ToolInvocationRequest::new(
         &call_id,
         &route,
-        tool.as_ref().map(|tool| tool.invocation_class()),
+        Some(prepared_call.spec().invocation_class),
         &tool_context,
-        input.clone(),
+        prepared_call.input().clone(),
         invocation_snapshot,
     );
     let grant = match invocation_gateway.authorize(request).await {
@@ -1260,25 +1266,25 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
             };
         }
     };
-    let Some(tool) = tool else {
-        warn!(%session_id, %trace_id, %call_id, tool = %route, "tool not found in registry");
+    if let Err(error) = prepared_call.validate_environment(&tool_context) {
+        warn!(%session_id, %trace_id, %call_id, tool = %route, %error, "tool execution environment rejected");
         let mut outcome = ToolExecutionOutcome {
-            output: format!("tool `{route}` not found in registry"),
+            output: error.to_string(),
             is_error: true,
             timed_out_after: None,
         };
-        if let Err(error) = grant
+        if let Err(audit_error) = grant
             .finish(crate::tool_invocation::ToolInvocationOutcome::Failed)
             .await
         {
-            outcome.output = error.to_string();
+            outcome.output = audit_error.to_string();
         }
         return outcome;
-    };
+    }
     let (result, timed_out_after) = if let Some(timeout) = timeout {
         if let Ok(result) = tokio::time::timeout(
             timeout,
-            tool.execute_streaming(&tool_context, input, progress),
+            prepared_call.execute_streaming(&tool_context, progress),
         )
         .await
         {
@@ -1289,7 +1295,11 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         }
     } else {
         (
-            Some(tool.execute_streaming(&tool_context, input, progress).await),
+            Some(
+                prepared_call
+                    .execute_streaming(&tool_context, progress)
+                    .await,
+            ),
             None,
         )
     };

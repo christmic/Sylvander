@@ -1,4 +1,4 @@
-//! `ToolContext` — per-invocation input to a `Tool::execute` call.
+//! `ToolContext` — trusted runtime context for prepared tool execution.
 //!
 //! # Two-tier context model
 //!
@@ -42,7 +42,7 @@ use crate::workspace_executor::{
     LocalExecutor, UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget,
 };
 
-/// Per-invocation context handed to every `Tool::execute` call.
+/// Per-invocation context handed to every registered tool executor.
 ///
 /// Cheap to clone (one `Arc` + a few small values); tools can pass
 /// it around freely.
@@ -369,13 +369,11 @@ impl ToolContext {
 /// caller has not supplied one. Kept in their own module so callers
 /// don't have to scroll past struct definitions.
 pub mod defaults {
-    use super::{SessionContext, ToolContext};
-
     /// Build an explicit `ToolContext` for trusted system-originated actions
     /// and tests that do not execute workspace tools.
     #[must_use]
-    pub fn system_tool_context() -> ToolContext {
-        ToolContext::new(SessionContext::system())
+    pub fn system_tool_context() -> super::ToolContext {
+        super::ToolContext::new(sylvander_protocol::SessionContext::system())
     }
 }
 
