@@ -1,8 +1,8 @@
 //! Deterministic, least-privilege User Profile prompt projection.
 use std::fmt;
 
-use sylvander_protocol::{
-    ClassifiedPreference, CommunicationTone, PrivacyClass, ResponseDetail, UserProfileView,
+use crate::user_profile::{
+    ClassifiedPreference, CommunicationTone, PrivacyClass, ResponseDetail, UserProfileSnapshot,
 };
 
 pub const USER_PROFILE_CONTRACT_VERSION: u16 = 1;
@@ -77,7 +77,7 @@ pub enum UserProfilePromptError {
 /// require an authorization decision outside the Agent and are never included
 /// by this default projection.
 pub fn compose_user_profile_prompt(
-    view: &UserProfileView,
+    view: &UserProfileSnapshot,
 ) -> Result<UserProfilePromptLayer, UserProfilePromptError> {
     if view.revision == 0 {
         return Err(UserProfilePromptError::InvalidProfile);
@@ -110,7 +110,7 @@ precedence=an_explicit_current_session_instruction_may_override_a_preference\n",
         &mut content,
         "preferred_language",
         profile.preferred_language.as_ref(),
-        |value| value.as_str(),
+        String::as_str,
         &mut included,
         &mut omitted,
     );
@@ -118,7 +118,7 @@ precedence=an_explicit_current_session_instruction_may_override_a_preference\n",
         &mut content,
         "locale",
         profile.locale.as_ref(),
-        |value| value.as_str(),
+        String::as_str,
         &mut included,
         &mut omitted,
     );

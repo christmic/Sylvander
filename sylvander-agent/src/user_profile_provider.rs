@@ -1,9 +1,8 @@
 //! Runtime-injected access to the authenticated user's current profile.
 
-use async_trait::async_trait;
-use sylvander_protocol::UserProfileView;
-
 use crate::identity::{AgentId, SessionId, UserId};
+use crate::user_profile::UserProfileSnapshot;
+use async_trait::async_trait;
 
 /// Runtime-derived query subject. External callers may inspect it to perform
 /// the lookup, but cannot construct it or replace its owner.
@@ -61,7 +60,7 @@ pub trait UserProfileProvider: Send + Sync {
     async fn current_profile(
         &self,
         subject: &UserProfileSubject,
-    ) -> Result<Option<UserProfileView>, UserProfileProviderError>;
+    ) -> Result<Option<UserProfileSnapshot>, UserProfileProviderError>;
 }
 
 #[cfg(test)]

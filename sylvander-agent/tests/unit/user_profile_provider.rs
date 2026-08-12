@@ -9,7 +9,7 @@ impl UserProfileProvider for Absent {
     async fn current_profile(
         &self,
         _subject: &UserProfileSubject,
-    ) -> Result<Option<UserProfileView>, UserProfileProviderError> {
+    ) -> Result<Option<crate::user_profile::UserProfileSnapshot>, UserProfileProviderError> {
         Ok(None)
     }
 }

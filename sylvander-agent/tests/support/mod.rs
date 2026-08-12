@@ -38,8 +38,7 @@ use sylvander_llm_anthropic::{
 };
 use sylvander_llm_core::{
     CacheHint, ChatMessage, InputSchema, ModelCapabilities as ProviderModelCapabilities,
-    ModelInfo as ProviderModelInfo, ModelProvider, ModelRef, ReasoningConfig,
-    ReasoningEffort as ProviderReasoningEffort, SystemInstruction,
+    ModelInfo as ProviderModelInfo, ModelProvider, ModelRef, SystemInstruction,
 };
 
 pub(crate) struct TestAgentBuilder {
@@ -49,7 +48,6 @@ pub(crate) struct TestAgentBuilder {
     tools: ToolRegistry,
     tool_context: ToolContext,
     system_prompt: Option<String>,
-    reasoning_effort: sylvander_protocol::ReasoningEffort,
     approval_gate: Option<Arc<dyn ApprovalGate>>,
     ask_user_gate: Option<Arc<dyn AskUserGate>>,
     plan_gate: Option<Arc<dyn PlanGate>>,
@@ -64,7 +62,6 @@ pub(crate) struct TestAgent {
     tools: ToolRegistry,
     tool_context: ToolContext,
     system_prompt: Option<String>,
-    reasoning_effort: sylvander_protocol::ReasoningEffort,
     approval_gate: Option<Arc<dyn ApprovalGate>>,
     ask_user_gate: Option<Arc<dyn AskUserGate>>,
     plan_gate: Option<Arc<dyn PlanGate>>,
@@ -91,11 +88,6 @@ impl TestAgentBuilder {
 
     pub(crate) fn system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
-        self
-    }
-
-    pub(crate) fn reasoning_effort(mut self, effort: sylvander_protocol::ReasoningEffort) -> Self {
-        self.reasoning_effort = effort;
         self
     }
 
@@ -151,7 +143,6 @@ impl TestAgentBuilder {
             tools: self.tools,
             tool_context: self.tool_context,
             system_prompt: self.system_prompt,
-            reasoning_effort: self.reasoning_effort,
             approval_gate: self.approval_gate,
             ask_user_gate: self.ask_user_gate,
             plan_gate: self.plan_gate,
@@ -179,25 +170,11 @@ impl TestAgent {
                     .then_some(CacheHint::Ephemeral),
             })
             .collect();
-        let reasoning =
-            self.reasoning_effort
-                .budget_tokens()
-                .map(|budget_tokens| ReasoningConfig {
-                    budget_tokens: Some(budget_tokens.min(self.model.max_output_tokens)),
-                    effort: Some(match self.reasoning_effort {
-                        sylvander_protocol::ReasoningEffort::Low => ProviderReasoningEffort::Low,
-                        sylvander_protocol::ReasoningEffort::Medium => {
-                            ProviderReasoningEffort::Medium
-                        }
-                        sylvander_protocol::ReasoningEffort::High => ProviderReasoningEffort::High,
-                        sylvander_protocol::ReasoningEffort::Off => unreachable!(),
-                    }),
-                });
         let request = AgentTurnRequest {
             conversation: ConversationSnapshot::new(messages),
             model: self.model.clone(),
             system_instructions,
-            reasoning,
+            reasoning: None,
             tools: self.tools.clone(),
             execution: self.tool_context.execution.as_ref().clone(),
         };
@@ -307,7 +284,6 @@ pub(crate) fn qualified_anthropic_loop_builder(
         tools: ToolRegistry::new(),
         tool_context: sylvander_agent::tool_context::defaults::system_tool_context(),
         system_prompt: None,
-        reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         approval_gate: None,
         ask_user_gate: None,
         plan_gate: None,

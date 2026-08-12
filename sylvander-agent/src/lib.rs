@@ -130,6 +130,8 @@ pub mod tools;
 /// Typed, budgeted, provenance-preserving context for one authenticated turn.
 pub mod turn_context;
 /// Bounded prompt layer generated from a user profile.
+pub mod user_profile;
+/// Bounded prompt layer generated from a user profile.
 pub mod user_profile_prompt;
 /// Runtime abstraction for retrieving authorized user profiles.
 pub mod user_profile_provider;

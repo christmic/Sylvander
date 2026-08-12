@@ -6,11 +6,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sylvander_protocol::{
-    USER_PROFILE_PROTOCOL_VERSION, UserId, UserProfileData, UserProfileExport,
-    UserProfileExportFormat, UserProfileView,
+    CommunicationTone, PrivacyClass, ResponseDetail, USER_PROFILE_PROTOCOL_VERSION, UserId,
+    UserProfileData, UserProfileExport, UserProfileExportFormat, UserProfileView,
 };
 use tokio::{sync::Mutex, task};
 
+use sylvander_agent::user_profile::{
+    AccessibilityPreferences as AgentAccessibilityPreferences,
+    ClassifiedPreference as AgentClassifiedPreference, CommunicationTone as AgentCommunicationTone,
+    PrivacyClass as AgentPrivacyClass, ResponseDetail as AgentResponseDetail,
+    UserProfileData as AgentUserProfileData, UserProfileSnapshot,
+};
 use sylvander_agent::user_profile_provider::{
     UserProfileProvider, UserProfileProviderError, UserProfileSubject,
 };
@@ -316,11 +322,88 @@ impl UserProfileProvider for UserProfileStore {
     async fn current_profile(
         &self,
         subject: &UserProfileSubject,
-    ) -> Result<Option<UserProfileView>, UserProfileProviderError> {
+    ) -> Result<Option<UserProfileSnapshot>, UserProfileProviderError> {
         self.read(sylvander_protocol::UserId::new(subject.user_id().0.clone()))
             .await
-            .map(|profile| profile.map(StoredUserProfile::into_view))
+            .map(|profile| {
+                profile
+                    .map(StoredUserProfile::into_view)
+                    .map(agent_profile_snapshot)
+            })
             .map_err(|_| UserProfileProviderError::Unavailable)
+    }
+}
+
+fn agent_profile_snapshot(view: UserProfileView) -> UserProfileSnapshot {
+    UserProfileSnapshot {
+        revision: view.revision,
+        profile: AgentUserProfileData {
+            preferred_language: view.profile.preferred_language.map(|preference| {
+                agent_preference(
+                    preference.value.as_str().to_owned(),
+                    preference.privacy_class,
+                )
+            }),
+            locale: view.profile.locale.map(|preference| {
+                agent_preference(
+                    preference.value.as_str().to_owned(),
+                    preference.privacy_class,
+                )
+            }),
+            response_detail: view.profile.response_detail.map(|preference| {
+                agent_preference(
+                    match preference.value {
+                        ResponseDetail::Concise => AgentResponseDetail::Concise,
+                        ResponseDetail::Balanced => AgentResponseDetail::Balanced,
+                        ResponseDetail::Detailed => AgentResponseDetail::Detailed,
+                    },
+                    preference.privacy_class,
+                )
+            }),
+            communication_tone: view.profile.communication_tone.map(|preference| {
+                agent_preference(
+                    match preference.value {
+                        CommunicationTone::Direct => AgentCommunicationTone::Direct,
+                        CommunicationTone::Warm => AgentCommunicationTone::Warm,
+                        CommunicationTone::Formal => AgentCommunicationTone::Formal,
+                    },
+                    preference.privacy_class,
+                )
+            }),
+            accessibility: view.profile.accessibility.map(|preference| {
+                agent_preference(
+                    AgentAccessibilityPreferences {
+                        screen_reader_optimized: preference.value.screen_reader_optimized,
+                        reduce_motion: preference.value.reduce_motion,
+                        high_contrast: preference.value.high_contrast,
+                    },
+                    preference.privacy_class,
+                )
+            }),
+            constraints: view
+                .profile
+                .constraints
+                .into_iter()
+                .map(|preference| {
+                    agent_preference(
+                        preference.value.as_str().to_owned(),
+                        preference.privacy_class,
+                    )
+                })
+                .collect(),
+        },
+        do_not_learn: view.do_not_learn,
+    }
+}
+
+fn agent_preference<T>(value: T, privacy_class: PrivacyClass) -> AgentClassifiedPreference<T> {
+    AgentClassifiedPreference {
+        value,
+        privacy_class: match privacy_class {
+            PrivacyClass::Personal => AgentPrivacyClass::Personal,
+            PrivacyClass::Sensitive => AgentPrivacyClass::Sensitive,
+            PrivacyClass::Restricted => AgentPrivacyClass::Restricted,
+        },
     }
 }
 

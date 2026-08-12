@@ -229,15 +229,13 @@ struct RecordingProvider {
 }
 
 #[derive(Clone)]
-struct FixedUserProfile(sylvander_protocol::UserProfileView);
+struct FixedUserProfile(sylvander_agent::user_profile::UserProfileSnapshot);
 
-fn profile_with_learning(do_not_learn: bool) -> sylvander_protocol::UserProfileView {
-    sylvander_protocol::UserProfileView {
+fn profile_with_learning(do_not_learn: bool) -> sylvander_agent::user_profile::UserProfileSnapshot {
+    sylvander_agent::user_profile::UserProfileSnapshot {
         revision: 1,
-        profile: sylvander_protocol::UserProfileData::default(),
+        profile: sylvander_agent::user_profile::UserProfileData::default(),
         do_not_learn,
-        created_at_unix_secs: 1,
-        updated_at_unix_secs: 1,
     }
 }
 
@@ -247,7 +245,7 @@ impl sylvander_agent::user_profile_provider::UserProfileProvider for FixedUserPr
         &self,
         _subject: &sylvander_agent::user_profile_provider::UserProfileSubject,
     ) -> Result<
-        Option<sylvander_protocol::UserProfileView>,
+        Option<sylvander_agent::user_profile::UserProfileSnapshot>,
         sylvander_agent::user_profile_provider::UserProfileProviderError,
     > {
         Ok(Some(self.0.clone()))
@@ -262,7 +260,7 @@ impl sylvander_agent::user_profile_provider::UserProfileProvider for Unavailable
         &self,
         _subject: &sylvander_agent::user_profile_provider::UserProfileSubject,
     ) -> Result<
-        Option<sylvander_protocol::UserProfileView>,
+        Option<sylvander_agent::user_profile::UserProfileSnapshot>,
         sylvander_agent::user_profile_provider::UserProfileProviderError,
     > {
         Err(sylvander_agent::user_profile_provider::UserProfileProviderError::Unavailable)
@@ -846,18 +844,16 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
         )
         .unwrap(),
     );
-    let profile = sylvander_protocol::UserProfileView {
+    let profile = sylvander_agent::user_profile::UserProfileSnapshot {
         revision: 9,
-        profile: sylvander_protocol::UserProfileData {
-            preferred_language: Some(sylvander_protocol::ClassifiedPreference {
-                value: sylvander_protocol::LanguageTag::new("zh-CN").unwrap(),
-                privacy_class: sylvander_protocol::PrivacyClass::Personal,
+        profile: sylvander_agent::user_profile::UserProfileData {
+            preferred_language: Some(sylvander_agent::user_profile::ClassifiedPreference {
+                value: "zh-CN".into(),
+                privacy_class: sylvander_agent::user_profile::PrivacyClass::Personal,
             }),
-            ..sylvander_protocol::UserProfileData::default()
+            ..sylvander_agent::user_profile::UserProfileData::default()
         },
         do_not_learn: false,
-        created_at_unix_secs: 1,
-        updated_at_unix_secs: 2,
     };
     let provider = Arc::new(RecordingProvider::default());
     let model = ProviderModelInfo {

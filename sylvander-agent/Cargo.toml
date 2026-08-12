@@ -8,7 +8,6 @@ license.workspace = true
 
 [dependencies]
 sylvander-llm-core = { path = "../sylvander-llm-core" }
-sylvander-protocol = { path = "../sylvander-protocol" }
 tokio = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
