@@ -41,7 +41,8 @@ use crate::config::{ModelDefinitionConfig, ModelProviderConfig, SecretResolver};
 use crate::credential_audit::CredentialOperationAuditLedger;
 use crate::credential_registry::CredentialSecretResolver;
 use crate::execution::{
-    ContainerExecutor, ContainerResourcePolicy, LocalExecutor, RuntimeExecutionService, SshExecutor,
+    ContainerExecutor, ContainerResourcePolicy, ExecutionTargetKind, ExecutionTargetRegistration,
+    ExecutionTargetStatus, LocalExecutor, RuntimeExecutionService, SshExecutor,
 };
 use crate::guardian_runtime::WorkerToolGatewayFactory;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
@@ -900,10 +901,19 @@ pub(crate) fn build_execution_service(
     // it is not a fallback for any other identifier.
     let mut executors = HashMap::from([(
         "local".to_owned(),
-        Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+        ExecutionTargetRegistration {
+            target_id: "local".to_owned(),
+            kind: ExecutionTargetKind::Local,
+            status: ExecutionTargetStatus::Ready,
+            executor: Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+        },
     )]);
     for target in &config.execution_targets {
-        let executor: Arc<dyn WorkspaceExecutor> = match &target.transport {
+        let (kind, status, executor): (
+            ExecutionTargetKind,
+            ExecutionTargetStatus,
+            Arc<dyn WorkspaceExecutor>,
+        ) = match &target.transport {
             ExecutionTransportConfig::Ssh {
                 host,
                 port,
@@ -918,31 +928,58 @@ pub(crate) fn build_execution_service(
                 let identity_path = identity
                     .as_str()
                     .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?;
-                Arc::new(
-                    SshExecutor::new(host, *port, user, identity_path, known_hosts, control_path)
+                (
+                    ExecutionTargetKind::Ssh,
+                    ExecutionTargetStatus::Unverified,
+                    Arc::new(
+                        SshExecutor::new(
+                            host,
+                            *port,
+                            user,
+                            identity_path,
+                            known_hosts,
+                            control_path,
+                        )
                         .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
+                    ),
                 )
             }
             ExecutionTransportConfig::Container {
                 runtime,
                 image,
                 resources,
-            } => Arc::new(
-                ContainerExecutor::new(runtime, image)
-                    .and_then(|executor| {
-                        executor.with_resource_policy(ContainerResourcePolicy {
-                            memory_mb: resources.memory_mb,
-                            cpu_millis: resources.cpu_millis,
-                            pids_limit: resources.pids_limit,
+            } => (
+                ExecutionTargetKind::Container,
+                ExecutionTargetStatus::Unverified,
+                Arc::new(
+                    ContainerExecutor::new(runtime, image)
+                        .and_then(|executor| {
+                            executor.with_resource_policy(ContainerResourcePolicy {
+                                memory_mb: resources.memory_mb,
+                                cpu_millis: resources.cpu_millis,
+                                pids_limit: resources.pids_limit,
+                            })
                         })
-                    })
-                    .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
+                        .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
+                ),
             ),
-            ExecutionTransportConfig::Local { .. } => Arc::new(LocalExecutor),
+            ExecutionTransportConfig::Local { .. } => (
+                ExecutionTargetKind::Local,
+                ExecutionTargetStatus::Ready,
+                Arc::new(LocalExecutor),
+            ),
         };
-        executors.insert(target.id.clone(), executor);
+        executors.insert(
+            target.id.clone(),
+            ExecutionTargetRegistration {
+                target_id: target.id.clone(),
+                kind,
+                status,
+                executor,
+            },
+        );
     }
-    RuntimeExecutionService::new(executors)
+    RuntimeExecutionService::new(executors.into_values())
         .map_err(|_| CompositionError::ExecutionTarget("registry".into()))
 }
 

@@ -205,7 +205,7 @@ use crate::evidence::{
     AdministrationAudit, AuthorizationDenial, EvidenceArtifactSink, EvidenceEncryption,
     EvidenceGovernance, EvidenceRecorder, EvidenceStore,
 };
-use crate::execution::RuntimeExecutionService;
+use crate::execution::{ExecutionTargetHealth, RuntimeExecutionService};
 use crate::guardian_runtime::{
     GuardianRuntime, GuardianRuntimeError, GuardianRuntimeSettings, WorkerToolGatewayFactory,
 };
@@ -378,6 +378,8 @@ pub struct Runtime {
     storage: RuntimeStorage,
     /// Mandatory built-in lifecycle facts and counters.
     observability: RuntimeObservability,
+    /// Immutable concrete execution environments shared by Agent revisions.
+    execution_service: RuntimeExecutionService,
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
@@ -488,6 +490,7 @@ pub struct RuntimeOperationalSnapshot {
     pub bus: BusDiagnostics,
     pub evidence: Option<evidence::EvidenceCounts>,
     pub observability: RuntimeObservabilitySnapshot,
+    pub execution_targets: Vec<ExecutionTargetHealth>,
     pub health_issues: Vec<RuntimeHealthIssue>,
 }
 
@@ -3817,6 +3820,7 @@ impl Runtime {
                 .map_err(|e| RuntimeError::Store(format!("open session store: {e}")))?,
         );
         let memory_store: Arc<dyn MemoryStore> = Arc::new(InMemoryMemoryStore::new());
+        let execution_service = RuntimeExecutionService::standalone_local();
 
         // Spawn agents
         for spec in &config.agents {
@@ -3837,6 +3841,7 @@ impl Runtime {
             )
             .bus(bus.clone())
             .observability(observability.clone())
+            .execution_service(execution_service.clone())
             .session_store(session_store.clone())
             .memory(memory_store.clone())
             .override_tools(default_tools(memory_store.clone()))
@@ -3912,6 +3917,7 @@ impl Runtime {
             engine,
             storage: RuntimeStorage::new(session_store, memory_store),
             observability,
+            execution_service,
             bus,
             configured_agents,
             revision_provider: None,
@@ -4285,7 +4291,7 @@ impl Runtime {
             registry: agent_registry.clone(),
             bus: bus.clone(),
             observability: observability.clone(),
-            execution_service,
+            execution_service: execution_service.clone(),
             sessions: session_store.clone(),
             memory: memory_store.clone(),
             user_profiles: Arc::new(user_profiles.clone()),
@@ -4460,6 +4466,7 @@ impl Runtime {
             engine,
             storage: RuntimeStorage::new(session_store, memory_store),
             observability,
+            execution_service,
             bus,
             configured_agents,
             revision_provider: Some(revision_provider),
@@ -4802,6 +4809,7 @@ impl Runtime {
             bus: self.bus.diagnostics().await,
             evidence,
             observability: self.observability.snapshot(),
+            execution_targets: self.execution_service.health(),
             health_issues,
         })
     }

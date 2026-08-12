@@ -186,7 +186,7 @@ async fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
     )
     .unwrap();
 
-    let execution_service = crate::execution::RuntimeExecutionService::new([(
+    let execution_service = crate::execution::RuntimeExecutionService::new_for_test([(
         "local".to_owned(),
         Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
     )])
@@ -384,7 +384,7 @@ impl WorkspaceExecutor for MarkerWorkspaceExecutor {
 async fn workspace_prompt_uses_each_execution_target_without_local_filesystem_access() {
     let agent = Arc::new(MarkerWorkspaceExecutor::new(b"remote-agent-guide"));
     let task = Arc::new(MarkerWorkspaceExecutor::new(b"remote-task-guide"));
-    let execution_service = crate::execution::RuntimeExecutionService::new([
+    let execution_service = crate::execution::RuntimeExecutionService::new_for_test([
         (
             "ssh:agent".to_owned(),
             agent.clone() as Arc<dyn WorkspaceExecutor>,
@@ -1947,7 +1947,7 @@ fn permission_profile_builds_a_workspace_scoped_tool_context() {
 fn builder_uses_one_immutable_runtime_execution_service() {
     let (spec, client) = test_spec_and_client();
     let remote: Arc<dyn WorkspaceExecutor> = Arc::new(MarkerWorkspaceExecutor::new(b"remote"));
-    let execution_service = crate::execution::RuntimeExecutionService::new([
+    let execution_service = crate::execution::RuntimeExecutionService::new_for_test([
         (
             "local".to_owned(),
             Arc::new(crate::execution::LocalExecutor) as Arc<dyn WorkspaceExecutor>,
@@ -1974,7 +1974,7 @@ async fn turn_context_resolves_the_effective_execution_target() {
     let metadata = test_metadata();
     let effective = remote_effective_config("ssh:build", "/remote/project");
     let remote = Arc::new(MarkerWorkspaceExecutor::new(b"remote"));
-    let execution_service = crate::execution::RuntimeExecutionService::new([(
+    let execution_service = crate::execution::RuntimeExecutionService::new_for_test([(
         "ssh:build".to_owned(),
         remote.clone() as Arc<dyn WorkspaceExecutor>,
     )])
@@ -2020,8 +2020,11 @@ async fn executor_resolution_is_rebuilt_after_agent_restart() {
     let before_restart = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .execution_service(
-            crate::execution::RuntimeExecutionService::new([("container:dev".into(), old)])
-                .unwrap(),
+            crate::execution::RuntimeExecutionService::new_for_test([(
+                "container:dev".into(),
+                old,
+            )])
+            .unwrap(),
         )
         .build()
         .unwrap();
@@ -2030,8 +2033,11 @@ async fn executor_resolution_is_rebuilt_after_agent_restart() {
     let after_restart = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .execution_service(
-            crate::execution::RuntimeExecutionService::new([("container:dev".into(), new)])
-                .unwrap(),
+            crate::execution::RuntimeExecutionService::new_for_test([(
+                "container:dev".into(),
+                new,
+            )])
+            .unwrap(),
         )
         .build()
         .unwrap();
@@ -2099,7 +2105,7 @@ async fn effective_workspace_mounts_route_file_operations_by_logical_reference()
             },
         },
     ];
-    let execution_service = crate::execution::RuntimeExecutionService::new([(
+    let execution_service = crate::execution::RuntimeExecutionService::new_for_test([(
         "local".into(),
         Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
     )])
@@ -2147,7 +2153,7 @@ async fn effective_workspace_mounts_route_file_operations_by_logical_reference()
 async fn unknown_execution_target_is_explicitly_unavailable() {
     let metadata = test_metadata();
     let effective = remote_effective_config("ssh:missing", "/remote/project");
-    let execution_service = crate::execution::RuntimeExecutionService::new([]).unwrap();
+    let execution_service = crate::execution::RuntimeExecutionService::new_for_test([]).unwrap();
     let context = tool_context_for_permissions(
         ToolSessionExecution {
             metadata: &metadata,

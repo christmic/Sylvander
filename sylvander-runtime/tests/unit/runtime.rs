@@ -663,8 +663,9 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         ))
         .await
         .unwrap();
+    let operational = runtime.operational_snapshot().await.unwrap();
     assert_eq!(
-        runtime.operational_snapshot().await.unwrap().observability,
+        operational.observability,
         RuntimeObservabilitySnapshot {
             event_count: 8,
             turns_started: 1,
@@ -675,6 +676,17 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
             ..RuntimeObservabilitySnapshot::default()
         }
     );
+    assert_eq!(operational.execution_targets.len(), 1);
+    assert_eq!(operational.execution_targets[0].target_id, "local");
+    assert_eq!(
+        operational.execution_targets[0].kind,
+        crate::execution::ExecutionTargetKind::Local
+    );
+    assert_eq!(
+        operational.execution_targets[0].status,
+        crate::execution::ExecutionTargetStatus::Ready
+    );
+    assert!(!operational.execution_targets[0].sandbox_enforced);
     assert_eq!(
         std::fs::read_to_string(effective_workspace.join("routed.txt")).unwrap(),
         "worktree only\n"
