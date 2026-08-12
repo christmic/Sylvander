@@ -91,7 +91,8 @@ use sylvander_agent::turn_context::{
 use sylvander_agent::user_profile_prompt::{UserProfilePromptLayer, compose_user_profile_prompt};
 use sylvander_agent::user_profile_provider::{UserProfileProvider, UserProfileSubject};
 use sylvander_agent::workspace_executor::{
-    MountedWorkspace, UnavailableExecutor, WorkspaceExecutor, WorkspaceRouter, WorkspaceTarget,
+    MountedWorkspace, UnavailableExecutor, WorkspaceCapabilities, WorkspaceExecutor,
+    WorkspaceRouter, WorkspaceTarget,
 };
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
 use sylvander_protocol::{
@@ -3397,7 +3398,12 @@ fn tool_context_for_permissions(
                     .map(|mount| mount.reference.clone())
                     .expect("non-empty workspace composition has a default mount");
                 let mounts = config.workspace_mounts.iter().map(|mount| {
-                    let mut capabilities = mount.capabilities;
+                    let mut capabilities = WorkspaceCapabilities {
+                        read: mount.capabilities.read,
+                        write: mount.capabilities.write,
+                        command: mount.capabilities.command,
+                        git: mount.capabilities.git,
+                    };
                     if permission_read_only {
                         capabilities.write = false;
                         capabilities.command = false;

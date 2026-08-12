@@ -141,7 +141,7 @@ async fn workspace_router_resolves_logical_mounts_and_enforces_capabilities() {
                         workspace_path: "/task".into(),
                         read_only: false,
                     },
-                    capabilities: sylvander_protocol::WorkspaceCapabilityPolicy::default(),
+                    capabilities: WorkspaceCapabilities::default(),
                 },
             ),
             (
@@ -153,7 +153,7 @@ async fn workspace_router_resolves_logical_mounts_and_enforces_capabilities() {
                         workspace_path: "/dependency".into(),
                         read_only: true,
                     },
-                    capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
+                    capabilities: WorkspaceCapabilities {
                         read: false,
                         ..Default::default()
                     },

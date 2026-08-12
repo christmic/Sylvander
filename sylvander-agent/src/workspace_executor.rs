@@ -380,11 +380,35 @@ pub trait WorkspaceExecutor: Send + Sync + Debug {
     }
 }
 
+/// Agent-domain capability surface for one logical workspace mount.
+///
+/// Runtime derives this value from authenticated product configuration. It is
+/// intentionally independent of the public API DTO so workspace routing can
+/// be embedded and tested without a service-protocol dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceCapabilities {
+    pub read: bool,
+    pub write: bool,
+    pub command: bool,
+    pub git: bool,
+}
+
+impl Default for WorkspaceCapabilities {
+    fn default() -> Self {
+        Self {
+            read: true,
+            write: false,
+            command: false,
+            git: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MountedWorkspace {
     pub executor: Arc<dyn WorkspaceExecutor>,
     pub target: WorkspaceTarget,
-    pub capabilities: sylvander_protocol::WorkspaceCapabilityPolicy,
+    pub capabilities: WorkspaceCapabilities,
 }
 
 /// Routes logical `@reference/path` requests to role-bearing workspaces while
