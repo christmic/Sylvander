@@ -24,11 +24,11 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use sylvander_agent::spec::SessionId;
 use sylvander_channel::credential::{
     CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
+use sylvander_protocol::SessionId;
 use sylvander_protocol::{MessageKind, StreamEvent};
 
 #[derive(Deserialize)]
@@ -40,7 +40,7 @@ struct ChatRequest {
 /// Authenticated HTTP/SSE adapter for bounded debug and automation traffic.
 pub struct HttpChannel {
     addr: SocketAddr,
-    agent_id: sylvander_agent::spec::AgentId,
+    agent_id: sylvander_protocol::AgentId,
     instance_id: String,
     principal_id: Option<String>,
     bearer_lease: Option<BearerLease>,
@@ -80,7 +80,7 @@ pub struct OperationalHealth {
 
 impl HttpChannel {
     /// Construct an adapter bound to `addr` and one configured Agent.
-    pub fn new(addr: SocketAddr, agent_id: impl Into<sylvander_agent::spec::AgentId>) -> Self {
+    pub fn new(addr: SocketAddr, agent_id: impl Into<sylvander_protocol::AgentId>) -> Self {
         Self {
             addr,
             agent_id: agent_id.into(),
@@ -212,7 +212,7 @@ async fn reject_http_authentication(state: &AppState) -> StatusCode {
 
 struct AppState {
     ctx: Arc<ChannelContext>,
-    agent_id: sylvander_agent::spec::AgentId,
+    agent_id: sylvander_protocol::AgentId,
     sessions: Mutex<std::collections::HashMap<String, SessionId>>,
     instance_id: String,
     principal_id: Option<String>,

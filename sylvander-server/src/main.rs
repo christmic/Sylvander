@@ -5,9 +5,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sylvander_agent::spec::AgentId;
 use sylvander_channel::Channel;
 use sylvander_channel::credential::CredentialLeaseSource;
+use sylvander_protocol::AgentId;
 use sylvander_protocol::{
     ApprovalPolicy, FileAccess, ModelCapability, ModelDescriptor, ModelLifecycle, NetworkAccess,
     PermissionProfile, ReasoningEffort, SessionConfigOverrides, SessionWorkspaceBinding,

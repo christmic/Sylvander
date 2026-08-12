@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::json;
-use sylvander_agent::prelude::{AgentSpec, ToolRegistry};
+use sylvander_agent::prelude::ToolRegistry;
 use sylvander_agent::tools::{AskUserTool, WriteTool};
 use sylvander_channel::{Channel, ChannelContext, ChannelHost};
 use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
@@ -26,6 +26,7 @@ use sylvander_protocol::{
     SessionEffectiveConfig, SessionId, SessionMetadata, StreamEvent, SubscriptionFilter,
     UiClientMessage, UiSessionInfo,
 };
+use sylvander_runtime::agent_definition::AgentSpec;
 use sylvander_runtime::agent_run::{AgentRun, AgentSessionIssuer};
 use sylvander_runtime::agent_supervisor::AgentRunEngine;
 use sylvander_runtime::storage::session::{

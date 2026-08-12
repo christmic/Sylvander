@@ -21,7 +21,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-use sylvander_agent::spec::McpServerConfig;
+use crate::agent_definition::McpServerConfig;
 use sylvander_agent::tool::{
     DynamicToolSource, PreparedToolCall, RegisteredTool, ToolDefinition, ToolError, ToolExecutor,
     ToolOutput, ToolSourceFeature, ToolSourceKind, ToolSourceStatus, ToolSpec,

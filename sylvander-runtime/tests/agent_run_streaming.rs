@@ -17,9 +17,10 @@ use sylvander_llm_core::{
 use sylvander_protocol::{
     BusMessage, InProcessMessageBus, MessageBus, MessageId, MessageKind, PermissionProfile,
     PlanDecision, ReasoningEffort, Recipient, Sender, SessionConfigProvenance, SessionConfigSource,
-    SessionConfigSourceKind, SessionEffectiveConfig, StreamEvent, SubscriptionFilter,
+    SessionConfigSourceKind, SessionEffectiveConfig, SessionId, StreamEvent, SubscriptionFilter,
     SystemMessage,
 };
+use sylvander_runtime::agent_definition::AgentSpec;
 use sylvander_runtime::agent_run::{AgentRun, AgentRunBuilder};
 use sylvander_runtime::agent_supervisor::AgentRunEngine;
 use sylvander_runtime::session::SessionMetadata;

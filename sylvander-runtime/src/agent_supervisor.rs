@@ -27,9 +27,9 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::agent_run::AgentRun;
 use crate::session::SessionMetadata;
-use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_protocol::{
     AgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender, SystemMessage,
 };

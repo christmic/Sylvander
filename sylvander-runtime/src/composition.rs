@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::agent_definition::{AgentSpec, ToolRef};
 use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
 use sylvander_agent::curated_memory::MemoryCandidateSink;
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
-use sylvander_agent::spec::{AgentSpec, ToolRef};
 use sylvander_agent::tool::ToolRegistry;
 use sylvander_agent::tools::memory::MemoryStore;
 use sylvander_agent::tools::{
@@ -783,8 +783,8 @@ async fn configured_tools(
 }
 
 fn resolve_mcp_config(
-    config: &sylvander_agent::spec::McpServerConfig,
-) -> Result<sylvander_agent::spec::McpServerConfig, CompositionError> {
+    config: &crate::agent_definition::McpServerConfig,
+) -> Result<crate::agent_definition::McpServerConfig, CompositionError> {
     const PREFIX: &str = "sylvander-secret-ref:v1:";
     let mut resolved = config.clone();
     for (name, value) in &mut resolved.envs {

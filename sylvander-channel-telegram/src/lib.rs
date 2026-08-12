@@ -26,13 +26,13 @@ use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
-use sylvander_agent::spec::AgentId;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, parse_external_control, submit_external_chat,
 };
+use sylvander_protocol::AgentId;
 use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
     BoundaryErrorCode,

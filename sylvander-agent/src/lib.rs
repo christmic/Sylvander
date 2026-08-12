@@ -113,10 +113,6 @@ pub mod plan_gate;
 pub mod prompt;
 /// Immutable input for one Agent execution.
 pub mod request;
-/// Internal translation between Anthropic wire types and provider-neutral
-/// model contracts. This is a current adapter, not a fallback backend.
-/// Declarative Agent identity, model, tool, and workspace specification.
-pub mod spec;
 /// Restricted background-task lifecycle and result gate.
 pub mod task_gate;
 /// Bounded wall-clock conversion for Agent-owned records.
@@ -174,10 +170,6 @@ pub mod prelude {
     pub use crate::outcome::AgentOutcome;
     pub use crate::plan_gate::PlanDecision;
     pub use crate::request::AgentTurnRequest;
-    pub use crate::spec::{
-        AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig, MemoryStoreConfig,
-        ModelConfig, PersonaConfig, SessionId, ToolRef,
-    };
     pub use crate::tool::{
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
         ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
@@ -205,5 +197,4 @@ pub mod prelude {
     pub use sylvander_llm_core::{
         ChatMessage, ChatRole, ContentBlock, InputSchema, ModelResponse, StopReason, TokenUsage,
     };
-    pub use sylvander_protocol::types::UserId;
 }

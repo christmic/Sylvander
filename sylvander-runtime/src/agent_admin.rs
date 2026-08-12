@@ -8,11 +8,11 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use sha2::{Digest, Sha256};
-use sylvander_agent::spec::{
+use crate::agent_definition::{
     AgentSpec, BehaviorConfig, McpServerConfig, MemoryStoreConfig, ModelConfig, PersonaConfig,
     ToolPresentationConfig, ToolRef, UiCommandConfig,
 };
+use sha2::{Digest, Sha256};
 use sylvander_agent::tool::{AgentHookPhase, ToolHookConfig};
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,

@@ -26,6 +26,8 @@ mod agent_admin;
 #[cfg(test)]
 #[path = "../tests/unit/agent_admin_runtime_v3.rs"]
 mod agent_admin_runtime_v3_tests;
+/// Runtime-owned declarative Agent configuration.
+pub mod agent_definition;
 /// Versioned Agent definitions and active-revision lookup.
 pub mod agent_registry;
 #[allow(dead_code)] // versioned contract staged before SQL composition wiring
@@ -137,10 +139,10 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::mcp_stdio::McpResultArtifactSink;
 #[cfg(test)]
-use sylvander_agent::spec::AgentSpec;
-use sylvander_agent::spec::{AgentId, SessionId};
+use crate::agent_definition::AgentSpec;
+use crate::agent_definition::{AgentId, SessionId};
+use crate::mcp_stdio::McpResultArtifactSink;
 #[cfg(test)]
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_agent::tools::MemoryStore;

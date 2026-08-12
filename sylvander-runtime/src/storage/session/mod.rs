@@ -16,8 +16,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
-use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_protocol::types::{SessionConfigOverrides, SessionEffectiveConfig, UserId};
 
 // ---------------------------------------------------------------------------

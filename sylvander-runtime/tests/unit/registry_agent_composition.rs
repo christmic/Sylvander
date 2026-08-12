@@ -162,7 +162,7 @@ async fn persisted_session(
     agent: &ConfiguredAgent,
     store: &SqliteSessionStore,
     name: &str,
-) -> sylvander_agent::spec::SessionId {
+) -> crate::agent_definition::SessionId {
     persisted_session_with_overrides(agent, store, name, SessionConfigOverrides::default()).await
 }
 
@@ -171,7 +171,7 @@ async fn persisted_session_with_overrides(
     store: &SqliteSessionStore,
     name: &str,
     overrides: SessionConfigOverrides,
-) -> sylvander_agent::spec::SessionId {
+) -> crate::agent_definition::SessionId {
     let metadata = SessionMetadata {
         workspace: std::path::PathBuf::from("/workspace"),
         name: name.into(),

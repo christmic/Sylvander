@@ -7,8 +7,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::agent_definition::AgentSpec;
 use serde::{Deserialize, Serialize};
-use sylvander_agent::spec::AgentSpec;
 
 use sylvander_agent::prompt::{
     MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_profile_selectors,

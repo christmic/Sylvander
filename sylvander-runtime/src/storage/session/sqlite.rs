@@ -29,8 +29,8 @@ use sylvander_protocol::session_context::Priority;
 use tokio::sync::Mutex;
 use tokio::task;
 
+use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
-use sylvander_agent::spec::{AgentId, SessionId};
 
 use super::{
     MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch,

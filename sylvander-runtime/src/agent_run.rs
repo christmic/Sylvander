@@ -45,6 +45,7 @@ use sylvander_protocol::{
     PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
 };
 
+use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::approval_store::{
     ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory, approval_policy_revision,
 };
@@ -73,7 +74,6 @@ use sylvander_agent::loop_::{self, AgentLoop};
 use sylvander_agent::plan_gate::{PlanDecision, PlanGate};
 use sylvander_agent::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
 use sylvander_agent::request::AgentTurnRequest;
-use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_agent::task_gate::TaskGate;
 use sylvander_agent::tool::{
     RegisteredTool, ToolRegistry, ToolSourceFeature, ToolSourceKind, ToolSourceStatus,
@@ -532,7 +532,7 @@ impl AgentRun {
             .tools
             .iter()
             .filter_map(|tool| {
-                let sylvander_agent::spec::ToolRef::McpServer(server) = tool else {
+                let crate::agent_definition::ToolRef::McpServer(server) = tool else {
                     return None;
                 };
                 Some(PlatformFeature {

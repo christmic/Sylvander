@@ -1,9 +1,10 @@
-//! Agent specification types — declarative agent description.
+//! Runtime-owned declarative Agent definition.
 //!
 //! The `AgentSpec` is a serializable declaration of what an agent IS:
 //! its identity, personality, model preferences, tool set, and memory
-//! configuration. It does NOT contain runtime state — that lives in
-//! `AgentRun` (see `run.rs`).
+//! configuration. Runtime owns this product configuration because it resolves
+//! credentials, provider/model revisions, infrastructure, and Session policy
+//! before constructing a bounded Agent-kernel request.
 //!
 //! Two construction paths:
 //! 1. **Programmatic**: `AgentSpec::builder()` — for embedding
@@ -207,7 +208,7 @@ pub struct AgentSpec {
     pub ui_commands: Vec<UiCommandConfig>,
     /// Typed tool/turn hooks executed through the selected workspace executor.
     #[serde(default)]
-    pub hooks: Vec<crate::tool::ToolHookConfig>,
+    pub hooks: Vec<sylvander_agent::tool::ToolHookConfig>,
     /// Declarative TUI presentation hints for extension-provided tools.
     #[serde(default)]
     pub tool_presentations: Vec<ToolPresentationConfig>,
@@ -259,7 +260,7 @@ pub struct AgentSpecBuilder {
     tools: Vec<ToolRef>,
     memory_stores: Vec<MemoryStoreConfig>,
     ui_commands: Vec<UiCommandConfig>,
-    hooks: Vec<crate::tool::ToolHookConfig>,
+    hooks: Vec<sylvander_agent::tool::ToolHookConfig>,
     tool_presentations: Vec<ToolPresentationConfig>,
     behavior: BehaviorConfig,
 }
@@ -359,7 +360,7 @@ impl AgentSpecBuilder {
 
     /// Replace the typed lifecycle hook set.
     #[must_use]
-    pub fn hooks(mut self, hooks: Vec<crate::tool::ToolHookConfig>) -> Self {
+    pub fn hooks(mut self, hooks: Vec<sylvander_agent::tool::ToolHookConfig>) -> Self {
         self.hooks = hooks;
         self
     }
@@ -458,5 +459,5 @@ pub enum AgentSpecError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../tests/unit/spec.rs"]
+#[path = "../tests/unit/agent_definition.rs"]
 mod tests;

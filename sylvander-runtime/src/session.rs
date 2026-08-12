@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sylvander_llm_core::{ChatMessage, ModelResponse};
 
-use sylvander_agent::spec::SessionId;
+use crate::agent_definition::SessionId;
 
 // ---------------------------------------------------------------------------
 // Helpers

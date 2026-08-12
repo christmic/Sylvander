@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use sylvander_agent::spec::AgentSpec;
+use crate::agent_definition::AgentSpec;
 use sylvander_llm_anthropic::{
     AnthropicProvider,
     api::{client::AnthropicClient, model::ModelCapabilities as AnthropicModelCapabilities},

@@ -40,11 +40,11 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tracing::{info, warn};
 
-use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
     unavailable_agent_admin_response, unavailable_registry_admin_response,
 };
+use sylvander_protocol::{AgentId, SessionId};
 use sylvander_protocol::{MessageKind, StreamEvent};
 use sylvander_protocol::{
     SessionConfigOverrides, SessionWorkspaceBinding, UiClientMessage as ClientMsg,

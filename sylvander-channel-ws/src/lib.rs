@@ -43,7 +43,6 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
 
-use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::credential::{
     CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
@@ -51,6 +50,7 @@ use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
     unavailable_agent_admin_response, unavailable_registry_admin_response,
 };
+use sylvander_protocol::{AgentId, SessionId};
 use sylvander_protocol::{MessageKind, StreamEvent};
 use sylvander_protocol::{
     UiClientMessage as ClientMsg, UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,

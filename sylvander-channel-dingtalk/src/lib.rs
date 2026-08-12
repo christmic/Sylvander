@@ -29,11 +29,11 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use sylvander_agent::spec::AgentId;
 use sylvander_channel::credential::{CredentialLeaseError, CredentialLeaseSource};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, parse_external_control, submit_external_chat,
 };
+use sylvander_protocol::AgentId;
 use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 use sylvander_protocol::{MessageKind, SubscriptionFilter};
 

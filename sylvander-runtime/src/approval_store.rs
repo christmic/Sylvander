@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+use crate::agent_definition::{AgentId, SessionId};
 use sylvander_agent::approval::{ApprovalRule, RuleAction, ToolUseRequest};
-use sylvander_agent::spec::{AgentId, SessionId};
 
 const STORE_SCHEMA_VERSION: u32 = 1;
 const MAX_STORE_BYTES: u64 = 16 * 1024 * 1024;

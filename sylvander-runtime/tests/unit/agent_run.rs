@@ -1334,13 +1334,13 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
         .id("test-agent")
         .name("Test")
         .model_name("test-model")
-        .mcp_server(sylvander_agent::spec::McpServerConfig {
+        .mcp_server(crate::agent_definition::McpServerConfig {
             name: "search".into(),
             command: "/opt/bin/search-mcp".into(),
             args: vec!["--token".into(), "also-secret".into()],
             envs: std::collections::HashMap::from([("SEARCH_TOKEN".into(), "super-secret".into())]),
         })
-        .ui_command(sylvander_agent::spec::UiCommandConfig {
+        .ui_command(crate::agent_definition::UiCommandConfig {
             id: "security-review".into(),
             name: "security-review".into(),
             usage: "/security-review [scope]".into(),
@@ -1348,7 +1348,7 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
             hint: "workspace".into(),
             prompt: "Review {{args}} for security issues.".into(),
         })
-        .tool_presentations(vec![sylvander_agent::spec::ToolPresentationConfig {
+        .tool_presentations(vec![crate::agent_definition::ToolPresentationConfig {
             tool_name: "search".into(),
             label: "Search".into(),
             kind: sylvander_protocol::ToolPresentationKind::Search,
@@ -1408,7 +1408,7 @@ fn platform_snapshot_reports_runtime_override_without_activating_declarations() 
         .id("test-agent")
         .name("Test")
         .model_name("test-model")
-        .memory_store(sylvander_agent::spec::MemoryStoreConfig {
+        .memory_store(crate::agent_definition::MemoryStoreConfig {
             store_type: "sqlite".into(),
             path: PathBuf::from("/private/sentinel-memory.db"),
         })
@@ -1461,7 +1461,7 @@ fn agent_memory_declarations_are_not_implicit_runtime_fallbacks() {
         .id("test-agent")
         .name("Test")
         .model_name("test-model")
-        .memory_store(sylvander_agent::spec::MemoryStoreConfig {
+        .memory_store(crate::agent_definition::MemoryStoreConfig {
             store_type: "unsupported-future-store".into(),
             path: PathBuf::from("/private/never-open-this-store"),
         })
