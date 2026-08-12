@@ -1,9 +1,42 @@
 use super::*;
 use crate::execution_context::AgentExecutionContext;
+use crate::workspace_journal::{PreparedMutation, WorkspaceMutationJournal};
 use std::fs;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 use crate::tool_context::ToolContext;
+
+#[derive(Debug, Default)]
+struct RecordingWorkspaceJournal {
+    events: Mutex<Vec<String>>,
+}
+
+impl WorkspaceMutationJournal for RecordingWorkspaceJournal {
+    fn prepare(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        _workspace: &Path,
+        relative_path: &str,
+        _after: &[u8],
+    ) -> Result<PreparedMutation, String> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("prepare:{session_id}:{turn_id}:{relative_path}"));
+        PreparedMutation::from_runtime_token("prepared-1")
+    }
+
+    fn commit(&self, prepared: &PreparedMutation) -> Result<(), String> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("commit:{}", prepared.runtime_token()));
+        Ok(())
+    }
+}
 fn ctx(root: &std::path::Path) -> ToolContext {
     ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_fs_root(root)
@@ -44,10 +77,9 @@ async fn edit_unique_match() {
 #[tokio::test]
 async fn edit_is_recorded_by_the_workspace_journal() {
     let dir = setup_workspace();
-    let data = TempDir::new().unwrap();
     let file = dir.path().join("f.txt");
     fs::write(&file, "hello world").unwrap();
-    let journal = std::sync::Arc::new(crate::workspace_journal::WorkspaceJournal::new(data.path()));
+    let journal = Arc::new(RecordingWorkspaceJournal::default());
     let context = ToolContext::new(
         AgentExecutionContext::restricted_for("u", "a", "s").with_trace_id("turn-1"),
     )
@@ -61,9 +93,11 @@ async fn edit_is_recorded_by_the_workspace_journal() {
         )
         .await
         .unwrap();
-    let preview = journal.preview_latest_turn("s").unwrap();
-    journal.rollback_latest_turn("s", &preview.turn_id).unwrap();
-    assert_eq!(fs::read_to_string(file).unwrap(), "hello world");
+    assert_eq!(fs::read_to_string(file).unwrap(), "hello agent");
+    assert_eq!(
+        *journal.events.lock().unwrap(),
+        ["prepare:s:turn-1:f.txt", "commit:prepared-1"]
+    );
 }
 
 #[tokio::test]

@@ -54,6 +54,7 @@ use crate::storage::session::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
     SessionStoreError, StoredSession, TurnStart,
 };
+use crate::storage::workspace_journal::{RollbackPreview, RollbackReport, WorkspaceJournal};
 use sylvander_agent::approval::{
     ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest,
 };
@@ -96,6 +97,7 @@ use sylvander_agent::user_profile_provider::{UserProfileProvider, UserProfileSub
 use sylvander_agent::workspace_executor::{
     MountedWorkspace, UnavailableExecutor, WorkspaceExecutor, WorkspaceRouter, WorkspaceTarget,
 };
+use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
 
 #[path = "workspace_context.rs"]
 mod workspace_context;
@@ -191,7 +193,7 @@ pub(crate) struct AgentRunInner {
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
-    workspace_journal: Option<Arc<sylvander_agent::workspace_journal::WorkspaceJournal>>,
+    workspace_journal: Option<Arc<WorkspaceJournal>>,
     /// Server-owned executor adapters keyed by exact execution-target id.
     workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
     skill_features: std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
@@ -827,10 +829,10 @@ impl AgentRun {
         Ok(public_compaction_report(false, &layers))
     }
 
-    pub async fn preview_workspace_rollback(
+    pub(crate) async fn preview_workspace_rollback(
         &self,
         session_id: &SessionId,
-    ) -> Result<sylvander_agent::workspace_journal::RollbackPreview, String> {
+    ) -> Result<RollbackPreview, String> {
         if self
             .inner
             .active_turns
@@ -850,11 +852,11 @@ impl AgentRun {
             .preview_latest_turn(&session_id.0)
     }
 
-    pub async fn rollback_workspace_latest(
+    pub(crate) async fn rollback_workspace_latest(
         &self,
         session_id: &SessionId,
         expected_turn_id: &str,
-    ) -> Result<sylvander_agent::workspace_journal::RollbackReport, String> {
+    ) -> Result<RollbackReport, String> {
         if self
             .inner
             .active_turns
@@ -3339,7 +3341,7 @@ fn tool_context_for_permissions(
     session_id: &SessionId,
     permissions: &sylvander_protocol::PermissionProfile,
     trusted_memory: bool,
-    workspace_journal: Option<Arc<sylvander_agent::workspace_journal::WorkspaceJournal>>,
+    workspace_journal: Option<Arc<WorkspaceJournal>>,
     turn_id: Option<&str>,
 ) -> ToolContext {
     let metadata = execution.metadata;
@@ -3443,6 +3445,7 @@ fn tool_context_for_permissions(
         && !read_only
         && let Some(journal) = workspace_journal
     {
+        let journal: Arc<dyn WorkspaceMutationJournal> = journal;
         context = context.with_workspace_journal(journal);
     }
     match permissions.file_access {
@@ -3793,11 +3796,9 @@ impl AgentRunBuilder {
             )
         });
 
-        let workspace_journal = self.workspace_journal_path.map(|path| {
-            Arc::new(sylvander_agent::workspace_journal::WorkspaceJournal::new(
-                path,
-            ))
-        });
+        let workspace_journal = self
+            .workspace_journal_path
+            .map(|path| Arc::new(WorkspaceJournal::new(path)));
         let session_authority = Arc::new(SessionAuthorityMarker);
         let issuer = AgentSessionIssuer {
             authority: session_authority.clone(),

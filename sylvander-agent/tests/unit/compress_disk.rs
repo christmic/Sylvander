@@ -2,31 +2,6 @@ use super::*;
 use crate::test_support::InMemoryToolResultDisk;
 
 #[test]
-fn filesystem_disk_writes_and_returns_handle() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let disk = FilesystemToolResultDisk::with_root(dir.path().to_path_buf()).expect("disk");
-
-    let handle = disk
-        .persist("toolu_abc", "hello world")
-        .expect("persist should succeed");
-
-    assert_eq!(handle.original_bytes, 11);
-    assert!(handle.path.exists());
-
-    let read_back = std::fs::read_to_string(&handle.path).expect("read back");
-    assert_eq!(read_back, "hello world");
-}
-
-#[test]
-fn filesystem_disk_path_for_is_predictable() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let disk = FilesystemToolResultDisk::with_root(dir.path().to_path_buf()).expect("disk");
-
-    let p = disk.path_for("toolu_xyz");
-    assert!(p.ends_with("toolu_xyz.txt"));
-}
-
-#[test]
 fn in_memory_disk_records_writes() {
     let disk = InMemoryToolResultDisk::new();
 
@@ -54,12 +29,8 @@ fn in_memory_disk_overwrites_on_same_id() {
 
 #[test]
 fn trait_is_object_safe() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let fs: Box<dyn ToolResultDisk> =
-        Box::new(FilesystemToolResultDisk::with_root(tmp.path().to_path_buf()).unwrap());
     let mem: Box<dyn ToolResultDisk> = Box::new(InMemoryToolResultDisk::new());
 
-    // Smoke: both impls callable through trait object.
-    let _ = fs.persist("x", "y").unwrap();
+    // Smoke: Runtime-selected implementations remain callable by the layer.
     let _ = mem.persist("x", "y").unwrap();
 }

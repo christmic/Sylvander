@@ -35,6 +35,7 @@ use std::time::Duration;
 
 use crate::execution_context::AgentExecutionContext;
 use crate::workspace_executor::{UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget};
+use crate::workspace_journal::WorkspaceMutationJournal;
 
 #[cfg(test)]
 fn default_workspace_executor() -> Arc<dyn WorkspaceExecutor> {
@@ -67,8 +68,8 @@ pub struct ToolContext {
     /// Execution target and workspace binding passed to the executor.
     pub execution_target: WorkspaceTarget,
 
-    /// Optional durable workspace mutation journal owned by the Agent runtime.
-    pub workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
+    /// Optional Runtime-owned durable workspace mutation journal.
+    pub workspace_journal: Option<Arc<dyn WorkspaceMutationJournal>>,
 
     /// Runtime-derived identity used by every memory-store operation. It is
     /// intentionally not replaceable through a public builder or model input.
@@ -200,10 +201,7 @@ impl ToolContext {
     }
 
     #[must_use]
-    pub fn with_workspace_journal(
-        mut self,
-        journal: Arc<crate::workspace_journal::WorkspaceJournal>,
-    ) -> Self {
+    pub fn with_workspace_journal(mut self, journal: Arc<dyn WorkspaceMutationJournal>) -> Self {
         self.workspace_journal = Some(journal);
         self
     }
