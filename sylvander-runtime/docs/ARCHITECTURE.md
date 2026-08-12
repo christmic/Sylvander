@@ -97,6 +97,9 @@ crate without retaining a second production path.
 - `execution`, `git_worktree`, and `remote_git_worktree` own location-neutral
   workspace selection plus isolated local/host-backed and SSH coding
   worktrees.
+- `mcp_stdio` owns the MCP child process, JSON-RPC protocol, health probing,
+  cancellation, reconnect, discovery, and governed result-artifact handoff.
+  Agent receives only implementations of its generic dynamic-tool contract.
 - `self_change` runs evidence-backed, isolated experiments and requires a
   distinct human merge gate.
 
@@ -139,6 +142,8 @@ crate without retaining a second production path.
 
 - [`application-services.md`](application-services.md) — Session supervision,
   execution/sandbox ownership, unified storage, and built-in observability.
+- [`mcp.md`](mcp.md) — MCP stdio lifecycle, bounds, cancellation, and current
+  transport limits.
 - [`channel-supervision.md`](channel-supervision.md) — concrete channel
   lifecycle and restart parameters.
 - [`../../docs/server-configuration.md`](../../docs/server-configuration.md)

@@ -384,7 +384,7 @@ Skill packages as workspace-scoped instruction bundles. Both have
 dedicated docs that are authoritative:
 
 - MCP runtime lifecycle, frames, health, reconnection:
-  [`sylvander-agent/docs/mcp.md`](../sylvander-agent/docs/mcp.md).
+  [`sylvander-runtime/docs/mcp.md`](../sylvander-runtime/docs/mcp.md).
 - Skill packages, manifest schema, activation, and the
   per-turn budget:
   [`sylvander-agent/docs/skills.md`](../sylvander-agent/docs/skills.md).

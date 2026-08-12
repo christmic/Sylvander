@@ -17,7 +17,12 @@ Runtime composition:
 5. atomically publishes collision-safe `mcp__server__tool` names;
 6. probes health every 30 seconds and reconnects after a recoverable transport
    failure;
-7. shuts the owned process down during Runtime drain.
+7. retains process ownership inside the configured Runtime revision; dropping
+   that revision terminates the child through Tokio's kill-on-drop boundary.
+
+Explicit awaited MCP shutdown during Runtime drain is not yet composed. This
+is a lifecycle gap: kill-on-drop prevents an orphaned process, but does not
+provide the same observable graceful-drain guarantee as an awaited stop.
 
 An uncertain in-flight call is never replayed. After reconnection the complete
 tool and resource catalog is refreshed for the next model iteration.

@@ -217,13 +217,15 @@ Migration is performed without compatibility aliases:
 2. **Complete:** make the provider/tool state machine consume immutable
    `AgentTurnRequest` and `AgentExecutionPorts`. `AgentLoop` now contains only
    stable retry, iteration, and compression policy.
-3. Move `AgentRun`, `AgentRunEngine`, Session persistence, and public event
-   mapping into Runtime.
-4. Remove Agent's Protocol dependency and move concrete infrastructure below
-   Runtime-owned ports.
+3. **Complete:** move `AgentRun`, `AgentRunEngine`, Session persistence, and
+   public event mapping into Runtime.
+4. **In progress:** remove Agent's Protocol dependency and move concrete
+   infrastructure below Runtime-owned ports. MCP stdio is Runtime-owned;
+   concrete local filesystem/process and durable memory implementations remain.
 5. Move `MessageBus` and `InProcessMessageBus` out of Protocol; split the large
    wire `types` module by API domain.
-6. Replace Channel access to Agent and `SessionStore` with `ChannelHost`.
+6. **Complete:** replace Channel access to Agent and `SessionStore` with
+   `ChannelHost`.
 7. Rename the pure wire crate to `sylvander-api` and add dependency-graph
    verification to CI.
 

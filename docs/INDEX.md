@@ -91,7 +91,7 @@ and this index in the same change.
   per-turn execution, tools, memory, MCP, Skills, and extension rules.
 - [sylvander-agent/docs/workspace-execution.md](../sylvander-agent/docs/workspace-execution.md) —
   executor dispatch across local, SSH, container, and sandbox targets.
-- [sylvander-agent/docs/mcp.md](../sylvander-agent/docs/mcp.md) —
+- [sylvander-runtime/docs/mcp.md](../sylvander-runtime/docs/mcp.md) —
   MCP runtime lifecycle, health, reconnection contract.
 - [sylvander-agent/docs/skills.md](../sylvander-agent/docs/skills.md) —
   Skill package discovery, precedence, isolation, and the per-turn budget.

@@ -8,8 +8,10 @@ public stream events, and concrete infrastructure.
 
 The normative target and migration rules are documented in
 [`../../docs/agent-runtime-api-boundaries.md`](../../docs/agent-runtime-api-boundaries.md).
-The remaining `AgentRun`, engine, bus, persistence, MCP, and concrete adapter
-modules in this crate are migration debt, not the intended boundary.
+Runtime now owns `AgentRun`, supervision, Session persistence, public event
+mapping, and MCP process transport. The remaining bus, concrete workspace,
+memory persistence, and product-Protocol dependencies in this crate are
+migration debt, not the intended boundary.
 
 ## Internal layers
 
@@ -22,9 +24,6 @@ Runtime Agent service
   -> AgentEvent + AgentOutcome
 ```
 
-- `run` and `engine` currently mix Runtime-owned Session orchestration with the
-  Agent kernel. They move to Runtime; only model/tool execution and
-  tool-result re-feeding remain here.
 - `turn_context` composes the immutable Safety/Agent/User Profile/
   Relationship Memory/Workspace Knowledge/Session precedence chain. It applies
   per-layer byte, token-estimate, and item budgets and records content-safe
@@ -38,17 +37,14 @@ Runtime Agent service
 - `tool` and `tool_context` define the invocation boundary. Tools receive
   Runtime-derived identity, workspace, capability, and execution-budget data;
   model arguments are never authority.
-- `workspace_executor`, `tools`, `mcp_stdio`, and skill loading are adapters
-  below the Tool boundary. They return bounded structured results and artifacts
-  rather than unbounded transcript text.
-- `session_store` is the durable transcript/config store. Production uses the
-  SQLite implementation injected by Runtime. A completely empty database is
-  initialized directly at session schema version 1; every existing database
-  must match the Sylvander session application ID, `user_version`, complete
-  table/index definition set, foreign-key rules, and SQLite integrity check
-  exactly. Old, future, undeclared, partial, or damaged files fail closed. The
-  session store has no migration, repair, downgrade, or production in-memory
-  fallback. In-memory SQLite is only a full-schema test fixture.
+- `workspace_executor` currently contains the neutral workspace port and a
+  legacy local implementation. The port remains Agent-owned; concrete local,
+  SSH, and OCI implementations belong to Runtime.
+- `tools` contains Agent-owned definitions and prepared-call handlers. Concrete
+  storage and process services are injected through the execution context.
+- MCP is not part of the Agent source tree. Runtime owns the stdio process,
+  JSON-RPC lifecycle, discovery, health, cancellation, and artifact sink, then
+  registers MCP tools through the ordinary Agent tool contract.
 
 ## Invariants
 
@@ -115,7 +111,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-agent --no-deps --locked
   construction, authority invariants, and code documentation rules.
 - [`workspace-execution.md`](workspace-execution.md) — executor and coding tool
   rules.
-- [`mcp.md`](mcp.md) — MCP lifecycle and bounded result handling.
+- [`../../sylvander-runtime/docs/mcp.md`](../../sylvander-runtime/docs/mcp.md)
+  — Runtime-owned MCP lifecycle and bounded result handling.
 - [`skills.md`](skills.md) — Skill discovery and per-turn budget.
 - [`approval.md`](approval.md) — stable-identity persistent approval keys,
   invalidation, and durable-store operations.

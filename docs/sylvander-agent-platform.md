@@ -577,7 +577,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   cancellation on timeout and dropped requests, reconnect without replay,
   refresh catalogs atomically, send complete results to the Runtime-owned
   encrypted artifact sink, and expose redacted health counters. See
-  [`sylvander-agent/docs/mcp.md`](../sylvander-agent/docs/mcp.md).
+  [`sylvander-runtime/docs/mcp.md`](../sylvander-runtime/docs/mcp.md).
 
 ### P3 — Location-transparent execution and coding isolation
 
