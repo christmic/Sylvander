@@ -36,13 +36,13 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{Instrument as _, info, warn};
 
+use sylvander_api::{
+    PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
+};
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ChatRole, ContentBlock, ImageContent, MediaSource, ModelCapabilities,
     ModelInfo, ModelProvider, ModelResponse, ReasoningConfig,
     ReasoningEffort as ProviderReasoningEffort, SystemInstruction, TokenUsage,
-};
-use sylvander_protocol::{
-    PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
 };
 
 use crate::agent_definition::{AgentId, AgentSpec, SessionId};
@@ -99,11 +99,11 @@ use sylvander_agent::workspace_executor::{
     WorkspaceRouter, WorkspaceTarget,
 };
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
-use sylvander_channel::{MessageBus, SubscriptionFilter};
-use sylvander_protocol::{
+use sylvander_api::{
     AgentStatus as BusAgentStatus, BusMessage, MessageKind, Sender, StreamEvent, SystemMessage,
     ToolCallInfo,
 };
+use sylvander_channel::{MessageBus, SubscriptionFilter};
 
 #[path = "workspace_context.rs"]
 mod workspace_context;
@@ -112,26 +112,26 @@ mod workspace_context;
 ///
 /// Protocol types terminate at this Runtime boundary; the Agent kernel only
 /// receives its provider-neutral domain decision.
-fn agent_plan_decision(decision: &sylvander_protocol::PlanDecision) -> PlanDecision {
+fn agent_plan_decision(decision: &sylvander_api::PlanDecision) -> PlanDecision {
     match decision {
-        sylvander_protocol::PlanDecision::Approved => PlanDecision::Approved,
-        sylvander_protocol::PlanDecision::Revised { steps } => PlanDecision::Revised {
+        sylvander_api::PlanDecision::Approved => PlanDecision::Approved,
+        sylvander_api::PlanDecision::Revised { steps } => PlanDecision::Revised {
             steps: steps.clone(),
         },
-        sylvander_protocol::PlanDecision::Rejected { reason } => PlanDecision::Rejected {
+        sylvander_api::PlanDecision::Rejected { reason } => PlanDecision::Rejected {
             reason: reason.clone(),
         },
     }
 }
 
 /// Translate an internal retry classification into the versioned public API.
-fn public_retry_cause(cause: ModelRetryCause) -> sylvander_protocol::RetryCause {
+fn public_retry_cause(cause: ModelRetryCause) -> sylvander_api::RetryCause {
     match cause {
-        ModelRetryCause::RateLimit => sylvander_protocol::RetryCause::RateLimit,
-        ModelRetryCause::Server => sylvander_protocol::RetryCause::Server,
-        ModelRetryCause::Network => sylvander_protocol::RetryCause::Network,
-        ModelRetryCause::Stream => sylvander_protocol::RetryCause::Stream,
-        ModelRetryCause::Other => sylvander_protocol::RetryCause::Other,
+        ModelRetryCause::RateLimit => sylvander_api::RetryCause::RateLimit,
+        ModelRetryCause::Server => sylvander_api::RetryCause::Server,
+        ModelRetryCause::Network => sylvander_api::RetryCause::Network,
+        ModelRetryCause::Stream => sylvander_api::RetryCause::Stream,
+        ModelRetryCause::Other => sylvander_api::RetryCause::Other,
     }
 }
 
@@ -190,7 +190,7 @@ pub(crate) struct AgentRunInner {
     /// Mutable selection read once at the start of every turn. Active turns
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
-    runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
+    runtime_permissions: RwLock<sylvander_api::PermissionProfile>,
     prompt_resolver: Option<Arc<PromptResolver>>,
     user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
     curated_context_provider: Option<Arc<dyn CuratedContextProvider>>,
@@ -202,7 +202,7 @@ pub(crate) struct AgentRunInner {
     workspace_journal: Option<Arc<WorkspaceJournal>>,
     /// Server-owned executor adapters keyed by exact execution-target id.
     workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
-    skill_features: std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
+    skill_features: std::sync::RwLock<Vec<sylvander_api::PlatformFeature>>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
@@ -256,7 +256,7 @@ struct PendingApproval {
     session_id: SessionId,
     grant: ApprovalGrantKey,
     persistent_identity_authorized: bool,
-    allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
+    allowed_scopes: Vec<sylvander_api::ApprovalScope>,
     sender: oneshot::Sender<sylvander_agent::approval::ApprovalDecision>,
 }
 
@@ -282,17 +282,17 @@ struct ActiveTurn {
 
 #[derive(Clone)]
 struct RuntimeModel {
-    selection: sylvander_protocol::ModelSelection,
+    selection: sylvander_api::ModelSelection,
     shadow: ModelInfo,
     exact: Option<ModelInfo>,
-    lifecycle: sylvander_protocol::ModelLifecycle,
-    pricing: Option<sylvander_protocol::ModelPricing>,
+    lifecycle: sylvander_api::ModelLifecycle,
+    pricing: Option<sylvander_api::ModelPricing>,
 }
 
 struct RuntimeModels {
-    available: HashMap<sylvander_protocol::ModelSelection, RuntimeModel>,
-    current: sylvander_protocol::ModelSelection,
-    reasoning_effort: sylvander_protocol::ReasoningEffort,
+    available: HashMap<sylvander_api::ModelSelection, RuntimeModel>,
+    current: sylvander_api::ModelSelection,
+    reasoning_effort: sylvander_api::ReasoningEffort,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -303,7 +303,7 @@ struct ContextUsage {
 }
 
 impl RuntimeModels {
-    fn public_info(&self) -> sylvander_protocol::RuntimeModelInfo {
+    fn public_info(&self) -> sylvander_api::RuntimeModelInfo {
         let mut models = self
             .available
             .values()
@@ -314,15 +314,15 @@ impl RuntimeModels {
                     .contains(ModelCapabilities::REASONING)
                 {
                     vec![
-                        sylvander_protocol::ReasoningEffort::Off,
-                        sylvander_protocol::ReasoningEffort::Low,
-                        sylvander_protocol::ReasoningEffort::Medium,
-                        sylvander_protocol::ReasoningEffort::High,
+                        sylvander_api::ReasoningEffort::Off,
+                        sylvander_api::ReasoningEffort::Low,
+                        sylvander_api::ReasoningEffort::Medium,
+                        sylvander_api::ReasoningEffort::High,
                     ]
                 } else {
-                    vec![sylvander_protocol::ReasoningEffort::Off]
+                    vec![sylvander_api::ReasoningEffort::Off]
                 };
-                sylvander_protocol::ModelDescriptor {
+                sylvander_api::ModelDescriptor {
                     id: model.selection.model_id.clone(),
                     provider: model.selection.provider_id.clone(),
                     capabilities: u8::try_from(model.shadow.capabilities.bits()).unwrap_or(u8::MAX),
@@ -334,7 +334,7 @@ impl RuntimeModels {
             })
             .collect::<Vec<_>>();
         models.sort_by(|left, right| (&left.provider, &left.id).cmp(&(&right.provider, &right.id)));
-        sylvander_protocol::RuntimeModelInfo {
+        sylvander_api::RuntimeModelInfo {
             current_model: self.current.model_id.clone(),
             reasoning_effort: self.reasoning_effort,
             models,
@@ -342,33 +342,31 @@ impl RuntimeModels {
     }
 }
 
-fn public_capability_names(
-    capabilities: ModelCapabilities,
-) -> Vec<sylvander_protocol::ModelCapability> {
+fn public_capability_names(capabilities: ModelCapabilities) -> Vec<sylvander_api::ModelCapability> {
     [
         (
             ModelCapabilities::REASONING,
-            sylvander_protocol::ModelCapability::ExtendedThinking,
+            sylvander_api::ModelCapability::ExtendedThinking,
         ),
         (
             ModelCapabilities::PROMPT_CACHING,
-            sylvander_protocol::ModelCapability::PromptCaching,
+            sylvander_api::ModelCapability::PromptCaching,
         ),
         (
             ModelCapabilities::STRUCTURED_OUTPUT,
-            sylvander_protocol::ModelCapability::StructuredOutput,
+            sylvander_api::ModelCapability::StructuredOutput,
         ),
         (
             ModelCapabilities::TOOL_USE,
-            sylvander_protocol::ModelCapability::ToolUse,
+            sylvander_api::ModelCapability::ToolUse,
         ),
         (
             ModelCapabilities::VISION,
-            sylvander_protocol::ModelCapability::Vision,
+            sylvander_api::ModelCapability::Vision,
         ),
         (
             ModelCapabilities::DOCUMENT_INPUT,
-            sylvander_protocol::ModelCapability::DocumentInput,
+            sylvander_api::ModelCapability::DocumentInput,
         ),
     ]
     .into_iter()
@@ -376,10 +374,7 @@ fn public_capability_names(
     .collect()
 }
 
-fn usage_cost_nano_usd(
-    pricing: sylvander_protocol::ModelPricing,
-    usage: &TokenUsage,
-) -> Option<u64> {
+fn usage_cost_nano_usd(pricing: sylvander_api::ModelPricing, usage: &TokenUsage) -> Option<u64> {
     fn component(tokens: u64, rate: u64) -> u128 {
         // rate is micro-USD / 1M tokens; nano-USD therefore divides by 1,000.
         (u128::from(tokens) * u128::from(rate) + 500) / 1_000
@@ -486,7 +481,7 @@ impl AgentRun {
         &self.inner.id
     }
 
-    pub async fn runtime_model_info(&self) -> sylvander_protocol::RuntimeModelInfo {
+    pub async fn runtime_model_info(&self) -> sylvander_api::RuntimeModelInfo {
         let runtime = self.inner.runtime_models.read().await;
         runtime.public_info()
     }
@@ -494,9 +489,9 @@ impl AgentRun {
     /// Select one exact provider-qualified model for subsequently started turns.
     pub async fn select_qualified_model(
         &self,
-        selection: sylvander_protocol::ModelSelection,
-        reasoning_effort: sylvander_protocol::ReasoningEffort,
-    ) -> Result<sylvander_protocol::RuntimeModelInfo, String> {
+        selection: sylvander_api::ModelSelection,
+        reasoning_effort: sylvander_api::ReasoningEffort,
+    ) -> Result<sylvander_api::RuntimeModelInfo, String> {
         let mut runtime = self.inner.runtime_models.write().await;
         let model = runtime.available.get(&selection).cloned().ok_or_else(|| {
             format!(
@@ -506,7 +501,7 @@ impl AgentRun {
         })?;
         AgentRunInner::validate_turn_model(&model, reasoning_effort)
             .map_err(|error| error.to_string())?;
-        if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
+        if reasoning_effort != sylvander_api::ReasoningEffort::Off
             && !model
                 .shadow
                 .capabilities
@@ -522,7 +517,7 @@ impl AgentRun {
         Ok(runtime.public_info())
     }
 
-    pub async fn permission_profile(&self) -> sylvander_protocol::PermissionProfile {
+    pub async fn permission_profile(&self) -> sylvander_api::PermissionProfile {
         self.inner.runtime_permissions.read().await.clone()
     }
 
@@ -530,7 +525,7 @@ impl AgentRun {
     /// not probe or start optional services and never exposes MCP environment
     /// values or memory store paths.
     #[must_use]
-    pub fn platform_snapshot(&self) -> sylvander_protocol::PlatformSnapshot {
+    pub fn platform_snapshot(&self) -> sylvander_api::PlatformSnapshot {
         let mut features = self
             .inner
             .spec
@@ -643,7 +638,7 @@ impl AgentRun {
             .spec
             .ui_commands
             .iter()
-            .map(|command| sylvander_protocol::UiCommandDescriptor {
+            .map(|command| sylvander_api::UiCommandDescriptor {
                 id: command.id.clone(),
                 name: command.name.clone(),
                 usage: command.usage.clone(),
@@ -651,7 +646,7 @@ impl AgentRun {
                 hint: command.hint.clone(),
                 source: "agent configuration".into(),
                 trust: PlatformTrust::Workspace,
-                effect: sylvander_protocol::UiCommandEffect::SubmitPrompt {
+                effect: sylvander_api::UiCommandEffect::SubmitPrompt {
                     template: command.prompt.clone(),
                 },
             })
@@ -662,19 +657,17 @@ impl AgentRun {
             .spec
             .tool_presentations
             .iter()
-            .map(
-                |presentation| sylvander_protocol::ToolPresentationDescriptor {
-                    tool_name: presentation.tool_name.clone(),
-                    label: presentation.label.clone(),
-                    kind: presentation.kind,
-                    target_field: presentation.target_field.clone(),
-                    source: "agent configuration".into(),
-                    trust: PlatformTrust::Workspace,
-                },
-            )
+            .map(|presentation| sylvander_api::ToolPresentationDescriptor {
+                tool_name: presentation.tool_name.clone(),
+                label: presentation.label.clone(),
+                kind: presentation.kind,
+                target_field: presentation.target_field.clone(),
+                source: "agent configuration".into(),
+                trust: PlatformTrust::Workspace,
+            })
             .collect();
 
-        sylvander_protocol::PlatformSnapshot {
+        sylvander_api::PlatformSnapshot {
             features,
             commands,
             tool_presentations,
@@ -684,7 +677,7 @@ impl AgentRun {
     pub async fn context_report(
         &self,
         session_id: Option<&SessionId>,
-    ) -> sylvander_protocol::ContextReport {
+    ) -> sylvander_api::ContextReport {
         let models = self.inner.runtime_models.read().await;
         let model = models
             .available
@@ -713,28 +706,28 @@ impl AgentRun {
         };
         let mut sources = Vec::new();
         if !self.inner.spec.persona.system_prompt.is_empty() {
-            sources.push(sylvander_protocol::ContextSource {
-                kind: sylvander_protocol::ContextSourceKind::SystemPrompt,
+            sources.push(sylvander_api::ContextSource {
+                kind: sylvander_api::ContextSourceKind::SystemPrompt,
                 label: "agent instructions".into(),
                 items: 1,
             });
         }
         if conversation_items > 0 {
-            sources.push(sylvander_protocol::ContextSource {
-                kind: sylvander_protocol::ContextSourceKind::Conversation,
+            sources.push(sylvander_api::ContextSource {
+                kind: sylvander_api::ContextSourceKind::Conversation,
                 label: "conversation messages".into(),
                 items: conversation_items,
             });
         }
         let tool_count = self.inner.tools.len();
         if tool_count > 0 {
-            sources.push(sylvander_protocol::ContextSource {
-                kind: sylvander_protocol::ContextSourceKind::Tools,
+            sources.push(sylvander_api::ContextSource {
+                kind: sylvander_api::ContextSourceKind::Tools,
                 label: "tool definitions".into(),
                 items: tool_count,
             });
         }
-        sylvander_protocol::ContextReport {
+        sylvander_api::ContextReport {
             model: model.shadow.reference.model.clone(),
             context_window: model.shadow.context_window,
             used_tokens: usage.used,
@@ -751,7 +744,7 @@ impl AgentRun {
     pub async fn compact_session(
         &self,
         session_id: &SessionId,
-    ) -> Result<sylvander_protocol::CompactionReport, String> {
+    ) -> Result<sylvander_api::CompactionReport, String> {
         self.compact_session_typed(session_id)
             .await
             .map_err(|error| error.compatibility_reason().into())
@@ -760,10 +753,8 @@ impl AgentRun {
     async fn compact_session_typed(
         &self,
         session_id: &SessionId,
-    ) -> Result<
-        sylvander_protocol::CompactionReport,
-        sylvander_agent::compress::error::CompactionError,
-    > {
+    ) -> Result<sylvander_api::CompactionReport, sylvander_agent::compress::error::CompactionError>
+    {
         if self
             .inner
             .active_turns
@@ -881,9 +872,9 @@ impl AgentRun {
 
     pub async fn select_permissions(
         &self,
-        profile: sylvander_protocol::PermissionProfile,
-    ) -> Result<sylvander_protocol::PermissionProfile, String> {
-        if profile.approval_policy == sylvander_protocol::ApprovalPolicy::Ask
+        profile: sylvander_api::PermissionProfile,
+    ) -> Result<sylvander_api::PermissionProfile, String> {
+        if profile.approval_policy == sylvander_api::ApprovalPolicy::Ask
             && !self.inner.approval_enabled
         {
             return Err("approval prompts are disabled by the server operator".into());
@@ -1515,10 +1506,10 @@ impl ApprovalGate for BusApprovalGate {
                     &self.bus,
                     &self.session_id,
                     &self.agent_id,
-                    sylvander_protocol::InteractionTimeoutKind::Approval,
+                    sylvander_api::InteractionTimeoutKind::Approval,
                     &call_id,
                     120,
-                    sylvander_protocol::TimeoutRecovery::RetryRequest,
+                    sylvander_api::TimeoutRecovery::RetryRequest,
                 )
                 .await;
                 ApprovalDecision::Rejected {
@@ -1544,10 +1535,10 @@ async fn publish_interaction_timeout(
     bus: &Arc<dyn MessageBus>,
     session_id: &SessionId,
     agent_id: &AgentId,
-    kind: sylvander_protocol::InteractionTimeoutKind,
+    kind: sylvander_api::InteractionTimeoutKind,
     subject_id: &str,
     timeout_secs: u64,
-    recovery: sylvander_protocol::TimeoutRecovery,
+    recovery: sylvander_api::TimeoutRecovery,
 ) {
     let _ = bus
         .publish(BusMessage::stream_event(
@@ -1587,8 +1578,8 @@ fn compaction_summary(layers: &[sylvander_agent::compress::layer::LayerReport]) 
 fn public_compaction_report(
     automatic: bool,
     layers: &[sylvander_agent::compress::layer::LayerReport],
-) -> sylvander_protocol::CompactionReport {
-    sylvander_protocol::CompactionReport {
+) -> sylvander_api::CompactionReport {
+    sylvander_api::CompactionReport {
         automatic,
         removed_messages: sylvander_agent::compress::layer::total_removed(layers),
         condensed_blocks: sylvander_agent::compress::layer::total_condensed(layers),
@@ -1651,10 +1642,10 @@ impl AskUserGate for BusAskUserGate {
                 &self.bus,
                 &self.session_id,
                 &self.agent_id,
-                sylvander_protocol::InteractionTimeoutKind::Question,
+                sylvander_api::InteractionTimeoutKind::Question,
                 call_id,
                 300,
-                sylvander_protocol::TimeoutRecovery::RetryRequest,
+                sylvander_api::TimeoutRecovery::RetryRequest,
             )
             .await;
             Vec::new()
@@ -1711,10 +1702,10 @@ impl PlanGate for BusPlanGate {
                 &self.bus,
                 &self.session_id,
                 &self.agent_id,
-                sylvander_protocol::InteractionTimeoutKind::Plan,
+                sylvander_api::InteractionTimeoutKind::Plan,
                 plan_id,
                 300,
-                sylvander_protocol::TimeoutRecovery::RetryRequest,
+                sylvander_api::TimeoutRecovery::RetryRequest,
             )
             .await;
             PlanDecision::Rejected {
@@ -1818,10 +1809,10 @@ impl TaskGate for BusTaskGate {
                             &bus,
                             &session_id,
                             &agent_id,
-                            sylvander_protocol::InteractionTimeoutKind::Task,
+                            sylvander_api::InteractionTimeoutKind::Task,
                             &running_id,
                             600,
-                            sylvander_protocol::TimeoutRecovery::NarrowScope,
+                            sylvander_api::TimeoutRecovery::NarrowScope,
                         ).await;
                         let _ = bus.publish(BusMessage::stream_event(
                             session_id.clone(),
@@ -1933,9 +1924,9 @@ impl AgentRunInner {
 
     fn validate_turn_model(
         model: &RuntimeModel,
-        reasoning_effort: sylvander_protocol::ReasoningEffort,
+        reasoning_effort: sylvander_api::ReasoningEffort,
     ) -> Result<ModelInfo, AgentRunError> {
-        if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
+        if reasoning_effort != sylvander_api::ReasoningEffort::Off
             && !model
                 .shadow
                 .capabilities
@@ -1979,7 +1970,7 @@ impl AgentRunInner {
         if compaction_summary(layers).is_some()
             && let Some(store) = &self.session_store
         {
-            let caller = sylvander_protocol::SessionContext::new(
+            let caller = sylvander_api::SessionContext::new(
                 metadata.user_id,
                 self.id.clone(),
                 session_id.clone(),
@@ -2061,7 +2052,7 @@ impl AgentRunInner {
             }
         }
 
-        let caller = sylvander_protocol::SessionContext::new(
+        let caller = sylvander_api::SessionContext::new(
             metadata.user_id.clone(),
             self.id.clone(),
             session_id.clone(),
@@ -2090,10 +2081,10 @@ impl AgentRunInner {
     async fn direct_session_config(
         &self,
         metadata: &SessionMetadata,
-    ) -> sylvander_protocol::SessionEffectiveConfig {
+    ) -> sylvander_api::SessionEffectiveConfig {
         let runtime = self.runtime_models.read().await;
-        let source = || sylvander_protocol::SessionConfigSource {
-            kind: sylvander_protocol::SessionConfigSourceKind::AgentDefault,
+        let source = || sylvander_api::SessionConfigSource {
+            kind: sylvander_api::SessionConfigSourceKind::AgentDefault,
             reference: Some("direct-agent".into()),
         };
         let prompt = self.system_prompt.as_deref().unwrap_or_default();
@@ -2108,9 +2099,9 @@ impl AgentRunInner {
                 (
                     None,
                     sha256.clone(),
-                    sylvander_protocol::PromptManifest {
-                        layers: vec![sylvander_protocol::PromptLayerDigest {
-                            kind: sylvander_protocol::PromptLayerKind::Agent,
+                    sylvander_api::PromptManifest {
+                        layers: vec![sylvander_api::PromptLayerDigest {
+                            kind: sylvander_api::PromptLayerKind::Agent,
                             reference: Some("direct-agent".into()),
                             sha256: sha256.clone(),
                             byte_count: prompt.len() as u64,
@@ -2128,7 +2119,7 @@ impl AgentRunInner {
                 )
             },
         );
-        sylvander_protocol::SessionEffectiveConfig {
+        sylvander_api::SessionEffectiveConfig {
             agent_id: self.id.clone(),
             agent_revision: 1,
             provider_id: runtime.current.provider_id.clone(),
@@ -2141,7 +2132,7 @@ impl AgentRunInner {
             system_prompt_sha256,
             prompt_manifest,
             agent_workspace: None,
-            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+            user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
                 execution_target: "local".into(),
                 path: metadata.workspace.clone(),
                 read_only: false,
@@ -2149,7 +2140,7 @@ impl AgentRunInner {
             }),
             workspace_mounts: Vec::new(),
             execution_target: "local".into(),
-            provenance: sylvander_protocol::SessionConfigProvenance {
+            provenance: sylvander_api::SessionConfigProvenance {
                 model: source(),
                 reasoning_effort: source(),
                 permissions: source(),
@@ -2264,7 +2255,7 @@ impl AgentRunInner {
             if let Err(error @ AgentRunError::SessionPersistence { .. }) = &result {
                 self.publish_stream(
                     &session_id,
-                    sylvander_protocol::StreamEvent::Error {
+                    sylvander_api::StreamEvent::Error {
                         message: error.to_string(),
                     },
                 )
@@ -2327,7 +2318,7 @@ impl AgentRunInner {
             let runtime = self.runtime_models.read().await;
             let selection = effective_config.as_ref().map_or_else(
                 || runtime.current.clone(),
-                |config| sylvander_protocol::ModelSelection {
+                |config| sylvander_api::ModelSelection {
                     provider_id: config.provider_id.clone(),
                     model_id: config.model_id.clone(),
                 },
@@ -2567,11 +2558,8 @@ impl AgentRunInner {
                 Sender::User(user_id) => user_id.as_str(),
                 _ => "unix-client",
             };
-            let caller = sylvander_protocol::SessionContext::new(
-                user_id,
-                self.id.clone(),
-                session_id.clone(),
-            );
+            let caller =
+                sylvander_api::SessionContext::new(user_id, self.id.clone(), session_id.clone());
             let user_content = serde_json::to_value(&user_message).map_err(|_| {
                 AgentRunError::session_persistence(
                     SessionPersistenceOperation::BeginTurn,
@@ -2633,7 +2621,7 @@ impl AgentRunInner {
             .await
             .contains(&session_id);
         let mut approval_gate: Option<Arc<dyn ApprovalGate>> = None;
-        if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Ask {
+        if permissions.approval_policy == sylvander_api::ApprovalPolicy::Ask {
             let grant_context = ApprovalGrantContext::new(
                 session_metadata.user_id.clone(),
                 self.id.clone(),
@@ -2659,7 +2647,7 @@ impl AgentRunInner {
             };
             approval_gate = Some(gate);
         }
-        if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
+        if permissions.approval_policy == sylvander_api::ApprovalPolicy::Deny {
             approval_gate = Some(Arc::new(DenyAllApprovalGate));
         }
         let tool_context = tool_context_for_permissions(
@@ -2692,10 +2680,10 @@ impl AgentRunInner {
             .map(|budget_tokens| ReasoningConfig {
                 budget_tokens: Some(budget_tokens.min(selected_exact_model.max_output_tokens)),
                 effort: Some(match selected_effort {
-                    sylvander_protocol::ReasoningEffort::Low => ProviderReasoningEffort::Low,
-                    sylvander_protocol::ReasoningEffort::Medium => ProviderReasoningEffort::Medium,
-                    sylvander_protocol::ReasoningEffort::High => ProviderReasoningEffort::High,
-                    sylvander_protocol::ReasoningEffort::Off => {
+                    sylvander_api::ReasoningEffort::Low => ProviderReasoningEffort::Low,
+                    sylvander_api::ReasoningEffort::Medium => ProviderReasoningEffort::Medium,
+                    sylvander_api::ReasoningEffort::High => ProviderReasoningEffort::High,
+                    sylvander_api::ReasoningEffort::Off => {
                         unreachable!("disabled reasoning cannot carry a token budget")
                     }
                 }),
@@ -2760,7 +2748,7 @@ impl AgentRunInner {
                     self.cancel_pending_decisions(&session_id).await;
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::TurnInterrupted {
+                        sylvander_api::StreamEvent::TurnInterrupted {
                             reason: "interrupted by user".into(),
                         },
                     ).await;
@@ -2775,14 +2763,14 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::TextChunk(text) => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::TextDelta { delta: text },
+                        sylvander_api::StreamEvent::TextDelta { delta: text },
                     )
                     .await;
                 }
                 sylvander_agent::event::AgentEvent::ThinkingChunk(text) => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::ThinkingDelta { delta: text },
+                        sylvander_api::StreamEvent::ThinkingDelta { delta: text },
                     )
                     .await;
                 }
@@ -2795,7 +2783,7 @@ impl AgentRunInner {
                 } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::ModelRetry {
+                        sylvander_api::StreamEvent::ModelRetry {
                             attempt,
                             max_attempts,
                             delay_ms,
@@ -2814,7 +2802,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::ToolCall {
+                        sylvander_api::StreamEvent::ToolCall {
                             call_id: id,
                             tool_name: name,
                             input,
@@ -2825,7 +2813,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::ToolCallOutputDelta { id, name, delta } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::ToolOutputDelta {
+                        sylvander_api::StreamEvent::ToolOutputDelta {
                             call_id: id,
                             tool_name: name,
                             delta,
@@ -2842,10 +2830,10 @@ impl AgentRunInner {
                         &self.bus,
                         &session_id,
                         &self.id,
-                        sylvander_protocol::InteractionTimeoutKind::Tool,
+                        sylvander_api::InteractionTimeoutKind::Tool,
                         &id,
                         timeout_secs,
-                        sylvander_protocol::TimeoutRecovery::NarrowScope,
+                        sylvander_api::TimeoutRecovery::NarrowScope,
                     )
                     .await;
                 }
@@ -2863,7 +2851,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::ToolResult {
+                        sylvander_api::StreamEvent::ToolResult {
                             call_id: id,
                             tool_name: name,
                             output,
@@ -2875,7 +2863,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::ToolRejected { id, name, reason } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::ToolResult {
+                        sylvander_api::StreamEvent::ToolResult {
                             call_id: id,
                             tool_name: name,
                             output: reason,
@@ -2887,7 +2875,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::IterationStart { iteration } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::IterationStart { iteration },
+                        sylvander_api::StreamEvent::IterationStart { iteration },
                     )
                     .await;
                 }
@@ -2937,7 +2925,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::IterationEnd {
+                        sylvander_api::StreamEvent::IterationEnd {
                             iteration,
                             input_tokens: u32::try_from(input_tokens).unwrap_or(u32::MAX),
                             output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
@@ -2949,7 +2937,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::CompressionStarted => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::CompactionStarted { automatic: true },
+                        sylvander_api::StreamEvent::CompactionStarted { automatic: true },
                     )
                     .await;
                 }
@@ -2966,7 +2954,7 @@ impl AgentRunInner {
                     {
                         self.publish_stream(
                             &session_id,
-                            sylvander_protocol::StreamEvent::CompactionFailed {
+                            sylvander_api::StreamEvent::CompactionFailed {
                                 automatic: true,
                                 reason: error.compatibility_reason().into(),
                             },
@@ -2980,7 +2968,7 @@ impl AgentRunInner {
                             Ok(()) => {
                                 self.publish_stream(
                                     &session_id,
-                                    sylvander_protocol::StreamEvent::CompactionCompleted {
+                                    sylvander_api::StreamEvent::CompactionCompleted {
                                         report: public_compaction_report(true, &layers),
                                     },
                                 )
@@ -2989,7 +2977,7 @@ impl AgentRunInner {
                             Err(error) => {
                                 self.publish_stream(
                                     &session_id,
-                                    sylvander_protocol::StreamEvent::CompactionFailed {
+                                    sylvander_api::StreamEvent::CompactionFailed {
                                         automatic: true,
                                         reason: sylvander_agent::compress::error::CompactionError::new(
                                             sylvander_agent::compress::error::CompactionFailureCode::Persistence,
@@ -3007,7 +2995,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::UserAnswer { call_id, answer } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_protocol::StreamEvent::UserAnswer { call_id, answer },
+                        sylvander_api::StreamEvent::UserAnswer { call_id, answer },
                     )
                     .await;
                 }
@@ -3029,7 +3017,7 @@ impl AgentRunInner {
                     || "unix-client".into(),
                     |context| context.metadata.user_id.clone(),
                 );
-                let caller = sylvander_protocol::SessionContext::new(
+                let caller = sylvander_api::SessionContext::new(
                     user_id,
                     self.id.clone(),
                     session_id.clone(),
@@ -3064,7 +3052,7 @@ impl AgentRunInner {
                 ctx.append_assistant_message(msg);
             }
             drop(sessions);
-            self.publish_stream(&session_id, sylvander_protocol::StreamEvent::Done { text })
+            self.publish_stream(&session_id, sylvander_api::StreamEvent::Done { text })
                 .await;
         }
 
@@ -3073,7 +3061,7 @@ impl AgentRunInner {
 
     // -- helpers --
 
-    async fn publish_stream(&self, session_id: &SessionId, event: sylvander_protocol::StreamEvent) {
+    async fn publish_stream(&self, session_id: &SessionId, event: sylvander_api::StreamEvent) {
         let msg = BusMessage::stream_event(session_id.clone(), self.id.clone(), event);
         let _ = self.bus.publish(msg).await;
     }
@@ -3081,7 +3069,7 @@ impl AgentRunInner {
     async fn publish_error(&self, session_id: &SessionId, err: &AgentLoopError) {
         self.publish_stream(
             session_id,
-            sylvander_protocol::StreamEvent::Error {
+            sylvander_api::StreamEvent::Error {
                 message: err.to_string(),
             },
         )
@@ -3100,7 +3088,7 @@ impl AgentRunInner {
         }
         for attachment in &msg.attachments {
             match &attachment.content {
-                sylvander_protocol::AttachmentContent::Text { text } => {
+                sylvander_api::AttachmentContent::Text { text } => {
                     blocks.push(ContentBlock::Text {
                         text: format!(
                             "Attached {:?} `{}` ({}):\n{}",
@@ -3108,7 +3096,7 @@ impl AgentRunInner {
                         ),
                     });
                 }
-                sylvander_protocol::AttachmentContent::Base64 { data } => {
+                sylvander_api::AttachmentContent::Base64 { data } => {
                     if matches!(attachment.mime_type.as_str(), "image/png" | "image/jpeg") {
                         blocks.push(ContentBlock::Text {
                             text: format!("Attached image `{}`:", attachment.name),
@@ -3137,12 +3125,12 @@ struct WorkspaceTurnContext {
 
 #[allow(clippy::too_many_arguments)]
 async fn workspace_turn_context(
-    agent_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
-    task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
-    workspace_mounts: &[sylvander_protocol::SessionWorkspaceMount],
+    agent_workspace: Option<&sylvander_api::SessionWorkspaceBinding>,
+    task_workspace: Option<&sylvander_api::SessionWorkspaceBinding>,
+    workspace_mounts: &[sylvander_api::SessionWorkspaceMount],
     fallback_task_workspace: &Path,
     workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
-    skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
+    skill_features: &std::sync::RwLock<Vec<sylvander_api::PlatformFeature>>,
     query: &str,
     budget: sylvander_agent::turn_context::TurnContextBudget,
 ) -> Result<WorkspaceTurnContext, AgentRunError> {
@@ -3200,28 +3188,28 @@ async fn workspace_turn_context(
     *skill_features.write().unwrap() = context
         .skills
         .iter()
-        .map(|skill| sylvander_protocol::PlatformFeature {
-            kind: sylvander_protocol::PlatformFeatureKind::Skill,
+        .map(|skill| sylvander_api::PlatformFeature {
+            kind: sylvander_api::PlatformFeatureKind::Skill,
             name: skill.name.clone(),
             status: match skill.status {
                 workspace_context::SkillStatus::Active => {
-                    sylvander_protocol::PlatformFeatureStatus::Active
+                    sylvander_api::PlatformFeatureStatus::Active
                 }
                 workspace_context::SkillStatus::Disabled => {
-                    sylvander_protocol::PlatformFeatureStatus::Configured
+                    sylvander_api::PlatformFeatureStatus::Configured
                 }
                 workspace_context::SkillStatus::Degraded => {
-                    sylvander_protocol::PlatformFeatureStatus::Degraded
+                    sylvander_api::PlatformFeatureStatus::Degraded
                 }
             },
             summary: format!("prompt context only · {} ({})", skill.summary, skill.role),
             source: Some(format!("{}:{}", skill.target_id, skill.relative_path)),
             trust: Some(if skill.role == "agent-home" {
-                sylvander_protocol::PlatformTrust::BuiltIn
+                sylvander_api::PlatformTrust::BuiltIn
             } else {
-                sylvander_protocol::PlatformTrust::Workspace
+                sylvander_api::PlatformTrust::Workspace
             }),
-            auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+            auth: sylvander_api::PlatformAuthStatus::NotRequired,
             capabilities: {
                 let mut capabilities = skill.capabilities.clone();
                 capabilities.push("prompt_context_only".into());
@@ -3246,10 +3234,10 @@ async fn workspace_turn_context(
                     operations.push("git");
                 }
                 let role = match mount.role {
-                    sylvander_protocol::WorkspaceMountRole::AgentHome => "agent-home",
-                    sylvander_protocol::WorkspaceMountRole::Task => "task",
-                    sylvander_protocol::WorkspaceMountRole::Dependency => "dependency",
-                    sylvander_protocol::WorkspaceMountRole::Artifact => "artifact",
+                    sylvander_api::WorkspaceMountRole::AgentHome => "agent-home",
+                    sylvander_api::WorkspaceMountRole::Task => "task",
+                    sylvander_api::WorkspaceMountRole::Dependency => "dependency",
+                    sylvander_api::WorkspaceMountRole::Artifact => "artifact",
                 };
                 format!("- @{} ({role}): {}", mount.reference, operations.join(", "))
             })
@@ -3291,7 +3279,7 @@ async fn workspace_turn_context(
     })
 }
 
-fn workspace_target(binding: &sylvander_protocol::SessionWorkspaceBinding) -> WorkspaceTarget {
+fn workspace_target(binding: &sylvander_api::SessionWorkspaceBinding) -> WorkspaceTarget {
     WorkspaceTarget {
         id: binding.execution_target.clone(),
         workspace_path: binding.path.clone(),
@@ -3332,7 +3320,7 @@ impl TurnCorrelation {
 #[derive(Clone, Copy)]
 struct ToolSessionExecution<'a> {
     metadata: &'a SessionMetadata,
-    effective_config: Option<&'a sylvander_protocol::SessionEffectiveConfig>,
+    effective_config: Option<&'a sylvander_api::SessionEffectiveConfig>,
     workspace_executors: &'a HashMap<String, Arc<dyn WorkspaceExecutor>>,
 }
 
@@ -3340,7 +3328,7 @@ fn tool_context_for_permissions(
     execution: ToolSessionExecution<'_>,
     agent_id: &AgentId,
     session_id: &SessionId,
-    permissions: &sylvander_protocol::PermissionProfile,
+    permissions: &sylvander_api::PermissionProfile,
     trusted_memory: bool,
     workspace_journal: Option<Arc<WorkspaceJournal>>,
     turn_id: Option<&str>,
@@ -3356,8 +3344,7 @@ fn tool_context_for_permissions(
     let workspace = binding.map_or(metadata.workspace.as_path(), |binding| {
         binding.path.as_path()
     });
-    let permission_read_only =
-        permissions.file_access != sylvander_protocol::FileAccess::WorkspaceWrite;
+    let permission_read_only = permissions.file_access != sylvander_api::FileAccess::WorkspaceWrite;
     let read_only = permission_read_only || binding.is_some_and(|binding| binding.read_only);
     let mut agent_execution = AgentExecutionContext::restricted_for(
         metadata.user_id.clone(),
@@ -3400,7 +3387,7 @@ fn tool_context_for_permissions(
                 let default_reference = config
                     .workspace_mounts
                     .iter()
-                    .find(|mount| mount.role == sylvander_protocol::WorkspaceMountRole::Task)
+                    .find(|mount| mount.role == sylvander_api::WorkspaceMountRole::Task)
                     .or_else(|| config.workspace_mounts.first())
                     .map(|mount| mount.reference.clone())
                     .expect("non-empty workspace composition has a default mount");
@@ -3455,11 +3442,11 @@ fn tool_context_for_permissions(
         context = context.with_workspace_journal(journal);
     }
     match permissions.file_access {
-        sylvander_protocol::FileAccess::None => {}
-        sylvander_protocol::FileAccess::ReadOnly => {
+        sylvander_api::FileAccess::None => {}
+        sylvander_api::FileAccess::ReadOnly => {
             context = context.with_capability(Cap::Read).with_capability(Cap::Git);
         }
-        sylvander_protocol::FileAccess::WorkspaceWrite => {
+        sylvander_api::FileAccess::WorkspaceWrite => {
             context = context
                 .with_capability(Cap::Read)
                 .with_capability(Cap::Write)
@@ -3467,7 +3454,7 @@ fn tool_context_for_permissions(
                 .with_capability(Cap::Git);
         }
     }
-    if permissions.network_access == sylvander_protocol::NetworkAccess::Allowed {
+    if permissions.network_access == sylvander_api::NetworkAccess::Allowed {
         context = context.with_capability(Cap::Network);
         context.surface.network = NetworkPolicy::All;
     }
@@ -3480,9 +3467,9 @@ fn tool_context_for_permissions(
 }
 
 fn select_workspace_binding<'a>(
-    user_workspace: Option<&'a sylvander_protocol::SessionWorkspaceBinding>,
-    agent_workspace: Option<&'a sylvander_protocol::SessionWorkspaceBinding>,
-) -> Option<&'a sylvander_protocol::SessionWorkspaceBinding> {
+    user_workspace: Option<&'a sylvander_api::SessionWorkspaceBinding>,
+    agent_workspace: Option<&'a sylvander_api::SessionWorkspaceBinding>,
+) -> Option<&'a sylvander_api::SessionWorkspaceBinding> {
     user_workspace.or(agent_workspace)
 }
 
@@ -3502,9 +3489,8 @@ pub struct AgentRunBuilder {
     session_store: Option<Arc<dyn SessionStore>>,
     available_provider_models: Vec<ModelInfo>,
     qualified_model_lifecycles:
-        HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
-    qualified_model_pricing:
-        HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
+        HashMap<sylvander_api::ModelSelection, sylvander_api::ModelLifecycle>,
+    qualified_model_pricing: HashMap<sylvander_api::ModelSelection, sylvander_api::ModelPricing>,
     prompt_resolver: Option<Arc<PromptResolver>>,
     user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
     curated_context_provider: Option<Arc<dyn CuratedContextProvider>>,
@@ -3599,7 +3585,7 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn qualified_model_lifecycles(
         mut self,
-        lifecycles: HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
+        lifecycles: HashMap<sylvander_api::ModelSelection, sylvander_api::ModelLifecycle>,
     ) -> Self {
         self.qualified_model_lifecycles = lifecycles;
         self
@@ -3609,7 +3595,7 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn qualified_model_pricing(
         mut self,
-        pricing: HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
+        pricing: HashMap<sylvander_api::ModelSelection, sylvander_api::ModelPricing>,
     ) -> Self {
         self.qualified_model_pricing = pricing;
         self
@@ -3731,7 +3717,7 @@ impl AgentRunBuilder {
             ));
         }
         let model_info = self.model.clone();
-        let primary_selection = sylvander_protocol::ModelSelection {
+        let primary_selection = sylvander_api::ModelSelection {
             provider_id: self.model.reference.provider.clone(),
             model_id: self.model.reference.model.clone(),
         };
@@ -3740,7 +3726,7 @@ impl AgentRunBuilder {
             .iter()
             .map(|exact| {
                 (
-                    sylvander_protocol::ModelSelection {
+                    sylvander_api::ModelSelection {
                         provider_id: exact.reference.provider.clone(),
                         model_id: exact.reference.model.clone(),
                     },
@@ -3774,15 +3760,15 @@ impl AgentRunBuilder {
         let runtime_models = RuntimeModels {
             available: available_models,
             current: primary_selection,
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            reasoning_effort: sylvander_api::ReasoningEffort::Off,
         };
-        let runtime_permissions = sylvander_protocol::PermissionProfile {
-            file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
-            network_access: sylvander_protocol::NetworkAccess::Denied,
+        let runtime_permissions = sylvander_api::PermissionProfile {
+            file_access: sylvander_api::FileAccess::WorkspaceWrite,
+            network_access: sylvander_api::NetworkAccess::Denied,
             approval_policy: if self.approval_enabled {
-                sylvander_protocol::ApprovalPolicy::Ask
+                sylvander_api::ApprovalPolicy::Ask
             } else {
-                sylvander_protocol::ApprovalPolicy::Allow
+                sylvander_api::ApprovalPolicy::Allow
             },
         };
 

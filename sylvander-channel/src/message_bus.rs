@@ -1,7 +1,7 @@
 //! Runtime-facing message bus port and bounded in-process adapter.
 //!
 //! The bus is an application transport contract, not a serializable API
-//! shape. It lives beside Channel hosting so `sylvander-protocol` can remain a
+//! shape. It lives beside Channel hosting so `sylvander-api` can remain a
 //! pure wire-format and schema crate while Runtime still depends on a small,
 //! replaceable delivery port.
 
@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock, mpsc};
 
-use sylvander_protocol::{AgentId, BusMessage, MessageKind, Recipient, SessionId};
+use sylvander_api::{AgentId, BusMessage, MessageKind, Recipient, SessionId};
 
 /// Observable bounded-delivery state for readiness and operations reporting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

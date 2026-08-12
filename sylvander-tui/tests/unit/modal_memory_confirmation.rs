@@ -1,11 +1,11 @@
 use super::*;
 use ratatui::{Terminal, backend::TestBackend};
 
-fn confirmation() -> sylvander_protocol::PendingMemoryConfirmation {
-    sylvander_protocol::PendingMemoryConfirmation {
+fn confirmation() -> sylvander_api::PendingMemoryConfirmation {
+    sylvander_api::PendingMemoryConfirmation {
         candidate_id: "candidate-1".into(),
         expected_revision: 3,
-        scope: sylvander_protocol::MemoryConfirmationScope::UserProfile,
+        scope: sylvander_api::MemoryConfirmationScope::UserProfile,
         summary: "prefers concise answers".into(),
     }
 }
@@ -25,7 +25,7 @@ fn enter_emits_typed_confirm_for_the_bound_session() {
             session_id,
             candidate_id,
             expected_revision: 3,
-            decision: sylvander_protocol::MemoryConfirmationDecision::Confirm,
+            decision: sylvander_api::MemoryConfirmationDecision::Confirm,
         }] if session_id == "session-1" && candidate_id == "candidate-1"
     ));
 }
@@ -42,7 +42,7 @@ fn escape_is_an_explicit_rejection() {
     assert!(matches!(
         state.pending_actions.as_slice(),
         [Action::ResolveMemoryConfirmation {
-            decision: sylvander_protocol::MemoryConfirmationDecision::Reject,
+            decision: sylvander_api::MemoryConfirmationDecision::Reject,
             ..
         }]
     ));
@@ -60,7 +60,7 @@ fn keyboard_selection_can_reject_without_a_second_input_surface() {
     assert!(matches!(
         state.pending_actions.as_slice(),
         [Action::ResolveMemoryConfirmation {
-            decision: sylvander_protocol::MemoryConfirmationDecision::Reject,
+            decision: sylvander_api::MemoryConfirmationDecision::Reject,
             ..
         }]
     ));

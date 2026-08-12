@@ -1,4 +1,4 @@
-//! # sylvander-protocol
+//! # sylvander-api
 //!
 //! Wire-format protocol types for Sylvander's service boundaries.
 //!
@@ -15,7 +15,7 @@
 //!
 //! ```bash
 //! # Generate JSON Schema for TypeScript/Python/etc codegen
-//! cargo run -p sylvander-protocol --example generate_ui_schema
+//! cargo run -p sylvander-api --example generate_ui_schema
 //! ```
 
 /// Versioned administrative messages for Agent definition revisions.

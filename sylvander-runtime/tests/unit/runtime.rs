@@ -14,7 +14,7 @@ use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
 use sylvander_channel::BusError;
 
 use crate::execution::LocalExecutor;
-use sylvander_protocol::{
+use sylvander_api::{
     SessionWorkspaceBinding, SessionWorkspaceMount, WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };
 use tokio::sync::Notify;
@@ -147,7 +147,7 @@ impl InstrumentedBus {
 #[async_trait::async_trait]
 impl MessageBus for InstrumentedBus {
     async fn publish(&self, message: BusMessage) -> Result<(), BusError> {
-        let chat = matches!(message.kind, sylvander_protocol::MessageKind::Chat);
+        let chat = matches!(message.kind, sylvander_api::MessageKind::Chat);
         self.operations
             .lock()
             .unwrap()
@@ -590,16 +590,16 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
     config.model_providers[0].models[0].capabilities = vec!["tool_use".into()];
     config.agents[0].access.allow_authenticated = true;
     let runtime = Runtime::boot_config(config).await.unwrap();
-    let boundary = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let boundary = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "workspace-owner",
-            sylvander_protocol::AuthenticationMethod::UnixPeer,
+            sylvander_api::AuthenticationMethod::UnixPeer,
         ),
         "tui-local",
         "unix",
         "request-worktree",
     );
-    let requested_workspace = sylvander_protocol::SessionWorkspaceBinding {
+    let requested_workspace = sylvander_api::SessionWorkspaceBinding {
         execution_target: "local".into(),
         path: repository.clone(),
         read_only: false,
@@ -655,7 +655,7 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         .configured_agent(&AgentId::new("assistant"))
         .unwrap()
         .run
-        .handle_message(sylvander_protocol::BusMessage::user_chat(
+        .handle_message(sylvander_api::BusMessage::user_chat(
             created.session_id.clone(),
             session_owner,
             "write the routed file",
@@ -695,10 +695,10 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
             session_id: created.session_id.clone(),
             expected_revision: created.revision,
             overrides: SessionConfigOverrides {
-                permissions: Some(sylvander_protocol::PermissionProfile {
-                    file_access: sylvander_protocol::FileAccess::ReadOnly,
-                    network_access: sylvander_protocol::NetworkAccess::Denied,
-                    approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+                permissions: Some(sylvander_api::PermissionProfile {
+                    file_access: sylvander_api::FileAccess::ReadOnly,
+                    network_access: sylvander_api::NetworkAccess::Denied,
+                    approval_policy: sylvander_api::ApprovalPolicy::Deny,
                 }),
                 ..initial_overrides.clone()
             },
@@ -720,7 +720,7 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
             session_id: created.session_id.clone(),
             expected_revision: updated.revision,
             overrides: SessionConfigOverrides {
-                user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
                     path: changed_workspace,
                     ..requested_workspace
                 }),
@@ -762,10 +762,10 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
 
     let mut config = configured_memory_test_config(&directory, &["assistant"]);
     config.agents[0].access.allow_authenticated = true;
-    let boundary = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let boundary = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "workspace-owner",
-            sylvander_protocol::AuthenticationMethod::UnixPeer,
+            sylvander_api::AuthenticationMethod::UnixPeer,
         ),
         "tui-local",
         "unix",
@@ -776,7 +776,7 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
             provider_id: "primary".into(),
             model_id: "model-a".into(),
         }),
-        user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+        user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
             execution_target: "local".into(),
             path: repository.clone(),
             read_only: false,
@@ -940,17 +940,17 @@ async fn container_coding_session_runs_in_worktree_and_survives_restart() {
                 resources: config::ContainerResourceSettings::default(),
             },
         });
-    let boundary = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let boundary = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "container-owner",
-            sylvander_protocol::AuthenticationMethod::UnixPeer,
+            sylvander_api::AuthenticationMethod::UnixPeer,
         ),
         "tui-local",
         "unix",
         "container-coding",
     );
     let overrides = SessionConfigOverrides {
-        user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+        user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
             execution_target: "container".into(),
             path: repository.clone(),
             read_only: false,
@@ -1077,10 +1077,10 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     let mut config = configured_memory_test_config(&directory, &["assistant"]);
     config.agents[0].access.allow_authenticated = true;
     let runtime = Runtime::boot_config(config).await.unwrap();
-    let boundary = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let boundary = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "channel-user",
-            sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            sylvander_api::AuthenticationMethod::PlatformIdentity,
         ),
         "channel-a",
         "test",
@@ -1218,7 +1218,7 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
             .unwrap();
     assert_eq!(success_bus.operations(), ["subscribe", "publish_chat"]);
     let chat = submitted.events.recv().await.unwrap();
-    assert!(matches!(chat.kind, sylvander_protocol::MessageKind::Chat));
+    assert!(matches!(chat.kind, sylvander_api::MessageKind::Chat));
     assert_eq!(chat.session_id, submitted.session_id);
     assert!(matches!(
         submitted.events.try_recv(),
@@ -1233,10 +1233,10 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     let mut config = configured_memory_test_config(&directory, &["assistant"]);
     config.agents[0].access.allow_authenticated = true;
     let runtime = Runtime::boot_config(config).await.unwrap();
-    let owner = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let owner = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "owner",
-            sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            sylvander_api::AuthenticationMethod::PlatformIdentity,
         ),
         "channel-a",
         "test",
@@ -1262,10 +1262,10 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     .await
     .expect("owner may inspect its context");
     assert_eq!(owner_context.model, "model-a");
-    let attacker = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let attacker = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "attacker",
-            sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            sylvander_api::AuthenticationMethod::PlatformIdentity,
         ),
         "channel-a",
         "test",
@@ -1279,10 +1279,7 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     )
     .await
     .expect_err("foreign context inspection must be rejected");
-    assert_eq!(
-        context.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(context.code, sylvander_api::BoundaryErrorCode::Forbidden);
     let compact = sylvander_channel::ChannelHost::compact_session(
         runtime.channel_host.as_ref(),
         &attacker,
@@ -1290,10 +1287,7 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     )
     .await
     .expect_err("foreign compaction must be rejected");
-    assert_eq!(
-        compact.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(compact.code, sylvander_api::BoundaryErrorCode::Forbidden);
     let preview = sylvander_channel::ChannelHost::preview_workspace_rollback(
         runtime.channel_host.as_ref(),
         &attacker,
@@ -1301,10 +1295,7 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     )
     .await
     .expect_err("foreign rollback preview must be rejected");
-    assert_eq!(
-        preview.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(preview.code, sylvander_api::BoundaryErrorCode::Forbidden);
     let rollback = sylvander_channel::ChannelHost::rollback_workspace(
         runtime.channel_host.as_ref(),
         &attacker,
@@ -1313,10 +1304,7 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     )
     .await
     .expect_err("foreign rollback must be rejected");
-    assert_eq!(
-        rollback.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(rollback.code, sylvander_api::BoundaryErrorCode::Forbidden);
 
     let load_denial = sylvander_channel::ChannelHost::load_session(
         runtime.channel_host.as_ref(),
@@ -1327,7 +1315,7 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     .expect_err("a foreign principal must not read session history");
     assert_eq!(
         load_denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
+        sylvander_api::BoundaryErrorCode::Forbidden
     );
     sylvander_channel::ChannelHost::rename_session(
         runtime.channel_host.as_ref(),
@@ -1384,10 +1372,7 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     )
     .await
     .expect_err("a foreign principal must not delete the session");
-    assert_eq!(
-        deletion.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(deletion.code, sylvander_api::BoundaryErrorCode::Forbidden);
     sylvander_channel::ChannelHost::delete_session(
         runtime.channel_host.as_ref(),
         &owner,
@@ -1431,11 +1416,11 @@ async fn attach_memory_session(
     agent: &str,
     user: &str,
 ) -> crate::agent_run::AuthenticatedSession {
-    let boundary = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal {
-            id: sylvander_protocol::PrincipalId::new(user),
-            kind: sylvander_protocol::PrincipalKind::System,
-            authentication: sylvander_protocol::AuthenticationMethod::UnixPeer,
+    let boundary = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal {
+            id: sylvander_api::PrincipalId::new(user),
+            kind: sylvander_api::PrincipalKind::System,
+            authentication: sylvander_api::AuthenticationMethod::UnixPeer,
             roles: Vec::new(),
         },
         "memory-test",
@@ -1527,10 +1512,10 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         IdentityBindingCapabilities::current()
     );
 
-    let local = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let local = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "local-alice",
-            sylvander_protocol::AuthenticationMethod::UnixPeer,
+            sylvander_api::AuthenticationMethod::UnixPeer,
         ),
         "terminal",
         "unix",
@@ -1540,8 +1525,8 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         .submit_identity_binding(
             &local,
             IdentityBindingRequest {
-                version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
-                action: sylvander_protocol::IdentityBindingAction::Begin {},
+                version: sylvander_api::IDENTITY_BINDING_PROTOCOL_VERSION,
+                action: sylvander_api::IdentityBindingAction::Begin {},
             },
         )
         .await;
@@ -1554,10 +1539,10 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         panic!("configured identity service did not issue a challenge: {issued:?}");
     };
 
-    let external = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let external = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "telegram-42",
-            sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            sylvander_api::AuthenticationMethod::PlatformIdentity,
         ),
         "bot-primary",
         "telegram",
@@ -1567,8 +1552,8 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         .submit_identity_binding(
             &external,
             IdentityBindingRequest {
-                version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
-                action: sylvander_protocol::IdentityBindingAction::Confirm {
+                version: sylvander_api::IDENTITY_BINDING_PROTOCOL_VERSION,
+                action: sylvander_api::IdentityBindingAction::Confirm {
                     challenge_id,
                     proof: secret.into_confirmation_proof(),
                 },
@@ -1586,7 +1571,7 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         UserProfileRequest {
             version: USER_PROFILE_PROTOCOL_VERSION,
             action: UserProfileAction::Create {
-                profile: sylvander_protocol::UserProfileData::default(),
+                profile: sylvander_api::UserProfileData::default(),
             },
         },
     )
@@ -2648,7 +2633,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         test_metadata(),
         vec![AgentId::new("assistant")],
     );
-    stored.config_overrides.user_workspace = Some(sylvander_protocol::SessionWorkspaceBinding {
+    stored.config_overrides.user_workspace = Some(sylvander_api::SessionWorkspaceBinding {
         execution_target: "local".into(),
         path: stored.metadata.workspace.clone(),
         read_only: false,
@@ -2688,7 +2673,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     assert_eq!(effective.execution_target, "local");
     assert_eq!(
         effective.provenance.user_workspace.kind,
-        sylvander_protocol::SessionConfigSourceKind::SessionOverride
+        sylvander_api::SessionConfigSourceKind::SessionOverride
     );
     let registry = runtime.channel_host.agent_registry.as_ref().unwrap();
     let active_agent = runtime
@@ -2756,7 +2741,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     assert_eq!(revision, 1);
     assert_eq!(
         updated.provenance.model.kind,
-        sylvander_protocol::SessionConfigSourceKind::SessionOverride
+        sylvander_api::SessionConfigSourceKind::SessionOverride
     );
     assert!(
         runtime
@@ -2769,10 +2754,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .is_err(),
         "a stale client must not overwrite a newer configuration"
     );
-    let owner = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let owner = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "test-user",
-            sylvander_protocol::AuthenticationMethod::UnixPeer,
+            sylvander_api::AuthenticationMethod::UnixPeer,
         ),
         "tui-local",
         "unix",
@@ -2882,10 +2867,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     )
     .await
     .unwrap();
-    let restricted = sylvander_protocol::PermissionProfile {
-        file_access: sylvander_protocol::FileAccess::ReadOnly,
-        network_access: sylvander_protocol::NetworkAccess::Denied,
-        approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+    let restricted = sylvander_api::PermissionProfile {
+        file_access: sylvander_api::FileAccess::ReadOnly,
+        network_access: sylvander_api::NetworkAccess::Denied,
+        approval_policy: sylvander_api::ApprovalPolicy::Deny,
     };
     let selected = sylvander_channel::ChannelHost::update_session_config(
         runtime.channel_host.as_ref(),
@@ -2920,25 +2905,25 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let missing_session = sylvander_channel::ChannelHost::authorize_message(
         runtime.channel_host.as_ref(),
         &owner,
-        &sylvander_protocol::UiClientMessage::SelectModel {
+        &sylvander_api::UiClientMessage::SelectModel {
             session_id: None,
             model: ModelSelection {
                 provider_id: "primary".into(),
                 model_id: "model-a".into(),
             },
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            reasoning_effort: sylvander_api::ReasoningEffort::Off,
         },
     )
     .await
     .expect_err("selection without session identity must fail closed");
     assert_eq!(
         missing_session.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
+        sylvander_api::BoundaryErrorCode::Forbidden
     );
-    let other_terminal = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let other_terminal = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "test-user",
-            sylvander_protocol::AuthenticationMethod::UnixPeer,
+            sylvander_api::AuthenticationMethod::UnixPeer,
         ),
         "other-terminal",
         "unix",
@@ -2947,20 +2932,17 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let denial = sylvander_channel::ChannelHost::authorize_message(
         runtime.channel_host.as_ref(),
         &other_terminal,
-        &sylvander_protocol::UiClientMessage::GetSessionConfig {
+        &sylvander_api::UiClientMessage::GetSessionConfig {
             session_id: created.session_id.0.clone(),
         },
     )
     .await
     .expect_err("the same principal from another channel instance must be denied");
-    assert_eq!(
-        denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
-    let platform_boundary = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    assert_eq!(denial.code, sylvander_api::BoundaryErrorCode::Forbidden);
+    let platform_boundary = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "telegram:bot-a:42",
-            sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            sylvander_api::AuthenticationMethod::PlatformIdentity,
         ),
         "bot-a",
         "telegram",
@@ -2999,7 +2981,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     assert_eq!(routed.session_id, platform_session);
     assert_eq!(
         routed.recipient,
-        sylvander_protocol::Recipient::Agent(AgentId::new("assistant"))
+        sylvander_api::Recipient::Agent(AgentId::new("assistant"))
     );
     let platform_stored = runtime
         .session_store
@@ -3009,7 +2991,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .unwrap();
     assert_eq!(
         routed.sender,
-        sylvander_protocol::Sender::User(platform_stored.metadata.user_id.clone())
+        sylvander_api::Sender::User(platform_stored.metadata.user_id.clone())
     );
     assert!(platform_stored.metadata.user_id.starts_with("unlinked:v1:"));
     assert_eq!(
@@ -3035,10 +3017,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .as_deref(),
         Some("42")
     );
-    let other_bot = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    let other_bot = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "telegram:bot-b:42",
-            sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            sylvander_api::AuthenticationMethod::PlatformIdentity,
         ),
         "bot-b",
         "telegram",
@@ -3053,7 +3035,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .expect_err("a context cannot resolve sessions for another Channel instance");
     assert_eq!(
         resolution_denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
+        sylvander_api::BoundaryErrorCode::Forbidden
     );
     let other_context = ChannelContext::with_runtime_services(
         runtime.bus(),
@@ -3080,11 +3062,11 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let control_denial = channel_context
         .submit_control(
             &other_bot,
-            sylvander_protocol::UiClientMessage::Approve {
+            sylvander_api::UiClientMessage::Approve {
                 session_id: platform_session.0.clone(),
                 call_id: "victim-call".into(),
                 approved: true,
-                scope: sylvander_protocol::ApprovalScope::Once,
+                scope: sylvander_api::ApprovalScope::Once,
                 reason: None,
             },
         )
@@ -3092,7 +3074,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .expect_err("an external channel must not control a victim session");
     assert_eq!(
         control_denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
+        sylvander_api::BoundaryErrorCode::Forbidden
     );
     assert!(matches!(
         victim_inbox.try_recv(),
@@ -3113,14 +3095,11 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     )
     .await
     .expect_err("another channel instance must not reuse the session");
-    assert_eq!(
-        denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
-    let stranger = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal::user(
+    assert_eq!(denial.code, sylvander_api::BoundaryErrorCode::Forbidden);
+    let stranger = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
             "other-user",
-            sylvander_protocol::AuthenticationMethod::UnixPeer,
+            sylvander_api::AuthenticationMethod::UnixPeer,
         ),
         "tui-local",
         "unix",
@@ -3135,7 +3114,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let denial = sylvander_channel::ChannelHost::authorize_message(
         runtime.channel_host.as_ref(),
         &stranger,
-        &sylvander_protocol::UiClientMessage::CreateSession {
+        &sylvander_api::UiClientMessage::CreateSession {
             request: SessionCreateRequest {
                 agent_id: AgentId::new("assistant"),
                 label: "unauthorized".into(),
@@ -3146,10 +3125,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     )
     .await
     .expect_err("an Agent allowlist must be enforced before creation");
-    assert_eq!(
-        denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(denial.code, sylvander_api::BoundaryErrorCode::Forbidden);
     let denial = sylvander_channel::ChannelHost::session_config(
         runtime.channel_host.as_ref(),
         &stranger,
@@ -3157,14 +3133,11 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     )
     .await
     .expect_err("a different principal must not read the session");
-    assert_eq!(
-        denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(denial.code, sylvander_api::BoundaryErrorCode::Forbidden);
     let chat_denial = sylvander_channel::ChannelHost::authorize_message(
         runtime.channel_host.as_ref(),
         &stranger,
-        &sylvander_protocol::UiClientMessage::Chat {
+        &sylvander_api::UiClientMessage::Chat {
             text: "cross-session attempt".into(),
             attachments: Vec::new(),
             session_id: Some(created.session_id.0.clone()),
@@ -3175,25 +3148,22 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .expect_err("message dispatch must enforce the same ownership boundary");
     assert_eq!(
         chat_denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
+        sylvander_api::BoundaryErrorCode::Forbidden
     );
-    let unauthenticated = sylvander_protocol::BoundaryContext::unauthenticated(
-        "websocket",
-        "websocket",
-        "request-ping",
-    );
+    let unauthenticated =
+        sylvander_api::BoundaryContext::unauthenticated("websocket", "websocket", "request-ping");
     let denial = sylvander_channel::ChannelHost::authorize_message(
         runtime.channel_host.as_ref(),
         &unauthenticated,
-        &sylvander_protocol::UiClientMessage::Ping,
+        &sylvander_api::UiClientMessage::Ping,
     )
     .await
     .expect_err("an unauthenticated transport must fail closed");
     assert_eq!(
         denial.code,
-        sylvander_protocol::BoundaryErrorCode::Unauthenticated
+        sylvander_api::BoundaryErrorCode::Unauthenticated
     );
-    let authentication_boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+    let authentication_boundary = sylvander_api::BoundaryContext::unauthenticated(
         "websocket",
         "websocket",
         "request-authentication-failure",
@@ -3201,14 +3171,12 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let authentication_denial = sylvander_channel::ChannelHost::reject_authentication(
         runtime.channel_host.as_ref(),
         &authentication_boundary,
-        sylvander_protocol::AuthenticationFailure::new(
-            sylvander_protocol::AuthenticationMethod::BearerToken,
-        ),
+        sylvander_api::AuthenticationFailure::new(sylvander_api::AuthenticationMethod::BearerToken),
     )
     .await;
     assert_eq!(
         authentication_denial.code,
-        sylvander_protocol::BoundaryErrorCode::Unauthenticated
+        sylvander_api::BoundaryErrorCode::Unauthenticated
     );
     assert!(
         runtime
@@ -3238,19 +3206,19 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .unwrap();
     let feedback = RunFeedback {
         target: crate::evidence::feedback_target("feedback-auth-run", "feedback-auth-turn"),
-        rating: sylvander_protocol::FeedbackRating::Positive,
+        rating: sylvander_api::FeedbackRating::Positive,
         note: None,
         correction: Some("prefer the verified result".into()),
         tags: Vec::new(),
-        task_result: Some(sylvander_protocol::FeedbackTaskResult::Succeeded),
+        task_result: Some(sylvander_api::FeedbackTaskResult::Succeeded),
         artifacts: Vec::new(),
-        validations: vec![sylvander_protocol::EvidenceReference {
+        validations: vec![sylvander_api::EvidenceReference {
             locator: "test:runtime-controls".into(),
             digest_sha256: Some("a".repeat(64)),
         }],
-        privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
+        privacy_class: sylvander_api::FeedbackPrivacyClass::Private,
     };
-    let feedback_message = sylvander_protocol::UiClientMessage::SubmitFeedback {
+    let feedback_message = sylvander_api::UiClientMessage::SubmitFeedback {
         feedback: feedback.clone(),
     };
     let feedback_id = sylvander_channel::ChannelHost::submit_feedback(
@@ -3277,7 +3245,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     );
     assert_eq!(
         stored_feedback.task_result,
-        Some(sylvander_protocol::FeedbackTaskResult::Succeeded)
+        Some(sylvander_api::FeedbackTaskResult::Succeeded)
     );
     let guardian = runtime
         .guardian
@@ -3292,10 +3260,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     )
     .await
     .expect_err("another principal must not submit feedback for the turn");
-    assert_eq!(
-        denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(denial.code, sylvander_api::BoundaryErrorCode::Forbidden);
     evidence
         .finish_run("feedback-auth-run".into(), 12, "succeeded")
         .await
@@ -3335,11 +3300,11 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     ];
     next_definition.spec.persona.system_prompt = "revision two prompt".into();
     next_definition.access = crate::config::AgentAccessConfig::default();
-    let administrator = sylvander_protocol::BoundaryContext::authenticated(
-        sylvander_protocol::AuthenticatedPrincipal {
-            id: sylvander_protocol::PrincipalId::new("operator"),
-            kind: sylvander_protocol::PrincipalKind::User,
-            authentication: sylvander_protocol::AuthenticationMethod::Internal,
+    let administrator = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal {
+            id: sylvander_api::PrincipalId::new("operator"),
+            kind: sylvander_api::PrincipalKind::User,
+            authentication: sylvander_api::AuthenticationMethod::Internal,
             roles: vec!["admin".into()],
         },
         "admin-console",
@@ -3349,7 +3314,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let mut uncomposable = next_definition.clone();
     uncomposable.prompt_profiles = vec![crate::config::PromptProfileConfig {
         id: "wrong-provider".into(),
-        qualified_models: vec![sylvander_protocol::ModelSelection {
+        qualified_models: vec![sylvander_api::ModelSelection {
             provider_id: "another-provider".into(),
             model_id: "model-a".into(),
         }],
@@ -3359,7 +3324,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let rejected = sylvander_channel::ChannelHost::agent_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::AgentAdminRequest::UpdateDefinition {
+        sylvander_api::AgentAdminRequest::UpdateDefinition {
             expected_active_revision: original_revision,
             definition: Box::new(
                 crate::agent_admin::tests::draft_from_definition(&uncomposable).unwrap(),
@@ -3370,9 +3335,9 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     assert!(
         matches!(
             rejected,
-            sylvander_protocol::AgentAdminResponse::Error {
-                error: sylvander_protocol::AgentAdminError {
-                    code: sylvander_protocol::AgentAdminErrorCode::InvalidDefinition,
+            sylvander_api::AgentAdminResponse::Error {
+                error: sylvander_api::AgentAdminError {
+                    code: sylvander_api::AgentAdminErrorCode::InvalidDefinition,
                     ..
                 }
             }
@@ -3382,7 +3347,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let inspected = sylvander_channel::ChannelHost::agent_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::AgentAdminRequest::ListRevisions {
+        sylvander_api::AgentAdminRequest::ListRevisions {
             agent_id: next_definition.spec.id.clone(),
             before_revision: None,
             limit: 10,
@@ -3391,23 +3356,23 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         inspected,
-        sylvander_protocol::AgentAdminResponse::Success { result }
+        sylvander_api::AgentAdminResponse::Success { result }
             if matches!(
                 result.as_ref(),
-                sylvander_protocol::AgentAdminResult::RevisionsListed {
+                sylvander_api::AgentAdminResult::RevisionsListed {
                     active_revision,
                     revisions,
                     ..
                 } if *active_revision == original_revision && revisions.len() == 1
             )
     ));
-    let update_request = sylvander_protocol::AgentAdminRequest::UpdateDefinition {
+    let update_request = sylvander_api::AgentAdminRequest::UpdateDefinition {
         expected_active_revision: original_revision,
         definition: Box::new(
             crate::agent_admin::tests::draft_from_definition(&next_definition).unwrap(),
         ),
     };
-    let update_message = sylvander_protocol::UiClientMessage::AgentAdmin {
+    let update_message = sylvander_api::UiClientMessage::AgentAdmin {
         request: update_request.clone(),
     };
     let denial = sylvander_channel::ChannelHost::authorize_message(
@@ -3417,10 +3382,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     )
     .await
     .expect_err("ordinary session owners must not administer Agents");
-    assert_eq!(
-        denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
-    );
+    assert_eq!(denial.code, sylvander_api::BoundaryErrorCode::Forbidden);
     sylvander_channel::ChannelHost::authorize_message(
         runtime.channel_host.as_ref(),
         &administrator,
@@ -3428,11 +3390,11 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     )
     .await
     .expect("administrators may reach the Agent administration service");
-    let registry_request = sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+    let registry_request = sylvander_api::RegistryAdminRequest::InspectProviderRevision {
         provider_id: "primary".into(),
         revision: 1,
     };
-    let registry_message = sylvander_protocol::UiClientMessage::RegistryAdmin {
+    let registry_message = sylvander_api::UiClientMessage::RegistryAdmin {
         request: registry_request.clone(),
     };
     assert!(
@@ -3459,8 +3421,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         unauthorized_registry,
-        sylvander_protocol::RegistryAdminResponse::Error { error }
-            if error.code == sylvander_protocol::RegistryAdminErrorCode::Unauthorized
+        sylvander_api::RegistryAdminResponse::Error { error }
+            if error.code == sylvander_api::RegistryAdminErrorCode::Unauthorized
     ));
     let inspected_provider = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
@@ -3470,10 +3432,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         inspected_provider,
-        sylvander_protocol::RegistryAdminResponse::Success { result }
+        sylvander_api::RegistryAdminResponse::Success { result }
             if matches!(
                 result.as_ref(),
-                sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
+                sylvander_api::RegistryAdminResult::ProviderRevisionInspected {
                     revision
                 } if revision.definition.provider_id == "primary"
                     && revision.definition.revision == 1
@@ -3482,7 +3444,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let missing_provider_revision = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+        sylvander_api::RegistryAdminRequest::InspectProviderRevision {
             provider_id: "primary".into(),
             revision: 99,
         },
@@ -3490,8 +3452,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         missing_provider_revision,
-        sylvander_protocol::RegistryAdminResponse::Error { error }
-            if error.code == sylvander_protocol::RegistryAdminErrorCode::UnknownRevision
+        sylvander_api::RegistryAdminResponse::Error { error }
+            if error.code == sylvander_api::RegistryAdminErrorCode::UnknownRevision
     ));
     let primary_binding = runtime
         .revision_provider
@@ -3507,9 +3469,9 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let create_provider = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::CreateProvider {
+        sylvander_api::RegistryAdminRequest::CreateProvider {
             provider_id: "secondary".into(),
-            definition: sylvander_protocol::ProviderDefinitionDraft {
+            definition: sylvander_api::ProviderDefinitionDraft {
                 kind: "anthropic_compatible".into(),
                 features: BTreeSet::new(),
                 base_url: model_server.uri(),
@@ -3520,19 +3482,19 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         create_provider,
-        sylvander_protocol::RegistryAdminResponse::Success { .. }
+        sylvander_api::RegistryAdminResponse::Success { .. }
     ));
     let create_model = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::CreateModel {
+        sylvander_api::RegistryAdminRequest::CreateModel {
             provider_id: "secondary".into(),
             model_id: "model-c".into(),
-            definition: sylvander_protocol::ModelDefinitionDraft {
+            definition: sylvander_api::ModelDefinitionDraft {
                 context_window: 100_000,
                 max_output_tokens: 4096,
                 capabilities: vec!["tool_use".into()],
-                lifecycle: sylvander_protocol::ModelLifecycleDraft::Active {},
+                lifecycle: sylvander_api::ModelLifecycleDraft::Active {},
                 pricing: None,
             },
         },
@@ -3540,15 +3502,15 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         create_model,
-        sylvander_protocol::RegistryAdminResponse::Success { .. }
+        sylvander_api::RegistryAdminResponse::Success { .. }
     ));
     let binding_id = "credential/runtime-audit";
     let create_credential = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
+        sylvander_api::RegistryAdminRequest::CreateCredentialBinding {
             binding_id: binding_id.into(),
-            reference: sylvander_protocol::CredentialSecretReferenceDraft::File {
+            reference: sylvander_api::CredentialSecretReferenceDraft::File {
                 path: secret.display().to_string(),
             },
         },
@@ -3556,16 +3518,16 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         create_credential,
-        sylvander_protocol::RegistryAdminResponse::Success { .. }
+        sylvander_api::RegistryAdminResponse::Success { .. }
     ));
     let stage_credential = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::StageCredentialGeneration {
+        sylvander_api::RegistryAdminRequest::StageCredentialGeneration {
             binding_id: binding_id.into(),
             generation: 2,
             expected_active_generation: 1,
-            reference: sylvander_protocol::CredentialSecretReferenceDraft::File {
+            reference: sylvander_api::CredentialSecretReferenceDraft::File {
                 path: secret.display().to_string(),
             },
         },
@@ -3573,12 +3535,12 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         stage_credential,
-        sylvander_protocol::RegistryAdminResponse::Success { .. }
+        sylvander_api::RegistryAdminResponse::Success { .. }
     ));
     let activate_credential = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::ActivateCredentialGeneration {
+        sylvander_api::RegistryAdminRequest::ActivateCredentialGeneration {
             binding_id: binding_id.into(),
             generation: 2,
             expected_active_generation: 1,
@@ -3587,12 +3549,12 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         activate_credential,
-        sylvander_protocol::RegistryAdminResponse::Success { .. }
+        sylvander_api::RegistryAdminResponse::Success { .. }
     ));
     let conflict = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::RollbackCredentialGeneration {
+        sylvander_api::RegistryAdminRequest::RollbackCredentialGeneration {
             binding_id: binding_id.into(),
             target_generation: 1,
             expected_active_generation: 1,
@@ -3601,14 +3563,14 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         conflict,
-        sylvander_protocol::RegistryAdminResponse::Error { error }
+        sylvander_api::RegistryAdminResponse::Error { error }
             if error.code
-                == sylvander_protocol::RegistryAdminErrorCode::ActiveGenerationConflict
+                == sylvander_api::RegistryAdminErrorCode::ActiveGenerationConflict
     ));
     let rollback_credential = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::RollbackCredentialGeneration {
+        sylvander_api::RegistryAdminRequest::RollbackCredentialGeneration {
             binding_id: binding_id.into(),
             target_generation: 1,
             expected_active_generation: 2,
@@ -3617,7 +3579,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         rollback_credential,
-        sylvander_protocol::RegistryAdminResponse::Success { .. }
+        sylvander_api::RegistryAdminResponse::Success { .. }
     ));
     let registry_audits = evidence.administration_audits(20).await.unwrap();
     assert!(registry_audits.iter().any(|audit| {
@@ -3688,10 +3650,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         updated,
-        sylvander_protocol::AgentAdminResponse::Success { result }
+        sylvander_api::AgentAdminResponse::Success { result }
             if matches!(
                 result.as_ref(),
-                sylvander_protocol::AgentAdminResult::DefinitionUpdated { revision }
+                sylvander_api::AgentAdminResult::DefinitionUpdated { revision }
                     if revision.definition.revision == next_definition.revision
                         && !revision.active
             )
@@ -3699,7 +3661,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let activated = sylvander_channel::ChannelHost::agent_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::AgentAdminRequest::ActivateRevision {
+        sylvander_api::AgentAdminRequest::ActivateRevision {
             agent_id: next_definition.spec.id.clone(),
             revision: next_definition.revision,
             expected_active_revision: original_revision,
@@ -3708,10 +3670,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         activated,
-        sylvander_protocol::AgentAdminResponse::Success { result }
+        sylvander_api::AgentAdminResponse::Success { result }
             if matches!(
                 result.as_ref(),
-                sylvander_protocol::AgentAdminResult::RevisionActivated {
+                sylvander_api::AgentAdminResult::RevisionActivated {
                     active_revision,
                     ..
                 } if *active_revision == next_definition.revision
@@ -3793,21 +3755,19 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .unwrap()
         .metadata
         .user_id;
-    let mut original_probe = sylvander_protocol::BusMessage::user_chat(
+    let mut original_probe = sylvander_api::BusMessage::user_chat(
         created.session_id.clone(),
         original_user,
         "revision-one-probe",
     );
-    original_probe.recipient =
-        sylvander_protocol::Recipient::Agent(next_definition.spec.id.clone());
+    original_probe.recipient = sylvander_api::Recipient::Agent(next_definition.spec.id.clone());
     runtime.bus().publish(original_probe).await.unwrap();
-    let mut activated_probe = sylvander_protocol::BusMessage::user_chat(
+    let mut activated_probe = sylvander_api::BusMessage::user_chat(
         activated_session.session_id.clone(),
         activated_user,
         "revision-two-probe",
     );
-    activated_probe.recipient =
-        sylvander_protocol::Recipient::Agent(next_definition.spec.id.clone());
+    activated_probe.recipient = sylvander_api::Recipient::Agent(next_definition.spec.id.clone());
     runtime.bus().publish(activated_probe).await.unwrap();
     let revision_requests = tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
         loop {
@@ -3865,7 +3825,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let stale_activation = sylvander_channel::ChannelHost::agent_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::AgentAdminRequest::ActivateRevision {
+        sylvander_api::AgentAdminRequest::ActivateRevision {
             agent_id: next_definition.spec.id.clone(),
             revision: original_revision,
             expected_active_revision: original_revision,
@@ -3874,9 +3834,9 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         stale_activation,
-        sylvander_protocol::AgentAdminResponse::Error {
-            error: sylvander_protocol::AgentAdminError {
-                code: sylvander_protocol::AgentAdminErrorCode::RevisionConflict,
+        sylvander_api::AgentAdminResponse::Error {
+            error: sylvander_api::AgentAdminError {
+                code: sylvander_api::AgentAdminErrorCode::RevisionConflict,
                 ..
             }
         }
@@ -3895,7 +3855,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let rolled_back = sylvander_channel::ChannelHost::agent_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::AgentAdminRequest::RollbackRevision {
+        sylvander_api::AgentAdminRequest::RollbackRevision {
             agent_id: next_definition.spec.id.clone(),
             target_revision: original_revision,
             expected_active_revision: next_definition.revision,
@@ -3904,10 +3864,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         rolled_back,
-        sylvander_protocol::AgentAdminResponse::Success { result }
+        sylvander_api::AgentAdminResponse::Success { result }
             if matches!(
                 result.as_ref(),
-                sylvander_protocol::AgentAdminResult::RevisionRolledBack {
+                sylvander_api::AgentAdminResult::RevisionRolledBack {
                     active_revision,
                     ..
                 } if *active_revision == original_revision
@@ -3932,7 +3892,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let reactivated = sylvander_channel::ChannelHost::agent_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::AgentAdminRequest::ActivateRevision {
+        sylvander_api::AgentAdminRequest::ActivateRevision {
             agent_id: next_definition.spec.id.clone(),
             revision: next_definition.revision,
             expected_active_revision: original_revision,
@@ -3941,10 +3901,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await;
     assert!(matches!(
         reactivated,
-        sylvander_protocol::AgentAdminResponse::Success { result }
+        sylvander_api::AgentAdminResponse::Success { result }
             if matches!(
                 result.as_ref(),
-                sylvander_protocol::AgentAdminResult::RevisionActivated {
+                sylvander_api::AgentAdminResult::RevisionActivated {
                     active_revision,
                     ..
                 } if *active_revision == next_definition.revision
@@ -3978,16 +3938,14 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             && audit.outcome == "failed"
             && audit.error_code.as_deref()
                 == Some(
-                    agent_admin_error_code(
-                        sylvander_protocol::AgentAdminErrorCode::RevisionConflict,
-                    )
-                    .as_str(),
+                    agent_admin_error_code(sylvander_api::AgentAdminErrorCode::RevisionConflict)
+                        .as_str(),
                 )
     }));
     let owner_denial = sylvander_channel::ChannelHost::authorize_message(
         runtime.channel_host.as_ref(),
         &owner,
-        &sylvander_protocol::UiClientMessage::GetSessionConfig {
+        &sylvander_api::UiClientMessage::GetSessionConfig {
             session_id: created.session_id.0.clone(),
         },
     )
@@ -3995,7 +3953,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .expect_err("activating a restrictive Agent policy must revoke existing access");
     assert_eq!(
         owner_denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
+        sylvander_api::BoundaryErrorCode::Forbidden
     );
     assert!(
         sylvander_channel::ChannelHost::discover_agents(runtime.channel_host.as_ref(), &owner)
@@ -4012,45 +3970,45 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .expect_err("direct session reads must enforce the active Agent policy");
     assert_eq!(
         direct_denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
+        sylvander_api::BoundaryErrorCode::Forbidden
     );
     let feedback_denial = sylvander_channel::ChannelHost::submit_feedback(
         runtime.channel_host.as_ref(),
         &owner,
         RunFeedback {
             target: crate::evidence::feedback_target("feedback-auth-run", "feedback-auth-turn"),
-            rating: sylvander_protocol::FeedbackRating::Positive,
+            rating: sylvander_api::FeedbackRating::Positive,
             note: None,
             correction: None,
             tags: Vec::new(),
             task_result: None,
             artifacts: Vec::new(),
             validations: Vec::new(),
-            privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
+            privacy_class: sylvander_api::FeedbackPrivacyClass::Private,
         },
     )
     .await
     .expect_err("direct feedback writes must enforce the active Agent policy");
     assert_eq!(
         feedback_denial.code,
-        sylvander_protocol::BoundaryErrorCode::Forbidden
+        sylvander_api::BoundaryErrorCode::Forbidden
     );
 
     for principal in [
-        sylvander_protocol::AuthenticatedPrincipal {
-            id: sylvander_protocol::PrincipalId::new("operator"),
-            kind: sylvander_protocol::PrincipalKind::User,
-            authentication: sylvander_protocol::AuthenticationMethod::Internal,
+        sylvander_api::AuthenticatedPrincipal {
+            id: sylvander_api::PrincipalId::new("operator"),
+            kind: sylvander_api::PrincipalKind::User,
+            authentication: sylvander_api::AuthenticationMethod::Internal,
             roles: vec!["admin".into()],
         },
-        sylvander_protocol::AuthenticatedPrincipal {
-            id: sylvander_protocol::PrincipalId::new("runtime"),
-            kind: sylvander_protocol::PrincipalKind::System,
-            authentication: sylvander_protocol::AuthenticationMethod::Internal,
+        sylvander_api::AuthenticatedPrincipal {
+            id: sylvander_api::PrincipalId::new("runtime"),
+            kind: sylvander_api::PrincipalKind::System,
+            authentication: sylvander_api::AuthenticationMethod::Internal,
             roles: Vec::new(),
         },
     ] {
-        let privileged = sylvander_protocol::BoundaryContext::authenticated(
+        let privileged = sylvander_api::BoundaryContext::authenticated(
             principal,
             "internal-control",
             "internal",
@@ -4059,7 +4017,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         sylvander_channel::ChannelHost::authorize_message(
             runtime.channel_host.as_ref(),
             &privileged,
-            &sylvander_protocol::UiClientMessage::GetSessionConfig {
+            &sylvander_api::UiClientMessage::GetSessionConfig {
                 session_id: created.session_id.0.clone(),
             },
         )

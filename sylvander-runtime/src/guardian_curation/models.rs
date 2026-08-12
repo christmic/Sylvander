@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sylvander_protocol::{AgentId, UserId};
+use sylvander_api::{AgentId, UserId};
 
 use crate::capability_runtime::RuntimeOwnerScope;
 

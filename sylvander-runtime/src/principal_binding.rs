@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
-use sylvander_protocol::UserId;
+use sylvander_api::UserId;
 use tokio::sync::Mutex;
 use tokio::task;
 use uuid::Uuid;

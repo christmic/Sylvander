@@ -1,5 +1,5 @@
 use super::*;
-use sylvander_protocol::{
+use sylvander_api::{
     AgentAccessDraft, AgentHookDraft, AgentId, AgentPromptProfileDraft, AgentUiCommandDraft,
     AuthenticationMethod, ModelSelection, SessionWorkspaceBinding,
 };
@@ -30,7 +30,7 @@ pub(crate) fn draft_from_definition(
             .memory_stores
             .iter()
             .map(|store| {
-                Ok(sylvander_protocol::AgentMemoryStoreDraft {
+                Ok(sylvander_api::AgentMemoryStoreDraft {
                     store_type: store.store_type.clone(),
                     path: store
                         .path
@@ -53,10 +53,10 @@ pub(crate) fn draft_from_definition(
             .map(|hook| AgentHookDraft {
                 name: hook.name.clone(),
                 phase: match hook.phase {
-                    AgentHookPhase::BeforeTool => sylvander_protocol::AgentHookPhase::BeforeTool,
-                    AgentHookPhase::AfterTool => sylvander_protocol::AgentHookPhase::AfterTool,
-                    AgentHookPhase::BeforeTurn => sylvander_protocol::AgentHookPhase::BeforeTurn,
-                    AgentHookPhase::AfterTurn => sylvander_protocol::AgentHookPhase::AfterTurn,
+                    AgentHookPhase::BeforeTool => sylvander_api::AgentHookPhase::BeforeTool,
+                    AgentHookPhase::AfterTool => sylvander_api::AgentHookPhase::AfterTool,
+                    AgentHookPhase::BeforeTurn => sylvander_api::AgentHookPhase::BeforeTurn,
+                    AgentHookPhase::AfterTurn => sylvander_api::AgentHookPhase::AfterTurn,
                 },
                 command: hook.command.clone(),
                 timeout_secs: hook.timeout_secs,
@@ -89,7 +89,7 @@ pub(crate) fn draft_from_definition(
         workspace_mounts: definition
             .workspace_mounts
             .iter()
-            .map(|mount| sylvander_protocol::SessionWorkspaceMount {
+            .map(|mount| sylvander_api::SessionWorkspaceMount {
                 reference: mount.reference.clone(),
                 role: mount.role,
                 binding: SessionWorkspaceBinding {
@@ -108,7 +108,7 @@ pub(crate) fn draft_from_definition(
             .collect(),
         default_prompt_profile: definition.default_prompt_profile.clone(),
         allow_session_prompt: definition.allow_session_prompt,
-        access: sylvander_protocol::AgentAccessDraft {
+        access: sylvander_api::AgentAccessDraft {
             allow_authenticated: definition.access.allow_authenticated,
             allowed_principals: definition.access.allowed_principals.clone(),
             allowed_roles: definition.access.allowed_roles.clone(),
@@ -226,7 +226,7 @@ fn draft() -> AgentDefinitionDraft {
         ui_commands: Vec::new(),
         hooks: vec![AgentHookDraft {
             name: "lint".into(),
-            phase: sylvander_protocol::AgentHookPhase::BeforeTool,
+            phase: sylvander_api::AgentHookPhase::BeforeTool,
             command: "cargo check --quiet".into(),
             timeout_secs: 20,
             blocking: true,
@@ -234,7 +234,7 @@ fn draft() -> AgentDefinitionDraft {
         tool_presentations: vec![AgentToolPresentationDraft {
             tool_name: "search".into(),
             label: "Search docs".into(),
-            kind: sylvander_protocol::ToolPresentationKind::Search,
+            kind: sylvander_api::ToolPresentationKind::Search,
             target_field: Some("query".into()),
         }],
         behavior: AgentBehaviorDraft::default(),
@@ -300,7 +300,7 @@ fn redaction_returns_hashes_and_counts_not_sensitive_values() {
     assert_eq!(view.definition.hooks[0].name, "lint");
     assert_eq!(
         view.definition.hooks[0].phase,
-        sylvander_protocol::AgentHookPhase::BeforeTool
+        sylvander_api::AgentHookPhase::BeforeTool
     );
     assert!(view.definition.hooks[0].blocking);
     assert_eq!(

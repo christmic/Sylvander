@@ -39,20 +39,20 @@ impl CredentialLeaseSource for RotatingLeaseSource {
 }
 
 struct SessionConfigHost {
-    states: Mutex<HashMap<String, sylvander_protocol::SessionConfigState>>,
+    states: Mutex<HashMap<String, sylvander_api::SessionConfigState>>,
 }
 
 struct CredentialRegistryHost {
-    received: Mutex<Option<sylvander_protocol::RegistryAdminRequest>>,
+    received: Mutex<Option<sylvander_api::RegistryAdminRequest>>,
 }
 
 #[async_trait]
 impl ChannelHost for CredentialRegistryHost {
     async fn authorize_message(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         message: &ClientMsg,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         if matches!(message, ClientMsg::IdentityBinding { .. }) {
             return Ok(());
         }
@@ -64,7 +64,7 @@ impl ChannelHost for CredentialRegistryHost {
         {
             Ok(())
         } else {
-            Err(sylvander_protocol::BoundaryError::forbidden(
+            Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 "registry_admin",
             ))
@@ -73,53 +73,53 @@ impl ChannelHost for CredentialRegistryHost {
 
     async fn discover_agents(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-    ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::AgentDescriptor>, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn create_session(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::SessionCreateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionCreateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn session_config(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
+        _: &sylvander_api::BoundaryContext,
         _: &SessionId,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn update_session_config(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::SessionConfigUpdateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionConfigUpdateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn submit_feedback(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::RunFeedback,
-    ) -> Result<String, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::RunFeedback,
+    ) -> Result<String, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
-    fn identity_binding_capabilities(&self) -> sylvander_protocol::IdentityBindingCapabilities {
-        sylvander_protocol::IdentityBindingCapabilities::current()
+    fn identity_binding_capabilities(&self) -> sylvander_api::IdentityBindingCapabilities {
+        sylvander_api::IdentityBindingCapabilities::current()
     }
 
     async fn identity_binding(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         identity: sylvander_channel::AuthenticatedTransportIdentity,
-        _request: sylvander_protocol::IdentityBindingRequest,
-    ) -> sylvander_protocol::IdentityBindingResponse {
+        _request: sylvander_api::IdentityBindingRequest,
+    ) -> sylvander_api::IdentityBindingResponse {
         let (transport, instance, principal) = identity.into_parts();
         assert_eq!(transport, boundary.transport);
         assert_eq!(instance, boundary.channel_instance_id);
@@ -127,10 +127,10 @@ impl ChannelHost for CredentialRegistryHost {
             principal,
             boundary.principal.as_ref().expect("principal").id.0
         );
-        sylvander_protocol::IdentityBindingResponse::Resolved {
-            version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
-            binding: sylvander_protocol::IdentityBindingView {
-                user_id: sylvander_protocol::UserId::new("stable-ws-user"),
+        sylvander_api::IdentityBindingResponse::Resolved {
+            version: sylvander_api::IDENTITY_BINDING_PROTOCOL_VERSION,
+            binding: sylvander_api::IdentityBindingView {
+                user_id: sylvander_api::UserId::new("stable-ws-user"),
                 revision: 3,
                 linked_at_unix_secs: 5,
             },
@@ -139,17 +139,17 @@ impl ChannelHost for CredentialRegistryHost {
 
     async fn registry_admin(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        request: sylvander_protocol::RegistryAdminRequest,
-    ) -> sylvander_protocol::RegistryAdminResponse {
+        _: &sylvander_api::BoundaryContext,
+        request: sylvander_api::RegistryAdminRequest,
+    ) -> sylvander_api::RegistryAdminResponse {
         *self.received.lock().await = Some(request);
-        sylvander_protocol::RegistryAdminResponse::Success {
+        sylvander_api::RegistryAdminResponse::Success {
             result: Box::new(
-                sylvander_protocol::RegistryAdminResult::CredentialBindingCreated {
-                    generation: sylvander_protocol::CredentialGenerationView {
+                sylvander_api::RegistryAdminResult::CredentialBindingCreated {
+                    generation: sylvander_api::CredentialGenerationView {
                         binding_id_sha256: "binding-digest".into(),
                         generation: 1,
-                        reference_kind: sylvander_protocol::CredentialReferenceKind::Environment,
+                        reference_kind: sylvander_api::CredentialReferenceKind::Environment,
                         reference_configured: true,
                         reference_digest_sha256: "reference-digest".into(),
                         created_at_unix_secs: 7,
@@ -161,8 +161,8 @@ impl ChannelHost for CredentialRegistryHost {
     }
 }
 
-fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
-    use sylvander_protocol::{
+fn config_state(id: &str) -> sylvander_api::SessionConfigState {
+    use sylvander_api::{
         SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
         SessionEffectiveConfig,
     };
@@ -170,10 +170,10 @@ fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
         kind: SessionConfigSourceKind::AgentDefault,
         reference: Some("agent-1".into()),
     };
-    sylvander_protocol::SessionConfigState {
+    sylvander_api::SessionConfigState {
         session_id: SessionId::new(id),
         revision: 1,
-        overrides: sylvander_protocol::SessionConfigOverrides::default(),
+        overrides: sylvander_api::SessionConfigOverrides::default(),
         effective: SessionEffectiveConfig {
             agent_id: AgentId::new("agent-1"),
             agent_revision: 1,
@@ -181,11 +181,11 @@ fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
             provider_revision: 1,
             model_id: "default-model".into(),
             model_revision: 1,
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
-            permissions: sylvander_protocol::PermissionProfile::default(),
+            reasoning_effort: sylvander_api::ReasoningEffort::Off,
+            permissions: sylvander_api::PermissionProfile::default(),
             prompt_profile: None,
             system_prompt_sha256: "digest".into(),
-            prompt_manifest: sylvander_protocol::PromptManifest {
+            prompt_manifest: sylvander_api::PromptManifest {
                 layers: Vec::new(),
                 aggregate_sha256: "manifest".into(),
                 total_bytes: 0,
@@ -212,16 +212,16 @@ fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
 impl ChannelHost for SessionConfigHost {
     async fn authorize_message(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         message: &ClientMsg,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         if matches!(message, ClientMsg::RegistryAdmin { .. })
             && !boundary
                 .principal
                 .as_ref()
                 .is_some_and(|principal| principal.has_role("admin"))
         {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
+            return Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 "registry_admin",
             ));
@@ -231,14 +231,14 @@ impl ChannelHost for SessionConfigHost {
 
     async fn list_sessions(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-    ) -> Result<Vec<sylvander_protocol::UiSessionInfo>, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::UiSessionInfo>, sylvander_api::BoundaryError> {
         let mut sessions = self
             .states
             .lock()
             .await
             .keys()
-            .map(|id| sylvander_protocol::UiSessionInfo {
+            .map(|id| sylvander_api::UiSessionInfo {
                 id: id.clone(),
                 label: format!("Session {id}"),
                 workspace: "/workspace".into(),
@@ -251,18 +251,18 @@ impl ChannelHost for SessionConfigHost {
 
     async fn discover_agents(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-    ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError> {
-        let model = |provider: &str, id: &str| sylvander_protocol::ModelDescriptor {
+        _: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::AgentDescriptor>, sylvander_api::BoundaryError> {
+        let model = |provider: &str, id: &str| sylvander_api::ModelDescriptor {
             id: id.into(),
             provider: provider.into(),
             capabilities: 0,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
-            lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Off],
+            lifecycle: sylvander_api::ModelLifecycle::Active,
             pricing: None,
         };
-        Ok(vec![sylvander_protocol::AgentDescriptor {
+        Ok(vec![sylvander_api::AgentDescriptor {
             id: AgentId::new("agent-1"),
             revision: 1,
             name: "Agent".into(),
@@ -281,35 +281,33 @@ impl ChannelHost for SessionConfigHost {
 
     async fn create_session(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::SessionCreateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionCreateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn session_config(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         self.states
             .lock()
             .await
             .get(&session_id.0)
             .cloned()
-            .ok_or_else(|| {
-                sylvander_protocol::BoundaryError::forbidden(boundary, "get_session_config")
-            })
+            .ok_or_else(|| sylvander_api::BoundaryError::forbidden(boundary, "get_session_config"))
     }
 
     async fn update_session_config(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        request: sylvander_protocol::SessionConfigUpdateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        boundary: &sylvander_api::BoundaryContext,
+        request: sylvander_api::SessionConfigUpdateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         let mut states = self.states.lock().await;
         let state = states.get_mut(&request.session_id.0).ok_or_else(|| {
-            sylvander_protocol::BoundaryError::forbidden(boundary, "update_session_config")
+            sylvander_api::BoundaryError::forbidden(boundary, "update_session_config")
         })?;
         assert_eq!(request.expected_revision, state.revision);
         state.revision += 1;
@@ -329,25 +327,25 @@ impl ChannelHost for SessionConfigHost {
 
     async fn submit_feedback(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::RunFeedback,
-    ) -> Result<String, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::RunFeedback,
+    ) -> Result<String, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn agent_admin(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        request: sylvander_protocol::AgentAdminRequest,
-    ) -> sylvander_protocol::AgentAdminResponse {
-        let sylvander_protocol::AgentAdminRequest::ActivateRevision {
+        _: &sylvander_api::BoundaryContext,
+        request: sylvander_api::AgentAdminRequest,
+    ) -> sylvander_api::AgentAdminResponse {
+        let sylvander_api::AgentAdminRequest::ActivateRevision {
             agent_id, revision, ..
         } = request
         else {
             unreachable!()
         };
-        sylvander_protocol::AgentAdminResponse::Success {
-            result: Box::new(sylvander_protocol::AgentAdminResult::RevisionActivated {
+        sylvander_api::AgentAdminResponse::Success {
+            result: Box::new(sylvander_api::AgentAdminResult::RevisionActivated {
                 agent_id,
                 active_revision: revision,
             }),
@@ -356,9 +354,9 @@ impl ChannelHost for SessionConfigHost {
 
     async fn registry_admin(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        request: sylvander_protocol::RegistryAdminRequest,
-    ) -> sylvander_protocol::RegistryAdminResponse {
+        boundary: &sylvander_api::BoundaryContext,
+        request: sylvander_api::RegistryAdminRequest,
+    ) -> sylvander_api::RegistryAdminResponse {
         assert!(
             boundary
                 .principal
@@ -366,18 +364,18 @@ impl ChannelHost for SessionConfigHost {
                 .is_some_and(|principal| principal.has_role("admin")),
             "non-administrator reached registry dispatch"
         );
-        let sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+        let sylvander_api::RegistryAdminRequest::InspectProviderRevision {
             provider_id,
             revision,
         } = request
         else {
             unreachable!()
         };
-        sylvander_protocol::RegistryAdminResponse::Success {
+        sylvander_api::RegistryAdminResponse::Success {
             result: Box::new(
-                sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
-                    revision: sylvander_protocol::ProviderRevisionView {
-                        definition: sylvander_protocol::RedactedProviderDefinition {
+                sylvander_api::RegistryAdminResult::ProviderRevisionInspected {
+                    revision: sylvander_api::ProviderRevisionView {
+                        definition: sylvander_api::RedactedProviderDefinition {
                             provider_id,
                             revision,
                             kind: "mock".into(),
@@ -403,18 +401,18 @@ async fn welcome_declares_administration_and_credential_lifecycle_capabilities()
         None,
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "client",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     handle_client_msg(
         ClientMsg::Hello {
-            protocol: sylvander_protocol::UiProtocolHello {
+            protocol: sylvander_api::UiProtocolHello {
                 client_name: "test-client".into(),
-                min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
-                max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+                min_version: sylvander_api::UI_PROTOCOL_MIN_VERSION,
+                max_version: sylvander_api::UI_PROTOCOL_MAX_VERSION,
                 capabilities: Vec::new(),
             },
         },
@@ -435,7 +433,7 @@ async fn welcome_declares_administration_and_credential_lifecycle_capabilities()
         "credential_registry_lifecycle",
         "provider_model_registry_lifecycle",
         "sessions",
-        sylvander_protocol::IDENTITY_BINDING_CAPABILITY,
+        sylvander_api::IDENTITY_BINDING_CAPABILITY,
     ] {
         assert!(
             protocol.capabilities.iter().any(|item| item == capability),
@@ -457,9 +455,9 @@ async fn list_sessions_dispatches_to_runtime_channel_host_and_returns_typed_rows
         })),
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "client",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -483,7 +481,7 @@ async fn list_sessions_dispatches_to_runtime_channel_host_and_returns_typed_rows
 
 fn hello(version: u16) -> ClientMsg {
     ClientMsg::Hello {
-        protocol: sylvander_protocol::UiProtocolHello {
+        protocol: sylvander_api::UiProtocolHello {
             client_name: "test-client".into(),
             min_version: version,
             max_version: version,
@@ -500,9 +498,9 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
         None,
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "client",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut selected = None;
@@ -526,7 +524,7 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
 
     assert!(
         !handle_protocol_message(
-            hello(sylvander_protocol::UI_PROTOCOL_VERSION - 1),
+            hello(sylvander_api::UI_PROTOCOL_VERSION - 1),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -543,7 +541,7 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
 
     assert!(
         handle_protocol_message(
-            hello(sylvander_protocol::UI_PROTOCOL_VERSION),
+            hello(sylvander_api::UI_PROTOCOL_VERSION),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -577,7 +575,7 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
 
     assert!(
         handle_protocol_message(
-            hello(sylvander_protocol::UI_PROTOCOL_VERSION),
+            hello(sylvander_api::UI_PROTOCOL_VERSION),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -604,15 +602,15 @@ async fn credential_mutation_requires_the_current_protocol_before_dispatch() {
         Some(ui.clone()),
         None,
     );
-    let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let mut principal = sylvander_api::AuthenticatedPrincipal::user(
         "admin",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     principal.roles.push("admin".into());
     let request = || ClientMsg::RegistryAdmin {
-        request: sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
+        request: sylvander_api::RegistryAdminRequest::CreateCredentialBinding {
             binding_id: "private".into(),
-            reference: sylvander_protocol::CredentialSecretReferenceDraft::Environment {
+            reference: sylvander_api::CredentialSecretReferenceDraft::Environment {
                 name: "PRIVATE_TOKEN".into(),
             },
         },
@@ -622,7 +620,7 @@ async fn credential_mutation_requires_the_current_protocol_before_dispatch() {
 
     assert!(
         !handle_protocol_message(
-            hello(sylvander_protocol::UI_PROTOCOL_VERSION - 1),
+            hello(sylvander_api::UI_PROTOCOL_VERSION - 1),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -649,7 +647,7 @@ async fn credential_mutation_requires_the_current_protocol_before_dispatch() {
     selected = None;
     assert!(
         handle_protocol_message(
-            hello(sylvander_protocol::UI_PROTOCOL_VERSION),
+            hello(sylvander_api::UI_PROTOCOL_VERSION),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -692,15 +690,15 @@ async fn agent_admin_dispatches_through_the_channel_host() {
         })),
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "admin",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     handle_client_msg(
         ClientMsg::AgentAdmin {
-            request: sylvander_protocol::AgentAdminRequest::ActivateRevision {
+            request: sylvander_api::AgentAdminRequest::ActivateRevision {
                 agent_id: AgentId::new("oraculo"),
                 revision: 5,
                 expected_active_revision: 4,
@@ -717,12 +715,12 @@ async fn agent_admin_dispatches_through_the_channel_host() {
     assert!(matches!(
         rx.recv().await.expect("Agent admin response"),
         ServerMsg::AgentAdmin {
-            response: sylvander_protocol::AgentAdminResponse::Success {
+            response: sylvander_api::AgentAdminResponse::Success {
                 result
             }
         } if matches!(
             result.as_ref(),
-            sylvander_protocol::AgentAdminResult::RevisionActivated {
+            sylvander_api::AgentAdminResult::RevisionActivated {
                 agent_id,
                 active_revision: 5,
             } if agent_id == &AgentId::new("oraculo")
@@ -740,17 +738,17 @@ async fn identity_binding_round_trip_uses_authenticated_websocket_ingress() {
         })),
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "websocket-user",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     handle_client_msg(
         ClientMsg::IdentityBinding {
-            request: Arc::new(sylvander_protocol::IdentityBindingRequest {
-                version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
-                action: sylvander_protocol::IdentityBindingAction::Resolve {},
+            request: Arc::new(sylvander_api::IdentityBindingRequest {
+                version: sylvander_api::IDENTITY_BINDING_PROTOCOL_VERSION,
+                action: sylvander_api::IdentityBindingAction::Resolve {},
             }),
         },
         &context,
@@ -769,10 +767,10 @@ async fn identity_binding_round_trip_uses_authenticated_websocket_ingress() {
         ServerMsg::IdentityBinding { response }
             if matches!(
                 response.as_ref(),
-                sylvander_protocol::IdentityBindingResponse::Resolved {
+                sylvander_api::IdentityBindingResponse::Resolved {
                     binding,
                     ..
-                } if binding.user_id == sylvander_protocol::UserId::new("stable-ws-user")
+                } if binding.user_id == sylvander_api::UserId::new("stable-ws-user")
                     && binding.revision == 3
             )
     ));
@@ -786,14 +784,14 @@ async fn registry_admin_without_channel_host_returns_content_free_error() {
         None,
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "admin",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
     handle_client_msg(
         ClientMsg::RegistryAdmin {
-            request: sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+            request: sylvander_api::RegistryAdminRequest::InspectProviderRevision {
                 provider_id: "private-provider".into(),
                 revision: 42,
             },
@@ -811,9 +809,9 @@ async fn registry_admin_without_channel_host_returns_content_free_error() {
     assert!(matches!(
         response,
         ServerMsg::RegistryAdmin {
-            response: sylvander_protocol::RegistryAdminResponse::Error {
-                error: sylvander_protocol::RegistryAdminError {
-                    code: sylvander_protocol::RegistryAdminErrorCode::Unauthorized,
+            response: sylvander_api::RegistryAdminResponse::Error {
+                error: sylvander_api::RegistryAdminError {
+                    code: sylvander_api::RegistryAdminErrorCode::Unauthorized,
                     provider_id: None,
                     revision: None,
                     ..
@@ -825,9 +823,7 @@ async fn registry_admin_without_channel_host_returns_content_free_error() {
     assert!(!json.contains("42"));
 }
 
-async fn dispatch_registry_admin_as(
-    principal: sylvander_protocol::AuthenticatedPrincipal,
-) -> ServerMsg {
+async fn dispatch_registry_admin_as(principal: sylvander_api::AuthenticatedPrincipal) -> ServerMsg {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Some("test".into()),
@@ -860,9 +856,9 @@ async fn dispatch_registry_admin_as(
 
 #[tokio::test]
 async fn registry_admin_round_trip_preserves_success_response() {
-    let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let mut principal = sylvander_api::AuthenticatedPrincipal::user(
         "admin",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     principal.roles.push("admin".into());
     let response = dispatch_registry_admin_as(principal).await;
@@ -872,10 +868,10 @@ async fn registry_admin_round_trip_preserves_success_response() {
     assert!(matches!(
         decoded,
         ServerMsg::RegistryAdmin {
-            response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            response: sylvander_api::RegistryAdminResponse::Success { result }
         } if matches!(
             result.as_ref(),
-            sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected { revision }
+            sylvander_api::RegistryAdminResult::ProviderRevisionInspected { revision }
                 if revision.definition.provider_id == "provider-a"
                     && revision.definition.revision == 9
         )
@@ -896,9 +892,9 @@ async fn credential_binding_create_dispatches_reference_without_echoing_it() {
         Some(ui.clone()),
         None,
     );
-    let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let mut principal = sylvander_api::AuthenticatedPrincipal::user(
         "admin",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     principal.roles.push("admin".into());
     let request: ClientMsg = serde_json::from_value(serde_json::json!({
@@ -933,10 +929,10 @@ async fn credential_binding_create_dispatches_reference_without_echoing_it() {
         .expect("registry service received request");
     assert!(matches!(
         received,
-        sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
+        sylvander_api::RegistryAdminRequest::CreateCredentialBinding {
             binding_id,
             reference:
-                sylvander_protocol::CredentialSecretReferenceDraft::Environment { name },
+                sylvander_api::CredentialSecretReferenceDraft::Environment { name },
         } if binding_id == BINDING_ID && name == ENVIRONMENT_NAME
     ));
 
@@ -944,10 +940,10 @@ async fn credential_binding_create_dispatches_reference_without_echoing_it() {
     assert!(matches!(
         &response,
         ServerMsg::RegistryAdmin {
-            response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            response: sylvander_api::RegistryAdminResponse::Success { result }
         } if matches!(
             result.as_ref(),
-            sylvander_protocol::RegistryAdminResult::CredentialBindingCreated { generation }
+            sylvander_api::RegistryAdminResult::CredentialBindingCreated { generation }
                 if generation.binding_id_sha256 == "binding-digest"
                     && generation.reference_digest_sha256 == "reference-digest"
                     && generation.reference_configured
@@ -960,14 +956,14 @@ async fn credential_binding_create_dispatches_reference_without_echoing_it() {
 
 #[tokio::test]
 async fn registry_admin_non_administrator_is_rejected_before_dispatch() {
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "reader",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     assert!(matches!(
         dispatch_registry_admin_as(principal).await,
         ServerMsg::BoundaryDenied { error }
-            if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
+            if error.code == sylvander_api::BoundaryErrorCode::Forbidden
                 && error.operation == "registry_admin"
     ));
 }
@@ -982,11 +978,11 @@ fn message_limit_is_configurable() {
 impl ChannelHost for DenyAgentAccess {
     async fn reject_authentication(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::AuthenticationFailure,
-    ) -> sylvander_protocol::BoundaryError {
-        sylvander_protocol::BoundaryError {
-            code: sylvander_protocol::BoundaryErrorCode::RateLimited,
+        boundary: &sylvander_api::BoundaryContext,
+        _: sylvander_api::AuthenticationFailure,
+    ) -> sylvander_api::BoundaryError {
+        sylvander_api::BoundaryError {
+            code: sylvander_api::BoundaryErrorCode::RateLimited,
             operation: "authenticate_bearer_token".into(),
             request_id: boundary.request_id.clone(),
             message: "request rate limit exceeded".into(),
@@ -996,14 +992,14 @@ impl ChannelHost for DenyAgentAccess {
 
     async fn authorize_message(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        message: &sylvander_protocol::UiClientMessage,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        boundary: &sylvander_api::BoundaryContext,
+        message: &sylvander_api::UiClientMessage,
+    ) -> Result<(), sylvander_api::BoundaryError> {
         if matches!(
             message,
-            sylvander_protocol::UiClientMessage::CreateSession { .. }
+            sylvander_api::UiClientMessage::CreateSession { .. }
         ) {
-            Err(sylvander_protocol::BoundaryError::forbidden(
+            Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 "create_session",
             ))
@@ -1014,10 +1010,10 @@ impl ChannelHost for DenyAgentAccess {
 
     async fn submit_chat(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         _: sylvander_channel::ExternalChatRequest,
-    ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
-        Err(sylvander_protocol::BoundaryError::forbidden(
+    ) -> Result<sylvander_channel::SubmittedChat, sylvander_api::BoundaryError> {
+        Err(sylvander_api::BoundaryError::forbidden(
             boundary,
             "submit_chat",
         ))
@@ -1025,40 +1021,40 @@ impl ChannelHost for DenyAgentAccess {
 
     async fn discover_agents(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-    ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::AgentDescriptor>, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn create_session(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::SessionCreateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionCreateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         panic!("denied Agent access must stop before session creation")
     }
 
     async fn session_config(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
+        _: &sylvander_api::BoundaryContext,
         _: &SessionId,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn update_session_config(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::SessionConfigUpdateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionConfigUpdateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn submit_feedback(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::RunFeedback,
-    ) -> Result<String, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::RunFeedback,
+    ) -> Result<String, sylvander_api::BoundaryError> {
         unreachable!()
     }
 }
@@ -1160,9 +1156,9 @@ async fn first_chat_cannot_create_a_session_without_agent_access() {
         Some(Arc::new(DenyAgentAccess)),
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "caller",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -1184,7 +1180,7 @@ async fn first_chat_cannot_create_a_session_without_agent_access() {
     assert!(matches!(
         rx.recv().await,
         Some(ServerMsg::BoundaryDenied { error })
-            if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
+            if error.code == sylvander_api::BoundaryErrorCode::Forbidden
     ));
 }
 
@@ -1224,20 +1220,20 @@ async fn selection_updates_only_the_addressed_session() {
         Some(ui.clone()),
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "caller",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     handle_client_msg(
         ClientMsg::SelectModel {
             session_id: Some("session-a".into()),
-            model: sylvander_protocol::ModelSelection {
+            model: sylvander_api::ModelSelection {
                 provider_id: "test".into(),
                 model_id: "thinking-model".into(),
             },
-            reasoning_effort: sylvander_protocol::ReasoningEffort::High,
+            reasoning_effort: sylvander_api::ReasoningEffort::High,
         },
         &context,
         &AgentId::new("agent-1"),
@@ -1253,13 +1249,13 @@ async fn selection_updates_only_the_addressed_session() {
             if state.session_id.0 == "session-a"
                 && state.effective.model_id == "thinking-model"
                 && state.effective.reasoning_effort
-                    == sylvander_protocol::ReasoningEffort::High
+                    == sylvander_api::ReasoningEffort::High
     ));
     let states = ui.states.lock().await;
     assert_eq!(states["session-a"].revision, 2);
     assert_eq!(
         states["session-a"].overrides.model,
-        Some(sylvander_protocol::ModelSelection {
+        Some(sylvander_api::ModelSelection {
             provider_id: "test".into(),
             model_id: "thinking-model".into(),
         })
@@ -1274,9 +1270,9 @@ async fn session_prompt_is_redacted_from_the_websocket_payload() {
     let mut state = config_state("session-secret");
     state.overrides.system_prompt = Some(SENTINEL.into());
     state.effective.system_prompt_sha256 = DIGEST.into();
-    state.effective.prompt_manifest = sylvander_protocol::PromptManifest {
-        layers: vec![sylvander_protocol::PromptLayerDigest {
-            kind: sylvander_protocol::PromptLayerKind::SessionInput,
+    state.effective.prompt_manifest = sylvander_api::PromptManifest {
+        layers: vec![sylvander_api::PromptLayerDigest {
+            kind: sylvander_api::PromptLayerKind::SessionInput,
             reference: Some("session".into()),
             sha256: DIGEST.into(),
             byte_count: SENTINEL.len() as u64,
@@ -1292,9 +1288,9 @@ async fn session_prompt_is_redacted_from_the_websocket_payload() {
         })),
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "caller",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -1339,20 +1335,20 @@ async fn unavailable_qualified_selection_fails_without_mutating_session() {
         Some(ui.clone()),
         None,
     );
-    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
         "caller",
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     handle_client_msg(
         ClientMsg::SelectModel {
             session_id: Some("session-a".into()),
-            model: sylvander_protocol::ModelSelection {
+            model: sylvander_api::ModelSelection {
                 provider_id: "missing".into(),
                 model_id: "shared".into(),
             },
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            reasoning_effort: sylvander_api::ReasoningEffort::Off,
         },
         &context,
         &AgentId::new("agent-1"),

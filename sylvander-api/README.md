@@ -1,7 +1,7 @@
-# sylvander-protocol
+# sylvander-api
 
-`sylvander-protocol` 是 Sylvander 当前的公共服务线协议与 JSON Schema crate；目标名称
-是 `sylvander-api`。它定义客户端、Channel 与 Runtime 跨进程交换的版本化 DTO，包含
+`sylvander-api` 是 Sylvander 的公共服务线协议与 JSON Schema crate。它定义客户端、
+Channel 与 Runtime 跨进程交换的版本化 DTO，包含
 请求、响应、事件、标识符、脱敏视图、协议协商及纯校验。
 
 ## 为什么保持纯数据
@@ -42,5 +42,5 @@ crate 根重新导出公共 DTO，供普通调用者使用；领域模块路径�
 生成当前 UI 协议 Schema：
 
 ```bash
-cargo run -p sylvander-protocol --example generate_ui_schema
+cargo run -p sylvander-api --example generate_ui_schema
 ```

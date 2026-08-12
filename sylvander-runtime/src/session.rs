@@ -33,7 +33,7 @@ pub fn now_secs() -> i64 {
 // SessionMetadata
 // ---------------------------------------------------------------------------
 
-pub use sylvander_protocol::SessionMetadata;
+pub use sylvander_api::SessionMetadata;
 
 // ---------------------------------------------------------------------------
 // SessionContext

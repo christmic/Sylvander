@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sylvander_protocol::EvidenceReference;
+use sylvander_api::EvidenceReference;
 
 use super::evaluation_types::EvaluationComparison;
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use rusqlite::{OptionalExtension, params};
-use sylvander_protocol::EvidenceReference;
+use sylvander_api::EvidenceReference;
 
 use super::{digest_text, valid_key, valid_sha256};
 use crate::evidence::evaluation_types::{

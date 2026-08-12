@@ -1,5 +1,5 @@
 use super::*;
-use sylvander_protocol::{AgentId, BusMessage, Recipient, SessionId};
+use sylvander_api::{AgentId, BusMessage, Recipient, SessionId};
 
 fn tm(s: &str) -> BusMessage {
     BusMessage::user_chat(SessionId::new(s), "u1", "hi")

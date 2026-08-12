@@ -93,9 +93,9 @@ impl TuiConfig {
             keymap,
             metadata: RuntimeMetadata {
                 model: std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into()),
-                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                reasoning_effort: sylvander_api::ReasoningEffort::Off,
                 models: Vec::new(),
-                permissions: sylvander_protocol::PermissionProfile::default(),
+                permissions: sylvander_api::PermissionProfile::default(),
                 workspace: launch.workspace.unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("~"))
                 }),

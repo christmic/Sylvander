@@ -40,8 +40,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
-use sylvander_protocol::BusMessage;
-use sylvander_protocol::{
+use sylvander_api::BusMessage;
+use sylvander_api::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
     AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
     IDENTITY_BINDING_PROTOCOL_VERSION, IdentityBindingCapabilities, IdentityBindingError,
@@ -67,7 +67,7 @@ pub struct ExternalChatRequest {
     /// User message content.
     pub text: String,
     /// Typed UI attachments forwarded without flattening.
-    pub attachments: Vec<sylvander_protocol::MessageAttachment>,
+    pub attachments: Vec<sylvander_api::MessageAttachment>,
     /// Transport-owned identifiers used for future session lookup.
     pub external_meta: BTreeMap<String, String>,
 }
@@ -81,7 +81,7 @@ pub struct SubmittedChat {
     /// Runtime-authorized session receiving the turn.
     pub session_id: SessionId,
     /// Opaque handle for feedback about this exact submitted turn.
-    pub feedback_target: Option<sylvander_protocol::FeedbackTarget>,
+    pub feedback_target: Option<sylvander_api::FeedbackTarget>,
     /// Session-scoped event subscription installed before message publication.
     pub events: tokio::sync::mpsc::Receiver<BusMessage>,
 }
@@ -201,7 +201,7 @@ pub trait ChannelHost: Send + Sync {
         &self,
         boundary: &BoundaryContext,
         _session_id: &SessionId,
-    ) -> Result<sylvander_protocol::UiSessionHistory, BoundaryError> {
+    ) -> Result<sylvander_api::UiSessionHistory, BoundaryError> {
         Err(unavailable_ui_control(boundary, "load_session"))
     }
     /// Rename one visible session without exposing persistence metadata.
@@ -236,7 +236,7 @@ pub trait ChannelHost: Send + Sync {
         _session_id: &SessionId,
         _completed_turns: Option<usize>,
         _checkpoint: bool,
-    ) -> Result<sylvander_protocol::UiSessionHistory, BoundaryError> {
+    ) -> Result<sylvander_api::UiSessionHistory, BoundaryError> {
         Err(unavailable_ui_control(boundary, "fork_session"))
     }
     /// Resolve one channel-native identity to a visible Runtime Session.
@@ -397,7 +397,7 @@ pub trait ChannelHost: Send + Sync {
         &self,
         boundary: &BoundaryContext,
         _session_id: &SessionId,
-    ) -> Result<sylvander_protocol::ContextReport, BoundaryError> {
+    ) -> Result<sylvander_api::ContextReport, BoundaryError> {
         Err(unavailable_ui_control(boundary, "context_report"))
     }
 
@@ -406,7 +406,7 @@ pub trait ChannelHost: Send + Sync {
         &self,
         boundary: &BoundaryContext,
         _session_id: &SessionId,
-    ) -> Result<sylvander_protocol::CompactionReport, BoundaryError> {
+    ) -> Result<sylvander_api::CompactionReport, BoundaryError> {
         Err(unavailable_ui_control(boundary, "compact_session"))
     }
 
@@ -415,7 +415,7 @@ pub trait ChannelHost: Send + Sync {
         &self,
         boundary: &BoundaryContext,
         _session_id: &SessionId,
-    ) -> Result<sylvander_protocol::WorkspaceRollbackPreview, BoundaryError> {
+    ) -> Result<sylvander_api::WorkspaceRollbackPreview, BoundaryError> {
         Err(unavailable_ui_control(
             boundary,
             "preview_workspace_rollback",
@@ -428,7 +428,7 @@ pub trait ChannelHost: Send + Sync {
         boundary: &BoundaryContext,
         _session_id: &SessionId,
         _expected_turn_id: &str,
-    ) -> Result<sylvander_protocol::WorkspaceRollbackReport, BoundaryError> {
+    ) -> Result<sylvander_api::WorkspaceRollbackReport, BoundaryError> {
         Err(unavailable_ui_control(boundary, "rollback_workspace"))
     }
 
@@ -437,7 +437,7 @@ pub trait ChannelHost: Send + Sync {
         &self,
         boundary: &BoundaryContext,
         _session_id: &SessionId,
-    ) -> Result<sylvander_protocol::CodingSessionDiff, BoundaryError> {
+    ) -> Result<sylvander_api::CodingSessionDiff, BoundaryError> {
         Err(unavailable_ui_control(boundary, "inspect_coding_session"))
     }
 
@@ -903,9 +903,9 @@ pub fn parse_external_control(
                 ));
             };
             let scope = match parts.next().unwrap_or("once") {
-                "once" => sylvander_protocol::ApprovalScope::Once,
-                "session" => sylvander_protocol::ApprovalScope::Session,
-                "persistent" => sylvander_protocol::ApprovalScope::Persistent,
+                "once" => sylvander_api::ApprovalScope::Once,
+                "session" => sylvander_api::ApprovalScope::Session,
+                "persistent" => sylvander_api::ApprovalScope::Persistent,
                 _ => {
                     return Some(Err("approval scope must be once, session, or persistent"));
                 }
@@ -928,7 +928,7 @@ pub fn parse_external_control(
                 session_id,
                 call_id: call_id.trim().into(),
                 approved: false,
-                scope: sylvander_protocol::ApprovalScope::Once,
+                scope: sylvander_api::ApprovalScope::Once,
                 reason: parts
                     .next()
                     .map(str::trim)

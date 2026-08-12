@@ -523,7 +523,7 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
         && !state
             .protocol_capabilities
             .iter()
-            .any(|capability| capability == sylvander_protocol::USER_PROFILE_CAPABILITY)
+            .any(|capability| capability == sylvander_api::USER_PROFILE_CAPABILITY)
     {
         return Unavailable("server does not advertise user_profile_v1".into());
     }
@@ -531,7 +531,7 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
         if !state
             .protocol_capabilities
             .iter()
-            .any(|capability| capability == sylvander_protocol::FEEDBACK_CAPABILITY)
+            .any(|capability| capability == sylvander_api::FEEDBACK_CAPABILITY)
         {
             return Unavailable("server does not advertise feedback_v1".into());
         }
@@ -679,7 +679,7 @@ fn dynamic_command_issue(index: usize, state: &AppState) -> Option<String> {
     }
     if !matches!(
         command.trust,
-        sylvander_protocol::PlatformTrust::Workspace | sylvander_protocol::PlatformTrust::User
+        sylvander_api::PlatformTrust::Workspace | sylvander_api::PlatformTrust::User
     ) {
         return Some(format!(
             "{} source is not trusted for commands",
@@ -696,7 +696,7 @@ fn dynamic_command_issue(index: usize, state: &AppState) -> Option<String> {
         return Some("duplicates an earlier extension command".into());
     }
     match &command.effect {
-        sylvander_protocol::UiCommandEffect::SubmitPrompt { template }
+        sylvander_api::UiCommandEffect::SubmitPrompt { template }
             if template.is_empty()
                 || template.len() > 16 * 1024
                 || template.chars().any(|character| {
@@ -705,7 +705,7 @@ fn dynamic_command_issue(index: usize, state: &AppState) -> Option<String> {
         {
             Some("prompt template is empty or too large".into())
         }
-        sylvander_protocol::UiCommandEffect::SubmitPrompt { .. } => None,
+        sylvander_api::UiCommandEffect::SubmitPrompt { .. } => None,
     }
 }
 
@@ -765,7 +765,7 @@ pub fn execute_line(line: &str, state: &mut AppState) -> Result<(), String> {
     }
     let command = state.platform.commands[index].clone();
     let args = parts.collect::<Vec<_>>().join(" ");
-    let sylvander_protocol::UiCommandEffect::SubmitPrompt { template } = command.effect;
+    let sylvander_api::UiCommandEffect::SubmitPrompt { template } = command.effect;
     let prompt = if template.contains("{{args}}") {
         template.replace("{{args}}", &args)
     } else if args.is_empty() {
@@ -1265,7 +1265,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             state.messages.push(ChatMessage::Info(platform_report(
                 "MCP servers",
-                sylvander_protocol::PlatformFeatureKind::Mcp,
+                sylvander_api::PlatformFeatureKind::Mcp,
                 &state.platform,
             )));
         }
@@ -1273,7 +1273,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             state.messages.push(ChatMessage::Info(platform_report(
                 "Skills",
-                sylvander_protocol::PlatformFeatureKind::Skill,
+                sylvander_api::PlatformFeatureKind::Skill,
                 &state.platform,
             )));
         }
@@ -1281,7 +1281,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             state.messages.push(ChatMessage::Info(platform_report(
                 "Hooks",
-                sylvander_protocol::PlatformFeatureKind::Hook,
+                sylvander_api::PlatformFeatureKind::Hook,
                 &state.platform,
             )));
         }
@@ -1289,7 +1289,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             state.messages.push(ChatMessage::Info(platform_report(
                 "Extensions",
-                sylvander_protocol::PlatformFeatureKind::Extension,
+                sylvander_api::PlatformFeatureKind::Extension,
                 &state.platform,
             )));
         }
@@ -1297,7 +1297,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             state.messages.push(ChatMessage::Info(platform_report(
                 "Memory",
-                sylvander_protocol::PlatformFeatureKind::Memory,
+                sylvander_api::PlatformFeatureKind::Memory,
                 &state.platform,
             )));
         }
@@ -1417,14 +1417,14 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                     .get(1)
                     .map(|value| parse_reasoning_effort(value))
                     .transpose()?
-                    .unwrap_or(sylvander_protocol::ReasoningEffort::Off);
+                    .unwrap_or(sylvander_api::ReasoningEffort::Off);
                 if !descriptor.reasoning_efforts.contains(&effort) {
                     return Err(format!(
                         "Model `{model}` does not advertise reasoning `{}`",
                         crate::app::reasoning_label(effort)
                     ));
                 }
-                let selection = sylvander_protocol::ModelSelection {
+                let selection = sylvander_api::ModelSelection {
                     provider_id: descriptor.provider.clone(),
                     model_id: descriptor.id.clone(),
                 };
@@ -1489,7 +1489,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
 }
 
 fn execute_feedback(invocation: &Invocation<'_>, state: &mut AppState) -> Result<(), String> {
-    use sylvander_protocol::{FeedbackPrivacyClass, FeedbackRating, RunFeedback};
+    use sylvander_api::{FeedbackPrivacyClass, FeedbackRating, RunFeedback};
 
     let target = state
         .feedback_target
@@ -1551,7 +1551,7 @@ fn joined_feedback(parts: &[&str]) -> Option<String> {
 }
 
 fn execute_profile(invocation: &Invocation<'_>, state: &mut AppState) -> Result<(), String> {
-    use sylvander_protocol::{
+    use sylvander_api::{
         USER_PROFILE_PROTOCOL_VERSION, UserProfileAction, UserProfileExportFormat,
         UserProfileRequest,
     };
@@ -1625,28 +1625,28 @@ fn execute_profile(invocation: &Invocation<'_>, state: &mut AppState) -> Result<
     Ok(())
 }
 
-fn permission_summary(profile: &sylvander_protocol::PermissionProfile) -> String {
+fn permission_summary(profile: &sylvander_api::PermissionProfile) -> String {
     let files = match profile.file_access {
-        sylvander_protocol::FileAccess::None => "no-files",
-        sylvander_protocol::FileAccess::ReadOnly => "read-only",
-        sylvander_protocol::FileAccess::WorkspaceWrite => "workspace-write",
+        sylvander_api::FileAccess::None => "no-files",
+        sylvander_api::FileAccess::ReadOnly => "read-only",
+        sylvander_api::FileAccess::WorkspaceWrite => "workspace-write",
     };
     let network = match profile.network_access {
-        sylvander_protocol::NetworkAccess::Denied => "net-deny",
-        sylvander_protocol::NetworkAccess::Allowed => "net-allow",
+        sylvander_api::NetworkAccess::Denied => "net-deny",
+        sylvander_api::NetworkAccess::Allowed => "net-allow",
     };
     let approval = match profile.approval_policy {
-        sylvander_protocol::ApprovalPolicy::Ask => "ask",
-        sylvander_protocol::ApprovalPolicy::Allow => "allow",
-        sylvander_protocol::ApprovalPolicy::Deny => "deny",
+        sylvander_api::ApprovalPolicy::Ask => "ask",
+        sylvander_api::ApprovalPolicy::Allow => "allow",
+        sylvander_api::ApprovalPolicy::Deny => "deny",
     };
     format!("{files}/{network}/{approval}")
 }
 
 fn platform_report(
     title: &str,
-    kind: sylvander_protocol::PlatformFeatureKind,
-    snapshot: &sylvander_protocol::PlatformSnapshot,
+    kind: sylvander_api::PlatformFeatureKind,
+    snapshot: &sylvander_api::PlatformSnapshot,
 ) -> String {
     let features = snapshot
         .features
@@ -1684,41 +1684,41 @@ fn platform_report(
     format!("{title}\n{rows}")
 }
 
-fn platform_status_label(status: sylvander_protocol::PlatformFeatureStatus) -> &'static str {
+fn platform_status_label(status: sylvander_api::PlatformFeatureStatus) -> &'static str {
     match status {
-        sylvander_protocol::PlatformFeatureStatus::Active => "active",
-        sylvander_protocol::PlatformFeatureStatus::Configured => "configured",
-        sylvander_protocol::PlatformFeatureStatus::Degraded => "degraded",
-        sylvander_protocol::PlatformFeatureStatus::Unavailable => "unavailable",
+        sylvander_api::PlatformFeatureStatus::Active => "active",
+        sylvander_api::PlatformFeatureStatus::Configured => "configured",
+        sylvander_api::PlatformFeatureStatus::Degraded => "degraded",
+        sylvander_api::PlatformFeatureStatus::Unavailable => "unavailable",
     }
 }
 
-fn platform_auth_label(auth: sylvander_protocol::PlatformAuthStatus) -> &'static str {
+fn platform_auth_label(auth: sylvander_api::PlatformAuthStatus) -> &'static str {
     match auth {
-        sylvander_protocol::PlatformAuthStatus::NotRequired => "not-required",
-        sylvander_protocol::PlatformAuthStatus::Configured => "configured",
-        sylvander_protocol::PlatformAuthStatus::Missing => "missing",
-        sylvander_protocol::PlatformAuthStatus::Unknown => "unknown",
+        sylvander_api::PlatformAuthStatus::NotRequired => "not-required",
+        sylvander_api::PlatformAuthStatus::Configured => "configured",
+        sylvander_api::PlatformAuthStatus::Missing => "missing",
+        sylvander_api::PlatformAuthStatus::Unknown => "unknown",
     }
 }
 
-fn platform_trust_label(trust: sylvander_protocol::PlatformTrust) -> String {
+fn platform_trust_label(trust: sylvander_api::PlatformTrust) -> String {
     match trust {
-        sylvander_protocol::PlatformTrust::BuiltIn => "built-in",
-        sylvander_protocol::PlatformTrust::Workspace => "workspace",
-        sylvander_protocol::PlatformTrust::User => "user",
-        sylvander_protocol::PlatformTrust::External => "external",
-        sylvander_protocol::PlatformTrust::Unverified => "unverified",
+        sylvander_api::PlatformTrust::BuiltIn => "built-in",
+        sylvander_api::PlatformTrust::Workspace => "workspace",
+        sylvander_api::PlatformTrust::User => "user",
+        sylvander_api::PlatformTrust::External => "external",
+        sylvander_api::PlatformTrust::Unverified => "unverified",
     }
     .into()
 }
 
-fn parse_reasoning_effort(value: &str) -> Result<sylvander_protocol::ReasoningEffort, String> {
+fn parse_reasoning_effort(value: &str) -> Result<sylvander_api::ReasoningEffort, String> {
     match value.to_ascii_lowercase().as_str() {
-        "off" => Ok(sylvander_protocol::ReasoningEffort::Off),
-        "low" => Ok(sylvander_protocol::ReasoningEffort::Low),
-        "medium" => Ok(sylvander_protocol::ReasoningEffort::Medium),
-        "high" => Ok(sylvander_protocol::ReasoningEffort::High),
+        "off" => Ok(sylvander_api::ReasoningEffort::Off),
+        "low" => Ok(sylvander_api::ReasoningEffort::Low),
+        "medium" => Ok(sylvander_api::ReasoningEffort::Medium),
+        "high" => Ok(sylvander_api::ReasoningEffort::High),
         _ => Err("Reasoning must be off, low, medium, or high".into()),
     }
 }

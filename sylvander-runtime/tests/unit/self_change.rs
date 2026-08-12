@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use sylvander_protocol::EvidenceReference;
+use sylvander_api::EvidenceReference;
 
 use super::*;
 use crate::evidence::{

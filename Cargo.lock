@@ -2854,12 +2854,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sylvander-api"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "sylvander-channel"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde_json",
- "sylvander-protocol",
+ "sylvander-api",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
@@ -2875,8 +2886,8 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sylvander-api",
  "sylvander-channel",
- "sylvander-protocol",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
@@ -2893,8 +2904,8 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "sylvander-api",
  "sylvander-channel",
- "sylvander-protocol",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -2910,8 +2921,8 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sylvander-api",
  "sylvander-channel",
- "sylvander-protocol",
  "tokio",
  "tracing",
  "uuid",
@@ -2925,9 +2936,9 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "sylvander-api",
  "sylvander-channel",
  "sylvander-llm-anthropic",
- "sylvander-protocol",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -2950,8 +2961,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1 0.11.0",
+ "sylvander-api",
  "sylvander-channel",
- "sylvander-protocol",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2967,8 +2978,8 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "sylvander-api",
  "sylvander-channel",
- "sylvander-protocol",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -3035,17 +3046,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sylvander-protocol"
-version = "0.1.0"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
 name = "sylvander-runtime"
 version = "0.1.0"
 dependencies = [
@@ -3059,12 +3059,12 @@ dependencies = [
  "serde_json",
  "sha2",
  "sylvander-agent",
+ "sylvander-api",
  "sylvander-channel",
  "sylvander-llm-anthropic",
  "sylvander-llm-core",
  "sylvander-llm-dashscope",
  "sylvander-llm-openai",
- "sylvander-protocol",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3083,6 +3083,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sylvander-api",
  "sylvander-channel",
  "sylvander-channel-dingtalk",
  "sylvander-channel-http",
@@ -3091,7 +3092,6 @@ dependencies = [
  "sylvander-channel-wechat",
  "sylvander-channel-ws",
  "sylvander-llm-anthropic",
- "sylvander-protocol",
  "sylvander-runtime",
  "tempfile",
  "thiserror 2.0.18",
@@ -3116,11 +3116,11 @@ dependencies = [
  "shell-words",
  "similar 3.1.1",
  "sylvander-agent",
+ "sylvander-api",
  "sylvander-channel",
  "sylvander-channel-unix",
  "sylvander-llm-anthropic",
  "sylvander-llm-core",
- "sylvander-protocol",
  "sylvander-runtime",
  "tempfile",
  "tokio",

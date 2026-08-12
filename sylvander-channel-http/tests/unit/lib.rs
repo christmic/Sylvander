@@ -56,11 +56,11 @@ fn request_limit_is_configurable() {
 impl ChannelHost for DenyAgentAccess {
     async fn reject_authentication(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::AuthenticationFailure,
-    ) -> sylvander_protocol::BoundaryError {
-        sylvander_protocol::BoundaryError {
-            code: sylvander_protocol::BoundaryErrorCode::RateLimited,
+        boundary: &sylvander_api::BoundaryContext,
+        _: sylvander_api::AuthenticationFailure,
+    ) -> sylvander_api::BoundaryError {
+        sylvander_api::BoundaryError {
+            code: sylvander_api::BoundaryErrorCode::RateLimited,
             operation: "authenticate_bearer_token".into(),
             request_id: boundary.request_id.clone(),
             message: "request rate limit exceeded".into(),
@@ -70,14 +70,14 @@ impl ChannelHost for DenyAgentAccess {
 
     async fn authorize_message(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        message: &sylvander_protocol::UiClientMessage,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        boundary: &sylvander_api::BoundaryContext,
+        message: &sylvander_api::UiClientMessage,
+    ) -> Result<(), sylvander_api::BoundaryError> {
         if matches!(
             message,
-            sylvander_protocol::UiClientMessage::CreateSession { .. }
+            sylvander_api::UiClientMessage::CreateSession { .. }
         ) {
-            Err(sylvander_protocol::BoundaryError::forbidden(
+            Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 "create_session",
             ))
@@ -88,10 +88,10 @@ impl ChannelHost for DenyAgentAccess {
 
     async fn submit_chat(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         _: sylvander_channel::ExternalChatRequest,
-    ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
-        Err(sylvander_protocol::BoundaryError::forbidden(
+    ) -> Result<sylvander_channel::SubmittedChat, sylvander_api::BoundaryError> {
+        Err(sylvander_api::BoundaryError::forbidden(
             boundary,
             "submit_chat",
         ))
@@ -99,40 +99,40 @@ impl ChannelHost for DenyAgentAccess {
 
     async fn discover_agents(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-    ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::AgentDescriptor>, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn create_session(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::SessionCreateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionCreateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         panic!("denied Agent access must stop before session creation")
     }
 
     async fn session_config(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
+        _: &sylvander_api::BoundaryContext,
         _: &SessionId,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn update_session_config(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::SessionConfigUpdateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionConfigUpdateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
 
     async fn submit_feedback(
         &self,
-        _: &sylvander_protocol::BoundaryContext,
-        _: sylvander_protocol::RunFeedback,
-    ) -> Result<String, sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::RunFeedback,
+    ) -> Result<String, sylvander_api::BoundaryError> {
         unreachable!()
     }
 }
@@ -156,7 +156,7 @@ async fn live_bearer_lease_rotates_and_fails_closed_without_restart() {
             None,
             None,
         )),
-        agent_id: sylvander_protocol::AgentId::new("agent"),
+        agent_id: sylvander_api::AgentId::new("agent"),
         sessions: Mutex::new(std::collections::HashMap::new()),
         instance_id: "http-primary".into(),
         principal_id: Some("caller".into()),
@@ -208,7 +208,7 @@ async fn first_chat_cannot_create_a_session_without_agent_access() {
             Some(Arc::new(DenyAgentAccess)),
             None,
         )),
-        agent_id: sylvander_protocol::AgentId::new("private-agent"),
+        agent_id: sylvander_api::AgentId::new("private-agent"),
         sessions: Mutex::new(std::collections::HashMap::new()),
         instance_id: "http-private".into(),
         principal_id: Some("caller".into()),
@@ -248,7 +248,7 @@ async fn authentication_rejection_uses_runtime_status() {
             Some(Arc::new(DenyAgentAccess)),
             None,
         )),
-        agent_id: sylvander_protocol::AgentId::new("private-agent"),
+        agent_id: sylvander_api::AgentId::new("private-agent"),
         sessions: Mutex::new(std::collections::HashMap::new()),
         instance_id: "http-private".into(),
         principal_id: Some("caller".into()),
@@ -270,7 +270,7 @@ async fn operational_health_controls_readiness_and_metrics() {
             None,
             None,
         )),
-        agent_id: sylvander_protocol::AgentId::new("agent"),
+        agent_id: sylvander_api::AgentId::new("agent"),
         sessions: Mutex::new(std::collections::HashMap::new()),
         instance_id: "http".into(),
         principal_id: None,

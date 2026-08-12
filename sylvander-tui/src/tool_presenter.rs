@@ -117,7 +117,7 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
 pub fn compact_target_with_presentation(
     tool_name: &str,
     input: &Value,
-    presentations: &[sylvander_protocol::ToolPresentationDescriptor],
+    presentations: &[sylvander_api::ToolPresentationDescriptor],
 ) -> String {
     let Some(presentation) = presentations
         .iter()
@@ -132,11 +132,11 @@ pub fn compact_target_with_presentation(
         return compact_target(tool_name, input);
     }
     let fields: &[&str] = match presentation.kind {
-        sylvander_protocol::ToolPresentationKind::Command => &["command", "cmd"],
-        sylvander_protocol::ToolPresentationKind::File => &["path", "file"],
-        sylvander_protocol::ToolPresentationKind::Search => &["query", "pattern"],
-        sylvander_protocol::ToolPresentationKind::Resource => &["uri", "url"],
-        sylvander_protocol::ToolPresentationKind::Generic => &[],
+        sylvander_api::ToolPresentationKind::Command => &["command", "cmd"],
+        sylvander_api::ToolPresentationKind::File => &["path", "file"],
+        sylvander_api::ToolPresentationKind::Search => &["query", "pattern"],
+        sylvander_api::ToolPresentationKind::Resource => &["uri", "url"],
+        sylvander_api::ToolPresentationKind::Generic => &[],
     };
     let target = presentation
         .target_field

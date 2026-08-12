@@ -8,7 +8,7 @@ use sylvander_agent::prompt::{
     PromptLayerKind as AgentPromptLayerKind, PromptManifest as AgentPromptManifest,
     PromptModelSelection, PromptValidationIssue, validate_profile_selectors,
 };
-use sylvander_protocol::{ModelSelection, PromptLayerDigest, PromptLayerKind, PromptManifest};
+use sylvander_api::{ModelSelection, PromptLayerDigest, PromptLayerKind, PromptManifest};
 
 /// Project a public model selection into the minimal Agent prompt input.
 #[must_use]

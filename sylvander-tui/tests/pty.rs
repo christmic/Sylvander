@@ -52,7 +52,7 @@ fn spawn_server(
             writeln!(
                 stream,
                 r#"{{"type":"welcome","protocol":{{"server_name":"pty-test","version":{},"capabilities":[]}}}}"#,
-                sylvander_protocol::UI_PROTOCOL_VERSION
+                sylvander_api::UI_PROTOCOL_VERSION
             )
             .expect("send welcome");
             stream.flush().expect("flush welcome");
@@ -129,7 +129,7 @@ fn spawn_welcome_server(path: &Path) -> std::thread::JoinHandle<()> {
         writeln!(
             stream,
             r#"{{"type":"welcome","protocol":{{"server_name":"surface-test","version":{},"capabilities":[]}}}}"#,
-            sylvander_protocol::UI_PROTOCOL_VERSION
+            sylvander_api::UI_PROTOCOL_VERSION
         )
         .expect("send welcome");
         stream.flush().expect("flush welcome");

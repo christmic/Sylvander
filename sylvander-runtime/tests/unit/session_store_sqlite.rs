@@ -4,8 +4,8 @@ use std::path::PathBuf;
 /// Default session context used by every test. Identity is the
 /// stable "user-1" from `test_meta` so ownership assertions share one
 /// authenticated subject.
-fn ctx() -> sylvander_protocol::SessionContext {
-    sylvander_protocol::SessionContext::new("user-1", "agent-1", "sess-1")
+fn ctx() -> sylvander_api::SessionContext {
+    sylvander_api::SessionContext::new("user-1", "agent-1", "sess-1")
 }
 
 fn test_meta() -> SessionMetadata {
@@ -26,34 +26,34 @@ fn make_session(id: &str, lifetime: SessionLifetime) -> StoredSession {
     )
 }
 
-fn effective_config() -> sylvander_protocol::SessionEffectiveConfig {
-    let source = sylvander_protocol::SessionConfigSource {
-        kind: sylvander_protocol::SessionConfigSourceKind::AgentDefault,
+fn effective_config() -> sylvander_api::SessionEffectiveConfig {
+    let source = sylvander_api::SessionConfigSource {
+        kind: sylvander_api::SessionConfigSourceKind::AgentDefault,
         reference: Some("assistant@7".into()),
     };
-    sylvander_protocol::SessionEffectiveConfig {
+    sylvander_api::SessionEffectiveConfig {
         agent_id: AgentId::new("agent-1"),
         agent_revision: 7,
         provider_id: "primary".into(),
         provider_revision: 1,
         model_id: "model-a".into(),
         model_revision: 1,
-        reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
-        permissions: sylvander_protocol::PermissionProfile::default(),
+        reasoning_effort: sylvander_api::ReasoningEffort::Medium,
+        permissions: sylvander_api::PermissionProfile::default(),
         prompt_profile: Some("coding".into()),
         system_prompt_sha256: "abc123".into(),
-        prompt_manifest: sylvander_protocol::PromptManifest {
+        prompt_manifest: sylvander_api::PromptManifest {
             layers: Vec::new(),
             aggregate_sha256: "manifest".into(),
             total_bytes: 0,
         },
-        agent_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+        agent_workspace: Some(sylvander_api::SessionWorkspaceBinding {
             execution_target: "local".into(),
             path: "/agent".into(),
             read_only: false,
             instruction_focus: None,
         }),
-        user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+        user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
             execution_target: "local".into(),
             path: "/project".into(),
             read_only: false,
@@ -61,7 +61,7 @@ fn effective_config() -> sylvander_protocol::SessionEffectiveConfig {
         }),
         workspace_mounts: Vec::new(),
         execution_target: "local".into(),
-        provenance: sylvander_protocol::SessionConfigProvenance {
+        provenance: sylvander_api::SessionConfigProvenance {
             model: source.clone(),
             reasoning_effort: source.clone(),
             permissions: source.clone(),
@@ -99,7 +99,7 @@ async fn save_and_get() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     let mut session = make_session("s1", SessionLifetime::Persistent);
     session.config_revision = 3;
-    session.config_overrides.model = Some(sylvander_protocol::ModelSelection {
+    session.config_overrides.model = Some(sylvander_api::ModelSelection {
         provider_id: "provider-a".into(),
         model_id: "model-a".into(),
     });
@@ -114,7 +114,7 @@ async fn save_and_get() {
     assert_eq!(s.config_revision, 3);
     assert_eq!(
         s.config_overrides.model,
-        Some(sylvander_protocol::ModelSelection {
+        Some(sylvander_api::ModelSelection {
             provider_id: "provider-a".into(),
             model_id: "model-a".into(),
         })
@@ -152,8 +152,8 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     let session = make_session("s1", SessionLifetime::Persistent);
     store.save(&session).await.unwrap();
     let effective = effective_config();
-    let overrides = sylvander_protocol::SessionConfigOverrides {
-        model: Some(sylvander_protocol::ModelSelection {
+    let overrides = sylvander_api::SessionConfigOverrides {
+        model: Some(sylvander_api::ModelSelection {
             provider_id: "primary".into(),
             model_id: "model-a".into(),
         }),
@@ -237,7 +237,7 @@ async fn metadata_patch_cannot_roll_back_a_prompt_config_update() {
 
     let mut effective = effective_config();
     effective.system_prompt_sha256 = "new-prompt-hash".into();
-    let overrides = sylvander_protocol::SessionConfigOverrides {
+    let overrides = sylvander_api::SessionConfigOverrides {
         system_prompt: Some("new prompt".into()),
         ..Default::default()
     };
@@ -481,10 +481,10 @@ async fn list_filters_by_user() {
     store.save(&s_b).await.unwrap();
 
     let filter = SessionFilter {
-        identity: Some(sylvander_protocol::Identity {
-            user_id: sylvander_protocol::UserId::new("alice"),
-            agent_id: sylvander_protocol::AgentId::new("agent-1"),
-            session_id: sylvander_protocol::SessionId::new("dummy"),
+        identity: Some(sylvander_api::Identity {
+            user_id: sylvander_api::UserId::new("alice"),
+            agent_id: sylvander_api::AgentId::new("agent-1"),
+            session_id: sylvander_api::SessionId::new("dummy"),
         }),
         ..Default::default()
     };

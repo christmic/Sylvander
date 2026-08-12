@@ -385,7 +385,7 @@ fn submit_keeps_attachment_typed_and_out_of_visible_history() {
     assert_eq!(attachments.len(), 1);
     assert!(matches!(
         &attachments[0].content,
-        sylvander_protocol::AttachmentContent::Text { text }
+        sylvander_api::AttachmentContent::Text { text }
             if text.starts_with("L1\n") && text.ends_with("L15")
     ));
     assert_eq!(c.history.back().map(String::as_str), Some("que"));
@@ -471,7 +471,7 @@ fn image_attachment_is_capability_gated_and_base64_typed() {
     assert_eq!(attachment.byte_count, bytes.len());
     assert!(matches!(
         attachment.to_message_attachment(0).content,
-        sylvander_protocol::AttachmentContent::Base64 { ref data }
+        sylvander_api::AttachmentContent::Base64 { ref data }
             if base64::engine::general_purpose::STANDARD.decode(data).unwrap() == bytes
     ));
     std::fs::remove_dir_all(root).ok();
@@ -506,7 +506,7 @@ fn composer_selection_becomes_a_typed_attachment_without_deleting_text() {
     assert_eq!(composer.text(), "hello");
     assert_eq!(
         composer.attachments[0].to_message_attachment(0).kind,
-        sylvander_protocol::AttachmentKind::Selection
+        sylvander_api::AttachmentKind::Selection
     );
 }
 

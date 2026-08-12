@@ -45,26 +45,26 @@ pub struct AppState {
     pub streaming: String,
     pub streaming_thinking: String,
     pub session_id: Option<String>,
-    pub agents: Vec<sylvander_protocol::AgentDescriptor>,
-    pub selected_agent_id: Option<sylvander_protocol::AgentId>,
-    pub session_config: Option<sylvander_protocol::SessionConfigState>,
-    pub pending_session_prompt: Option<(String, Vec<sylvander_protocol::MessageAttachment>)>,
+    pub agents: Vec<sylvander_api::AgentDescriptor>,
+    pub selected_agent_id: Option<sylvander_api::AgentId>,
+    pub session_config: Option<sylvander_api::SessionConfigState>,
+    pub pending_session_prompt: Option<(String, Vec<sylvander_api::MessageAttachment>)>,
     pub session_creation_pending: bool,
     pub session_model_override: Option<(
-        sylvander_protocol::ModelSelection,
-        sylvander_protocol::ReasoningEffort,
+        sylvander_api::ModelSelection,
+        sylvander_api::ReasoningEffort,
     )>,
     pub connected: bool,
     pub protocol_version: Option<u16>,
     pub protocol_capabilities: Vec<String>,
     /// Latest owner-scoped profile returned by Runtime. Mutations always bind
     /// to this server revision; conflict responses invalidate the cache.
-    pub user_profile: Option<sylvander_protocol::UserProfileView>,
+    pub user_profile: Option<sylvander_api::UserProfileView>,
     /// Server-issued opaque handle for feedback about the most recently
     /// completed turn in this single-session view.
-    pub feedback_target: Option<sylvander_protocol::FeedbackTarget>,
+    pub feedback_target: Option<sylvander_api::FeedbackTarget>,
     pub(crate) pending_profile_intent: Option<PendingProfileIntent>,
-    pub platform: sylvander_protocol::PlatformSnapshot,
+    pub platform: sylvander_api::PlatformSnapshot,
     pub status: String,
     pub mode: AppMode,
     pub iteration: u32,
@@ -80,7 +80,7 @@ pub struct AppState {
     /// Prompts accepted while a turn is active. They are sent one at a time
     /// only after the previous turn reaches a terminal event.
     pub queued_prompts: VecDeque<String>,
-    pub queued_prompt_attachments: VecDeque<Vec<sylvander_protocol::MessageAttachment>>,
+    pub queued_prompt_attachments: VecDeque<Vec<sylvander_api::MessageAttachment>>,
     /// Whether tool inputs and multi-line results are expanded in transcript.
     pub tool_details_expanded: bool,
     /// Successfully invoked slash commands, newest first. This is deliberately
@@ -184,7 +184,7 @@ impl AppState {
             user_profile: None,
             feedback_target: None,
             pending_profile_intent: None,
-            platform: sylvander_protocol::PlatformSnapshot::default(),
+            platform: sylvander_api::PlatformSnapshot::default(),
             status: "Connecting...".into(),
             mode: AppMode::Normal,
             iteration: 0,
@@ -405,7 +405,7 @@ impl AppState {
     pub(crate) fn submit_prompt(
         &mut self,
         text: String,
-        attachments: Vec<sylvander_protocol::MessageAttachment>,
+        attachments: Vec<sylvander_api::MessageAttachment>,
     ) -> Option<Action> {
         self.welcomed = true;
         if self.turn_active {
@@ -451,8 +451,8 @@ impl AppState {
 
     pub(crate) fn create_session_action(&self) -> Option<Action> {
         let agent_id = self.selected_agent_id.clone()?;
-        let mut overrides = sylvander_protocol::SessionConfigOverrides {
-            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+        let mut overrides = sylvander_api::SessionConfigOverrides {
+            user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
                 execution_target: "local".into(),
                 path: self.metadata.workspace.clone(),
                 read_only: false,
@@ -465,7 +465,7 @@ impl AppState {
             overrides.reasoning_effort = Some(*effort);
         }
         Some(Action::CreateSession {
-            request: Box::new(sylvander_protocol::SessionCreateRequest {
+            request: Box::new(sylvander_api::SessionCreateRequest {
                 agent_id,
                 label: "New session".into(),
                 channel_id: None,
@@ -805,7 +805,7 @@ impl AppState {
                     .protocol_capabilities
                     .iter()
                     .any(|capability| {
-                        capability == sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY
+                        capability == sylvander_api::MEMORY_CONFIRMATION_CAPABILITY
                     })
                 {
                     self.pending_actions
@@ -907,8 +907,8 @@ impl AppState {
                 decision,
             } => {
                 let verb = match decision {
-                    sylvander_protocol::MemoryConfirmationDecision::Confirm => "saved",
-                    sylvander_protocol::MemoryConfirmationDecision::Reject => "not saved",
+                    sylvander_api::MemoryConfirmationDecision::Confirm => "saved",
+                    sylvander_api::MemoryConfirmationDecision::Reject => "not saved",
                 };
                 self.status = format!("Memory {verb}");
                 self.messages.push(ChatMessage::Info(format!(
@@ -954,15 +954,15 @@ impl AppState {
                 recovery,
             } => {
                 let modal_title = match kind {
-                    sylvander_protocol::InteractionTimeoutKind::Approval => Some("Tool Approval"),
-                    sylvander_protocol::InteractionTimeoutKind::Question => Some("Agent asks"),
-                    sylvander_protocol::InteractionTimeoutKind::Plan => Some("Plan review"),
+                    sylvander_api::InteractionTimeoutKind::Approval => Some("Tool Approval"),
+                    sylvander_api::InteractionTimeoutKind::Question => Some("Agent asks"),
+                    sylvander_api::InteractionTimeoutKind::Plan => Some("Plan review"),
                     _ => None,
                 };
                 if modal_title.is_some_and(|title| {
                     self.modals.top().is_some_and(|modal| {
                         modal.title() == title
-                            || (kind == sylvander_protocol::InteractionTimeoutKind::Plan
+                            || (kind == sylvander_api::InteractionTimeoutKind::Plan
                                 && matches!(modal.title(), "Plan editor" | "Plan · Edit step"))
                     })
                 }) {
@@ -1071,13 +1071,13 @@ impl AppState {
                     self.messages.push(ChatMessage::Info(self.status.clone()));
                 } else {
                     let prompt = "Review the attached workspace changes. Report actionable findings first, ordered by severity, with file and line references. Focus on correctness, regressions, security, and missing tests; keep the summary brief after the findings.".to_string();
-                    let attachment = sylvander_protocol::MessageAttachment {
+                    let attachment = sylvander_api::MessageAttachment {
                         id: "workspace-review-diff".into(),
-                        kind: sylvander_protocol::AttachmentKind::Diff,
+                        kind: sylvander_api::AttachmentKind::Diff,
                         name: format!("workspace-{}.diff", scope.label().replace(' ', "-")),
                         mime_type: "text/x-diff".into(),
                         byte_count: diff.len(),
-                        content: sylvander_protocol::AttachmentContent::Text { text: diff },
+                        content: sylvander_api::AttachmentContent::Text { text: diff },
                     };
                     self.messages.push(ChatMessage::User(prompt.clone()));
                     self.turn_active = true;
@@ -1267,7 +1267,7 @@ impl AppState {
                     .protocol_capabilities
                     .iter()
                     .any(|capability| {
-                        capability == sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY
+                        capability == sylvander_api::MEMORY_CONFIRMATION_CAPABILITY
                     })
                     && let Some(session_id) = self.session_id.clone()
                 {
@@ -1291,7 +1291,7 @@ impl AppState {
                     .protocol_capabilities
                     .iter()
                     .any(|capability| {
-                        capability == sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY
+                        capability == sylvander_api::MEMORY_CONFIRMATION_CAPABILITY
                     })
                     && let Some(session_id) = self.session_id.clone()
                 {
@@ -1343,7 +1343,7 @@ impl AppState {
                     .protocol_capabilities
                     .iter()
                     .any(|capability| {
-                        capability == sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY
+                        capability == sylvander_api::MEMORY_CONFIRMATION_CAPABILITY
                     })
                     && let Some(session_id) = self.session_id.clone()
                 {
@@ -1369,7 +1369,7 @@ impl AppState {
                             session_id: self.session_id.clone().unwrap_or_default(),
                             call_id: tool.call_id,
                             approved: false,
-                            scope: sylvander_protocol::ApprovalScope::Once,
+                            scope: sylvander_api::ApprovalScope::Once,
                             reason: Some("TUI decision queue is full".into()),
                         });
                     }
@@ -1426,7 +1426,7 @@ impl AppState {
                     self.pending_actions.push(Action::ResolvePlan {
                         session_id: self.session_id.clone().unwrap_or_default(),
                         plan_id,
-                        decision: sylvander_protocol::PlanDecision::Rejected {
+                        decision: sylvander_api::PlanDecision::Rejected {
                             reason: "TUI decision queue is full".into(),
                         },
                     });
@@ -1752,8 +1752,8 @@ impl AppState {
 }
 
 impl AppState {
-    fn apply_user_profile_response(&mut self, response: sylvander_protocol::UserProfileResponse) {
-        use sylvander_protocol::UserProfileResponse;
+    fn apply_user_profile_response(&mut self, response: sylvander_api::UserProfileResponse) {
+        use sylvander_api::UserProfileResponse;
         match response {
             UserProfileResponse::Created { profile, .. } => {
                 self.user_profile = Some(profile);
@@ -1856,12 +1856,12 @@ impl AppState {
             UserProfileResponse::Error { error, .. } => {
                 self.pending_profile_intent = None;
                 let operation = format!("{:?}", error.operation).to_ascii_lowercase();
-                if error.code == sylvander_protocol::UserProfileErrorCode::Conflict {
+                if error.code == sylvander_api::UserProfileErrorCode::Conflict {
                     self.user_profile = None;
                     self.pending_actions.push(Action::UserProfile {
-                        request: sylvander_protocol::UserProfileRequest {
-                            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
-                            action: sylvander_protocol::UserProfileAction::Read {},
+                        request: sylvander_api::UserProfileRequest {
+                            version: sylvander_api::USER_PROFILE_PROTOCOL_VERSION,
+                            action: sylvander_api::UserProfileAction::Read {},
                         },
                     });
                     self.status = "User profile changed elsewhere · reloading".into();
@@ -1909,9 +1909,9 @@ impl AppState {
             }
             PendingProfileIntent::SetDoNotLearn(enabled) => {
                 self.pending_actions.push(Action::UserProfile {
-                    request: sylvander_protocol::UserProfileRequest {
-                        version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
-                        action: sylvander_protocol::UserProfileAction::SetDoNotLearn {
+                    request: sylvander_api::UserProfileRequest {
+                        version: sylvander_api::USER_PROFILE_PROTOCOL_VERSION,
+                        action: sylvander_api::UserProfileAction::SetDoNotLearn {
                             expected_revision: profile.revision,
                             enabled,
                         },
@@ -1978,7 +1978,7 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
     )
 }
 
-fn user_profile_summary(profile: &sylvander_protocol::UserProfileData) -> String {
+fn user_profile_summary(profile: &sylvander_api::UserProfileData) -> String {
     let language = profile
         .preferred_language
         .as_ref()
@@ -1991,17 +1991,17 @@ fn user_profile_summary(profile: &sylvander_protocol::UserProfileData) -> String
         .response_detail
         .as_ref()
         .map_or("not set", |value| match value.value {
-            sylvander_protocol::ResponseDetail::Concise => "concise",
-            sylvander_protocol::ResponseDetail::Balanced => "balanced",
-            sylvander_protocol::ResponseDetail::Detailed => "detailed",
+            sylvander_api::ResponseDetail::Concise => "concise",
+            sylvander_api::ResponseDetail::Balanced => "balanced",
+            sylvander_api::ResponseDetail::Detailed => "detailed",
         });
     let tone = profile
         .communication_tone
         .as_ref()
         .map_or("not set", |value| match value.value {
-            sylvander_protocol::CommunicationTone::Direct => "direct",
-            sylvander_protocol::CommunicationTone::Warm => "warm",
-            sylvander_protocol::CommunicationTone::Formal => "formal",
+            sylvander_api::CommunicationTone::Direct => "direct",
+            sylvander_api::CommunicationTone::Warm => "warm",
+            sylvander_api::CommunicationTone::Formal => "formal",
         });
     let accessibility = profile.accessibility.as_ref().map_or_else(
         || "default".into(),
@@ -2200,29 +2200,29 @@ pub(crate) fn format_cost(nano_usd: u64) -> String {
     format!("${}.{:06}", micro_usd / 1_000_000, micro_usd % 1_000_000)
 }
 
-fn retry_cause_label(cause: sylvander_protocol::RetryCause) -> &'static str {
+fn retry_cause_label(cause: sylvander_api::RetryCause) -> &'static str {
     match cause {
-        sylvander_protocol::RetryCause::RateLimit => "Rate limited",
-        sylvander_protocol::RetryCause::Server => "Provider unavailable",
-        sylvander_protocol::RetryCause::Network => "Network interrupted",
-        sylvander_protocol::RetryCause::Stream => "Response stream interrupted",
-        sylvander_protocol::RetryCause::Other => "Model retry",
+        sylvander_api::RetryCause::RateLimit => "Rate limited",
+        sylvander_api::RetryCause::Server => "Provider unavailable",
+        sylvander_api::RetryCause::Network => "Network interrupted",
+        sylvander_api::RetryCause::Stream => "Response stream interrupted",
+        sylvander_api::RetryCause::Other => "Model retry",
     }
 }
 
-pub(crate) fn reasoning_label(effort: sylvander_protocol::ReasoningEffort) -> &'static str {
+pub(crate) fn reasoning_label(effort: sylvander_api::ReasoningEffort) -> &'static str {
     match effort {
-        sylvander_protocol::ReasoningEffort::Off => "off",
-        sylvander_protocol::ReasoningEffort::Low => "low",
-        sylvander_protocol::ReasoningEffort::Medium => "medium",
-        sylvander_protocol::ReasoningEffort::High => "high",
+        sylvander_api::ReasoningEffort::Off => "off",
+        sylvander_api::ReasoningEffort::Low => "low",
+        sylvander_api::ReasoningEffort::Medium => "medium",
+        sylvander_api::ReasoningEffort::High => "high",
     }
 }
 
-fn model_migration_label(model: &sylvander_protocol::ModelDescriptor) -> Option<String> {
+fn model_migration_label(model: &sylvander_api::ModelDescriptor) -> Option<String> {
     match &model.lifecycle {
-        sylvander_protocol::ModelLifecycle::Active => None,
-        sylvander_protocol::ModelLifecycle::Deprecated { replacement } => {
+        sylvander_api::ModelLifecycle::Active => None,
+        sylvander_api::ModelLifecycle::Deprecated { replacement } => {
             Some(replacement.as_ref().map_or_else(
                 || format!("Model deprecated · {} · choose a supported model", model.id),
                 |replacement| format!("Model deprecated · {} → {replacement}", model.id),
@@ -2231,21 +2231,21 @@ fn model_migration_label(model: &sylvander_protocol::ModelDescriptor) -> Option<
     }
 }
 
-fn timeout_kind_label(kind: sylvander_protocol::InteractionTimeoutKind) -> &'static str {
+fn timeout_kind_label(kind: sylvander_api::InteractionTimeoutKind) -> &'static str {
     match kind {
-        sylvander_protocol::InteractionTimeoutKind::Approval => "approval",
-        sylvander_protocol::InteractionTimeoutKind::Question => "question",
-        sylvander_protocol::InteractionTimeoutKind::Plan => "plan review",
-        sylvander_protocol::InteractionTimeoutKind::Tool => "tool",
-        sylvander_protocol::InteractionTimeoutKind::Task => "background task",
+        sylvander_api::InteractionTimeoutKind::Approval => "approval",
+        sylvander_api::InteractionTimeoutKind::Question => "question",
+        sylvander_api::InteractionTimeoutKind::Plan => "plan review",
+        sylvander_api::InteractionTimeoutKind::Tool => "tool",
+        sylvander_api::InteractionTimeoutKind::Task => "background task",
     }
 }
 
-fn timeout_recovery_label(recovery: sylvander_protocol::TimeoutRecovery) -> &'static str {
+fn timeout_recovery_label(recovery: sylvander_api::TimeoutRecovery) -> &'static str {
     match recovery {
-        sylvander_protocol::TimeoutRecovery::RetryRequest => "ask the Agent to retry the request",
-        sylvander_protocol::TimeoutRecovery::NarrowScope => "retry with a narrower scope",
-        sylvander_protocol::TimeoutRecovery::ContinueWithout => "continue without this result",
+        sylvander_api::TimeoutRecovery::RetryRequest => "ask the Agent to retry the request",
+        sylvander_api::TimeoutRecovery::NarrowScope => "retry with a narrower scope",
+        sylvander_api::TimeoutRecovery::ContinueWithout => "continue without this result",
     }
 }
 

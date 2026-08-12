@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use sylvander_protocol::{
+use sylvander_api::{
     AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, ModelCapability, ModelSelection,
     RegistryAdminResponse, SessionConfigOverrides, SessionConfigUpdateRequest,
@@ -292,9 +292,9 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     let provider = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::CreateProvider {
+        sylvander_api::RegistryAdminRequest::CreateProvider {
             provider_id: "beta".into(),
-            definition: sylvander_protocol::ProviderDefinitionDraft {
+            definition: sylvander_api::ProviderDefinitionDraft {
                 kind: "anthropic_compatible".into(),
                 features: BTreeSet::new(),
                 base_url: "https://beta.invalid".into(),
@@ -307,10 +307,10 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     let model_response = sylvander_channel::ChannelHost::registry_admin(
         runtime.channel_host.as_ref(),
         &administrator,
-        sylvander_protocol::RegistryAdminRequest::CreateModel {
+        sylvander_api::RegistryAdminRequest::CreateModel {
             provider_id: "beta".into(),
             model_id: "shared".into(),
-            definition: sylvander_protocol::ModelDefinitionDraft {
+            definition: sylvander_api::ModelDefinitionDraft {
                 context_window: 100_000,
                 max_output_tokens: 4096,
                 capabilities: vec![
@@ -318,10 +318,10 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
                     "tool_use".into(),
                     "extended_thinking".into(),
                 ],
-                lifecycle: sylvander_protocol::ModelLifecycleDraft::Deprecated {
+                lifecycle: sylvander_api::ModelLifecycleDraft::Deprecated {
                     replacement: Some("alpha/shared".into()),
                 },
-                pricing: Some(sylvander_protocol::ModelPricingDraft {
+                pricing: Some(sylvander_api::ModelPricingDraft {
                     input_usd_micros_per_million: 11,
                     output_usd_micros_per_million: 29,
                     cache_write_usd_micros_per_million: Some(7),
@@ -475,7 +475,7 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     restarted.shutdown().await.unwrap();
 }
 
-fn assert_dynamic_beta_descriptor(descriptors: &[sylvander_protocol::AgentDescriptor]) {
+fn assert_dynamic_beta_descriptor(descriptors: &[sylvander_api::AgentDescriptor]) {
     let beta = descriptors
         .iter()
         .find(|agent| agent.id == AgentId::new("assistant"))
@@ -494,13 +494,13 @@ fn assert_dynamic_beta_descriptor(descriptors: &[sylvander_protocol::AgentDescri
     );
     assert_eq!(
         beta.lifecycle,
-        sylvander_protocol::ModelLifecycle::Deprecated {
+        sylvander_api::ModelLifecycle::Deprecated {
             replacement: Some("alpha/shared".into())
         }
     );
     assert_eq!(
         beta.pricing,
-        Some(sylvander_protocol::ModelPricing {
+        Some(sylvander_api::ModelPricing {
             input_usd_micros_per_million: 11,
             output_usd_micros_per_million: 29,
             cache_write_usd_micros_per_million: Some(7),

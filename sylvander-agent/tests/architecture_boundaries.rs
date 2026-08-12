@@ -33,7 +33,7 @@ fn execution_kernel_has_no_product_or_provider_dependencies() {
         let path = source_root().join(module);
         let source = fs::read_to_string(&path).expect("kernel module must be readable");
         for forbidden in [
-            "sylvander_protocol",
+            "sylvander_api",
             "sylvander_runtime",
             "sylvander_llm_anthropic",
             "sylvander_llm_openai",

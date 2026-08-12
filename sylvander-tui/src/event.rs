@@ -32,22 +32,22 @@ pub enum DomainEvent {
     },
     RuntimeInfo {
         model: String,
-        reasoning_effort: sylvander_protocol::ReasoningEffort,
-        models: Vec<sylvander_protocol::ModelDescriptor>,
-        permissions: sylvander_protocol::PermissionProfile,
+        reasoning_effort: sylvander_api::ReasoningEffort,
+        models: Vec<sylvander_api::ModelDescriptor>,
+        permissions: sylvander_api::PermissionProfile,
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
-        platform: sylvander_protocol::PlatformSnapshot,
+        platform: sylvander_api::PlatformSnapshot,
     },
     ContextReported {
-        report: sylvander_protocol::ContextReport,
+        report: sylvander_api::ContextReport,
     },
     CompactionStarted {
         automatic: bool,
     },
     CompactionCompleted {
-        report: sylvander_protocol::CompactionReport,
+        report: sylvander_api::CompactionReport,
     },
     CompactionFailed {
         automatic: bool,
@@ -55,10 +55,10 @@ pub enum DomainEvent {
     },
     WorkspaceRollbackPreviewed {
         session_id: String,
-        preview: sylvander_protocol::WorkspaceRollbackPreview,
+        preview: sylvander_api::WorkspaceRollbackPreview,
     },
     WorkspaceRollbackCompleted {
-        report: sylvander_protocol::WorkspaceRollbackReport,
+        report: sylvander_api::WorkspaceRollbackReport,
     },
     WorkspaceRollbackFailed {
         reason: String,
@@ -105,13 +105,13 @@ pub enum DomainEvent {
     /// Server assigned us a session id.
     SessionCreated {
         session_id: String,
-        config: Option<sylvander_protocol::SessionConfigState>,
+        config: Option<sylvander_api::SessionConfigState>,
     },
     AgentsDiscovered {
-        agents: Vec<sylvander_protocol::AgentDescriptor>,
+        agents: Vec<sylvander_api::AgentDescriptor>,
     },
     SessionConfigLoaded {
-        state: sylvander_protocol::SessionConfigState,
+        state: sylvander_api::SessionConfigState,
     },
     SessionsLoaded {
         sessions: Vec<SessionSummary>,
@@ -141,18 +141,18 @@ pub enum DomainEvent {
         message: String,
     },
     UserProfileReceived {
-        response: sylvander_protocol::UserProfileResponse,
+        response: sylvander_api::UserProfileResponse,
     },
     FeedbackRecorded {
         feedback_id: String,
     },
     MemoryConfirmationsLoaded {
         session_id: String,
-        confirmations: Vec<sylvander_protocol::PendingMemoryConfirmation>,
+        confirmations: Vec<sylvander_api::PendingMemoryConfirmation>,
     },
     MemoryConfirmationRecorded {
         candidate_id: String,
-        decision: sylvander_protocol::MemoryConfirmationDecision,
+        decision: sylvander_api::MemoryConfirmationDecision,
     },
     MemoryConfirmationFailed {
         message: String,
@@ -171,13 +171,13 @@ pub enum DomainEvent {
         max_attempts: u32,
         delay_ms: u64,
         reason: String,
-        cause: sylvander_protocol::RetryCause,
+        cause: sylvander_api::RetryCause,
     },
     InteractionTimedOut {
-        kind: sylvander_protocol::InteractionTimeoutKind,
+        kind: sylvander_api::InteractionTimeoutKind,
         subject_id: String,
         timeout_secs: u64,
-        recovery: sylvander_protocol::TimeoutRecovery,
+        recovery: sylvander_api::TimeoutRecovery,
     },
     /// A tool call started (status: pending).
     ToolStarted {
@@ -206,24 +206,24 @@ pub enum DomainEvent {
     /// The agent loop has emitted its final answer.
     AgentDone {
         final_text: String,
-        feedback_target: Option<sylvander_protocol::FeedbackTarget>,
+        feedback_target: Option<sylvander_api::FeedbackTarget>,
     },
     /// The agent loop failed.
     AgentError {
         message: String,
-        feedback_target: Option<sylvander_protocol::FeedbackTarget>,
+        feedback_target: Option<sylvander_api::FeedbackTarget>,
     },
     /// The server confirmed that the active turn ended by user interrupt.
     TurnInterrupted {
         reason: String,
-        feedback_target: Option<sylvander_protocol::FeedbackTarget>,
+        feedback_target: Option<sylvander_api::FeedbackTarget>,
     },
 
     /// Server wants permission to run one or more tools.
     ApprovalRequested {
         batch_id: String,
         tools: Vec<ToolInfo>,
-        allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
+        allowed_scopes: Vec<sylvander_api::ApprovalScope>,
     },
 
     /// Agent asks the user a clarifying question (UX §12.1).
@@ -381,7 +381,7 @@ pub enum Action {
     /// Send a chat message to the server.
     SendChat {
         text: String,
-        attachments: Vec<sylvander_protocol::MessageAttachment>,
+        attachments: Vec<sylvander_api::MessageAttachment>,
         session_id: Option<String>,
         workspace: String,
     },
@@ -390,7 +390,7 @@ pub enum Action {
         session_id: String,
         call_id: String,
         approved: bool,
-        scope: sylvander_protocol::ApprovalScope,
+        scope: sylvander_api::ApprovalScope,
         reason: Option<String>,
     },
     /// Answer an `AskUser` question.
@@ -406,7 +406,7 @@ pub enum Action {
     ResolvePlan {
         session_id: String,
         plan_id: String,
-        decision: sylvander_protocol::PlanDecision,
+        decision: sylvander_api::PlanDecision,
     },
     CancelTask {
         session_id: String,
@@ -416,7 +416,7 @@ pub enum Action {
     RequestRuntimeInfo,
     DiscoverAgents,
     CreateSession {
-        request: Box<sylvander_protocol::SessionCreateRequest>,
+        request: Box<sylvander_api::SessionCreateRequest>,
     },
     RequestContext {
         session_id: Option<String>,
@@ -442,12 +442,12 @@ pub enum Action {
     },
     SelectModel {
         session_id: String,
-        model: sylvander_protocol::ModelSelection,
-        reasoning_effort: sylvander_protocol::ReasoningEffort,
+        model: sylvander_api::ModelSelection,
+        reasoning_effort: sylvander_api::ReasoningEffort,
     },
     SelectPermissions {
         session_id: String,
-        profile: sylvander_protocol::PermissionProfile,
+        profile: sylvander_api::PermissionProfile,
     },
     LoadSession {
         session_id: String,
@@ -469,10 +469,10 @@ pub enum Action {
         session_id: String,
     },
     UserProfile {
-        request: sylvander_protocol::UserProfileRequest,
+        request: sylvander_api::UserProfileRequest,
     },
     SubmitFeedback {
-        feedback: sylvander_protocol::RunFeedback,
+        feedback: sylvander_api::RunFeedback,
     },
     RequestMemoryConfirmations {
         session_id: String,
@@ -481,7 +481,7 @@ pub enum Action {
         session_id: String,
         candidate_id: String,
         expected_revision: u64,
-        decision: sylvander_protocol::MemoryConfirmationDecision,
+        decision: sylvander_api::MemoryConfirmationDecision,
     },
     CopyText {
         text: String,

@@ -263,13 +263,13 @@ fn mcp_resource_calls_keep_server_resource_and_content_identity() {
 
 #[test]
 fn declarative_presentations_customize_labels_without_code_callbacks() {
-    let presentations = vec![sylvander_protocol::ToolPresentationDescriptor {
+    let presentations = vec![sylvander_api::ToolPresentationDescriptor {
         tool_name: "acme_deploy".into(),
         label: "Deploy".into(),
-        kind: sylvander_protocol::ToolPresentationKind::Generic,
+        kind: sylvander_api::ToolPresentationKind::Generic,
         target_field: Some("environment".into()),
         source: "agent configuration".into(),
-        trust: sylvander_protocol::PlatformTrust::Workspace,
+        trust: sylvander_api::PlatformTrust::Workspace,
     }];
     assert_eq!(
         compact_target_with_presentation(

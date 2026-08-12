@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use sylvander_protocol::{AgentId, SessionContext, UserId};
+use sylvander_api::{AgentId, SessionContext, UserId};
 
 use crate::capability_runtime::{
     ActorCapabilityRuntime, AuthorizedCapabilityInvocation, CapabilityClass, CapabilityDefinition,

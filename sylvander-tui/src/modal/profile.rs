@@ -11,7 +11,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use sylvander_protocol::{
+use sylvander_api::{
     AccessibilityPreferences, ClassifiedPreference, CommunicationTone, LanguageTag, LocaleId,
     PrivacyClass, ProfileConstraint, ResponseDetail, USER_PROFILE_PROTOCOL_VERSION,
     UserProfileAction, UserProfileData, UserProfileRequest, UserProfileView,

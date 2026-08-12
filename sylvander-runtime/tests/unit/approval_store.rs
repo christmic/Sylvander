@@ -66,16 +66,16 @@ async fn session_and_persistent_grants_have_exact_lifetimes() {
     assert_eq!(
         memory.allowed_scopes(true),
         vec![
-            sylvander_protocol::ApprovalScope::Once,
-            sylvander_protocol::ApprovalScope::Session,
-            sylvander_protocol::ApprovalScope::Persistent,
+            sylvander_api::ApprovalScope::Once,
+            sylvander_api::ApprovalScope::Session,
+            sylvander_api::ApprovalScope::Persistent,
         ]
     );
     memory
         .remember(
             &first,
             session_grant.clone(),
-            sylvander_protocol::ApprovalScope::Session,
+            sylvander_api::ApprovalScope::Session,
             true,
         )
         .await
@@ -84,7 +84,7 @@ async fn session_and_persistent_grants_have_exact_lifetimes() {
         .remember(
             &first,
             persistent_grant.clone(),
-            sylvander_protocol::ApprovalScope::Persistent,
+            sylvander_api::ApprovalScope::Persistent,
             true,
         )
         .await
@@ -113,7 +113,7 @@ async fn agent_runs_share_one_process_safe_persistent_store() {
         .remember(
             &session,
             first_grant.clone(),
-            sylvander_protocol::ApprovalScope::Persistent,
+            sylvander_api::ApprovalScope::Persistent,
             true,
         )
         .await
@@ -123,7 +123,7 @@ async fn agent_runs_share_one_process_safe_persistent_store() {
         .remember(
             &session,
             second_grant.clone(),
-            sylvander_protocol::ApprovalScope::Persistent,
+            sylvander_api::ApprovalScope::Persistent,
             true,
         )
         .await
@@ -147,15 +147,15 @@ async fn persistent_scope_requires_authenticated_stable_identity() {
     assert_eq!(
         memory.allowed_scopes(false),
         vec![
-            sylvander_protocol::ApprovalScope::Once,
-            sylvander_protocol::ApprovalScope::Session,
+            sylvander_api::ApprovalScope::Once,
+            sylvander_api::ApprovalScope::Session,
         ]
     );
     let error = memory
         .remember(
             &SessionId::new("session"),
             grant,
-            sylvander_protocol::ApprovalScope::Persistent,
+            sylvander_api::ApprovalScope::Persistent,
             false,
         )
         .await
@@ -176,7 +176,7 @@ async fn store_contains_hashes_but_not_raw_resource_arguments() {
         .remember(
             &SessionId::new("session"),
             grant,
-            sylvander_protocol::ApprovalScope::Persistent,
+            sylvander_api::ApprovalScope::Persistent,
             true,
         )
         .await
@@ -202,13 +202,13 @@ fn latest_schema_rejects_legacy_and_unknown_files() {
 
 #[test]
 fn approval_policy_revision_tracks_permissions_and_rule_order() {
-    let ask = sylvander_protocol::PermissionProfile {
-        file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
-        network_access: sylvander_protocol::NetworkAccess::Denied,
-        approval_policy: sylvander_protocol::ApprovalPolicy::Ask,
+    let ask = sylvander_api::PermissionProfile {
+        file_access: sylvander_api::FileAccess::WorkspaceWrite,
+        network_access: sylvander_api::NetworkAccess::Denied,
+        approval_policy: sylvander_api::ApprovalPolicy::Ask,
     };
-    let deny = sylvander_protocol::PermissionProfile {
-        approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+    let deny = sylvander_api::PermissionProfile {
+        approval_policy: sylvander_api::ApprovalPolicy::Deny,
         ..ask.clone()
     };
     let approve_rule = ApprovalRule {

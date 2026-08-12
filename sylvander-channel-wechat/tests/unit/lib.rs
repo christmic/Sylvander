@@ -7,11 +7,11 @@ use axum::{
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex as StdMutex, RwLock};
+use sylvander_api::SessionId;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_channel::{ChannelHost, InProcessMessageBus};
-use sylvander_protocol::SessionId;
 
 impl WechatChannel {
     fn with_api_base_url(mut self, api_base_url: impl Into<String>) -> Self {
@@ -176,55 +176,55 @@ impl ChannelHost for AuthenticationRecorder {
         &self,
         boundary: &BoundaryContext,
         failure: AuthenticationFailure,
-    ) -> sylvander_protocol::BoundaryError {
+    ) -> sylvander_api::BoundaryError {
         assert_eq!(boundary.transport, "wechat");
         assert_eq!(
             failure.attempted_method,
             AuthenticationMethod::WebhookSignature
         );
         self.0.fetch_add(1, Ordering::Relaxed);
-        sylvander_protocol::BoundaryError::unauthenticated(boundary, failure.operation())
+        sylvander_api::BoundaryError::unauthenticated(boundary, failure.operation())
     }
 
     async fn authorize_message(
         &self,
         _: &BoundaryContext,
-        _: &sylvander_protocol::UiClientMessage,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        _: &sylvander_api::UiClientMessage,
+    ) -> Result<(), sylvander_api::BoundaryError> {
         unreachable!()
     }
     async fn discover_agents(
         &self,
         _: &BoundaryContext,
-    ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError> {
+    ) -> Result<Vec<sylvander_api::AgentDescriptor>, sylvander_api::BoundaryError> {
         unreachable!()
     }
     async fn create_session(
         &self,
         _: &BoundaryContext,
-        _: sylvander_protocol::SessionCreateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: sylvander_api::SessionCreateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
     async fn session_config(
         &self,
         _: &BoundaryContext,
         _: &SessionId,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
     async fn update_session_config(
         &self,
         _: &BoundaryContext,
-        _: sylvander_protocol::SessionConfigUpdateRequest,
-    ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError> {
+        _: sylvander_api::SessionConfigUpdateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
         unreachable!()
     }
     async fn submit_feedback(
         &self,
         _: &BoundaryContext,
-        _: sylvander_protocol::RunFeedback,
-    ) -> Result<String, sylvander_protocol::BoundaryError> {
+        _: sylvander_api::RunFeedback,
+    ) -> Result<String, sylvander_api::BoundaryError> {
         unreachable!()
     }
 }

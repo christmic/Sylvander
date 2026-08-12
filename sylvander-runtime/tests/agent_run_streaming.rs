@@ -14,15 +14,15 @@ use sylvander_agent::prompt::{
     PromptLayerKind as AgentPromptLayerKind, PromptManifest as AgentPromptManifest,
     PromptModelSelection,
 };
+use sylvander_api::{
+    BusMessage, MessageId, MessageKind, PermissionProfile, PlanDecision, ReasoningEffort,
+    Recipient, Sender, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
+    SessionEffectiveConfig, SessionId, StreamEvent, SystemMessage,
+};
 use sylvander_channel::{InProcessMessageBus, MessageBus, SubscriptionFilter};
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
-};
-use sylvander_protocol::{
-    BusMessage, MessageId, MessageKind, PermissionProfile, PlanDecision, ReasoningEffort,
-    Recipient, Sender, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
-    SessionEffectiveConfig, SessionId, StreamEvent, SystemMessage,
 };
 use sylvander_runtime::agent_definition::AgentSpec;
 use sylvander_runtime::agent_run::{AgentRun, AgentRunBuilder};
@@ -36,22 +36,22 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use support::MockTool;
 
-fn protocol_prompt_manifest(manifest: AgentPromptManifest) -> sylvander_protocol::PromptManifest {
-    sylvander_protocol::PromptManifest {
+fn protocol_prompt_manifest(manifest: AgentPromptManifest) -> sylvander_api::PromptManifest {
+    sylvander_api::PromptManifest {
         layers: manifest
             .layers
             .into_iter()
-            .map(|layer| sylvander_protocol::PromptLayerDigest {
+            .map(|layer| sylvander_api::PromptLayerDigest {
                 kind: match layer.kind {
                     AgentPromptLayerKind::SharedSafety => {
-                        sylvander_protocol::PromptLayerKind::SharedSafety
+                        sylvander_api::PromptLayerKind::SharedSafety
                     }
                     AgentPromptLayerKind::ProviderModelProfile => {
-                        sylvander_protocol::PromptLayerKind::ProviderModelProfile
+                        sylvander_api::PromptLayerKind::ProviderModelProfile
                     }
-                    AgentPromptLayerKind::Agent => sylvander_protocol::PromptLayerKind::Agent,
+                    AgentPromptLayerKind::Agent => sylvander_api::PromptLayerKind::Agent,
                     AgentPromptLayerKind::SessionInput => {
-                        sylvander_protocol::PromptLayerKind::SessionInput
+                        sylvander_api::PromptLayerKind::SessionInput
                     }
                 },
                 reference: layer.reference,

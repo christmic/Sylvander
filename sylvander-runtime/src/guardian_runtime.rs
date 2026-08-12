@@ -27,7 +27,7 @@ use sylvander_agent::tool_invocation::{
     ToolInvocationRequest, ToolInvocationSnapshot,
 };
 use sylvander_agent::tools::MemoryOwner;
-use sylvander_protocol::{AgentId, SessionContext, UserId};
+use sylvander_api::{AgentId, SessionContext, UserId};
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
@@ -287,7 +287,7 @@ impl WorkerToolGatewayFactory {
 
     pub(crate) fn build(
         &self,
-        agent_id: sylvander_protocol::AgentId,
+        agent_id: sylvander_api::AgentId,
         descriptors: Vec<ToolInvocationDescriptor>,
     ) -> Result<Arc<dyn ToolInvocationGateway>, GuardianRuntimeError> {
         build_worker_tool_gateway(
@@ -532,7 +532,7 @@ impl GuardianRuntime {
         &self,
         session: &StoredSession,
         now: i64,
-    ) -> Result<Vec<sylvander_protocol::PendingMemoryConfirmation>, GuardianRuntimeError> {
+    ) -> Result<Vec<sylvander_api::PendingMemoryConfirmation>, GuardianRuntimeError> {
         for _ in 0..MAX_RUNS_PER_PASS {
             if !self.drain_once(now).await? {
                 break;
@@ -566,19 +566,17 @@ impl GuardianRuntime {
                 .ok_or(GuardianRuntimeError::InvalidConfiguration)?
             {
                 CandidateScope::Relationship => {
-                    sylvander_protocol::MemoryConfirmationScope::Relationship
+                    sylvander_api::MemoryConfirmationScope::Relationship
                 }
-                CandidateScope::UserProfile => {
-                    sylvander_protocol::MemoryConfirmationScope::UserProfile
-                }
+                CandidateScope::UserProfile => sylvander_api::MemoryConfirmationScope::UserProfile,
                 CandidateScope::AgentCanonical => {
-                    sylvander_protocol::MemoryConfirmationScope::AgentCanonical
+                    sylvander_api::MemoryConfirmationScope::AgentCanonical
                 }
                 CandidateScope::WorkspaceKnowledge => {
-                    sylvander_protocol::MemoryConfirmationScope::WorkspaceKnowledge
+                    sylvander_api::MemoryConfirmationScope::WorkspaceKnowledge
                 }
             };
-            pending.push(sylvander_protocol::PendingMemoryConfirmation {
+            pending.push(sylvander_api::PendingMemoryConfirmation {
                 candidate_id: candidate.candidate_id,
                 expected_revision: candidate.revision,
                 scope,
@@ -599,7 +597,7 @@ impl GuardianRuntime {
         session: &StoredSession,
         candidate_id: &str,
         expected_revision: u64,
-        decision: sylvander_protocol::MemoryConfirmationDecision,
+        decision: sylvander_api::MemoryConfirmationDecision,
         now: i64,
     ) -> Result<(), GuardianRuntimeError> {
         let inserted = self
@@ -607,10 +605,7 @@ impl GuardianRuntime {
                 session,
                 candidate_id,
                 expected_revision,
-                matches!(
-                    decision,
-                    sylvander_protocol::MemoryConfirmationDecision::Confirm
-                ),
+                matches!(decision, sylvander_api::MemoryConfirmationDecision::Confirm),
                 now,
             )
             .await?;
@@ -685,7 +680,7 @@ impl GuardianRuntime {
 }
 
 fn build_worker_tool_gateway(
-    agent_id: sylvander_protocol::AgentId,
+    agent_id: sylvander_api::AgentId,
     descriptors: Vec<ToolInvocationDescriptor>,
     learning_preferences: Arc<dyn LearningPreferenceSource>,
     guardian_identity: GuardianServiceIdentity,
@@ -817,7 +812,7 @@ impl GuardianRuntime {
 
 struct RuntimeWorkerToolGateway {
     capabilities: Arc<ActorCapabilityRuntime>,
-    agent_id: sylvander_protocol::AgentId,
+    agent_id: sylvander_api::AgentId,
     routes: BTreeMap<String, ToolInvocationClass>,
     snapshot: ToolInvocationSnapshot,
     learning_preferences: Arc<dyn LearningPreferenceSource>,

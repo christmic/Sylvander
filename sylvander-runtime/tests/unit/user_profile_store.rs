@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use rusqlite::Connection;
-use sylvander_protocol::{
+use sylvander_api::{
     AccessibilityPreferences, ClassifiedPreference, CommunicationTone, LanguageTag, PrivacyClass,
     ProfileConstraint, ResponseDetail,
 };

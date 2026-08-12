@@ -47,10 +47,10 @@ protocol_banned = {
     "sylvander-runtime",
     "tokio",
 }
-protocol_dependencies = normal_all("sylvander-protocol")
+protocol_dependencies = normal_all("sylvander-api")
 found = sorted(protocol_dependencies & protocol_banned)
 if found:
-    errors.append(f"sylvander-protocol has forbidden runtime dependencies: {found}")
+    errors.append(f"sylvander-api has forbidden runtime dependencies: {found}")
 
 for name in sorted(packages):
     dependencies = normal_first_party(name)
@@ -65,11 +65,9 @@ for name in sorted(packages):
     if (
         name != "sylvander-runtime"
         and "sylvander-agent" in dependencies
-        and "sylvander-protocol" in dependencies
+        and "sylvander-api" in dependencies
     ):
-        errors.append(
-            f"{name} joins Agent and public Protocol; only sylvander-runtime may do so"
-        )
+        errors.append(f"{name} joins Agent and public API; only sylvander-runtime may do so")
 
 if errors:
     for error in errors:
@@ -77,18 +75,18 @@ if errors:
     raise SystemExit(1)
 
 print(
-    "architecture verification: Agent, Protocol, Channel, provider, and Runtime "
+    "architecture verification: Agent, API, Channel, provider, and Runtime "
     "dependency boundaries passed"
 )
 '
 
-if rg -n 'sylvander_protocol::types::|crate::types::' --glob '*.rs' .; then
-  echo "architecture verification: deleted Protocol types path is still referenced" >&2
+if rg -n 'sylvander_api::types::|crate::types::' --glob '*.rs' .; then
+  echo "architecture verification: deleted API types path is still referenced" >&2
   exit 1
 fi
 
 if rg -n '^[[:space:]]+use[[:space:]]' --glob '*.rs' \
-  sylvander-protocol/src sylvander-channel/src sylvander-agent/src; then
+  sylvander-api/src sylvander-channel/src sylvander-agent/src; then
   echo "architecture verification: nested Rust use declaration found in boundary crates" >&2
   exit 1
 fi

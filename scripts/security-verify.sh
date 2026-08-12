@@ -28,7 +28,7 @@ fi
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0= \
   "$audit_command" audit --no-yanked
 
-cargo test -p sylvander-protocol --lib mutated_client_frames_are_total_and_strict_shapes_fail_closed
+cargo test -p sylvander-api --lib mutated_client_frames_are_total_and_strict_shapes_fail_closed
 cargo test -p sylvander-agent --lib read_path_outside_workdir_rejected
 cargo test -p sylvander-agent --lib diff_rejects_shell_arguments_and_parent_paths
 cargo test -p sylvander-agent --lib relationship_operations_isolate_user_and_agent

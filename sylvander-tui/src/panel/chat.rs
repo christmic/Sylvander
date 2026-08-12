@@ -166,7 +166,7 @@ fn push_message_lines(
     lines: &mut Vec<Line<'static>>,
     width: usize,
     tool_details_expanded: bool,
-    tool_presentations: &[sylvander_protocol::ToolPresentationDescriptor],
+    tool_presentations: &[sylvander_api::ToolPresentationDescriptor],
 ) {
     match msg {
         ChatMessage::User(text) => {

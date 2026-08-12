@@ -1,6 +1,6 @@
 use super::*;
 use crate::evidence::{EvidenceEvent, FeedbackAttribution, StepStart, TurnStart, feedback_target};
-use sylvander_protocol::{FeedbackPrivacyClass, FeedbackRating, RunFeedback};
+use sylvander_api::{FeedbackPrivacyClass, FeedbackRating, RunFeedback};
 
 fn event(id: &str, turn_id: &str, event_type: &str, occurred_at: i64) -> EvidenceEvent {
     EvidenceEvent {

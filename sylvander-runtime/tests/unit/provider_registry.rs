@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use rusqlite::params;
-use sylvander_protocol::ModelLifecycle;
+use sylvander_api::ModelLifecycle;
 use tempfile::tempdir;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};

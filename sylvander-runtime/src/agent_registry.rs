@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
-use sylvander_protocol::AgentId;
+use sylvander_api::AgentId;
 use tokio::sync::Mutex;
 use tokio::task;
 
@@ -204,7 +204,7 @@ impl AgentRegistry {
         selection: AgentSnapshotSelectionV3,
     ) -> Result<(AgentRevision, AgentRegistrySnapshotV3), AgentSnapshotV3Error> {
         selection.validate()?;
-        let configured_default = sylvander_protocol::ModelSelection {
+        let configured_default = sylvander_api::ModelSelection {
             provider_id: definition.spec.model.provider.clone(),
             model_id: definition.spec.model.model_name.clone(),
         };

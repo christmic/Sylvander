@@ -5,7 +5,7 @@ fn confirmation_carries_the_preview_turn_id() {
     let mut state = AppState::new();
     let mut modal = WorkspaceRollbackModal::new(
         "s1".into(),
-        sylvander_protocol::WorkspaceRollbackPreview {
+        sylvander_api::WorkspaceRollbackPreview {
             turn_id: "turn-7".into(),
             files: vec!["src/lib.rs".into()],
         },
@@ -29,7 +29,7 @@ fn safe_choice_is_selected_by_default() {
     let mut state = AppState::new();
     let mut modal = WorkspaceRollbackModal::new(
         "s1".into(),
-        sylvander_protocol::WorkspaceRollbackPreview {
+        sylvander_api::WorkspaceRollbackPreview {
             turn_id: "turn-7".into(),
             files: vec!["src/lib.rs".into()],
         },

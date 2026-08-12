@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use sylvander_protocol::{AgentId, SessionContext};
+use sylvander_api::{AgentId, SessionContext};
 
 use super::*;
 

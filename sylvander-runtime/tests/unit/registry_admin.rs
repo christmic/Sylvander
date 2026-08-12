@@ -1,8 +1,6 @@
 use std::collections::BTreeSet;
 
-use sylvander_protocol::{
-    AuthenticationMethod, ModelLifecycle, ModelPricing, RegistryAdminErrorCode,
-};
+use sylvander_api::{AuthenticationMethod, ModelLifecycle, ModelPricing, RegistryAdminErrorCode};
 
 use super::*;
 use crate::config::{SecretRef, SystemSecretResolver};

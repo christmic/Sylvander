@@ -4,20 +4,20 @@ use std::path::PathBuf;
 use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::tool::ToolExecutor as _;
 use sylvander_agent::tools::memory::InMemoryMemoryStore;
+use sylvander_api::Recipient;
 use sylvander_channel::InProcessMessageBus;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_core::ModelInfo as ProviderModelInfo;
-use sylvander_protocol::Recipient;
 
 #[allow(clippy::too_many_arguments)]
 async fn with_workspace_context(
     prompt: String,
-    agent_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
-    task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
-    workspace_mounts: &[sylvander_protocol::SessionWorkspaceMount],
+    agent_workspace: Option<&sylvander_api::SessionWorkspaceBinding>,
+    task_workspace: Option<&sylvander_api::SessionWorkspaceBinding>,
+    workspace_mounts: &[sylvander_api::SessionWorkspaceMount],
     fallback_task_workspace: &Path,
     workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
-    skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
+    skill_features: &std::sync::RwLock<Vec<sylvander_api::PlatformFeature>>,
 ) -> Result<String, AgentRunError> {
     let workspace = workspace_turn_context(
         agent_workspace,
@@ -161,16 +161,16 @@ async fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
         Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
     )]);
     let skill_features = std::sync::RwLock::new(Vec::new());
-    let mounts = vec![sylvander_protocol::SessionWorkspaceMount {
+    let mounts = vec![sylvander_api::SessionWorkspaceMount {
         reference: "docs".into(),
-        role: sylvander_protocol::WorkspaceMountRole::Dependency,
-        binding: sylvander_protocol::SessionWorkspaceBinding {
+        role: sylvander_api::WorkspaceMountRole::Dependency,
+        binding: sylvander_api::SessionWorkspaceBinding {
             execution_target: "local".into(),
             path: task.path().into(),
             read_only: true,
             instruction_focus: None,
         },
-        capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
+        capabilities: sylvander_api::WorkspaceCapabilityPolicy {
             read: true,
             git: true,
             ..Default::default()
@@ -178,13 +178,13 @@ async fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
     }];
     let prompt = with_workspace_context(
         "base-prompt".into(),
-        Some(&sylvander_protocol::SessionWorkspaceBinding {
+        Some(&sylvander_api::SessionWorkspaceBinding {
             execution_target: "local".into(),
             path: agent_home.path().to_path_buf(),
             read_only: true,
             instruction_focus: None,
         }),
-        Some(&sylvander_protocol::SessionWorkspaceBinding {
+        Some(&sylvander_api::SessionWorkspaceBinding {
             execution_target: "local".into(),
             path: task.path().to_path_buf(),
             read_only: false,
@@ -204,11 +204,11 @@ async fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
     assert_eq!(skills[0].name, "test");
     assert_eq!(
         skills[0].trust,
-        Some(sylvander_protocol::PlatformTrust::Workspace)
+        Some(sylvander_api::PlatformTrust::Workspace)
     );
     assert_eq!(
         skills[0].status,
-        sylvander_protocol::PlatformFeatureStatus::Active
+        sylvander_api::PlatformFeatureStatus::Active
     );
     assert!(
         skills[0]
@@ -365,13 +365,13 @@ async fn workspace_prompt_uses_each_execution_target_without_local_filesystem_ac
     ]);
     let prompt = with_workspace_context(
         "base".into(),
-        Some(&sylvander_protocol::SessionWorkspaceBinding {
+        Some(&sylvander_api::SessionWorkspaceBinding {
             execution_target: "ssh:agent".into(),
             path: "/remote/agent".into(),
             read_only: true,
             instruction_focus: None,
         }),
-        Some(&sylvander_protocol::SessionWorkspaceBinding {
+        Some(&sylvander_api::SessionWorkspaceBinding {
             execution_target: "ssh:task".into(),
             path: "/remote/task".into(),
             read_only: false,
@@ -400,29 +400,29 @@ async fn workspace_prompt_uses_each_execution_target_without_local_filesystem_ac
 fn remote_effective_config(
     target_id: &str,
     workspace: &str,
-) -> sylvander_protocol::SessionEffectiveConfig {
-    let source = || sylvander_protocol::SessionConfigSource {
-        kind: sylvander_protocol::SessionConfigSourceKind::RequestOverride,
+) -> sylvander_api::SessionEffectiveConfig {
+    let source = || sylvander_api::SessionConfigSource {
+        kind: sylvander_api::SessionConfigSourceKind::RequestOverride,
         reference: None,
     };
-    sylvander_protocol::SessionEffectiveConfig {
+    sylvander_api::SessionEffectiveConfig {
         agent_id: AgentId::new("test-agent"),
         agent_revision: 1,
         provider_id: "test".into(),
         provider_revision: 1,
         model_id: "test".into(),
         model_revision: 1,
-        reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
-        permissions: sylvander_protocol::PermissionProfile::default(),
+        reasoning_effort: sylvander_api::ReasoningEffort::Off,
+        permissions: sylvander_api::PermissionProfile::default(),
         prompt_profile: None,
         system_prompt_sha256: String::new(),
-        prompt_manifest: sylvander_protocol::PromptManifest {
+        prompt_manifest: sylvander_api::PromptManifest {
             layers: Vec::new(),
             aggregate_sha256: String::new(),
             total_bytes: 0,
         },
         agent_workspace: None,
-        user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+        user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
             execution_target: target_id.into(),
             path: workspace.into(),
             read_only: false,
@@ -430,7 +430,7 @@ fn remote_effective_config(
         }),
         workspace_mounts: Vec::new(),
         execution_target: target_id.into(),
-        provenance: sylvander_protocol::SessionConfigProvenance {
+        provenance: sylvander_api::SessionConfigProvenance {
             model: source(),
             reasoning_effort: source(),
             permissions: source(),
@@ -520,8 +520,8 @@ impl SessionStore for FailingSessionStore {
         &self,
         id: &SessionId,
         expected_revision: u64,
-        overrides: sylvander_protocol::SessionConfigOverrides,
-        effective: sylvander_protocol::SessionEffectiveConfig,
+        overrides: sylvander_api::SessionConfigOverrides,
+        effective: sylvander_api::SessionEffectiveConfig,
     ) -> Result<u64, crate::storage::session::SessionStoreError> {
         self.inner
             .update_config(id, expected_revision, overrides, effective)
@@ -530,7 +530,7 @@ impl SessionStore for FailingSessionStore {
 
     async fn begin_turn(
         &self,
-        context: &sylvander_protocol::SessionContext,
+        context: &sylvander_api::SessionContext,
         start: TurnStart,
     ) -> Result<crate::storage::session::StoredMessage, crate::storage::session::SessionStoreError>
     {
@@ -615,7 +615,7 @@ impl SessionStore for FailingSessionStore {
 
     async fn list(
         &self,
-        context: &sylvander_protocol::SessionContext,
+        context: &sylvander_api::SessionContext,
         filter: crate::storage::session::SessionFilter,
     ) -> Result<Vec<StoredSession>, crate::storage::session::SessionStoreError> {
         self.inner.list(context, filter).await
@@ -623,7 +623,7 @@ impl SessionStore for FailingSessionStore {
 
     async fn search(
         &self,
-        context: &sylvander_protocol::SessionContext,
+        context: &sylvander_api::SessionContext,
         query: &str,
         limit: usize,
     ) -> Result<Vec<StoredSession>, crate::storage::session::SessionStoreError> {
@@ -632,7 +632,7 @@ impl SessionStore for FailingSessionStore {
 
     async fn append_message(
         &self,
-        context: &sylvander_protocol::SessionContext,
+        context: &sylvander_api::SessionContext,
         session_id: &SessionId,
         role: StoredMessageRole,
         message_content: serde_json::Value,
@@ -659,7 +659,7 @@ impl SessionStore for FailingSessionStore {
 
     async fn read_history(
         &self,
-        context: &sylvander_protocol::SessionContext,
+        context: &sylvander_api::SessionContext,
         session_id: &SessionId,
         include_summarized: bool,
         limit: Option<usize>,
@@ -685,7 +685,7 @@ impl SessionStore for FailingSessionStore {
 
     async fn replace_active_history(
         &self,
-        context: &sylvander_protocol::SessionContext,
+        context: &sylvander_api::SessionContext,
         session_id: &SessionId,
         messages: Vec<ReplacementMessage>,
     ) -> Result<(), crate::storage::session::SessionStoreError> {
@@ -699,7 +699,7 @@ impl SessionStore for FailingSessionStore {
 
     async fn count_active_messages(
         &self,
-        context: &sylvander_protocol::SessionContext,
+        context: &sylvander_api::SessionContext,
         session_id: &SessionId,
     ) -> Result<u64, crate::storage::session::SessionStoreError> {
         self.inner.count_active_messages(context, session_id).await
@@ -831,7 +831,7 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
             .unwrap(),
     );
     let (spec, _) = test_spec_and_client();
-    let selection = sylvander_protocol::ModelSelection {
+    let selection = sylvander_api::ModelSelection {
         provider_id: spec.model.provider.clone(),
         model_id: spec.model.model_name.clone(),
     };
@@ -973,7 +973,7 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
                 .expect("store"),
         );
         let (spec, _) = test_spec_and_client();
-        let selection = sylvander_protocol::ModelSelection {
+        let selection = sylvander_api::ModelSelection {
             provider_id: spec.model.provider.clone(),
             model_id: spec.model.model_name.clone(),
         };
@@ -1106,13 +1106,13 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
 
     let before = run.runtime_model_info().await;
     assert_eq!(before.models.len(), 3);
-    let remote_selection = sylvander_protocol::ModelSelection {
+    let remote_selection = sylvander_api::ModelSelection {
         provider_id: "remote".into(),
         model_id: "shared".into(),
     };
     run.select_qualified_model(
         remote_selection.clone(),
-        sylvander_protocol::ReasoningEffort::Off,
+        sylvander_api::ReasoningEffort::Off,
     )
     .await
     .unwrap();
@@ -1121,11 +1121,11 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         remote_selection
     );
     run.select_qualified_model(
-        sylvander_protocol::ModelSelection {
+        sylvander_api::ModelSelection {
             provider_id: "local".into(),
             model_id: "model-b".into(),
         },
-        sylvander_protocol::ReasoningEffort::Off,
+        sylvander_api::ReasoningEffort::Off,
     )
     .await
     .unwrap();
@@ -1134,8 +1134,7 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         runtime.available.get(&runtime.current).unwrap().clone()
     };
     let selected =
-        AgentRunInner::validate_turn_model(&selected, sylvander_protocol::ReasoningEffort::Off)
-            .unwrap();
+        AgentRunInner::validate_turn_model(&selected, sylvander_api::ReasoningEffort::Off).unwrap();
     let (request, ports) = direct_turn(&run, selected, vec![ChatMessage::user("hello")]);
     sylvander_agent::loop_::run(&run.inner.loop_config, request, ports)
         .await
@@ -1171,15 +1170,15 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE
             | sylvander_llm_core::ModelCapabilities::VISION,
     };
-    let local_selection = sylvander_protocol::ModelSelection {
+    let local_selection = sylvander_api::ModelSelection {
         provider_id: "local".into(),
         model_id: "shared".into(),
     };
-    let remote_selection = sylvander_protocol::ModelSelection {
+    let remote_selection = sylvander_api::ModelSelection {
         provider_id: "remote".into(),
         model_id: "shared".into(),
     };
-    let remote_pricing = sylvander_protocol::ModelPricing {
+    let remote_pricing = sylvander_api::ModelPricing {
         input_usd_micros_per_million: 11,
         output_usd_micros_per_million: 22,
         cache_write_usd_micros_per_million: None,
@@ -1189,10 +1188,10 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         .bus(Arc::new(InProcessMessageBus::new()))
         .available_provider_models(vec![remote])
         .qualified_model_lifecycles(HashMap::from([
-            (local_selection, sylvander_protocol::ModelLifecycle::Active),
+            (local_selection, sylvander_api::ModelLifecycle::Active),
             (
                 remote_selection.clone(),
-                sylvander_protocol::ModelLifecycle::Deprecated { replacement: None },
+                sylvander_api::ModelLifecycle::Deprecated { replacement: None },
             ),
         ]))
         .qualified_model_pricing(HashMap::from([(remote_selection.clone(), remote_pricing)]))
@@ -1210,22 +1209,22 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         .iter()
         .find(|model| model.provider == "remote" && model.id == "shared")
         .unwrap();
-    assert_eq!(local.lifecycle, sylvander_protocol::ModelLifecycle::Active);
+    assert_eq!(local.lifecycle, sylvander_api::ModelLifecycle::Active);
     assert_eq!(local.pricing, None);
     assert!(matches!(
         remote.lifecycle,
-        sylvander_protocol::ModelLifecycle::Deprecated { .. }
+        sylvander_api::ModelLifecycle::Deprecated { .. }
     ));
     assert_eq!(remote.pricing, Some(remote_pricing));
     assert_eq!(
         remote.capability_names,
         [
-            sylvander_protocol::ModelCapability::ToolUse,
-            sylvander_protocol::ModelCapability::Vision,
+            sylvander_api::ModelCapability::ToolUse,
+            sylvander_api::ModelCapability::Vision,
         ]
     );
 
-    run.select_qualified_model(remote_selection, sylvander_protocol::ReasoningEffort::Off)
+    run.select_qualified_model(remote_selection, sylvander_api::ReasoningEffort::Off)
         .await
         .unwrap();
     let selected = {
@@ -1233,8 +1232,7 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         runtime.available.get(&runtime.current).unwrap().clone()
     };
     let selected =
-        AgentRunInner::validate_turn_model(&selected, sylvander_protocol::ReasoningEffort::Off)
-            .unwrap();
+        AgentRunInner::validate_turn_model(&selected, sylvander_api::ReasoningEffort::Off).unwrap();
     let (request, ports) = direct_turn(&run, selected, vec![ChatMessage::user("hello")]);
     sylvander_agent::loop_::run(&run.inner.loop_config, request, ports)
         .await
@@ -1356,7 +1354,7 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
         .tool_presentations(vec![crate::agent_definition::ToolPresentationConfig {
             tool_name: "search".into(),
             label: "Search".into(),
-            kind: sylvander_protocol::ToolPresentationKind::Search,
+            kind: sylvander_api::ToolPresentationKind::Search,
             target_field: Some("query".into()),
         }])
         .build()
@@ -1378,20 +1376,20 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
     assert_eq!(snapshot.commands[0].source, "agent configuration");
     assert_eq!(
         snapshot.commands[0].trust,
-        sylvander_protocol::PlatformTrust::Workspace
+        sylvander_api::PlatformTrust::Workspace
     );
     assert_eq!(
         snapshot.features[0].status,
-        sylvander_protocol::PlatformFeatureStatus::Configured
+        sylvander_api::PlatformFeatureStatus::Configured
     );
     assert_eq!(
         snapshot.features[1].kind,
-        sylvander_protocol::PlatformFeatureKind::Memory
+        sylvander_api::PlatformFeatureKind::Memory
     );
     assert_eq!(snapshot.features[1].name, "runtime memory");
     assert_eq!(
         snapshot.features[1].status,
-        sylvander_protocol::PlatformFeatureStatus::Active
+        sylvander_api::PlatformFeatureStatus::Active
     );
     assert_eq!(
         snapshot.features[1].source.as_deref(),
@@ -1399,7 +1397,7 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
     );
     assert_eq!(
         snapshot.features[2].kind,
-        sylvander_protocol::PlatformFeatureKind::Extension
+        sylvander_api::PlatformFeatureKind::Extension
     );
     let json = serde_json::to_string(&snapshot).unwrap();
     assert!(!json.contains("super-secret"));
@@ -1433,15 +1431,13 @@ fn platform_snapshot_reports_runtime_override_without_activating_declarations() 
     let memory = snapshot
         .features
         .iter()
-        .filter(|feature| feature.kind == sylvander_protocol::PlatformFeatureKind::Memory)
+        .filter(|feature| feature.kind == sylvander_api::PlatformFeatureKind::Memory)
         .collect::<Vec<_>>();
     assert_eq!(memory.len(), 2);
     assert_eq!(
         memory
             .iter()
-            .filter(|feature| {
-                feature.status == sylvander_protocol::PlatformFeatureStatus::Active
-            })
+            .filter(|feature| { feature.status == sylvander_api::PlatformFeatureStatus::Active })
             .count(),
         1
     );
@@ -1449,7 +1445,7 @@ fn platform_snapshot_reports_runtime_override_without_activating_declarations() 
     assert_eq!(memory[1].name, "sqlite");
     assert_eq!(
         memory[1].status,
-        sylvander_protocol::PlatformFeatureStatus::Configured
+        sylvander_api::PlatformFeatureStatus::Configured
     );
     assert_eq!(memory[1].source.as_deref(), Some("agent configuration"));
     assert!(memory[1].capabilities.is_empty());
@@ -1486,12 +1482,12 @@ fn agent_memory_declarations_are_not_implicit_runtime_fallbacks() {
     let memory = snapshot
         .features
         .iter()
-        .filter(|feature| feature.kind == sylvander_protocol::PlatformFeatureKind::Memory)
+        .filter(|feature| feature.kind == sylvander_api::PlatformFeatureKind::Memory)
         .collect::<Vec<_>>();
     assert_eq!(memory.len(), 1);
     assert_eq!(
         memory[0].status,
-        sylvander_protocol::PlatformFeatureStatus::Configured
+        sylvander_api::PlatformFeatureStatus::Configured
     );
     assert_eq!(memory[0].summary, "declared; not activated by runtime");
     assert!(memory[0].capabilities.is_empty());
@@ -1544,10 +1540,10 @@ async fn approval_timeout_rejects_and_clears_the_pending_request() {
     assert!(matches!(
         next_stream_event(&mut events).await,
         StreamEvent::InteractionTimedOut {
-            kind: sylvander_protocol::InteractionTimeoutKind::Approval,
+            kind: sylvander_api::InteractionTimeoutKind::Approval,
             subject_id,
             timeout_secs: 120,
-            recovery: sylvander_protocol::TimeoutRecovery::RetryRequest,
+            recovery: sylvander_api::TimeoutRecovery::RetryRequest,
         } if subject_id == "tool-1"
     ));
 }
@@ -1578,10 +1574,10 @@ async fn question_timeout_returns_empty_and_clears_the_pending_answer() {
     assert!(matches!(
         next_stream_event(&mut events).await,
         StreamEvent::InteractionTimedOut {
-            kind: sylvander_protocol::InteractionTimeoutKind::Question,
+            kind: sylvander_api::InteractionTimeoutKind::Question,
             subject_id,
             timeout_secs: 300,
-            recovery: sylvander_protocol::TimeoutRecovery::RetryRequest,
+            recovery: sylvander_api::TimeoutRecovery::RetryRequest,
         } if subject_id == "question-1"
     ));
 }
@@ -1614,17 +1610,17 @@ async fn plan_timeout_rejects_and_clears_the_pending_review() {
     assert!(matches!(
         next_stream_event(&mut events).await,
         StreamEvent::InteractionTimedOut {
-            kind: sylvander_protocol::InteractionTimeoutKind::Plan,
+            kind: sylvander_api::InteractionTimeoutKind::Plan,
             subject_id,
             timeout_secs: 300,
-            recovery: sylvander_protocol::TimeoutRecovery::RetryRequest,
+            recovery: sylvander_api::TimeoutRecovery::RetryRequest,
         } if subject_id == "plan-1"
     ));
 }
 
 #[test]
 fn configured_pricing_calculates_nano_usd_and_requires_cache_rates() {
-    let pricing = sylvander_protocol::ModelPricing {
+    let pricing = sylvander_api::ModelPricing {
         input_usd_micros_per_million: 3_000_000,
         output_usd_micros_per_million: 15_000_000,
         cache_write_usd_micros_per_million: None,
@@ -1715,11 +1711,11 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         .bus(bus)
         .available_provider_models(vec![thinking])
         .qualified_model_lifecycles(HashMap::from([(
-            sylvander_protocol::ModelSelection {
+            sylvander_api::ModelSelection {
                 provider_id: "anthropic".into(),
                 model_id: "thinking-model".into(),
             },
-            sylvander_protocol::ModelLifecycle::Deprecated {
+            sylvander_api::ModelLifecycle::Deprecated {
                 replacement: Some("claude-sonnet-5-20260601".into()),
             },
         )]))
@@ -1735,32 +1731,32 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
             .iter()
             .find(|model| model.id == "thinking-model")
             .map(|model| &model.lifecycle),
-        Some(sylvander_protocol::ModelLifecycle::Deprecated {
+        Some(sylvander_api::ModelLifecycle::Deprecated {
             replacement: Some(replacement)
         }) if replacement == "claude-sonnet-5-20260601"
     ));
     let selected = run
         .select_qualified_model(
-            sylvander_protocol::ModelSelection {
+            sylvander_api::ModelSelection {
                 provider_id: "anthropic".into(),
                 model_id: "thinking-model".into(),
             },
-            sylvander_protocol::ReasoningEffort::High,
+            sylvander_api::ReasoningEffort::High,
         )
         .await
         .expect("select");
     assert_eq!(selected.current_model, "thinking-model");
     assert_eq!(
         selected.reasoning_effort,
-        sylvander_protocol::ReasoningEffort::High
+        sylvander_api::ReasoningEffort::High
     );
     assert!(
         run.select_qualified_model(
-            sylvander_protocol::ModelSelection {
+            sylvander_api::ModelSelection {
                 provider_id: "anthropic".into(),
                 model_id: "claude-sonnet-5-20260601".into(),
             },
-            sylvander_protocol::ReasoningEffort::Low,
+            sylvander_api::ReasoningEffort::Low,
         )
         .await
         .is_err()
@@ -1805,7 +1801,7 @@ async fn context_report_separates_window_usage_from_cumulative_accounting() {
         report.context_window.saturating_sub(1_250)
     );
     assert!(report.sources.iter().any(|source| {
-        source.kind == sylvander_protocol::ContextSourceKind::Conversation && source.items == 1
+        source.kind == sylvander_api::ContextSourceKind::Conversation && source.items == 1
     }));
 }
 
@@ -1819,20 +1815,20 @@ async fn runtime_permissions_are_validated_against_operator_capabilities() {
         .expect("build");
     assert_eq!(
         run.permission_profile().await,
-        sylvander_protocol::PermissionProfile::default()
+        sylvander_api::PermissionProfile::default()
     );
-    let restricted = sylvander_protocol::PermissionProfile {
-        file_access: sylvander_protocol::FileAccess::ReadOnly,
-        network_access: sylvander_protocol::NetworkAccess::Denied,
-        approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+    let restricted = sylvander_api::PermissionProfile {
+        file_access: sylvander_api::FileAccess::ReadOnly,
+        network_access: sylvander_api::NetworkAccess::Denied,
+        approval_policy: sylvander_api::ApprovalPolicy::Deny,
     };
     assert_eq!(
         run.select_permissions(restricted.clone()).await.unwrap(),
         restricted
     );
     assert!(
-        run.select_permissions(sylvander_protocol::PermissionProfile {
-            approval_policy: sylvander_protocol::ApprovalPolicy::Ask,
+        run.select_permissions(sylvander_api::PermissionProfile {
+            approval_policy: sylvander_api::ApprovalPolicy::Ask,
             ..Default::default()
         })
         .await
@@ -1854,10 +1850,10 @@ fn permission_profile_builds_a_workspace_scoped_tool_context() {
         },
         &AgentId::new("agent"),
         &SessionId::new("session"),
-        &sylvander_protocol::PermissionProfile {
-            file_access: sylvander_protocol::FileAccess::ReadOnly,
-            network_access: sylvander_protocol::NetworkAccess::Allowed,
-            approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+        &sylvander_api::PermissionProfile {
+            file_access: sylvander_api::FileAccess::ReadOnly,
+            network_access: sylvander_api::NetworkAccess::Allowed,
+            approval_policy: sylvander_api::ApprovalPolicy::Deny,
         },
         true,
         None,
@@ -1911,7 +1907,7 @@ async fn turn_context_resolves_the_effective_execution_target() {
         },
         &AgentId::new("agent"),
         &SessionId::new("session"),
-        &sylvander_protocol::PermissionProfile::default(),
+        &sylvander_api::PermissionProfile::default(),
         false,
         None,
         Some("turn-1"),
@@ -1953,7 +1949,7 @@ async fn executor_resolution_is_rebuilt_after_agent_restart() {
         .workspace_executor("container:dev", new)
         .build()
         .unwrap();
-    let permissions = sylvander_protocol::PermissionProfile::default();
+    let permissions = sylvander_api::PermissionProfile::default();
     let context_after_restart = tool_context_for_permissions(
         ToolSessionExecution {
             metadata: &metadata,
@@ -1985,32 +1981,32 @@ async fn effective_workspace_mounts_route_file_operations_by_logical_reference()
     let metadata = test_metadata();
     let mut effective = remote_effective_config("local", task.path().to_str().unwrap());
     effective.workspace_mounts = vec![
-        sylvander_protocol::SessionWorkspaceMount {
+        sylvander_api::SessionWorkspaceMount {
             reference: "task".into(),
-            role: sylvander_protocol::WorkspaceMountRole::Task,
-            binding: sylvander_protocol::SessionWorkspaceBinding {
+            role: sylvander_api::WorkspaceMountRole::Task,
+            binding: sylvander_api::SessionWorkspaceBinding {
                 execution_target: "local".into(),
                 path: task.path().into(),
                 read_only: false,
                 instruction_focus: None,
             },
-            capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
+            capabilities: sylvander_api::WorkspaceCapabilityPolicy {
                 read: true,
                 write: true,
                 command: true,
                 git: true,
             },
         },
-        sylvander_protocol::SessionWorkspaceMount {
+        sylvander_api::SessionWorkspaceMount {
             reference: "shared".into(),
-            role: sylvander_protocol::WorkspaceMountRole::Dependency,
-            binding: sylvander_protocol::SessionWorkspaceBinding {
+            role: sylvander_api::WorkspaceMountRole::Dependency,
+            binding: sylvander_api::SessionWorkspaceBinding {
                 execution_target: "local".into(),
                 path: dependency.path().into(),
                 read_only: true,
                 instruction_focus: None,
             },
-            capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
+            capabilities: sylvander_api::WorkspaceCapabilityPolicy {
                 read: true,
                 git: true,
                 ..Default::default()
@@ -2031,7 +2027,7 @@ async fn effective_workspace_mounts_route_file_operations_by_logical_reference()
         },
         &AgentId::new("agent"),
         &SessionId::new("session"),
-        &sylvander_protocol::PermissionProfile::default(),
+        &sylvander_api::PermissionProfile::default(),
         false,
         None,
         None,
@@ -2074,7 +2070,7 @@ async fn unknown_execution_target_is_explicitly_unavailable() {
         },
         &AgentId::new("agent"),
         &SessionId::new("session"),
-        &sylvander_protocol::PermissionProfile::default(),
+        &sylvander_api::PermissionProfile::default(),
         false,
         None,
         None,
@@ -2094,13 +2090,13 @@ async fn unknown_execution_target_is_explicitly_unavailable() {
 
 #[test]
 fn user_workspace_precedes_agent_workspace_and_agent_fallback_keeps_read_only() {
-    let user = sylvander_protocol::SessionWorkspaceBinding {
+    let user = sylvander_api::SessionWorkspaceBinding {
         execution_target: "local".into(),
         path: "/user".into(),
         read_only: false,
         instruction_focus: None,
     };
-    let agent = sylvander_protocol::SessionWorkspaceBinding {
+    let agent = sylvander_api::SessionWorkspaceBinding {
         execution_target: "ssh:agent".into(),
         path: "/agent".into(),
         read_only: true,
@@ -2189,7 +2185,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
                 session_id: session.clone(),
                 grant,
                 persistent_identity_authorized: true,
-                allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+                allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
                 sender: approval,
             },
         );
@@ -2215,7 +2211,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
         SystemMessage::ApproveTool {
             call_id: "shared-id".into(),
             approved: false,
-            scope: sylvander_protocol::ApprovalScope::Once,
+            scope: sylvander_api::ApprovalScope::Once,
             reason: Some("session A rejected".into()),
         },
         SystemMessage::AnswerQuestion {
@@ -2224,18 +2220,18 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
         },
         SystemMessage::ResolvePlan {
             plan_id: "shared-id".into(),
-            decision: sylvander_protocol::PlanDecision::Approved,
+            decision: sylvander_api::PlanDecision::Approved,
         },
     ] {
         bus.publish(BusMessage {
             session_id: session_a.clone(),
-            sender: sylvander_protocol::Sender::System,
-            recipient: sylvander_protocol::Recipient::Agent(AgentId::new("test-agent")),
+            sender: sylvander_api::Sender::System,
+            recipient: sylvander_api::Recipient::Agent(AgentId::new("test-agent")),
             kind: MessageKind::System(kind),
             payload: String::new(),
             attachments: Vec::new(),
             timestamp: crate::session::now_secs(),
-            id: sylvander_protocol::MessageId::new(),
+            id: sylvander_api::MessageId::new(),
         })
         .await
         .unwrap();
@@ -2395,11 +2391,8 @@ async fn persistent_user_write_failure_stops_before_provider_work() {
     assert_persistence_failure(error, SessionPersistenceOperation::BeginTurn);
     assert!(provider.requests.lock().unwrap().is_empty());
     assert_eq!(run.get_session(&session_id).await.unwrap().len(), 0);
-    let caller = sylvander_protocol::SessionContext::new(
-        metadata.user_id,
-        run.id().clone(),
-        session_id.clone(),
-    );
+    let caller =
+        sylvander_api::SessionContext::new(metadata.user_id, run.id().clone(), session_id.clone());
     assert!(
         inner
             .read_history(&caller, &session_id, false, None)
@@ -2447,7 +2440,7 @@ async fn persistent_terminal_write_failures_never_publish_done() {
         assert_persistence_failure(error, expected);
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert_eq!(run.get_session(&session_id).await.unwrap().len(), 1);
-        let caller = sylvander_protocol::SessionContext::new(
+        let caller = sylvander_api::SessionContext::new(
             metadata.user_id,
             run.id().clone(),
             session_id.clone(),
@@ -2501,11 +2494,8 @@ async fn compacted_history_write_failure_keeps_live_and_durable_history_unchange
         .expect_err("history replacement must fail closed");
     assert_persistence_failure(error, SessionPersistenceOperation::ReplaceHistory);
     assert_eq!(run.get_session(&session_id).await.unwrap().len(), 0);
-    let caller = sylvander_protocol::SessionContext::new(
-        metadata.user_id,
-        run.id().clone(),
-        session_id.clone(),
-    );
+    let caller =
+        sylvander_api::SessionContext::new(metadata.user_id, run.id().clone(), session_id.clone());
     assert!(
         inner
             .read_history(&caller, &session_id, false, None)
@@ -2537,11 +2527,8 @@ async fn durable_session_history_restores_into_agent_context() {
         ))
         .await
         .expect("save session");
-    let caller = sylvander_protocol::SessionContext::new(
-        metadata.user_id.clone(),
-        agent_id,
-        session_id.clone(),
-    );
+    let caller =
+        sylvander_api::SessionContext::new(metadata.user_id.clone(), agent_id, session_id.clone());
     store
         .append_message(
             &caller,
@@ -2611,7 +2598,7 @@ async fn direct_join_persists_an_auditable_effective_configuration() {
     assert_eq!(effective.user_workspace.unwrap().path, metadata.workspace);
     assert_eq!(
         effective.provenance.model.kind,
-        sylvander_protocol::SessionConfigSourceKind::AgentDefault
+        sylvander_api::SessionConfigSourceKind::AgentDefault
     );
 }
 
@@ -2637,11 +2624,8 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
         ))
         .await
         .expect("save");
-    let caller = sylvander_protocol::SessionContext::new(
-        metadata.user_id.clone(),
-        agent_id,
-        session_id.clone(),
-    );
+    let caller =
+        sylvander_api::SessionContext::new(metadata.user_id.clone(), agent_id, session_id.clone());
     for index in 0..6 {
         store
             .append_message(
@@ -2922,12 +2906,12 @@ fn typed_attachments_become_provider_content_blocks() {
         SessionId::new("s1"),
         "u1",
         "review this",
-        vec![sylvander_protocol::MessageAttachment {
+        vec![sylvander_api::MessageAttachment {
             id: "a1".into(),
-            kind: sylvander_protocol::AttachmentKind::File,
+            kind: sylvander_api::AttachmentKind::File,
             name: "src/main.rs".into(),
             mime_type: "text/x-rust".into(),
-            content: sylvander_protocol::AttachmentContent::Text {
+            content: sylvander_api::AttachmentContent::Text {
                 text: "fn main() {}".into(),
             },
             byte_count: 12,

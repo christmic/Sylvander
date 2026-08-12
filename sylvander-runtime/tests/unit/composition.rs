@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use super::*;
 use crate::storage::session::SqliteSessionStore;
 use sylvander_agent::tools::InMemoryMemoryStore;
+use sylvander_api::ModelSelection;
 use sylvander_channel::InProcessMessageBus;
-use sylvander_protocol::ModelSelection;
 
 #[test]
 fn capability_mapping_covers_the_canonical_vocabulary() {
@@ -25,7 +25,7 @@ fn capability_mapping_covers_the_canonical_vocabulary() {
         .into_iter()
         .map(str::to_owned)
         .collect(),
-        lifecycle: sylvander_protocol::ModelLifecycle::Active,
+        lifecycle: sylvander_api::ModelLifecycle::Active,
         pricing: None,
     };
 
@@ -160,13 +160,13 @@ fn versioned_snapshot(config: &ServerConfig) -> VersionedRegistryCompositionSnap
         models: BTreeMap::from([
             (
                 selection("alpha"),
-                model("alpha", sylvander_protocol::ModelLifecycle::Active),
+                model("alpha", sylvander_api::ModelLifecycle::Active),
             ),
             (
                 selection("beta"),
                 model(
                     "beta",
-                    sylvander_protocol::ModelLifecycle::Deprecated { replacement: None },
+                    sylvander_api::ModelLifecycle::Deprecated { replacement: None },
                 ),
             ),
         ]),
@@ -218,7 +218,7 @@ async fn versioned_builder_preserves_the_full_qualified_catalog() {
     );
     assert!(matches!(
         info.models[1].lifecycle,
-        sylvander_protocol::ModelLifecycle::Deprecated { .. }
+        sylvander_api::ModelLifecycle::Deprecated { .. }
     ));
     configured
         .run

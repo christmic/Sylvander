@@ -6,11 +6,11 @@ use std::sync::Arc;
 use crate::storage::session::{SessionLifetime, SessionStore, SqliteSessionStore, StoredSession};
 use serde_json::json;
 use sylvander_agent::tools::InMemoryMemoryStore;
-use sylvander_channel::{InProcessMessageBus, MessageBus};
-use sylvander_protocol::{
+use sylvander_api::{
     AgentId, AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, BusMessage,
     SessionConfigOverrides, SessionConfigUpdateRequest, SessionCreateRequest, SessionMetadata,
 };
+use sylvander_channel::{InProcessMessageBus, MessageBus};
 use tempfile::tempdir;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -177,7 +177,7 @@ async fn persisted_session_with_overrides(
         name: name.into(),
         user_id: "user".into(),
     };
-    let session_id = sylvander_protocol::SessionId::new(uuid::Uuid::new_v4().to_string());
+    let session_id = sylvander_api::SessionId::new(uuid::Uuid::new_v4().to_string());
     agent
         .attach_authenticated_session(session_id.clone(), metadata.clone())
         .await
@@ -271,7 +271,7 @@ exec "$@"
         store.as_ref(),
         "sandbox",
         SessionConfigOverrides {
-            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+            user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
                 execution_target: "container:test".into(),
                 path: workspace,
                 read_only: true,

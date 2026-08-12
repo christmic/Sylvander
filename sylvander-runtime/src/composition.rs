@@ -17,6 +17,13 @@ use sylvander_agent::tools::{
 };
 use sylvander_agent::user_profile_provider::UserProfileProvider;
 use sylvander_agent::workspace_executor::WorkspaceExecutor;
+use sylvander_api::{
+    AgentSecretReference, ApprovalPolicy, FileAccess, ModelSelection,
+    ModelSelectionResolutionError, NetworkAccess, PermissionProfile, ReasoningEffort,
+    SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
+    SessionEffectiveConfig, SessionWorkspaceBinding, SessionWorkspaceMount,
+    WorkspaceCapabilityPolicy, WorkspaceMountRole,
+};
 use sylvander_channel::MessageBus;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 #[cfg(test)]
@@ -24,13 +31,6 @@ use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelProvider,
     ModelRef,
-};
-use sylvander_protocol::{
-    AgentSecretReference, ApprovalPolicy, FileAccess, ModelSelection,
-    ModelSelectionResolutionError, NetworkAccess, PermissionProfile, ReasoningEffort,
-    SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
-    SessionEffectiveConfig, SessionWorkspaceBinding, SessionWorkspaceMount,
-    WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };
 
 use crate::agent_run::{AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession};
@@ -81,17 +81,17 @@ pub struct ConfiguredAgent {
 /// credential binding, or mutable runtime control.
 #[derive(Clone)]
 pub struct ConfiguredAgentDescriptor {
-    pub id: sylvander_protocol::AgentId,
+    pub id: sylvander_api::AgentId,
     pub default_model: ModelSelection,
     pub models: BTreeMap<ModelSelection, ModelInfo>,
     pub approval_enabled: bool,
-    pub platform: sylvander_protocol::PlatformSnapshot,
+    pub platform: sylvander_api::PlatformSnapshot,
     platform_provider: AgentRun,
 }
 
 impl ConfiguredAgentDescriptor {
     #[must_use]
-    pub fn platform_snapshot(&self) -> sylvander_protocol::PlatformSnapshot {
+    pub fn platform_snapshot(&self) -> sylvander_api::PlatformSnapshot {
         self.platform_provider.platform_snapshot()
     }
 }
@@ -400,17 +400,14 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
 impl ConfiguredAgent {
     pub(crate) async fn attach_authenticated_session(
         &self,
-        session_id: sylvander_protocol::SessionId,
+        session_id: sylvander_api::SessionId,
         metadata: crate::session::SessionMetadata,
     ) -> Result<AuthenticatedSession, AgentRunError> {
         let lease = self.session_issuer.issue(session_id, metadata)?;
         self.run.attach_authenticated_session(lease).await
     }
 
-    pub(crate) async fn detach_authenticated_session(
-        &self,
-        session_id: &sylvander_protocol::SessionId,
-    ) {
+    pub(crate) async fn detach_authenticated_session(&self, session_id: &sylvander_api::SessionId) {
         self.run.leave_session(session_id).await;
     }
 

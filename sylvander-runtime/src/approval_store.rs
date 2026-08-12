@@ -117,13 +117,13 @@ impl ApprovalMemory {
     pub(crate) fn allowed_scopes(
         &self,
         persistent_identity_authorized: bool,
-    ) -> Vec<sylvander_protocol::ApprovalScope> {
+    ) -> Vec<sylvander_api::ApprovalScope> {
         let mut scopes = vec![
-            sylvander_protocol::ApprovalScope::Once,
-            sylvander_protocol::ApprovalScope::Session,
+            sylvander_api::ApprovalScope::Once,
+            sylvander_api::ApprovalScope::Session,
         ];
         if self.persistent.is_some() && persistent_identity_authorized {
-            scopes.push(sylvander_protocol::ApprovalScope::Persistent);
+            scopes.push(sylvander_api::ApprovalScope::Persistent);
         }
         scopes
     }
@@ -146,20 +146,20 @@ impl ApprovalMemory {
         &mut self,
         session_id: &SessionId,
         key: ApprovalGrantKey,
-        scope: sylvander_protocol::ApprovalScope,
+        scope: sylvander_api::ApprovalScope,
         persistent_identity_authorized: bool,
     ) -> Result<(), String> {
         key.validate()?;
         match scope {
-            sylvander_protocol::ApprovalScope::Once => Ok(()),
-            sylvander_protocol::ApprovalScope::Session => {
+            sylvander_api::ApprovalScope::Once => Ok(()),
+            sylvander_api::ApprovalScope::Session => {
                 self.sessions
                     .entry(session_id.clone())
                     .or_default()
                     .insert(key);
                 Ok(())
             }
-            sylvander_protocol::ApprovalScope::Persistent => {
+            sylvander_api::ApprovalScope::Persistent => {
                 if !persistent_identity_authorized {
                     return Err(
                         "persistent approval requires a Runtime-authenticated stable identity"
@@ -215,7 +215,7 @@ fn shared_persistent_state(path: PathBuf) -> Result<Arc<Mutex<PersistentApproval
 
 /// Content-addressed revision of the effective approval policy.
 pub(crate) fn approval_policy_revision(
-    permissions: &sylvander_protocol::PermissionProfile,
+    permissions: &sylvander_api::PermissionProfile,
     rules: &[ApprovalRule],
 ) -> String {
     let rules = rules

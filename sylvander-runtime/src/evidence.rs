@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::task;
 
-use sylvander_protocol::{
+use sylvander_api::{
     EvidenceReference, FeedbackPrivacyClass, FeedbackRating, FeedbackTaskResult, RunFeedback,
 };
 
@@ -68,13 +68,13 @@ const EVIDENCE_SCHEMA_VERSION: i64 = 1;
 /// The digest is an identifier, not an authorization credential. Runtime
 /// still resolves the target through the evidence store and enforces session
 /// ownership before accepting feedback.
-pub(crate) fn feedback_target(run_id: &str, turn_id: &str) -> sylvander_protocol::FeedbackTarget {
+pub(crate) fn feedback_target(run_id: &str, turn_id: &str) -> sylvander_api::FeedbackTarget {
     let mut digest = Sha256::new();
     digest.update(b"sylvander-feedback-target-v1\0");
     digest.update(run_id.as_bytes());
     digest.update(b"\0");
     digest.update(turn_id.as_bytes());
-    sylvander_protocol::FeedbackTarget(format!("sha256:{:x}", digest.finalize()))
+    sylvander_api::FeedbackTarget(format!("sha256:{:x}", digest.finalize()))
 }
 
 #[derive(Clone)]
@@ -673,7 +673,7 @@ impl EvidenceStore {
     /// Resolve the owner session for one server-issued opaque turn handle.
     pub async fn feedback_session(
         &self,
-        target: sylvander_protocol::FeedbackTarget,
+        target: sylvander_api::FeedbackTarget,
     ) -> Result<Option<String>, EvidenceError> {
         self.run(move |connection| {
             connection

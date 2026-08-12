@@ -640,10 +640,10 @@ pub struct WorkspaceBindingConfig {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceMountConfig {
     pub reference: String,
-    pub role: sylvander_protocol::WorkspaceMountRole,
+    pub role: sylvander_api::WorkspaceMountRole,
     pub binding: WorkspaceBindingConfig,
     #[serde(default)]
-    pub capabilities: sylvander_protocol::WorkspaceCapabilityPolicy,
+    pub capabilities: sylvander_api::WorkspaceCapabilityPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -651,7 +651,7 @@ pub struct WorkspaceMountConfig {
 pub struct PromptProfileConfig {
     pub id: String,
     #[serde(default)]
-    pub qualified_models: Vec<sylvander_protocol::ModelSelection>,
+    pub qualified_models: Vec<sylvander_api::ModelSelection>,
     pub system_prompt: String,
 }
 

@@ -107,7 +107,7 @@ fn profile_command_fails_closed_until_capability_negotiation() {
     );
     state
         .protocol_capabilities
-        .push(sylvander_protocol::USER_PROFILE_CAPABILITY.into());
+        .push(sylvander_api::USER_PROFILE_CAPABILITY.into());
     assert!(availability(profile, &state).is_available());
 }
 
@@ -117,7 +117,7 @@ fn profile_mutations_read_the_server_revision_before_editing() {
     state.connected = true;
     state
         .protocol_capabilities
-        .push(sylvander_protocol::USER_PROFILE_CAPABILITY.into());
+        .push(sylvander_api::USER_PROFILE_CAPABILITY.into());
 
     execute(parse("/profile edit").expect("parse"), &mut state).expect("execute");
     assert!(matches!(
@@ -127,8 +127,8 @@ fn profile_mutations_read_the_server_revision_before_editing() {
     assert!(matches!(
         state.pending_actions.as_slice(),
         [crate::event::Action::UserProfile {
-            request: sylvander_protocol::UserProfileRequest {
-                action: sylvander_protocol::UserProfileAction::Read {},
+            request: sylvander_api::UserProfileRequest {
+                action: sylvander_api::UserProfileAction::Read {},
                 ..
             }
         }]
@@ -141,15 +141,15 @@ fn profile_export_is_a_typed_json_request() {
     state.connected = true;
     state
         .protocol_capabilities
-        .push(sylvander_protocol::USER_PROFILE_CAPABILITY.into());
+        .push(sylvander_api::USER_PROFILE_CAPABILITY.into());
 
     execute(parse("/profile export").expect("parse"), &mut state).expect("execute");
     assert!(matches!(
         state.pending_actions.as_slice(),
         [crate::event::Action::UserProfile {
-            request: sylvander_protocol::UserProfileRequest {
-                action: sylvander_protocol::UserProfileAction::Export {
-                    format: sylvander_protocol::UserProfileExportFormat::Json,
+            request: sylvander_api::UserProfileRequest {
+                action: sylvander_api::UserProfileAction::Export {
+                    format: sylvander_api::UserProfileExportFormat::Json,
                 },
                 ..
             }
@@ -168,12 +168,12 @@ fn feedback_requires_a_completed_turn_and_emits_only_the_opaque_target() {
     );
     state
         .protocol_capabilities
-        .push(sylvander_protocol::FEEDBACK_CAPABILITY.into());
+        .push(sylvander_api::FEEDBACK_CAPABILITY.into());
     assert_eq!(
         availability(feedback, &state).reason(),
         Some("complete a turn before recording feedback")
     );
-    state.feedback_target = Some(sylvander_protocol::FeedbackTarget("sha256:opaque".into()));
+    state.feedback_target = Some(sylvander_api::FeedbackTarget("sha256:opaque".into()));
 
     execute(
         parse("/feedback correction use the verified output").expect("parse"),
@@ -183,9 +183,9 @@ fn feedback_requires_a_completed_turn_and_emits_only_the_opaque_target() {
     assert!(matches!(
         state.pending_actions.as_slice(),
         [crate::event::Action::SubmitFeedback {
-            feedback: sylvander_protocol::RunFeedback {
-                target: sylvander_protocol::FeedbackTarget(target),
-                rating: sylvander_protocol::FeedbackRating::Negative,
+            feedback: sylvander_api::RunFeedback {
+                target: sylvander_api::FeedbackTarget(target),
+                rating: sylvander_api::FeedbackRating::Negative,
                 correction: Some(correction),
                 task_result: None,
                 ..
@@ -200,8 +200,8 @@ fn feedback_note_requires_an_explicit_rating() {
     state.connected = true;
     state
         .protocol_capabilities
-        .push(sylvander_protocol::FEEDBACK_CAPABILITY.into());
-    state.feedback_target = Some(sylvander_protocol::FeedbackTarget("sha256:opaque".into()));
+        .push(sylvander_api::FEEDBACK_CAPABILITY.into());
+    state.feedback_target = Some(sylvander_api::FeedbackTarget("sha256:opaque".into()));
     assert!(
         execute(parse("/feedback note useful").expect("parse"), &mut state)
             .unwrap_err()
@@ -215,9 +215,9 @@ fn feedback_note_requires_an_explicit_rating() {
     assert!(matches!(
         state.pending_actions.last(),
         Some(crate::event::Action::SubmitFeedback {
-            feedback: sylvander_protocol::RunFeedback {
+            feedback: sylvander_api::RunFeedback {
                 note: Some(note),
-                rating: sylvander_protocol::FeedbackRating::Positive,
+                rating: sylvander_api::FeedbackRating::Positive,
                 ..
             }
         }) if note == "concise and correct"
@@ -403,47 +403,47 @@ fn platform_commands_render_only_server_reported_truth() {
     let mut state = AppState::new();
     state.connected = true;
     state.platform.features = vec![
-        sylvander_protocol::PlatformFeature {
-            kind: sylvander_protocol::PlatformFeatureKind::Mcp,
+        sylvander_api::PlatformFeature {
+            kind: sylvander_api::PlatformFeatureKind::Mcp,
             name: "search".into(),
-            status: sylvander_protocol::PlatformFeatureStatus::Configured,
+            status: sylvander_api::PlatformFeatureStatus::Configured,
             summary: "configured; runtime health unavailable".into(),
             source: Some("search-mcp".into()),
-            trust: Some(sylvander_protocol::PlatformTrust::External),
-            auth: sylvander_protocol::PlatformAuthStatus::Configured,
+            trust: Some(sylvander_api::PlatformTrust::External),
+            auth: sylvander_api::PlatformAuthStatus::Configured,
             capabilities: Vec::new(),
             reloadable: false,
         },
-        sylvander_protocol::PlatformFeature {
-            kind: sylvander_protocol::PlatformFeatureKind::Memory,
+        sylvander_api::PlatformFeature {
+            kind: sylvander_api::PlatformFeatureKind::Memory,
             name: "runtime memory".into(),
-            status: sylvander_protocol::PlatformFeatureStatus::Active,
+            status: sylvander_api::PlatformFeatureStatus::Active,
             summary: "long-term memory is available".into(),
             source: Some("runtime injection".into()),
-            trust: Some(sylvander_protocol::PlatformTrust::BuiltIn),
-            auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+            trust: Some(sylvander_api::PlatformTrust::BuiltIn),
+            auth: sylvander_api::PlatformAuthStatus::NotRequired,
             capabilities: vec!["search".into()],
             reloadable: false,
         },
-        sylvander_protocol::PlatformFeature {
-            kind: sylvander_protocol::PlatformFeatureKind::Hook,
+        sylvander_api::PlatformFeature {
+            kind: sylvander_api::PlatformFeatureKind::Hook,
             name: "lint".into(),
-            status: sylvander_protocol::PlatformFeatureStatus::Configured,
+            status: sylvander_api::PlatformFeatureStatus::Configured,
             summary: "before-tool · blocking".into(),
             source: None,
-            trust: Some(sylvander_protocol::PlatformTrust::User),
-            auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+            trust: Some(sylvander_api::PlatformTrust::User),
+            auth: sylvander_api::PlatformAuthStatus::NotRequired,
             capabilities: vec!["before_tool".into()],
             reloadable: false,
         },
-        sylvander_protocol::PlatformFeature {
-            kind: sylvander_protocol::PlatformFeatureKind::Extension,
+        sylvander_api::PlatformFeature {
+            kind: sylvander_api::PlatformFeatureKind::Extension,
             name: "agent configuration".into(),
-            status: sylvander_protocol::PlatformFeatureStatus::Active,
+            status: sylvander_api::PlatformFeatureStatus::Active,
             summary: "1 tools · 1 commands · 1 presentations".into(),
             source: Some("agent definition".into()),
-            trust: Some(sylvander_protocol::PlatformTrust::Workspace),
-            auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+            trust: Some(sylvander_api::PlatformTrust::Workspace),
+            auth: sylvander_api::PlatformAuthStatus::NotRequired,
             capabilities: vec!["tool_presentations".into()],
             reloadable: false,
         },
@@ -487,9 +487,9 @@ fn platform_commands_render_only_server_reported_truth() {
 
 fn dynamic_command(
     name: &str,
-    trust: sylvander_protocol::PlatformTrust,
-) -> sylvander_protocol::UiCommandDescriptor {
-    sylvander_protocol::UiCommandDescriptor {
+    trust: sylvander_api::PlatformTrust,
+) -> sylvander_api::UiCommandDescriptor {
+    sylvander_api::UiCommandDescriptor {
         id: format!("workspace.{name}"),
         name: name.into(),
         usage: format!("/{name} [scope]"),
@@ -497,7 +497,7 @@ fn dynamic_command(
         hint: "workspace command".into(),
         source: "agent configuration".into(),
         trust,
-        effect: sylvander_protocol::UiCommandEffect::SubmitPrompt {
+        effect: sylvander_api::UiCommandEffect::SubmitPrompt {
             template: "Review {{args}} for security issues.".into(),
         },
     }
@@ -510,7 +510,7 @@ fn trusted_dynamic_command_submits_through_the_normal_chat_path() {
     state.session_id = Some("session-1".into());
     state.platform.commands = vec![dynamic_command(
         "security-review",
-        sylvander_protocol::PlatformTrust::Workspace,
+        sylvander_api::PlatformTrust::Workspace,
     )];
 
     execute_line("/security-review src/auth", &mut state).unwrap();
@@ -544,15 +544,9 @@ fn dynamic_registry_exposes_collision_duplicate_and_trust_failures() {
     let mut state = AppState::new();
     state.connected = true;
     state.platform.commands = vec![
-        dynamic_command("status", sylvander_protocol::PlatformTrust::Workspace),
-        dynamic_command(
-            "review-security",
-            sylvander_protocol::PlatformTrust::External,
-        ),
-        dynamic_command(
-            "review-security",
-            sylvander_protocol::PlatformTrust::Workspace,
-        ),
+        dynamic_command("status", sylvander_api::PlatformTrust::Workspace),
+        dynamic_command("review-security", sylvander_api::PlatformTrust::External),
+        dynamic_command("review-security", sylvander_api::PlatformTrust::Workspace),
     ];
     state.platform.commands[2].id = state.platform.commands[1].id.clone();
 
@@ -573,16 +567,16 @@ fn model_command_uses_only_server_advertised_combinations() {
     let mut state = AppState::new();
     state.connected = true;
     state.session_id = Some("session-1".into());
-    state.metadata.models = vec![sylvander_protocol::ModelDescriptor {
+    state.metadata.models = vec![sylvander_api::ModelDescriptor {
         id: "thinking".into(),
         provider: "test".into(),
         capabilities: 0,
         capability_names: Vec::new(),
         reasoning_efforts: vec![
-            sylvander_protocol::ReasoningEffort::Off,
-            sylvander_protocol::ReasoningEffort::Medium,
+            sylvander_api::ReasoningEffort::Off,
+            sylvander_api::ReasoningEffort::Medium,
         ],
-        lifecycle: sylvander_protocol::ModelLifecycle::Active,
+        lifecycle: sylvander_api::ModelLifecycle::Active,
         pricing: None,
     }];
     execute(parse("model thinking medium").unwrap(), &mut state).unwrap();
@@ -591,7 +585,7 @@ fn model_command_uses_only_server_advertised_combinations() {
         [crate::event::Action::SelectModel {
             session_id,
             model,
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
+            reasoning_effort: sylvander_api::ReasoningEffort::Medium,
         }] if session_id == "session-1"
             && model.provider_id == "test"
             && model.model_id == "thinking"
@@ -607,13 +601,13 @@ fn model_command_requires_provider_for_shared_ids() {
     state.session_id = Some("session-1".into());
     state.metadata.models = ["alpha", "beta"]
         .into_iter()
-        .map(|provider| sylvander_protocol::ModelDescriptor {
+        .map(|provider| sylvander_api::ModelDescriptor {
             id: "shared".into(),
             provider: provider.into(),
             capabilities: 0,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
-            lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Off],
+            lifecycle: sylvander_api::ModelLifecycle::Active,
             pricing: None,
         })
         .collect();

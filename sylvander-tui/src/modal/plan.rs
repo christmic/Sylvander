@@ -180,9 +180,9 @@ impl PlanReviewModal {
 
     fn approve(&mut self, state: &mut AppState) -> Consumed {
         let decision = if self.steps == self.original_steps {
-            sylvander_protocol::PlanDecision::Approved
+            sylvander_api::PlanDecision::Approved
         } else {
-            sylvander_protocol::PlanDecision::Revised {
+            sylvander_api::PlanDecision::Revised {
                 steps: self.steps.clone(),
             }
         };
@@ -200,7 +200,7 @@ impl PlanReviewModal {
         state.pending_actions.push(Action::ResolvePlan {
             session_id: state.session_id.clone().unwrap_or_default(),
             plan_id: self.plan_id.clone(),
-            decision: sylvander_protocol::PlanDecision::Rejected {
+            decision: sylvander_api::PlanDecision::Rejected {
                 reason: "cancelled by user".into(),
             },
         });

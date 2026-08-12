@@ -123,7 +123,7 @@ and this index in the same change.
   implemented TUI capability ledger and verification commands.
 - [sylvander-tui/docs/SECURITY.md](../sylvander-tui/docs/SECURITY.md) —
   client trust boundary, redaction, terminal sanitization, and clipboard rules.
-- [module-sylvander-protocol.md](module-sylvander-protocol.md) —
+- [module-sylvander-api.md](module-sylvander-api.md) —
   latest wire schema, identifiers, negotiation, and generated contracts.
 - [module-sylvander-llm-core.md](module-sylvander-llm-core.md) —
   provider-neutral model requests, streaming, capabilities, and errors.

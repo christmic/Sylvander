@@ -46,7 +46,7 @@ impl ModelPicker {
         }
     }
 
-    fn selected<'a>(&self, state: &'a AppState) -> Option<&'a sylvander_protocol::ModelDescriptor> {
+    fn selected<'a>(&self, state: &'a AppState) -> Option<&'a sylvander_api::ModelDescriptor> {
         state.metadata.models.get(self.cursor)
     }
 
@@ -146,7 +146,7 @@ impl Modal for ModelPicker {
                         ),
                     ];
                     match &model.lifecycle {
-                        sylvander_protocol::ModelLifecycle::Active => {
+                        sylvander_api::ModelLifecycle::Active => {
                             spans.push(Span::styled(
                                 table_cell(&model.provider, 22),
                                 theme::text_muted(),
@@ -156,7 +156,7 @@ impl Modal for ModelPicker {
                                 theme::thinking_text(),
                             ));
                         }
-                        sylvander_protocol::ModelLifecycle::Deprecated { replacement } => {
+                        sylvander_api::ModelLifecycle::Deprecated { replacement } => {
                             let label = replacement.as_ref().map_or_else(
                                 || "deprecated".into(),
                                 |id| format!("deprecated → {id}"),
@@ -227,7 +227,7 @@ impl Modal for ModelPicker {
                     .get(self.effort_index)
                     .copied()
                     .unwrap_or_default();
-                let selection = sylvander_protocol::ModelSelection {
+                let selection = sylvander_api::ModelSelection {
                     provider_id: model.provider.clone(),
                     model_id: model.id.clone(),
                 };

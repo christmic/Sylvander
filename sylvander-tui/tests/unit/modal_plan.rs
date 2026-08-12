@@ -22,7 +22,7 @@ fn enter_approves_through_typed_action() {
     assert!(matches!(
         state.pending_actions[0],
         Action::ResolvePlan {
-            decision: sylvander_protocol::PlanDecision::Approved,
+            decision: sylvander_api::PlanDecision::Approved,
             ..
         }
     ));
@@ -49,7 +49,7 @@ fn revision_is_explicit_and_returns_to_decision() {
     assert!(matches!(
         &state.pending_actions[0],
         Action::ResolvePlan {
-            decision: sylvander_protocol::PlanDecision::Revised { steps },
+            decision: sylvander_api::PlanDecision::Revised { steps },
             ..
         } if steps[0] == "safer step"
     ));
@@ -63,7 +63,7 @@ fn escape_rejects_instead_of_abandoning_waiter() {
     assert!(matches!(
         &state.pending_actions[0],
         Action::ResolvePlan {
-            decision: sylvander_protocol::PlanDecision::Rejected { .. },
+            decision: sylvander_api::PlanDecision::Rejected { .. },
             ..
         }
     ));

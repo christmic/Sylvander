@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sylvander_protocol::{
+use sylvander_api::{
     AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext,
     IDENTITY_BINDING_PROTOCOL_VERSION, IdentityBindingAction, IdentityBindingError,
     IdentityBindingErrorCode, IdentityBindingRequest, IdentityBindingResponse, UserId,

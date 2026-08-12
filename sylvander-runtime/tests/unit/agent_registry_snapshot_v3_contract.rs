@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use sylvander_protocol::ModelSelection;
+use sylvander_api::ModelSelection;
 use tempfile::tempdir;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
@@ -182,7 +182,7 @@ async fn atomic_stage_unknown_model_rolls_back_definition_and_snapshot() {
     ));
     assert!(
         registry
-            .load(&sylvander_protocol::AgentId::new("assistant"), 2)
+            .load(&sylvander_api::AgentId::new("assistant"), 2)
             .await
             .unwrap()
             .is_none()
@@ -223,7 +223,7 @@ async fn atomic_stage_cas_conflict_leaves_no_revision_or_snapshot() {
     ));
     assert!(
         registry
-            .load(&sylvander_protocol::AgentId::new("assistant"), 2)
+            .load(&sylvander_api::AgentId::new("assistant"), 2)
             .await
             .unwrap()
             .is_none()

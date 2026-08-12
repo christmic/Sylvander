@@ -29,14 +29,14 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use sylvander_api::AgentId;
+use sylvander_api::MessageKind;
+use sylvander_api::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 use sylvander_channel::credential::{CredentialLeaseError, CredentialLeaseSource};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, SubscriptionFilter, parse_external_control,
     submit_external_chat,
 };
-use sylvander_protocol::AgentId;
-use sylvander_protocol::MessageKind;
-use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 use protocol::Client;
 
@@ -125,7 +125,7 @@ impl MessageHandler for ChannelMessageHandler {
                     "dt-{}",
                     &msg.conversation_id[..8.min(msg.conversation_id.len())]
                 ),
-                overrides: sylvander_protocol::SessionConfigOverrides::default(),
+                overrides: sylvander_api::SessionConfigOverrides::default(),
                 text: text.into(),
                 attachments: Vec::new(),
                 external_meta,
@@ -217,18 +217,18 @@ async fn run_outgoing(ctx: Arc<ChannelContext>, client: Client, agent_id: AgentI
         let Some(ref url) = webhook_url else { continue };
 
         match ev {
-            sylvander_protocol::StreamEvent::Done { text } => {
+            sylvander_api::StreamEvent::Done { text } => {
                 client.reply_markdown(url, "Reply", text).await;
             }
-            sylvander_protocol::StreamEvent::Error { message } => {
+            sylvander_api::StreamEvent::Error { message } => {
                 client.reply_text(url, &format!("❌ {message}")).await;
             }
-            sylvander_protocol::StreamEvent::ToolCall { tool_name, .. } => {
+            sylvander_api::StreamEvent::ToolCall { tool_name, .. } => {
                 client
                     .reply_text(url, &format!("🔧 calling: {tool_name}"))
                     .await;
             }
-            sylvander_protocol::StreamEvent::ToolApprovalRequired {
+            sylvander_api::StreamEvent::ToolApprovalRequired {
                 batch_id, tools, ..
             } => {
                 let list: Vec<String> = tools
@@ -245,7 +245,7 @@ async fn run_outgoing(ctx: Arc<ChannelContext>, client: Client, agent_id: AgentI
                     )
                     .await;
             }
-            sylvander_protocol::StreamEvent::AskUser {
+            sylvander_api::StreamEvent::AskUser {
                 call_id,
                 question,
                 options,
@@ -264,7 +264,7 @@ async fn run_outgoing(ctx: Arc<ChannelContext>, client: Client, agent_id: AgentI
                     )
                     .await;
             }
-            sylvander_protocol::StreamEvent::IterationStart { iteration } => {
+            sylvander_api::StreamEvent::IterationStart { iteration } => {
                 client
                     .reply_text(url, &format!("💭 thinking... (round {iteration})"))
                     .await;

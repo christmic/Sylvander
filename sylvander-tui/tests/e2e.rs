@@ -90,7 +90,7 @@ fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
         assert_eq!(hello["type"], "hello");
         let welcome = format!(
             r#"{{"type":"welcome","protocol":{{"server_name":"stub","version":{},"capabilities":["diagnostics"]}}}}"#,
-            sylvander_protocol::UI_PROTOCOL_VERSION
+            sylvander_api::UI_PROTOCOL_VERSION
         );
         let _ = stream.write_all(welcome.as_bytes());
         let _ = stream.write_all(b"\n");
@@ -120,8 +120,8 @@ where
     use tokio::io::AsyncWriteExt;
     let hello = format!(
         "{{\"type\":\"hello\",\"protocol\":{{\"client_name\":\"e2e\",\"min_version\":{},\"max_version\":{},\"capabilities\":[]}}}}\n",
-        sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
-        sylvander_protocol::UI_PROTOCOL_MAX_VERSION
+        sylvander_api::UI_PROTOCOL_MIN_VERSION,
+        sylvander_api::UI_PROTOCOL_MAX_VERSION
     );
     write
         .write_all(hello.as_bytes())
@@ -132,7 +132,7 @@ where
     assert!(matches!(
         welcome,
         ServerMsg::Welcome { protocol }
-            if protocol.version == sylvander_protocol::UI_PROTOCOL_VERSION
+            if protocol.version == sylvander_api::UI_PROTOCOL_VERSION
     ));
 }
 

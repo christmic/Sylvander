@@ -183,8 +183,8 @@ impl AgentService {
             Action::UserProfile { request } => ClientMsg::UserProfile { request },
             Action::SubmitFeedback { feedback } => ClientMsg::SubmitFeedback { feedback },
             Action::RequestMemoryConfirmations { session_id } => ClientMsg::MemoryConfirmation {
-                request: sylvander_protocol::MemoryConfirmationRequest::List {
-                    version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                request: sylvander_api::MemoryConfirmationRequest::List {
+                    version: sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
                     session_id,
                 },
             },
@@ -194,8 +194,8 @@ impl AgentService {
                 expected_revision,
                 decision,
             } => ClientMsg::MemoryConfirmation {
-                request: sylvander_protocol::MemoryConfirmationRequest::Decide {
-                    version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                request: sylvander_api::MemoryConfirmationRequest::Decide {
+                    version: sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
                     session_id,
                     candidate_id,
                     expected_revision,

@@ -235,7 +235,7 @@ fn stored_model(provider_id: &str, capabilities: &[&str]) -> ModelDefinition {
             .iter()
             .map(|capability| (*capability).to_owned())
             .collect(),
-        lifecycle: sylvander_protocol::ModelLifecycle::Active,
+        lifecycle: sylvander_api::ModelLifecycle::Active,
         pricing: None,
     }
 }

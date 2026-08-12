@@ -200,27 +200,25 @@ impl Attachment {
         })
     }
 
-    pub fn to_message_attachment(&self, index: usize) -> sylvander_protocol::MessageAttachment {
-        sylvander_protocol::MessageAttachment {
+    pub fn to_message_attachment(&self, index: usize) -> sylvander_api::MessageAttachment {
+        sylvander_api::MessageAttachment {
             id: format!("composer-attachment-{}", index + 1),
             kind: match self.kind {
-                AttachmentKind::Paste => sylvander_protocol::AttachmentKind::Paste,
-                AttachmentKind::File => sylvander_protocol::AttachmentKind::File,
-                AttachmentKind::Image => sylvander_protocol::AttachmentKind::Image,
-                AttachmentKind::Selection => sylvander_protocol::AttachmentKind::Selection,
-                AttachmentKind::Diff => sylvander_protocol::AttachmentKind::Diff,
-                AttachmentKind::TerminalOutput => {
-                    sylvander_protocol::AttachmentKind::TerminalOutput
-                }
+                AttachmentKind::Paste => sylvander_api::AttachmentKind::Paste,
+                AttachmentKind::File => sylvander_api::AttachmentKind::File,
+                AttachmentKind::Image => sylvander_api::AttachmentKind::Image,
+                AttachmentKind::Selection => sylvander_api::AttachmentKind::Selection,
+                AttachmentKind::Diff => sylvander_api::AttachmentKind::Diff,
+                AttachmentKind::TerminalOutput => sylvander_api::AttachmentKind::TerminalOutput,
             },
             name: self.name.clone(),
             mime_type: self.mime_type.clone(),
             content: if self.kind == AttachmentKind::Image {
-                sylvander_protocol::AttachmentContent::Base64 {
+                sylvander_api::AttachmentContent::Base64 {
                     data: self.content.clone(),
                 }
             } else {
-                sylvander_protocol::AttachmentContent::Text {
+                sylvander_api::AttachmentContent::Text {
                     text: self.content.clone(),
                 }
             },
@@ -281,7 +279,7 @@ pub struct Composer {
     pub(crate) history_idx: Option<usize>,
     /// Collapsed payloads above the draft.
     pub attachments: Vec<Attachment>,
-    submitted_attachments: Vec<sylvander_protocol::MessageAttachment>,
+    submitted_attachments: Vec<sylvander_api::MessageAttachment>,
     /// UX §18 IDLE/FOCUSED: whether the user has interacted with this
     /// composer at least once. `false` until the first state-mutating
     /// keystroke (or paste) flips it permanently to `true`. Until then
@@ -475,7 +473,7 @@ impl Composer {
         composed
     }
 
-    pub fn take_submitted_attachments(&mut self) -> Vec<sylvander_protocol::MessageAttachment> {
+    pub fn take_submitted_attachments(&mut self) -> Vec<sylvander_api::MessageAttachment> {
         std::mem::take(&mut self.submitted_attachments)
     }
 

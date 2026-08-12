@@ -1,5 +1,5 @@
 use super::*;
-use sylvander_protocol::{
+use sylvander_api::{
     AuthenticatedPrincipal, AuthenticationMethod, IDENTITY_BINDING_PROTOCOL_VERSION,
     IdentityBindingAction,
 };

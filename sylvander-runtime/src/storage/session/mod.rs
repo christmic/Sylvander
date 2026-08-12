@@ -18,8 +18,8 @@ use serde_json::Value as JsonValue;
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
-use sylvander_protocol::UserId;
-use sylvander_protocol::session::{SessionConfigOverrides, SessionEffectiveConfig};
+use sylvander_api::UserId;
+use sylvander_api::session::{SessionConfigOverrides, SessionEffectiveConfig};
 
 // ---------------------------------------------------------------------------
 // SessionLifetime
@@ -174,7 +174,7 @@ pub struct StoredMessage {
     /// Denormalized from `SessionContext::request.trace_id` (if set).
     pub trace_id: Option<String>,
     /// Denormalized from `SessionContext::request.priority`.
-    pub priority: Option<sylvander_protocol::session_context::Priority>,
+    pub priority: Option<sylvander_api::session_context::Priority>,
     pub seq: u32,
     pub role: MessageRole,
     /// Provider-neutral conversation JSON:
@@ -235,7 +235,7 @@ pub struct TurnStart {
 pub struct SessionFilter {
     /// Scope to a specific identity. `None` = all identities (admin
     /// path). Caller must check authorization before passing `None`.
-    pub identity: Option<sylvander_protocol::Identity>,
+    pub identity: Option<sylvander_api::Identity>,
     pub lifetime: Option<SessionLifetime>,
     /// When false (default), archived sessions are hidden.
     pub include_archived: bool,
@@ -282,7 +282,7 @@ pub trait SessionStore: Send + Sync {
     /// transaction before any provider or tool work starts.
     async fn begin_turn(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         start: TurnStart,
     ) -> Result<StoredMessage, SessionStoreError>;
 
@@ -335,7 +335,7 @@ pub trait SessionStore: Send + Sync {
     /// for admin callers; non-admin must pass their own identity).
     async fn list(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         filter: SessionFilter,
     ) -> Result<Vec<StoredSession>, SessionStoreError>;
 
@@ -346,7 +346,7 @@ pub trait SessionStore: Send + Sync {
     /// not visible to `ctx.identity` are excluded.
     async fn search(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         query: &str,
         limit: usize,
     ) -> Result<Vec<StoredSession>, SessionStoreError>;
@@ -362,7 +362,7 @@ pub trait SessionStore: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     async fn append_message(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
         role: MessageRole,
         content: JsonValue,
@@ -379,7 +379,7 @@ pub trait SessionStore: Send + Sync {
     /// Messages not visible to `ctx.identity` are excluded.
     async fn read_history(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
         include_summarized: bool,
         limit: Option<usize>,
@@ -399,7 +399,7 @@ pub trait SessionStore: Send + Sync {
     /// expose a half-replaced history.
     async fn replace_active_history(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
         messages: Vec<ReplacementMessage>,
     ) -> Result<(), SessionStoreError>;
@@ -408,7 +408,7 @@ pub trait SessionStore: Send + Sync {
     /// Cheap O(1) on `SQLite`.
     async fn count_active_messages(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
     ) -> Result<u64, SessionStoreError>;
 }

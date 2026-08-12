@@ -16,7 +16,7 @@ Service edge
   sylvander-server / Channel adapters
         |
 Public contract
-  sylvander-api (currently sylvander-protocol)
+  sylvander-api
         |
 Application Runtime
   Session service / Agent supervisor / execution service
@@ -212,9 +212,8 @@ a successfully observed operation.
 
 ## Service and presentation layers
 
-The eventual `sylvander-api`, currently named `sylvander-protocol`, is a pure
-versioned wire/schema crate. Its Tokio bus and in-process implementation have
-been removed.
+`sylvander-api` is the pure versioned wire/schema crate. Its former Tokio bus
+and in-process implementation have been removed.
 
 `sylvander-server` owns listeners, authentication middleware, request limits,
 shutdown, and Runtime construction. Channels translate native transports and

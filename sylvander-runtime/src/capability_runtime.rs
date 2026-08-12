@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sylvander_protocol::{AgentId, SessionContext, SessionId, UserId};
+use sylvander_api::{AgentId, SessionContext, SessionId, UserId};
 use thiserror::Error;
 use uuid::Uuid;
 

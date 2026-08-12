@@ -43,7 +43,7 @@ fn approve_advances_to_next_tool() {
     );
     assert_eq!(
         m.decisions[0],
-        Decision::Approve(sylvander_protocol::ApprovalScope::Once)
+        Decision::Approve(sylvander_api::ApprovalScope::Once)
     );
     assert_eq!(m.current, 1);
 }
@@ -76,8 +76,8 @@ fn approve_y_emits_action_when_last_tool() {
 #[test]
 fn session_scope_is_emitted_only_when_server_allows_it() {
     let mut modal = build_modal_with_n_tools(1).with_allowed_scopes(vec![
-        sylvander_protocol::ApprovalScope::Once,
-        sylvander_protocol::ApprovalScope::Session,
+        sylvander_api::ApprovalScope::Once,
+        sylvander_api::ApprovalScope::Session,
     ]);
     let mut state = AppState::new();
     let consumed =
@@ -87,7 +87,7 @@ fn session_scope_is_emitted_only_when_server_allows_it() {
         state.pending_actions.as_slice(),
         [Action::SendApprove {
             approved: true,
-            scope: sylvander_protocol::ApprovalScope::Session,
+            scope: sylvander_api::ApprovalScope::Session,
             ..
         }]
     ));

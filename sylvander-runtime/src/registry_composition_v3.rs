@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use sylvander_protocol::{AgentId, ModelSelection};
+use sylvander_api::{AgentId, ModelSelection};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::agent_registry_snapshot_v3::AgentSnapshotV3Error;

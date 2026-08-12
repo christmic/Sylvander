@@ -26,6 +26,12 @@ use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
+use sylvander_api::AgentId;
+use sylvander_api::{
+    AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
+    BoundaryErrorCode,
+};
+use sylvander_api::{MessageKind, StreamEvent};
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
@@ -33,12 +39,6 @@ use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, SubscriptionFilter, parse_external_control,
     submit_external_chat,
 };
-use sylvander_protocol::AgentId;
-use sylvander_protocol::{
-    AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
-    BoundaryErrorCode,
-};
-use sylvander_protocol::{MessageKind, StreamEvent};
 
 // ===========================================================================
 // Telegram types
@@ -341,7 +341,7 @@ async fn handle_webhook(
             existing_session: existing,
             agent_id: state.agent_id.clone(),
             label: format!("telegram-{chat_id}"),
-            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            overrides: sylvander_api::SessionConfigOverrides::default(),
             text: text.clone(),
             attachments: Vec::new(),
             external_meta,

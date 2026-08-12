@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use rusqlite::Connection;
-use sylvander_protocol::UserId;
+use sylvander_api::UserId;
 use tempfile::tempdir;
 
 use crate::principal_binding::{

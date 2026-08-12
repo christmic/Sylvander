@@ -49,18 +49,18 @@ fn unknown_server_messages_produce_bounded_diagnostics() {
 fn timeout_wire_event_preserves_recovery_contract() {
     let event = parse_server_msg(ServerMsg::InteractionTimeout {
         session_id: "session-1".into(),
-        kind: sylvander_protocol::InteractionTimeoutKind::Tool,
+        kind: sylvander_api::InteractionTimeoutKind::Tool,
         subject_id: "call-1".into(),
         timeout_secs: 120,
-        recovery: sylvander_protocol::TimeoutRecovery::NarrowScope,
+        recovery: sylvander_api::TimeoutRecovery::NarrowScope,
     });
     assert!(matches!(
         event,
         Some(DomainEvent::InteractionTimedOut {
-            kind: sylvander_protocol::InteractionTimeoutKind::Tool,
+            kind: sylvander_api::InteractionTimeoutKind::Tool,
             subject_id,
             timeout_secs: 120,
-            recovery: sylvander_protocol::TimeoutRecovery::NarrowScope,
+            recovery: sylvander_api::TimeoutRecovery::NarrowScope,
         }) if subject_id == "call-1"
     ));
 }
@@ -68,8 +68,8 @@ fn timeout_wire_event_preserves_recovery_contract() {
 #[test]
 fn agent_discovery_crosses_the_protocol_adapter() {
     let event = parse_server_msg(ServerMsg::AgentsDiscovered {
-        agents: vec![sylvander_protocol::AgentDescriptor {
-            id: sylvander_protocol::AgentId::new("coding"),
+        agents: vec![sylvander_api::AgentDescriptor {
+            id: sylvander_api::AgentId::new("coding"),
             revision: 3,
             name: "Coding".into(),
             provider_id: "provider".into(),
@@ -89,13 +89,13 @@ fn agent_discovery_crosses_the_protocol_adapter() {
 #[test]
 fn memory_confirmation_wire_response_preserves_typed_prompt() {
     let event = parse_server_msg(ServerMsg::MemoryConfirmation {
-        response: sylvander_protocol::MemoryConfirmationResponse::Pending {
-            version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+        response: sylvander_api::MemoryConfirmationResponse::Pending {
+            version: sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
             session_id: "session-1".into(),
-            confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+            confirmations: vec![sylvander_api::PendingMemoryConfirmation {
                 candidate_id: "candidate-1".into(),
                 expected_revision: 7,
-                scope: sylvander_protocol::MemoryConfirmationScope::UserProfile,
+                scope: sylvander_api::MemoryConfirmationScope::UserProfile,
                 summary: "prefers concise answers".into(),
             }],
         },
@@ -113,18 +113,15 @@ fn memory_confirmation_wire_response_preserves_typed_prompt() {
 
 #[test]
 fn memory_confirmation_wire_rejects_non_current_versions_without_decision_state() {
-    for version in [
-        0,
-        sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION + 1,
-    ] {
+    for version in [0, sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION + 1] {
         let event = parse_server_msg(ServerMsg::MemoryConfirmation {
-            response: sylvander_protocol::MemoryConfirmationResponse::Pending {
+            response: sylvander_api::MemoryConfirmationResponse::Pending {
                 version,
                 session_id: "session-1".into(),
-                confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+                confirmations: vec![sylvander_api::PendingMemoryConfirmation {
                     candidate_id: "candidate-1".into(),
                     expected_revision: 7,
-                    scope: sylvander_protocol::MemoryConfirmationScope::UserProfile,
+                    scope: sylvander_api::MemoryConfirmationScope::UserProfile,
                     summary: "must not be shown".into(),
                 }],
             },
@@ -148,31 +145,31 @@ fn memory_confirmation_wire_rejects_non_current_versions_without_decision_state(
 #[test]
 fn runtime_wire_event_preserves_server_capabilities() {
     let event = parse_server_msg(ServerMsg::RuntimeInfo {
-        model: sylvander_protocol::ModelSelection {
+        model: sylvander_api::ModelSelection {
             provider_id: "test".into(),
             model_id: "claude-test".into(),
         },
-        reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
-        models: vec![sylvander_protocol::ModelDescriptor {
+        reasoning_effort: sylvander_api::ReasoningEffort::Medium,
+        models: vec![sylvander_api::ModelDescriptor {
             id: "claude-test".into(),
             provider: "test".into(),
             capabilities: 0b10001,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Medium],
-            lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Medium],
+            lifecycle: sylvander_api::ModelLifecycle::Active,
             pricing: None,
         }],
-        permissions: sylvander_protocol::PermissionProfile::default(),
+        permissions: sylvander_api::PermissionProfile::default(),
         capabilities: 0b10001,
         approval_enabled: true,
         max_attachment_bytes: 4096,
-        platform: sylvander_protocol::PlatformSnapshot::default(),
+        platform: sylvander_api::PlatformSnapshot::default(),
     });
     assert!(matches!(
         event,
         Some(DomainEvent::RuntimeInfo {
             model,
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
+            reasoning_effort: sylvander_api::ReasoningEffort::Medium,
             models,
             capabilities: 0b10001,
             approval_enabled: true,
@@ -205,11 +202,11 @@ fn legacy_usage_event_defaults_to_unknown_cost() {
 fn model_selection_uses_typed_reasoning_effort_on_wire() {
     let value = serde_json::to_value(ClientMsg::SelectModel {
         session_id: Some("session-1".into()),
-        model: sylvander_protocol::ModelSelection {
+        model: sylvander_api::ModelSelection {
             provider_id: "provider-a".into(),
             model_id: "thinking".into(),
         },
-        reasoning_effort: sylvander_protocol::ReasoningEffort::High,
+        reasoning_effort: sylvander_api::ReasoningEffort::High,
     })
     .unwrap();
     assert_eq!(value["type"], "select_model");
@@ -223,10 +220,10 @@ fn model_selection_uses_typed_reasoning_effort_on_wire() {
 fn permission_selection_is_a_typed_wire_profile() {
     let value = serde_json::to_value(ClientMsg::SelectPermissions {
         session_id: Some("session-1".into()),
-        profile: sylvander_protocol::PermissionProfile {
-            file_access: sylvander_protocol::FileAccess::ReadOnly,
-            network_access: sylvander_protocol::NetworkAccess::Denied,
-            approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+        profile: sylvander_api::PermissionProfile {
+            file_access: sylvander_api::FileAccess::ReadOnly,
+            network_access: sylvander_api::NetworkAccess::Denied,
+            approval_policy: sylvander_api::ApprovalPolicy::Deny,
         },
     })
     .unwrap();
@@ -238,11 +235,11 @@ fn permission_selection_is_a_typed_wire_profile() {
 #[test]
 fn user_profile_response_crosses_the_domain_adapter() {
     let event = parse_server_msg(ServerMsg::UserProfile {
-        response: sylvander_protocol::UserProfileResponse::Read {
-            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
-            profile: sylvander_protocol::UserProfileView {
+        response: sylvander_api::UserProfileResponse::Read {
+            version: sylvander_api::USER_PROFILE_PROTOCOL_VERSION,
+            profile: sylvander_api::UserProfileView {
                 revision: 9,
-                profile: sylvander_protocol::UserProfileData::default(),
+                profile: sylvander_api::UserProfileData::default(),
                 do_not_learn: true,
                 created_at_unix_secs: 1,
                 updated_at_unix_secs: 2,
@@ -252,7 +249,7 @@ fn user_profile_response_crosses_the_domain_adapter() {
     assert!(matches!(
         event,
         Some(DomainEvent::UserProfileReceived {
-            response: sylvander_protocol::UserProfileResponse::Read { profile, .. }
+            response: sylvander_api::UserProfileResponse::Read { profile, .. }
         }) if profile.revision == 9 && profile.do_not_learn
     ));
 }
@@ -260,9 +257,9 @@ fn user_profile_response_crosses_the_domain_adapter() {
 #[test]
 fn user_profile_request_remains_typed_on_the_wire() {
     let value = serde_json::to_value(ClientMsg::UserProfile {
-        request: sylvander_protocol::UserProfileRequest {
-            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
-            action: sylvander_protocol::UserProfileAction::SetDoNotLearn {
+        request: sylvander_api::UserProfileRequest {
+            version: sylvander_api::USER_PROFILE_PROTOCOL_VERSION,
+            action: sylvander_api::UserProfileAction::SetDoNotLearn {
                 expected_revision: 4,
                 enabled: true,
             },
@@ -285,7 +282,7 @@ fn context_report_round_trips_as_typed_server_truth() {
     assert_eq!(request["session_id"], "session-1");
 
     let event = parse_server_msg(ServerMsg::ContextReport {
-        report: sylvander_protocol::ContextReport {
+        report: sylvander_api::ContextReport {
             model: "deep-code".into(),
             context_window: 100_000,
             used_tokens: 25_000,
@@ -313,7 +310,7 @@ fn compaction_wire_lifecycle_preserves_manual_identity_and_summary() {
 
     let event = parse_server_msg(ServerMsg::CompactionCompleted {
         session_id: "session-1".into(),
-        report: sylvander_protocol::CompactionReport {
+        report: sylvander_api::CompactionReport {
             automatic: false,
             removed_messages: 8,
             condensed_blocks: 0,
@@ -344,8 +341,8 @@ fn operation_errors_do_not_impersonate_agent_failures() {
 #[test]
 fn boundary_denials_preserve_operation_and_retry_guidance() {
     let event = parse_server_msg(ServerMsg::BoundaryDenied {
-        error: sylvander_protocol::BoundaryError {
-            code: sylvander_protocol::BoundaryErrorCode::RateLimited,
+        error: sylvander_api::BoundaryError {
+            code: sylvander_api::BoundaryErrorCode::RateLimited,
             operation: "chat".into(),
             request_id: "request-1".into(),
             message: "request rate limit exceeded".into(),
@@ -367,7 +364,7 @@ fn model_retry_wire_event_preserves_backoff_context() {
         max_attempts: 3,
         delay_ms: 200,
         reason: "rate limited".into(),
-        cause: sylvander_protocol::RetryCause::RateLimit,
+        cause: sylvander_api::RetryCause::RateLimit,
     });
     assert!(matches!(
         event,
@@ -376,7 +373,7 @@ fn model_retry_wire_event_preserves_backoff_context() {
             max_attempts: 3,
             delay_ms: 200,
             reason,
-            cause: sylvander_protocol::RetryCause::RateLimit,
+            cause: sylvander_api::RetryCause::RateLimit,
         }) if reason == "rate limited"
     ));
 }
@@ -432,7 +429,7 @@ fn approval_rejection_reason_uses_the_typed_wire_shape() {
         session_id: "s1".into(),
         call_id: "c1".into(),
         approved: false,
-        scope: sylvander_protocol::ApprovalScope::Once,
+        scope: sylvander_api::ApprovalScope::Once,
         reason: Some("unsafe outside workspace".into()),
     })
     .unwrap();
@@ -470,12 +467,12 @@ fn terminal_wire_event_preserves_the_opaque_feedback_target() {
     let event = parse_server_msg(ServerMsg::Done {
         session_id: "session-7".into(),
         text: "done".into(),
-        feedback_target: Some(sylvander_protocol::FeedbackTarget("sha256:opaque".into())),
+        feedback_target: Some(sylvander_api::FeedbackTarget("sha256:opaque".into())),
     });
     assert!(matches!(
         event,
         Some(DomainEvent::AgentDone {
-            feedback_target: Some(sylvander_protocol::FeedbackTarget(target)),
+            feedback_target: Some(sylvander_api::FeedbackTarget(target)),
             ..
         }) if target == "sha256:opaque"
     ));
@@ -509,7 +506,7 @@ fn plan_wire_event_maps_to_review_and_resolution_is_typed() {
     let json = serde_json::to_value(ClientMsg::ResolvePlan {
         session_id: "s1".into(),
         plan_id: "plan-1".into(),
-        decision: sylvander_protocol::PlanDecision::Approved,
+        decision: sylvander_api::PlanDecision::Approved,
     })
     .expect("serialize");
     assert_eq!(json["type"], "resolve_plan");
@@ -554,12 +551,12 @@ fn background_task_lifecycle_and_scoped_cancel_keep_identity() {
 fn chat_serializes_typed_attachments_without_text_wrappers() {
     let message = ClientMsg::Chat {
         text: "review".into(),
-        attachments: vec![sylvander_protocol::MessageAttachment {
+        attachments: vec![sylvander_api::MessageAttachment {
             id: "a1".into(),
-            kind: sylvander_protocol::AttachmentKind::File,
+            kind: sylvander_api::AttachmentKind::File,
             name: "src/main.rs".into(),
             mime_type: "text/x-rust".into(),
-            content: sylvander_protocol::AttachmentContent::Text {
+            content: sylvander_api::AttachmentContent::Text {
                 text: "fn main() {}".into(),
             },
             byte_count: 12,

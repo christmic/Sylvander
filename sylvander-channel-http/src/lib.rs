@@ -24,12 +24,12 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
+use sylvander_api::SessionId;
+use sylvander_api::{MessageKind, StreamEvent};
 use sylvander_channel::credential::{
     CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
-use sylvander_protocol::SessionId;
-use sylvander_protocol::{MessageKind, StreamEvent};
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -40,7 +40,7 @@ struct ChatRequest {
 /// Authenticated HTTP/SSE adapter for bounded debug and automation traffic.
 pub struct HttpChannel {
     addr: SocketAddr,
-    agent_id: sylvander_protocol::AgentId,
+    agent_id: sylvander_api::AgentId,
     instance_id: String,
     principal_id: Option<String>,
     bearer_lease: Option<BearerLease>,
@@ -80,7 +80,7 @@ pub struct OperationalHealth {
 
 impl HttpChannel {
     /// Construct an adapter bound to `addr` and one configured Agent.
-    pub fn new(addr: SocketAddr, agent_id: impl Into<sylvander_protocol::AgentId>) -> Self {
+    pub fn new(addr: SocketAddr, agent_id: impl Into<sylvander_api::AgentId>) -> Self {
         Self {
             addr,
             agent_id: agent_id.into(),
@@ -190,7 +190,7 @@ async fn require_http_authentication(
 }
 
 async fn reject_http_authentication(state: &AppState) -> StatusCode {
-    let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+    let boundary = sylvander_api::BoundaryContext::unauthenticated(
         &state.instance_id,
         "http",
         uuid::Uuid::new_v4().to_string(),
@@ -199,8 +199,8 @@ async fn reject_http_authentication(state: &AppState) -> StatusCode {
         let error = host
             .reject_authentication(
                 &boundary,
-                sylvander_protocol::AuthenticationFailure::new(
-                    sylvander_protocol::AuthenticationMethod::BearerToken,
+                sylvander_api::AuthenticationFailure::new(
+                    sylvander_api::AuthenticationMethod::BearerToken,
                 ),
             )
             .await;
@@ -212,7 +212,7 @@ async fn reject_http_authentication(state: &AppState) -> StatusCode {
 
 struct AppState {
     ctx: Arc<ChannelContext>,
-    agent_id: sylvander_protocol::AgentId,
+    agent_id: sylvander_api::AgentId,
     sessions: Mutex<std::collections::HashMap<String, SessionId>>,
     instance_id: String,
     principal_id: Option<String>,
@@ -296,7 +296,7 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 
 async fn chat(
     State(state): State<Arc<AppState>>,
-    Extension(principal): Extension<sylvander_protocol::AuthenticatedPrincipal>,
+    Extension(principal): Extension<sylvander_api::AuthenticatedPrincipal>,
     Json(req): Json<ChatRequest>,
 ) -> Result<
     Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>,
@@ -304,7 +304,7 @@ async fn chat(
 > {
     let mut aliases = state.sessions.lock().await;
     let existing_session = aliases.get(&req.session_id).cloned();
-    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+    let boundary = sylvander_api::BoundaryContext::authenticated(
         principal,
         &state.instance_id,
         "http",
@@ -317,7 +317,7 @@ async fn chat(
             existing_session: existing_session.clone(),
             agent_id: state.agent_id.clone(),
             label: "HTTP session".into(),
-            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            overrides: sylvander_api::SessionConfigOverrides::default(),
             text: req.message.clone(),
             attachments: Vec::new(),
             external_meta: BTreeMap::from([
@@ -367,20 +367,20 @@ async fn chat(
     Ok(Sse::new(stream))
 }
 
-fn boundary_status(error: sylvander_protocol::BoundaryError) -> StatusCode {
+fn boundary_status(error: sylvander_api::BoundaryError) -> StatusCode {
     match error.code {
-        sylvander_protocol::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
-        sylvander_protocol::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
-        sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-        sylvander_protocol::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-        sylvander_protocol::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
+        sylvander_api::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
+        sylvander_api::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        sylvander_api::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        sylvander_api::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        sylvander_api::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
     }
 }
 
 async fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
-) -> Option<sylvander_protocol::AuthenticatedPrincipal> {
+) -> Option<sylvander_api::AuthenticatedPrincipal> {
     let supplied = headers
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()
@@ -395,9 +395,9 @@ async fn authenticate(
     if !constant_time_eq(supplied.as_bytes(), expected.as_bytes()) {
         return None;
     }
-    Some(sylvander_protocol::AuthenticatedPrincipal::user(
+    Some(sylvander_api::AuthenticatedPrincipal::user(
         state.principal_id.clone()?,
-        sylvander_protocol::AuthenticationMethod::BearerToken,
+        sylvander_api::AuthenticationMethod::BearerToken,
     ))
 }
 

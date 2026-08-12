@@ -1,7 +1,7 @@
 # User Profile protocol
 
 This document is the normative public contract for a user's global interaction
-profile. Protocol DTOs live in `sylvander-protocol`; authentication,
+profile. Protocol DTOs live in `sylvander-api`; authentication,
 authorization, persistence, audit, retention, and prompt composition remain
 Runtime responsibilities.
 

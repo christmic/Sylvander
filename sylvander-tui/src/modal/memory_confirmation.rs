@@ -24,15 +24,12 @@ const ACTION_ROWS: u16 = 3;
 
 pub struct MemoryConfirmationModal {
     session_id: String,
-    confirmation: sylvander_protocol::PendingMemoryConfirmation,
+    confirmation: sylvander_api::PendingMemoryConfirmation,
     confirm_selected: bool,
 }
 
 impl MemoryConfirmationModal {
-    pub fn new(
-        session_id: String,
-        confirmation: sylvander_protocol::PendingMemoryConfirmation,
-    ) -> Self {
+    pub fn new(session_id: String, confirmation: sylvander_api::PendingMemoryConfirmation) -> Self {
         Self {
             session_id,
             confirmation,
@@ -43,7 +40,7 @@ impl MemoryConfirmationModal {
     fn decide(
         &mut self,
         state: &mut AppState,
-        decision: sylvander_protocol::MemoryConfirmationDecision,
+        decision: sylvander_api::MemoryConfirmationDecision,
     ) -> Consumed {
         state
             .pending_actions
@@ -77,12 +74,10 @@ impl Modal for MemoryConfirmationModal {
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
         let body = decision_dock(frame, parent, DOCK_BODY_ROWS);
         let scope = match self.confirmation.scope {
-            sylvander_protocol::MemoryConfirmationScope::Relationship => "our relationship",
-            sylvander_protocol::MemoryConfirmationScope::UserProfile => "your profile",
-            sylvander_protocol::MemoryConfirmationScope::AgentCanonical => "Agent knowledge",
-            sylvander_protocol::MemoryConfirmationScope::WorkspaceKnowledge => {
-                "workspace knowledge"
-            }
+            sylvander_api::MemoryConfirmationScope::Relationship => "our relationship",
+            sylvander_api::MemoryConfirmationScope::UserProfile => "your profile",
+            sylvander_api::MemoryConfirmationScope::AgentCanonical => "Agent knowledge",
+            sylvander_api::MemoryConfirmationScope::WorkspaceKnowledge => "workspace knowledge",
         };
         let allow_style = if self.confirm_selected {
             theme::brand_violet().bold()
@@ -165,24 +160,21 @@ impl Modal for MemoryConfirmationModal {
                 state.dirty.mark();
                 Consumed::Yes { dismiss: false }
             }
-            KeyCode::Char('1' | 'y' | 'Y') => self.decide(
-                state,
-                sylvander_protocol::MemoryConfirmationDecision::Confirm,
-            ),
-            KeyCode::Char('2' | 'n' | 'N') | KeyCode::Esc => self.decide(
-                state,
-                sylvander_protocol::MemoryConfirmationDecision::Reject,
-            ),
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.decide(
-                state,
-                sylvander_protocol::MemoryConfirmationDecision::Reject,
-            ),
+            KeyCode::Char('1' | 'y' | 'Y') => {
+                self.decide(state, sylvander_api::MemoryConfirmationDecision::Confirm)
+            }
+            KeyCode::Char('2' | 'n' | 'N') | KeyCode::Esc => {
+                self.decide(state, sylvander_api::MemoryConfirmationDecision::Reject)
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.decide(state, sylvander_api::MemoryConfirmationDecision::Reject)
+            }
             KeyCode::Enter => self.decide(
                 state,
                 if self.confirm_selected {
-                    sylvander_protocol::MemoryConfirmationDecision::Confirm
+                    sylvander_api::MemoryConfirmationDecision::Confirm
                 } else {
-                    sylvander_protocol::MemoryConfirmationDecision::Reject
+                    sylvander_api::MemoryConfirmationDecision::Reject
                 },
             ),
             _ => Consumed::Ignored,

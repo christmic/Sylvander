@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use sylvander_protocol::{
+use sylvander_api::{
     BoundaryContext, IDENTITY_BINDING_PROTOCOL_VERSION, IdentityBindingAction,
     IdentityBindingError, IdentityBindingErrorCode, IdentityBindingOperation,
     IdentityBindingRequest, IdentityBindingResponse, IdentityBindingView, IdentityLinkChallengeId,

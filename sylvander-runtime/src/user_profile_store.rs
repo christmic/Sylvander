@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use sylvander_protocol::{
+use sylvander_api::{
     CommunicationTone, PrivacyClass, ResponseDetail, USER_PROFILE_PROTOCOL_VERSION, UserId,
     UserProfileData, UserProfileExport, UserProfileExportFormat, UserProfileView,
 };
@@ -323,7 +323,7 @@ impl UserProfileProvider for UserProfileStore {
         &self,
         subject: &UserProfileSubject,
     ) -> Result<Option<UserProfileSnapshot>, UserProfileProviderError> {
-        self.read(sylvander_protocol::UserId::new(subject.user_id().0.clone()))
+        self.read(sylvander_api::UserId::new(subject.user_id().0.clone()))
             .await
             .map(|profile| {
                 profile

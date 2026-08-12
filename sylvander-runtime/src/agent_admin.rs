@@ -14,7 +14,7 @@ use crate::agent_definition::{
 };
 use sha2::{Digest, Sha256};
 use sylvander_agent::tool::{AgentHookPhase, ToolHookConfig};
-use sylvander_protocol::{
+use sylvander_api::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AgentBehaviorDraft, AgentDefinitionDraft, AgentRevisionView, AgentSecretReference,
     AgentToolDraft, AgentToolPresentationDraft, AuthenticatedPrincipal, PrincipalKind,
@@ -45,12 +45,12 @@ pub(crate) enum AgentAdminDispatch {
         definition: Box<AgentDefinitionConfig>,
     },
     Activate {
-        agent_id: sylvander_protocol::AgentId,
+        agent_id: sylvander_api::AgentId,
         revision: u64,
         expected_active_revision: u64,
     },
     Rollback {
-        agent_id: sylvander_protocol::AgentId,
+        agent_id: sylvander_api::AgentId,
         target_revision: u64,
         expected_active_revision: u64,
     },
@@ -139,7 +139,7 @@ impl<'a> AgentAdminService<'a> {
 
     async fn list_revisions(
         &self,
-        agent_id: sylvander_protocol::AgentId,
+        agent_id: sylvander_api::AgentId,
         before: Option<u64>,
         limit: u16,
     ) -> AgentAdminResponse {
@@ -259,14 +259,10 @@ pub(crate) fn definition_from_draft(
                 .map(|hook| ToolHookConfig {
                     name: hook.name,
                     phase: match hook.phase {
-                        sylvander_protocol::AgentHookPhase::BeforeTool => {
-                            AgentHookPhase::BeforeTool
-                        }
-                        sylvander_protocol::AgentHookPhase::AfterTool => AgentHookPhase::AfterTool,
-                        sylvander_protocol::AgentHookPhase::BeforeTurn => {
-                            AgentHookPhase::BeforeTurn
-                        }
-                        sylvander_protocol::AgentHookPhase::AfterTurn => AgentHookPhase::AfterTurn,
+                        sylvander_api::AgentHookPhase::BeforeTool => AgentHookPhase::BeforeTool,
+                        sylvander_api::AgentHookPhase::AfterTool => AgentHookPhase::AfterTool,
+                        sylvander_api::AgentHookPhase::BeforeTurn => AgentHookPhase::BeforeTurn,
+                        sylvander_api::AgentHookPhase::AfterTurn => AgentHookPhase::AfterTurn,
                     },
                     command: hook.command,
                     timeout_secs: hook.timeout_secs,
@@ -383,14 +379,10 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
                 .map(|hook| RedactedAgentHook {
                     name: hook.name.clone(),
                     phase: match hook.phase {
-                        AgentHookPhase::BeforeTool => {
-                            sylvander_protocol::AgentHookPhase::BeforeTool
-                        }
-                        AgentHookPhase::AfterTool => sylvander_protocol::AgentHookPhase::AfterTool,
-                        AgentHookPhase::BeforeTurn => {
-                            sylvander_protocol::AgentHookPhase::BeforeTurn
-                        }
-                        AgentHookPhase::AfterTurn => sylvander_protocol::AgentHookPhase::AfterTurn,
+                        AgentHookPhase::BeforeTool => sylvander_api::AgentHookPhase::BeforeTool,
+                        AgentHookPhase::AfterTool => sylvander_api::AgentHookPhase::AfterTool,
+                        AgentHookPhase::BeforeTurn => sylvander_api::AgentHookPhase::BeforeTurn,
+                        AgentHookPhase::AfterTurn => sylvander_api::AgentHookPhase::AfterTurn,
                     },
                     timeout_secs: hook.timeout_secs,
                     blocking: hook.blocking,
@@ -765,7 +757,7 @@ fn invalid_definition(message: impl Into<String>) -> AgentAdminError {
     }
 }
 
-fn unknown_revision(agent_id: sylvander_protocol::AgentId, revision: u64) -> AgentAdminError {
+fn unknown_revision(agent_id: sylvander_api::AgentId, revision: u64) -> AgentAdminError {
     AgentAdminError {
         code: AgentAdminErrorCode::UnknownRevision,
         message: format!("unknown Agent revision `{agent_id}`@{revision}"),

@@ -19,7 +19,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sylvander_protocol::{AgentId, UserId};
+use sylvander_api::{AgentId, UserId};
 use thiserror::Error;
 use tokio::task;
 use uuid::Uuid;
@@ -1730,8 +1730,8 @@ impl GuardianCurationStore {
     /// verified against the separately staged payload by `GuardianRuntime`.
     pub(crate) async fn pending_confirmations(
         &self,
-        owner_agent_id: sylvander_protocol::AgentId,
-        owner_user_id: sylvander_protocol::UserId,
+        owner_agent_id: sylvander_api::AgentId,
+        owner_user_id: sylvander_api::UserId,
     ) -> Result<Vec<MemoryCandidate>, GuardianCurationError> {
         validate_id(&owner_agent_id.0)?;
         validate_id(&owner_user_id.0)?;

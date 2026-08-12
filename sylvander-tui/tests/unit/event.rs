@@ -4,7 +4,7 @@ use super::*;
 fn backend_completion_events_are_agent_authoritative() {
     assert_eq!(
         DomainEvent::CompactionCompleted {
-            report: sylvander_protocol::CompactionReport {
+            report: sylvander_api::CompactionReport {
                 automatic: false,
                 removed_messages: 2,
                 condensed_blocks: 1,

@@ -22,14 +22,15 @@ cargo build --workspace --release --locked
 # can produce different test binaries from an individual package invocation;
 # compilation time is not part of an interaction latency budget.
 export CARGO_TARGET_DIR="$PWD/target/performance"
-cargo test -p sylvander-protocol --lib --no-run
+cargo test -p sylvander-api --lib --no-run
+cargo test -p sylvander-channel --lib --no-run
 cargo test -p sylvander-agent --lib --no-run
 cargo test -p sylvander-agent --test simple_run --no-run
 cargo test -p sylvander-tui --lib --no-run
 cargo test -p sylvander-runtime --lib --no-run
 
 run_budget 10 "message-bus burst" \
-  cargo test -p sylvander-protocol --lib concurrent_publish_burst_delivers_every_message_within_capacity
+  cargo test -p sylvander-channel --lib concurrent_publish_burst_delivers_every_message_within_capacity
 run_budget 10 "large workspace bounds" \
   cargo test -p sylvander-agent --lib large_local_workspace_queries_stop_at_their_result_budget
 run_budget 10 "concurrent tool scheduling" \

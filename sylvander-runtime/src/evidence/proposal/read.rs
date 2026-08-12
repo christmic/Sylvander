@@ -1,5 +1,5 @@
 use rusqlite::OptionalExtension;
-use sylvander_protocol::EvidenceReference;
+use sylvander_api::EvidenceReference;
 
 use super::{parse_risk, parse_status};
 use crate::evidence::proposal_types::{

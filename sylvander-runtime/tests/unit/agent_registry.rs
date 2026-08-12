@@ -429,7 +429,7 @@ async fn load_rejects_tampered_digest_and_definition_identity() {
     ));
 
     let mut mismatched = original;
-    mismatched.spec.id = sylvander_protocol::AgentId::new("other-agent");
+    mismatched.spec.id = sylvander_api::AgentId::new("other-agent");
     let json = serde_json::to_string(&mismatched).unwrap();
     let digest = hex_digest(json.as_bytes());
     let id = agent_id.0.clone();

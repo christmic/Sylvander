@@ -15,16 +15,16 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use sylvander_api::AgentId;
+use sylvander_api::{
+    AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
+};
+use sylvander_api::{MessageKind, StreamEvent};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, SubscriptionFilter,
     credential::{CredentialLeaseRequest, CredentialLeaseSource},
     parse_external_control, submit_external_chat,
 };
-use sylvander_protocol::AgentId;
-use sylvander_protocol::{
-    AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
-};
-use sylvander_protocol::{MessageKind, StreamEvent};
 
 use protocol::{WechatCrypto, parse_message_xml};
 
@@ -380,7 +380,7 @@ async fn handle_callback(
             existing_session: existing,
             agent_id: state.agent_id.clone(),
             label: format!("wechat-{}", msg.from_user_name),
-            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            overrides: sylvander_api::SessionConfigOverrides::default(),
             text: msg.content.clone(),
             attachments: Vec::new(),
             external_meta,

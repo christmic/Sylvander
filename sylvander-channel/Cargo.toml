@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-sylvander-protocol = { path = "../sylvander-protocol" }
+sylvander-api = { path = "../sylvander-api" }
 serde_json = { workspace = true }
 async-trait = "0.1"
 tokio = { workspace = true }

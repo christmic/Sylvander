@@ -18,12 +18,12 @@ use crate::theme;
 
 pub struct WorkspaceRollbackModal {
     session_id: String,
-    preview: sylvander_protocol::WorkspaceRollbackPreview,
+    preview: sylvander_api::WorkspaceRollbackPreview,
     choice_index: usize,
 }
 
 impl WorkspaceRollbackModal {
-    pub fn new(session_id: String, preview: sylvander_protocol::WorkspaceRollbackPreview) -> Self {
+    pub fn new(session_id: String, preview: sylvander_api::WorkspaceRollbackPreview) -> Self {
         Self {
             session_id,
             preview,

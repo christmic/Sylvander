@@ -1,8 +1,8 @@
 use super::*;
 
-fn agent(id: &str, name: &str) -> sylvander_protocol::AgentDescriptor {
-    sylvander_protocol::AgentDescriptor {
-        id: sylvander_protocol::AgentId::new(id),
+fn agent(id: &str, name: &str) -> sylvander_api::AgentDescriptor {
+    sylvander_api::AgentDescriptor {
+        id: sylvander_api::AgentId::new(id),
         revision: 1,
         name: name.into(),
         provider_id: "provider".into(),
@@ -17,7 +17,7 @@ fn agent(id: &str, name: &str) -> sylvander_protocol::AgentDescriptor {
 fn switching_agent_leaves_the_old_session_and_starts_fresh() {
     let mut state = AppState::new();
     state.agents = vec![agent("first", "First"), agent("second", "Second")];
-    state.selected_agent_id = Some(sylvander_protocol::AgentId::new("first"));
+    state.selected_agent_id = Some(sylvander_api::AgentId::new("first"));
     state.session_id = Some("old-session".into());
     state
         .messages

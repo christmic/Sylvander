@@ -26,7 +26,7 @@ use crate::theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Pending,
-    Approve(sylvander_protocol::ApprovalScope),
+    Approve(sylvander_api::ApprovalScope),
     Reject,
 }
 
@@ -63,7 +63,7 @@ pub struct ApprovalModal {
     /// Total modal count when this modal was pushed.
     pub queue_total: usize,
     /// Server-advertised scopes. The modal never invents a broader grant.
-    pub allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
+    pub allowed_scopes: Vec<sylvander_api::ApprovalScope>,
 }
 
 impl ApprovalModal {
@@ -79,7 +79,7 @@ impl ApprovalModal {
             feedback: String::new(),
             stack_position: 0,
             queue_total: 1,
-            allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+            allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
         };
         modal.reset_choice();
         modal
@@ -87,15 +87,15 @@ impl ApprovalModal {
 
     pub fn with_allowed_scopes(
         mut self,
-        allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
+        allowed_scopes: Vec<sylvander_api::ApprovalScope>,
     ) -> Self {
         self.allowed_scopes = allowed_scopes;
         if !self
             .allowed_scopes
-            .contains(&sylvander_protocol::ApprovalScope::Once)
+            .contains(&sylvander_api::ApprovalScope::Once)
         {
             self.allowed_scopes
-                .insert(0, sylvander_protocol::ApprovalScope::Once);
+                .insert(0, sylvander_api::ApprovalScope::Once);
         }
         self
     }
@@ -111,13 +111,13 @@ impl ApprovalModal {
         };
         if self
             .allowed_scopes
-            .contains(&sylvander_protocol::ApprovalScope::Session)
+            .contains(&sylvander_api::ApprovalScope::Session)
         {
             choices.push(ApprovalChoice::Session);
         }
         if self
             .allowed_scopes
-            .contains(&sylvander_protocol::ApprovalScope::Persistent)
+            .contains(&sylvander_api::ApprovalScope::Persistent)
         {
             choices.push(ApprovalChoice::Persistent);
         }
@@ -264,14 +264,14 @@ impl ApprovalModal {
             (KeyCode::Enter, _) => self.apply_selected_choice(state),
             (KeyCode::Char('y'), KeyModifiers::NONE) => {
                 self.decisions[self.current] =
-                    Decision::Approve(sylvander_protocol::ApprovalScope::Once);
+                    Decision::Approve(sylvander_api::ApprovalScope::Once);
                 advance(self, state)
             }
             (KeyCode::Char('s'), KeyModifiers::NONE) => {
-                self.approve_with_scope(sylvander_protocol::ApprovalScope::Session, state)
+                self.approve_with_scope(sylvander_api::ApprovalScope::Session, state)
             }
             (KeyCode::Char('p'), KeyModifiers::NONE) => {
-                self.approve_with_scope(sylvander_protocol::ApprovalScope::Persistent, state)
+                self.approve_with_scope(sylvander_api::ApprovalScope::Persistent, state)
             }
             (KeyCode::Char('n' | 'r'), KeyModifiers::NONE) => self.begin_rejection(state),
             (KeyCode::Char(number @ '1'..='4'), KeyModifiers::NONE) => {
@@ -288,7 +288,7 @@ impl ApprovalModal {
                 // Approve all remaining including current.
                 for d in &mut self.decisions[self.current..] {
                     if *d == Decision::Pending {
-                        *d = Decision::Approve(sylvander_protocol::ApprovalScope::Once);
+                        *d = Decision::Approve(sylvander_api::ApprovalScope::Once);
                     }
                 }
                 finish(self, state)
@@ -338,7 +338,7 @@ impl ApprovalModal {
 
     fn approve_with_scope(
         &mut self,
-        scope: sylvander_protocol::ApprovalScope,
+        scope: sylvander_api::ApprovalScope,
         state: &mut AppState,
     ) -> Consumed {
         if !self.allowed_scopes.contains(&scope) {
@@ -357,15 +357,15 @@ impl ApprovalModal {
         match choice {
             ApprovalChoice::Once => {
                 self.decisions[self.current] =
-                    Decision::Approve(sylvander_protocol::ApprovalScope::Once);
+                    Decision::Approve(sylvander_api::ApprovalScope::Once);
                 advance(self, state)
             }
             ApprovalChoice::Reject => self.begin_rejection(state),
             ApprovalChoice::Session => {
-                self.approve_with_scope(sylvander_protocol::ApprovalScope::Session, state)
+                self.approve_with_scope(sylvander_api::ApprovalScope::Session, state)
             }
             ApprovalChoice::Persistent => {
-                self.approve_with_scope(sylvander_protocol::ApprovalScope::Persistent, state)
+                self.approve_with_scope(sylvander_api::ApprovalScope::Persistent, state)
             }
         }
     }
@@ -467,7 +467,7 @@ fn advance(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     // Last tool or all decided — fill remaining pending as approve (default).
     for d in &mut modal.decisions {
         if *d == Decision::Pending {
-            *d = Decision::Approve(sylvander_protocol::ApprovalScope::Once);
+            *d = Decision::Approve(sylvander_api::ApprovalScope::Once);
         }
     }
     finish(modal, state)
@@ -490,7 +490,7 @@ fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
         let approved = matches!(decision, Decision::Approve(_));
         let scope = match decision {
             Decision::Approve(scope) => *scope,
-            Decision::Pending | Decision::Reject => sylvander_protocol::ApprovalScope::Once,
+            Decision::Pending | Decision::Reject => sylvander_api::ApprovalScope::Once,
         };
         state.pending_actions.push(Action::SendApprove {
             session_id: state.session_id.clone().unwrap_or_default(),
@@ -510,11 +510,11 @@ fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     Consumed::Yes { dismiss: true }
 }
 
-fn scope_label(scope: sylvander_protocol::ApprovalScope) -> &'static str {
+fn scope_label(scope: sylvander_api::ApprovalScope) -> &'static str {
     match scope {
-        sylvander_protocol::ApprovalScope::Once => "one-shot",
-        sylvander_protocol::ApprovalScope::Session => "session",
-        sylvander_protocol::ApprovalScope::Persistent => "persistent",
+        sylvander_api::ApprovalScope::Once => "one-shot",
+        sylvander_api::ApprovalScope::Session => "session",
+        sylvander_api::ApprovalScope::Persistent => "persistent",
     }
 }
 

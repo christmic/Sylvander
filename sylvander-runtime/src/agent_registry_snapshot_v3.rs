@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sylvander_protocol::ModelSelection;
+use sylvander_api::ModelSelection;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError, ensure_current_registry_schema};
 

@@ -30,8 +30,8 @@ use tracing::{info, warn};
 use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::agent_run::AgentRun;
 use crate::session::SessionMetadata;
+use sylvander_api::{AgentStatus, BusMessage, MessageKind, Recipient, Sender, SystemMessage};
 use sylvander_channel::{MessageBus, SubscriptionFilter};
-use sylvander_protocol::{AgentStatus, BusMessage, MessageKind, Recipient, Sender, SystemMessage};
 
 /// Supplies immutable Agent runs to the engine's revision router.
 ///
@@ -528,7 +528,7 @@ impl AgentRunEngine {
     pub async fn send_message(
         &self,
         session_id: SessionId,
-        target: sylvander_protocol::Recipient,
+        target: sylvander_api::Recipient,
         text: impl Into<String>,
     ) -> Result<(), EngineError> {
         // Verify the session exists
@@ -547,7 +547,7 @@ impl AgentRunEngine {
             payload: text.into(),
             attachments: Vec::new(),
             timestamp: crate::session::now_secs(),
-            id: sylvander_protocol::MessageId::new(),
+            id: sylvander_api::MessageId::new(),
         };
 
         self.bus

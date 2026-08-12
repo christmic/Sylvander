@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use sylvander_protocol::{
+use sylvander_api::{
     BoundaryContext, BoundaryError, BoundaryErrorCode, IdentityBindingRequest, UiClientMessage,
 };
 

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
-use sylvander_protocol::{ModelLifecycle, ModelPricing};
+use sylvander_api::{ModelLifecycle, ModelPricing};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::config::SecretRef;

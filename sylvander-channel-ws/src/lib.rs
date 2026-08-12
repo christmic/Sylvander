@@ -43,17 +43,17 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
 
+use sylvander_api::{AgentId, SessionId};
+use sylvander_api::{MessageKind, StreamEvent};
+use sylvander_api::{
+    UiClientMessage as ClientMsg, UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
+};
 use sylvander_channel::credential::{
     CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
     unavailable_agent_admin_response, unavailable_registry_admin_response,
-};
-use sylvander_protocol::{AgentId, SessionId};
-use sylvander_protocol::{MessageKind, StreamEvent};
-use sylvander_protocol::{
-    UiClientMessage as ClientMsg, UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
 };
 
 // ===========================================================================
@@ -202,7 +202,7 @@ async fn ws_handler(
 }
 
 async fn reject_ws_authentication(state: &AppState) -> StatusCode {
-    let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+    let boundary = sylvander_api::BoundaryContext::unauthenticated(
         &state.instance_id,
         "websocket",
         uuid::Uuid::new_v4().to_string(),
@@ -211,8 +211,8 @@ async fn reject_ws_authentication(state: &AppState) -> StatusCode {
         let error = host
             .reject_authentication(
                 &boundary,
-                sylvander_protocol::AuthenticationFailure::new(
-                    sylvander_protocol::AuthenticationMethod::BearerToken,
+                sylvander_api::AuthenticationFailure::new(
+                    sylvander_api::AuthenticationMethod::BearerToken,
                 ),
             )
             .await;
@@ -222,20 +222,20 @@ async fn reject_ws_authentication(state: &AppState) -> StatusCode {
     }
 }
 
-fn boundary_status(error: &sylvander_protocol::BoundaryError) -> StatusCode {
+fn boundary_status(error: &sylvander_api::BoundaryError) -> StatusCode {
     match error.code {
-        sylvander_protocol::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
-        sylvander_protocol::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
-        sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-        sylvander_protocol::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-        sylvander_protocol::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
+        sylvander_api::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
+        sylvander_api::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        sylvander_api::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        sylvander_api::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        sylvander_api::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
     }
 }
 
 async fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
-) -> Option<sylvander_protocol::AuthenticatedPrincipal> {
+) -> Option<sylvander_api::AuthenticatedPrincipal> {
     let auth = state.auth.as_ref()?;
     let supplied = headers
         .get(axum::http::header::AUTHORIZATION)?
@@ -249,9 +249,9 @@ async fn authenticate(
     }
     let expected = leased.secret("bearer_token").ok()?;
     constant_time_eq(supplied.as_bytes(), expected.as_bytes()).then(|| {
-        sylvander_protocol::AuthenticatedPrincipal::user(
+        sylvander_api::AuthenticatedPrincipal::user(
             auth.principal_id.clone(),
-            sylvander_protocol::AuthenticationMethod::BearerToken,
+            sylvander_api::AuthenticationMethod::BearerToken,
         )
     })
 }
@@ -271,7 +271,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<AppState>,
-    principal: sylvander_protocol::AuthenticatedPrincipal,
+    principal: sylvander_api::AuthenticatedPrincipal,
 ) {
     let client_id = {
         let mut id = state.next_id.lock().await;
@@ -343,12 +343,12 @@ async fn handle_protocol_message(
     ctx: &ChannelContext,
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
-    principal: &sylvander_protocol::AuthenticatedPrincipal,
+    principal: &sylvander_api::AuthenticatedPrincipal,
     instance_id: &str,
 ) -> bool {
     match (&msg, *selected) {
         (ClientMsg::Hello { protocol }, None) => {
-            match sylvander_protocol::negotiate_ui_protocol(protocol) {
+            match sylvander_api::negotiate_ui_protocol(protocol) {
                 Ok(version) => {
                     *selected = Some(version);
                     send_welcome(tx, version);
@@ -396,12 +396,12 @@ async fn handle_protocol_message(
 fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
     let mut capabilities = vec![
         "agent_discovery".into(),
-        sylvander_protocol::IDENTITY_BINDING_CAPABILITY.into(),
-        sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY.into(),
+        sylvander_api::IDENTITY_BINDING_CAPABILITY.into(),
+        sylvander_api::MEMORY_CONFIRMATION_CAPABILITY.into(),
         "session_config".into(),
         "sessions".into(),
-        sylvander_protocol::FEEDBACK_CAPABILITY.into(),
-        sylvander_protocol::USER_PROFILE_CAPABILITY.into(),
+        sylvander_api::FEEDBACK_CAPABILITY.into(),
+        sylvander_api::USER_PROFILE_CAPABILITY.into(),
     ];
     if version >= 2 {
         capabilities.extend([
@@ -414,7 +414,7 @@ fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
         capabilities.push("provider_model_registry_lifecycle".into());
     }
     let _ = tx.send(ServerMsg::Welcome {
-        protocol: sylvander_protocol::UiProtocolWelcome {
+        protocol: sylvander_api::UiProtocolWelcome {
             server_name: "sylvander-server".into(),
             version,
             capabilities,
@@ -424,11 +424,11 @@ fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
 
 fn send_protocol_error(tx: &mpsc::UnboundedSender<ServerMsg>, code: &str, message: &str) {
     let _ = tx.send(ServerMsg::ProtocolError {
-        error: sylvander_protocol::UiProtocolError {
+        error: sylvander_api::UiProtocolError {
             code: code.into(),
             message: message.into(),
-            server_min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
-            server_max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+            server_min_version: sylvander_api::UI_PROTOCOL_MIN_VERSION,
+            server_max_version: sylvander_api::UI_PROTOCOL_MAX_VERSION,
         },
     });
 }
@@ -438,10 +438,10 @@ async fn handle_client_msg(
     ctx: &ChannelContext,
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
-    principal: &sylvander_protocol::AuthenticatedPrincipal,
+    principal: &sylvander_api::AuthenticatedPrincipal,
     instance_id: &str,
 ) {
-    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+    let boundary = sylvander_api::BoundaryContext::authenticated(
         principal.clone(),
         instance_id,
         "websocket",
@@ -455,8 +455,7 @@ async fn handle_client_msg(
         return;
     }
     match msg {
-        ClientMsg::Hello { protocol } => match sylvander_protocol::negotiate_ui_protocol(&protocol)
-        {
+        ClientMsg::Hello { protocol } => match sylvander_api::negotiate_ui_protocol(&protocol) {
             Ok(version) => {
                 send_welcome(tx, version);
             }
@@ -478,7 +477,7 @@ async fn handle_client_msg(
                     existing_session,
                     agent_id: agent_id.clone(),
                     label: "websocket session".into(),
-                    overrides: sylvander_protocol::SessionConfigOverrides::default(),
+                    overrides: sylvander_api::SessionConfigOverrides::default(),
                     text: text.clone(),
                     attachments: attachments.clone(),
                     external_meta: BTreeMap::from([(
@@ -728,9 +727,7 @@ async fn handle_client_msg(
             let response = if let Some(host) = &ctx.host {
                 host.memory_confirmation(&boundary, request).await
             } else {
-                sylvander_protocol::MemoryConfirmationResponse::service_unavailable(
-                    request.operation(),
-                )
+                sylvander_api::MemoryConfirmationResponse::service_unavailable(request.operation())
             };
             let _ = tx.send(ServerMsg::MemoryConfirmation { response });
         }
@@ -754,9 +751,9 @@ async fn handle_client_msg(
             let response = if let Some(host) = &ctx.host {
                 host.user_profile(&boundary, request).await
             } else {
-                sylvander_protocol::UserProfileResponse::Error {
-                    version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
-                    error: sylvander_protocol::UserProfileError::service_unavailable(
+                sylvander_api::UserProfileResponse::Error {
+                    version: sylvander_api::USER_PROFILE_PROTOCOL_VERSION,
+                    error: sylvander_api::UserProfileError::service_unavailable(
                         request.operation(),
                     ),
                 }
@@ -767,9 +764,9 @@ async fn handle_client_msg(
             let operation = request.operation();
             let response = match Arc::into_inner(request) {
                 Some(request) => ctx.submit_identity_binding(&boundary, request).await,
-                None => sylvander_protocol::IdentityBindingResponse::Error {
-                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
-                    error: sylvander_protocol::IdentityBindingError::service_unavailable(operation),
+                None => sylvander_api::IdentityBindingResponse::Error {
+                    version: sylvander_api::IDENTITY_BINDING_PROTOCOL_VERSION,
+                    error: sylvander_api::IdentityBindingError::service_unavailable(operation),
                 },
             };
             let _ = tx.send(ServerMsg::IdentityBinding {
@@ -822,7 +819,7 @@ async fn handle_client_msg(
             match host
                 .update_session_config(
                     &boundary,
-                    sylvander_protocol::SessionConfigUpdateRequest {
+                    sylvander_api::SessionConfigUpdateRequest {
                         session_id,
                         expected_revision: state.revision,
                         overrides,
@@ -865,7 +862,7 @@ async fn handle_client_msg(
             match host
                 .update_session_config(
                     &boundary,
-                    sylvander_protocol::SessionConfigUpdateRequest {
+                    sylvander_api::SessionConfigUpdateRequest {
                         session_id,
                         expected_revision: state.revision,
                         overrides,
@@ -904,16 +901,16 @@ async fn handle_client_msg(
 }
 
 fn visible_model_catalog(
-    agents: &[sylvander_protocol::AgentDescriptor],
+    agents: &[sylvander_api::AgentDescriptor],
     agent_id: &AgentId,
-) -> Vec<sylvander_protocol::ModelSelection> {
+) -> Vec<sylvander_api::ModelSelection> {
     let Some(agent) = agents.iter().find(|agent| agent.id == *agent_id) else {
         return Vec::new();
     };
     agent
         .models
         .iter()
-        .map(|model| sylvander_protocol::ModelSelection {
+        .map(|model| sylvander_api::ModelSelection {
             provider_id: model.provider.clone(),
             model_id: model.id.clone(),
         })
@@ -931,10 +928,7 @@ fn operation_error(
     });
 }
 
-fn boundary_denied(
-    tx: &mpsc::UnboundedSender<ServerMsg>,
-    error: sylvander_protocol::BoundaryError,
-) {
+fn boundary_denied(tx: &mpsc::UnboundedSender<ServerMsg>, error: sylvander_api::BoundaryError) {
     let _ = tx.send(ServerMsg::BoundaryDenied { error });
 }
 

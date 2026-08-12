@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use sylvander_protocol::EvidenceReference;
+use sylvander_api::EvidenceReference;
 use sylvander_runtime::evidence::{
     EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit, EvidenceStore,
     ImprovementProposal, ImprovementProposalStatus, ImprovementRisk, RegressionMetric,

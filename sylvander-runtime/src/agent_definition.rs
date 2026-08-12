@@ -21,7 +21,7 @@ use sylvander_llm_core::{ModelCapabilities, ModelInfo, ModelRef};
 // ID types
 // ---------------------------------------------------------------------------
 
-pub use sylvander_protocol::{AgentId, ModelSelection, SessionId};
+pub use sylvander_api::{AgentId, ModelSelection, SessionId};
 
 // ---------------------------------------------------------------------------
 // Config sub-types
@@ -142,7 +142,7 @@ pub struct UiCommandConfig {
 pub struct ToolPresentationConfig {
     pub tool_name: String,
     pub label: String,
-    pub kind: sylvander_protocol::ToolPresentationKind,
+    pub kind: sylvander_api::ToolPresentationKind,
     #[serde(default)]
     pub target_field: Option<String>,
 }

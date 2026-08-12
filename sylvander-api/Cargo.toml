@@ -1,5 +1,5 @@
 [package]
-name = "sylvander-protocol"
+name = "sylvander-api"
 description = "Sylvander wire-format protocol types — language-neutral, cross-crate"
 version.workspace = true
 edition.workspace = true

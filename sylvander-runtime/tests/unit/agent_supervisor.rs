@@ -1,8 +1,8 @@
 use super::*;
 use crate::test_support::qualified_anthropic_run_builder;
+use sylvander_api::Recipient;
 use sylvander_channel::InProcessMessageBus;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
-use sylvander_protocol::Recipient;
 
 struct TestRevisionProvider {
     bindings: RwLock<HashMap<SessionId, u64>>,

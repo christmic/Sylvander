@@ -12,6 +12,13 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::json;
 use sylvander_agent::prelude::ToolRegistry;
 use sylvander_agent::tools::{AskUserTool, WriteTool};
+use sylvander_api::{
+    AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, BusMessage,
+    FileAccess, MessageKind, NetworkAccess, PermissionProfile, ReasoningEffort, RunFeedback,
+    SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind, SessionConfigState,
+    SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig, SessionId,
+    SessionMetadata, StreamEvent, UiClientMessage, UiSessionInfo,
+};
 use sylvander_channel::{
     Channel, ChannelContext, ChannelHost, InProcessMessageBus, MessageBus, SubscriptionFilter,
 };
@@ -19,13 +26,6 @@ use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
-};
-use sylvander_protocol::{
-    AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, BusMessage,
-    FileAccess, MessageKind, NetworkAccess, PermissionProfile, ReasoningEffort, RunFeedback,
-    SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind, SessionConfigState,
-    SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig, SessionId,
-    SessionMetadata, StreamEvent, UiClientMessage, UiSessionInfo,
 };
 use sylvander_runtime::agent_definition::AgentSpec;
 use sylvander_runtime::agent_run::{AgentRun, AgentSessionIssuer};
@@ -150,7 +150,7 @@ struct HarnessChannelHost {
     agent_id: AgentId,
     provider_id: String,
     prompt_sha256: String,
-    prompt_manifest: sylvander_protocol::PromptManifest,
+    prompt_manifest: sylvander_api::PromptManifest,
     approval_enabled: bool,
     next_session: AtomicUsize,
 }
@@ -235,9 +235,9 @@ impl HarnessChannelHost {
                     file_access: FileAccess::WorkspaceWrite,
                     network_access: NetworkAccess::Denied,
                     approval_policy: if self.approval_enabled {
-                        sylvander_protocol::ApprovalPolicy::Ask
+                        sylvander_api::ApprovalPolicy::Ask
                     } else {
-                        sylvander_protocol::ApprovalPolicy::Allow
+                        sylvander_api::ApprovalPolicy::Allow
                     },
                 }),
             prompt_profile: request.overrides.prompt_profile.clone(),
@@ -535,13 +535,13 @@ impl ChannelHost for HarnessChannelHost {
         self.bus
             .publish(BusMessage {
                 session_id: session_id.clone(),
-                sender: sylvander_protocol::Sender::User(principal.into()),
-                recipient: sylvander_protocol::Recipient::Agent(request.agent_id),
+                sender: sylvander_api::Sender::User(principal.into()),
+                recipient: sylvander_api::Recipient::Agent(request.agent_id),
                 kind: MessageKind::Chat,
                 payload: request.text,
                 attachments: request.attachments,
                 timestamp: sylvander_runtime::session::now_secs(),
-                id: sylvander_protocol::MessageId::new(),
+                id: sylvander_api::MessageId::new(),
             })
             .await
             .map_err(|error| {
@@ -576,7 +576,7 @@ impl ChannelHost for HarnessChannelHost {
                 scope,
                 reason,
                 ..
-            } => sylvander_protocol::SystemMessage::ApproveTool {
+            } => sylvander_api::SystemMessage::ApproveTool {
                 call_id,
                 approved,
                 scope,
@@ -584,8 +584,8 @@ impl ChannelHost for HarnessChannelHost {
             },
             UiClientMessage::Answer {
                 call_id, answer, ..
-            } => sylvander_protocol::SystemMessage::AnswerQuestion { call_id, answer },
-            UiClientMessage::Interrupt { .. } => sylvander_protocol::SystemMessage::InterruptTurn {
+            } => sylvander_api::SystemMessage::AnswerQuestion { call_id, answer },
+            UiClientMessage::Interrupt { .. } => sylvander_api::SystemMessage::InterruptTurn {
                 session_id: SessionId::new(&session_id),
             },
             _ => return Err(BoundaryError::forbidden(boundary, "submit_control")),
@@ -593,13 +593,13 @@ impl ChannelHost for HarnessChannelHost {
         self.bus
             .publish(BusMessage {
                 session_id: SessionId::new(session_id),
-                sender: sylvander_protocol::Sender::System,
-                recipient: sylvander_protocol::Recipient::Agent(self.agent_id.clone()),
+                sender: sylvander_api::Sender::System,
+                recipient: sylvander_api::Recipient::Agent(self.agent_id.clone()),
                 kind: MessageKind::System(system),
                 payload: String::new(),
                 attachments: Vec::new(),
                 timestamp: sylvander_runtime::session::now_secs(),
-                id: sylvander_protocol::MessageId::new(),
+                id: sylvander_api::MessageId::new(),
             })
             .await
             .map_err(|error| {
@@ -668,7 +668,7 @@ async fn start_runtime(
         .build()
         .expect("build agent spec");
     let provider_id = spec.model.provider.clone();
-    let selection = sylvander_protocol::ModelSelection {
+    let selection = sylvander_api::ModelSelection {
         provider_id: provider_id.clone(),
         model_id: spec.model.model_name.clone(),
     };
@@ -721,27 +721,27 @@ async fn start_runtime(
         .await
         .expect("spawn AgentRun through Engine");
     let approval_policy = if approval_enabled {
-        sylvander_protocol::ApprovalPolicy::Ask
+        sylvander_api::ApprovalPolicy::Ask
     } else {
-        sylvander_protocol::ApprovalPolicy::Allow
+        sylvander_api::ApprovalPolicy::Allow
     };
     let channel = Arc::new(
         UnixChannel::new(socket_path, agent_id.clone()).with_runtime_info(RuntimeInfo {
-            model: sylvander_protocol::ModelSelection {
+            model: sylvander_api::ModelSelection {
                 provider_id: "test".into(),
                 model_id: "sylvander-test-model".into(),
             },
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            reasoning_effort: sylvander_api::ReasoningEffort::Off,
             models: Vec::new(),
-            permissions: sylvander_protocol::PermissionProfile {
-                file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
-                network_access: sylvander_protocol::NetworkAccess::Denied,
+            permissions: sylvander_api::PermissionProfile {
+                file_access: sylvander_api::FileAccess::WorkspaceWrite,
+                network_access: sylvander_api::NetworkAccess::Denied,
                 approval_policy,
             },
             capabilities: sylvander_llm_anthropic::api::model::ModelCapabilities::TOOL_USE.bits(),
             approval_enabled,
             max_attachment_bytes: 512 * 1024,
-            platform: sylvander_protocol::PlatformSnapshot::default(),
+            platform: sylvander_api::PlatformSnapshot::default(),
             platform_provider: None,
         }),
     );
@@ -1315,7 +1315,7 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
     });
     assert!(replayed.contains("completed."));
 
-    let caller = sylvander_protocol::SessionContext::new(
+    let caller = sylvander_api::SessionContext::new(
         "unix-client",
         "real-runtime-test",
         "__multi_client_audit__",
@@ -1327,7 +1327,7 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
     assert_eq!(sessions.len(), 3);
     let mut audited = Vec::new();
     for session in sessions {
-        let session_caller = sylvander_protocol::SessionContext::new(
+        let session_caller = sylvander_api::SessionContext::new(
             session.metadata.user_id.clone(),
             "real-runtime-test",
             session.id.clone(),

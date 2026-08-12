@@ -3,7 +3,7 @@ use crate::evidence::evaluation_types::{
     EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
     MetricMeasurement, RegressionMetric, ScoreDirection,
 };
-use sylvander_protocol::EvidenceReference;
+use sylvander_api::EvidenceReference;
 
 fn scorer(revision: u64, metric: &str) -> ScoringAdapterRevision {
     ScoringAdapterRevision {

@@ -4,25 +4,25 @@ fn state() -> AppState {
     let mut state = AppState::new();
     state.metadata.model = "plain".into();
     state.metadata.models = vec![
-        sylvander_protocol::ModelDescriptor {
+        sylvander_api::ModelDescriptor {
             id: "plain".into(),
             provider: "test".into(),
             capabilities: 0,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
-            lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Off],
+            lifecycle: sylvander_api::ModelLifecycle::Active,
             pricing: None,
         },
-        sylvander_protocol::ModelDescriptor {
+        sylvander_api::ModelDescriptor {
             id: "thinking".into(),
             provider: "test".into(),
             capabilities: 0,
             capability_names: Vec::new(),
             reasoning_efforts: vec![
-                sylvander_protocol::ReasoningEffort::Off,
-                sylvander_protocol::ReasoningEffort::Low,
+                sylvander_api::ReasoningEffort::Off,
+                sylvander_api::ReasoningEffort::Low,
             ],
-            lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
+            lifecycle: sylvander_api::ModelLifecycle::Deprecated {
                 replacement: Some("plain".into()),
             },
             pricing: None,
@@ -47,7 +47,7 @@ fn keyboard_selects_only_server_advertised_effort() {
         [crate::event::Action::SelectModel {
             session_id,
             model,
-            reasoning_effort: sylvander_protocol::ReasoningEffort::Low,
+            reasoning_effort: sylvander_api::ReasoningEffort::Low,
         }] if session_id == "session-1"
             && model.provider_id == "test"
             && model.model_id == "thinking"
@@ -59,22 +59,22 @@ fn keyboard_keeps_provider_when_model_ids_are_shared() {
     let mut state = state();
     state.session_id = Some("session-1".into());
     state.metadata.models = vec![
-        sylvander_protocol::ModelDescriptor {
+        sylvander_api::ModelDescriptor {
             id: "shared".into(),
             provider: "alpha".into(),
             capabilities: 0,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
-            lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Off],
+            lifecycle: sylvander_api::ModelLifecycle::Active,
             pricing: None,
         },
-        sylvander_protocol::ModelDescriptor {
+        sylvander_api::ModelDescriptor {
             id: "shared".into(),
             provider: "beta".into(),
             capabilities: 0,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
-            lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Off],
+            lifecycle: sylvander_api::ModelLifecycle::Active,
             pricing: None,
         },
     ];

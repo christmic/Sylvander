@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sylvander_protocol::EvidenceReference;
+use sylvander_api::EvidenceReference;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

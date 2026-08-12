@@ -61,35 +61,35 @@ fn connection_requests_and_applies_runtime_truth() {
     ));
     state.apply(DomainEvent::RuntimeInfo {
         model: "claude-test".into(),
-        reasoning_effort: sylvander_protocol::ReasoningEffort::Low,
-        models: vec![sylvander_protocol::ModelDescriptor {
+        reasoning_effort: sylvander_api::ReasoningEffort::Low,
+        models: vec![sylvander_api::ModelDescriptor {
             id: "claude-test".into(),
             provider: "test".into(),
             capabilities: 0b10001,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
-            lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Off],
+            lifecycle: sylvander_api::ModelLifecycle::Active,
             pricing: None,
         }],
-        permissions: sylvander_protocol::PermissionProfile {
-            file_access: sylvander_protocol::FileAccess::ReadOnly,
-            network_access: sylvander_protocol::NetworkAccess::Denied,
-            approval_policy: sylvander_protocol::ApprovalPolicy::Ask,
+        permissions: sylvander_api::PermissionProfile {
+            file_access: sylvander_api::FileAccess::ReadOnly,
+            network_access: sylvander_api::NetworkAccess::Denied,
+            approval_policy: sylvander_api::ApprovalPolicy::Ask,
         },
         capabilities: 0b10001,
         approval_enabled: true,
         max_attachment_bytes: 4096,
-        platform: sylvander_protocol::PlatformSnapshot::default(),
+        platform: sylvander_api::PlatformSnapshot::default(),
     });
     assert_eq!(state.metadata.model, "claude-test");
     assert_eq!(
         state.metadata.reasoning_effort,
-        sylvander_protocol::ReasoningEffort::Low
+        sylvander_api::ReasoningEffort::Low
     );
     assert_eq!(state.metadata.models.len(), 1);
     assert_eq!(
         state.metadata.permissions.file_access,
-        sylvander_protocol::FileAccess::ReadOnly
+        sylvander_api::FileAccess::ReadOnly
     );
     assert_eq!(state.metadata.capabilities, 0b10001);
     assert!(state.metadata.approval_enabled);
@@ -116,11 +116,11 @@ fn profile_read_updates_the_revisioned_cache_and_opens_pending_editor() {
     let mut state = AppState::new();
     state.pending_profile_intent = Some(PendingProfileIntent::Edit { correction: false });
     state.apply(DomainEvent::UserProfileReceived {
-        response: sylvander_protocol::UserProfileResponse::Read {
-            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
-            profile: sylvander_protocol::UserProfileView {
+        response: sylvander_api::UserProfileResponse::Read {
+            version: sylvander_api::USER_PROFILE_PROTOCOL_VERSION,
+            profile: sylvander_api::UserProfileView {
                 revision: 12,
-                profile: sylvander_protocol::UserProfileData::default(),
+                profile: sylvander_api::UserProfileData::default(),
                 do_not_learn: false,
                 created_at_unix_secs: 1,
                 updated_at_unix_secs: 2,
@@ -140,19 +140,19 @@ fn profile_read_updates_the_revisioned_cache_and_opens_pending_editor() {
 #[test]
 fn profile_conflict_discards_stale_cache_and_reloads_without_retrying_the_write() {
     let mut state = AppState::new();
-    state.user_profile = Some(sylvander_protocol::UserProfileView {
+    state.user_profile = Some(sylvander_api::UserProfileView {
         revision: 3,
-        profile: sylvander_protocol::UserProfileData::default(),
+        profile: sylvander_api::UserProfileData::default(),
         do_not_learn: false,
         created_at_unix_secs: 1,
         updated_at_unix_secs: 2,
     });
     state.apply(DomainEvent::UserProfileReceived {
-        response: sylvander_protocol::UserProfileResponse::Error {
-            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
-            error: sylvander_protocol::UserProfileError {
-                code: sylvander_protocol::UserProfileErrorCode::Conflict,
-                operation: sylvander_protocol::UserProfileOperation::Update,
+        response: sylvander_api::UserProfileResponse::Error {
+            version: sylvander_api::USER_PROFILE_PROTOCOL_VERSION,
+            error: sylvander_api::UserProfileError {
+                code: sylvander_api::UserProfileErrorCode::Conflict,
+                operation: sylvander_api::UserProfileOperation::Update,
                 current_revision: Some(4),
                 retry_after_ms: None,
             },
@@ -162,8 +162,8 @@ fn profile_conflict_discards_stale_cache_and_reloads_without_retrying_the_write(
     assert!(matches!(
         state.pending_actions.as_slice(),
         [Action::UserProfile {
-            request: sylvander_protocol::UserProfileRequest {
-                action: sylvander_protocol::UserProfileAction::Read {},
+            request: sylvander_api::UserProfileRequest {
+                action: sylvander_api::UserProfileAction::Read {},
                 ..
             }
         }]
@@ -227,23 +227,23 @@ fn current_deprecated_model_surfaces_migration_target() {
     let mut state = AppState::new();
     state.apply(DomainEvent::RuntimeInfo {
         model: "old-model".into(),
-        reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
-        models: vec![sylvander_protocol::ModelDescriptor {
+        reasoning_effort: sylvander_api::ReasoningEffort::Off,
+        models: vec![sylvander_api::ModelDescriptor {
             id: "old-model".into(),
             provider: "test".into(),
             capabilities: 0,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
-            lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Off],
+            lifecycle: sylvander_api::ModelLifecycle::Deprecated {
                 replacement: Some("new-model".into()),
             },
             pricing: None,
         }],
-        permissions: sylvander_protocol::PermissionProfile::default(),
+        permissions: sylvander_api::PermissionProfile::default(),
         capabilities: 0,
         approval_enabled: false,
         max_attachment_bytes: 4096,
-        platform: sylvander_protocol::PlatformSnapshot::default(),
+        platform: sylvander_api::PlatformSnapshot::default(),
     });
     assert_eq!(state.status, "Model deprecated · old-model → new-model");
     assert!(matches!(
@@ -256,15 +256,15 @@ fn current_deprecated_model_surfaces_migration_target() {
 fn context_report_renders_provider_usage_cache_and_sources() {
     let mut state = AppState::new();
     state.apply(DomainEvent::ContextReported {
-        report: sylvander_protocol::ContextReport {
+        report: sylvander_api::ContextReport {
             model: "deep-code".into(),
             context_window: 200_000,
             used_tokens: 50_000,
             remaining_tokens: 150_000,
             cache_read_tokens: 40_000,
             cache_write_tokens: 2_000,
-            sources: vec![sylvander_protocol::ContextSource {
-                kind: sylvander_protocol::ContextSourceKind::Conversation,
+            sources: vec![sylvander_api::ContextSource {
+                kind: sylvander_api::ContextSourceKind::Conversation,
                 label: "conversation messages".into(),
                 items: 8,
             }],
@@ -285,7 +285,7 @@ fn compaction_lifecycle_is_visible_with_a_bounded_summary() {
     state.apply(DomainEvent::CompactionStarted { automatic: false });
     assert_eq!(state.status, "Compacting context…");
     state.apply(DomainEvent::CompactionCompleted {
-        report: sylvander_protocol::CompactionReport {
+        report: sylvander_api::CompactionReport {
             automatic: false,
             removed_messages: 12,
             condensed_blocks: 3,
@@ -348,7 +348,7 @@ fn model_retry_is_visible_and_bounded_in_transcript() {
         max_attempts: 3,
         delay_ms: 100,
         reason: format!("provider unavailable {}", "x".repeat(200)),
-        cause: sylvander_protocol::RetryCause::RateLimit,
+        cause: sylvander_api::RetryCause::RateLimit,
     });
     assert_eq!(state.status, "Rate limited · retry 1/3");
     assert!(matches!(
@@ -377,7 +377,7 @@ fn rollback_lifecycle_requires_preview_and_reports_restored_files() {
     let mut state = AppState::new();
     state.apply(DomainEvent::WorkspaceRollbackPreviewed {
         session_id: "s1".into(),
-        preview: sylvander_protocol::WorkspaceRollbackPreview {
+        preview: sylvander_api::WorkspaceRollbackPreview {
             turn_id: "turn-1".into(),
             files: vec!["src/lib.rs".into()],
         },
@@ -387,7 +387,7 @@ fn rollback_lifecycle_requires_preview_and_reports_restored_files() {
         Some("Rollback files")
     );
     state.apply(DomainEvent::WorkspaceRollbackCompleted {
-        report: sylvander_protocol::WorkspaceRollbackReport {
+        report: sylvander_api::WorkspaceRollbackReport {
             turn_id: "turn-1".into(),
             restored: vec!["src/lib.rs".into()],
         },
@@ -420,9 +420,9 @@ fn workspace_review_sends_one_typed_diff_attachment() {
     assert_eq!(session_id.as_deref(), Some("s1"));
     assert!(matches!(
         attachments.as_slice(),
-        [sylvander_protocol::MessageAttachment {
-            kind: sylvander_protocol::AttachmentKind::Diff,
-            content: sylvander_protocol::AttachmentContent::Text { text },
+        [sylvander_api::MessageAttachment {
+            kind: sylvander_api::AttachmentKind::Diff,
+            content: sylvander_api::AttachmentContent::Text { text },
             ..
         }] if text.contains("+fixed")
     ));
@@ -657,7 +657,7 @@ fn apply_approval_request_pushes_modal() {
     let mut s = AppState::new();
     s.apply(DomainEvent::ApprovalRequested {
         batch_id: "b1".into(),
-        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+        allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
         tools: vec![ToolInfo {
             call_id: "c1".into(),
             tool_name: "bash".into(),
@@ -684,7 +684,7 @@ fn full_decision_stack_rejects_approval_and_unblocks_the_agent() {
             tool_name: "write".into(),
             input: serde_json::json!({"path": "notes.md"}),
         }],
-        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+        allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
     });
 
     assert!(matches!(
@@ -703,7 +703,7 @@ fn decision_timeout_closes_stale_modal_and_explains_recovery() {
     let mut state = AppState::new();
     state.apply(DomainEvent::ApprovalRequested {
         batch_id: "batch-1".into(),
-        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+        allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
         tools: vec![ToolInfo {
             call_id: "call-123456".into(),
             tool_name: "bash".into(),
@@ -711,10 +711,10 @@ fn decision_timeout_closes_stale_modal_and_explains_recovery() {
         }],
     });
     state.apply(DomainEvent::InteractionTimedOut {
-        kind: sylvander_protocol::InteractionTimeoutKind::Approval,
+        kind: sylvander_api::InteractionTimeoutKind::Approval,
         subject_id: "call-123456".into(),
         timeout_secs: 120,
-        recovery: sylvander_protocol::TimeoutRecovery::RetryRequest,
+        recovery: sylvander_api::TimeoutRecovery::RetryRequest,
     });
     assert!(state.modals.is_empty());
     assert_eq!(state.mode, AppMode::Normal);
@@ -992,7 +992,7 @@ fn esc_dismisses_modal_first() {
     let mut s = AppState::new();
     s.apply(DomainEvent::ApprovalRequested {
         batch_id: "b".into(),
-        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+        allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
         tools: vec![ToolInfo {
             call_id: "c".into(),
             tool_name: "bash".into(),
@@ -1011,7 +1011,7 @@ fn approval_y_sends_approve_action() {
     let mut s = AppState::new();
     s.apply(DomainEvent::ApprovalRequested {
         batch_id: "b".into(),
-        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+        allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
         tools: vec![ToolInfo {
             call_id: "c1".into(),
             tool_name: "bash".into(),
@@ -1108,8 +1108,8 @@ fn first_prompt_creates_configured_session_then_sends_exactly_once() {
         },
     );
     state.apply(DomainEvent::AgentsDiscovered {
-        agents: vec![sylvander_protocol::AgentDescriptor {
-            id: sylvander_protocol::AgentId::new("coding"),
+        agents: vec![sylvander_api::AgentDescriptor {
+            id: sylvander_api::AgentId::new("coding"),
             revision: 1,
             name: "Coding".into(),
             provider_id: "provider".into(),
@@ -1120,11 +1120,11 @@ fn first_prompt_creates_configured_session_then_sends_exactly_once() {
         }],
     });
     state.session_model_override = Some((
-        sylvander_protocol::ModelSelection {
+        sylvander_api::ModelSelection {
             provider_id: "provider".into(),
             model_id: "fast".into(),
         },
-        sylvander_protocol::ReasoningEffort::Low,
+        sylvander_api::ReasoningEffort::Low,
     ));
 
     let create = state
@@ -1233,10 +1233,10 @@ fn memory_confirmation_uses_the_existing_decision_dock_key_path() {
     state.session_id = Some("session-1".into());
     state.apply(DomainEvent::MemoryConfirmationsLoaded {
         session_id: "session-1".into(),
-        confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+        confirmations: vec![sylvander_api::PendingMemoryConfirmation {
             candidate_id: "candidate-1".into(),
             expected_revision: 4,
-            scope: sylvander_protocol::MemoryConfirmationScope::Relationship,
+            scope: sylvander_api::MemoryConfirmationScope::Relationship,
             summary: "remember concise answers".into(),
         }],
     });
@@ -1252,7 +1252,7 @@ fn memory_confirmation_uses_the_existing_decision_dock_key_path() {
             session_id,
             candidate_id,
             expected_revision: 4,
-            decision: sylvander_protocol::MemoryConfirmationDecision::Reject,
+            decision: sylvander_api::MemoryConfirmationDecision::Reject,
         }] if session_id == "session-1" && candidate_id == "candidate-1"
     ));
     assert!(state.modals.is_empty());
@@ -1269,10 +1269,10 @@ fn memory_confirmation_queue_stays_pending_until_the_last_decision() {
             .into_iter()
             .enumerate()
             .map(
-                |(index, candidate_id)| sylvander_protocol::PendingMemoryConfirmation {
+                |(index, candidate_id)| sylvander_api::PendingMemoryConfirmation {
                     candidate_id: candidate_id.into(),
                     expected_revision: index as u64 + 1,
-                    scope: sylvander_protocol::MemoryConfirmationScope::Relationship,
+                    scope: sylvander_api::MemoryConfirmationScope::Relationship,
                     summary: format!("memory {}", index + 1),
                 },
             )
@@ -1298,12 +1298,12 @@ fn memory_confirmation_queue_stays_pending_until_the_last_decision() {
         [
             Action::ResolveMemoryConfirmation {
                 candidate_id: first,
-                decision: sylvander_protocol::MemoryConfirmationDecision::Confirm,
+                decision: sylvander_api::MemoryConfirmationDecision::Confirm,
                 ..
             },
             Action::ResolveMemoryConfirmation {
                 candidate_id: second,
-                decision: sylvander_protocol::MemoryConfirmationDecision::Reject,
+                decision: sylvander_api::MemoryConfirmationDecision::Reject,
                 ..
             }
         ] if first == "candidate-1" && second == "candidate-2"
@@ -1316,10 +1316,10 @@ fn memory_confirmation_for_a_different_session_is_ignored() {
     state.session_id = Some("session-1".into());
     state.apply(DomainEvent::MemoryConfirmationsLoaded {
         session_id: "session-2".into(),
-        confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+        confirmations: vec![sylvander_api::PendingMemoryConfirmation {
             candidate_id: "candidate-1".into(),
             expected_revision: 1,
-            scope: sylvander_protocol::MemoryConfirmationScope::UserProfile,
+            scope: sylvander_api::MemoryConfirmationScope::UserProfile,
             summary: "private".into(),
         }],
     });

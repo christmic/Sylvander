@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::Mutex;
-use sylvander_protocol::{
+use sylvander_api::{
     AuthenticatedPrincipal, AuthenticationMethod, ClassifiedPreference, IdentityBindingAction,
     LanguageTag, PrivacyClass, UserProfileAction, UserProfileData, UserProfileErrorCode,
     UserProfileOperation,
@@ -236,7 +236,7 @@ fn channel_defaults_fill_only_missing_session_fields() {
         ..SessionConfigOverrides::default()
     };
     let defaults = SessionConfigOverrides {
-        user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+        user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
             execution_target: "channel-target".into(),
             path: "/workspace/channel".into(),
             read_only: true,
@@ -268,7 +268,7 @@ fn external_controls_are_typed_and_require_an_existing_session() {
         parse_external_control("/approve batch-1 session", Some(&session)),
         Some(Ok(UiClientMessage::Approve {
             approved: true,
-            scope: sylvander_protocol::ApprovalScope::Session,
+            scope: sylvander_api::ApprovalScope::Session,
             ..
         }))
     ));

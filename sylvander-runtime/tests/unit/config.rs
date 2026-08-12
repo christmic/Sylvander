@@ -124,7 +124,7 @@ fn valid_configuration_parses_and_resolves_references() {
     assert_eq!(config.agents[0].workspace_mounts[0].reference, "shared-lib");
     assert_eq!(
         config.agents[0].workspace_mounts[0].role,
-        sylvander_protocol::WorkspaceMountRole::Dependency
+        sylvander_api::WorkspaceMountRole::Dependency
     );
     assert!(config.agents[0].workspace_mounts[0].capabilities.git);
     assert_eq!(config.channels[0].id, "terminal");

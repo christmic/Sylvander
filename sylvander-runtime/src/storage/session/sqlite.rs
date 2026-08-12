@@ -25,7 +25,7 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
-use sylvander_protocol::session_context::Priority;
+use sylvander_api::session_context::Priority;
 use tokio::sync::Mutex;
 use tokio::task;
 
@@ -571,8 +571,8 @@ impl SessionStore for SqliteSessionStore {
         &self,
         id: &SessionId,
         expected_revision: u64,
-        overrides: sylvander_protocol::SessionConfigOverrides,
-        effective: sylvander_protocol::SessionEffectiveConfig,
+        overrides: sylvander_api::SessionConfigOverrides,
+        effective: sylvander_api::SessionEffectiveConfig,
     ) -> Result<u64, SessionStoreError> {
         let id = id.clone();
         let expected = i64::try_from(expected_revision).map_err(|_| {
@@ -630,7 +630,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn begin_turn(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         start: TurnStart,
     ) -> Result<StoredMessage, SessionStoreError> {
         if start.turn_id.trim().is_empty() {
@@ -674,7 +674,7 @@ impl SessionStore for SqliteSessionStore {
             let stored_effective = stored_effective.ok_or_else(|| {
                 SessionStoreError::Invalid("session effective configuration is unresolved".into())
             })?;
-            let persisted: sylvander_protocol::SessionEffectiveConfig =
+            let persisted: sylvander_api::SessionEffectiveConfig =
                 decode_json(1, &stored_effective).map_err(sqlite_err)?;
             if persisted != start.effective_config {
                 return Err(SessionStoreError::Invalid(
@@ -926,7 +926,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn list(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         filter: SessionFilter,
     ) -> Result<Vec<StoredSession>, SessionStoreError> {
         // Caller-scoping: a non-admin caller MUST set
@@ -995,7 +995,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn search(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         query: &str,
         limit: usize,
     ) -> Result<Vec<StoredSession>, SessionStoreError> {
@@ -1032,7 +1032,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn append_message(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
         role: MessageRole,
         content: JsonValue,
@@ -1131,7 +1131,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn read_history(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
         include_summarized: bool,
         limit: Option<usize>,
@@ -1185,7 +1185,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn replace_active_history(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
         messages: Vec<ReplacementMessage>,
     ) -> Result<(), SessionStoreError> {
@@ -1271,7 +1271,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn count_active_messages(
         &self,
-        ctx: &sylvander_protocol::SessionContext,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
     ) -> Result<u64, SessionStoreError> {
         let session_id = session_id.clone();
@@ -1461,8 +1461,8 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
     Ok(StoredMessage {
         id,
         session_id: SessionId::new(session_id),
-        user_id: sylvander_protocol::UserId::new(user_id),
-        agent_id: sylvander_protocol::AgentId::new(agent_id),
+        user_id: sylvander_api::UserId::new(user_id),
+        agent_id: sylvander_api::AgentId::new(agent_id),
         trace_id,
         priority,
         seq: u32::try_from(seq).unwrap_or(u32::MAX),
@@ -1494,7 +1494,7 @@ fn sqlite_err(e: rusqlite::Error) -> SessionStoreError {
 // Priority <-> str
 // ---------------------------------------------------------------------------
 
-fn priority_str(p: sylvander_protocol::session_context::Priority) -> String {
+fn priority_str(p: sylvander_api::session_context::Priority) -> String {
     match p {
         Priority::Low => "low",
         Priority::Normal => "normal",
@@ -1504,7 +1504,7 @@ fn priority_str(p: sylvander_protocol::session_context::Priority) -> String {
     .to_string()
 }
 
-fn parse_priority(s: &str) -> rusqlite::Result<sylvander_protocol::session_context::Priority> {
+fn parse_priority(s: &str) -> rusqlite::Result<sylvander_api::session_context::Priority> {
     Ok(match s {
         "low" => Priority::Low,
         "normal" => Priority::Normal,

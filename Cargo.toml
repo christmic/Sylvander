@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "sylvander-protocol",
+    "sylvander-api",
     "sylvander-channel",
     "sylvander-channel-dingtalk",
     "sylvander-channel-http",

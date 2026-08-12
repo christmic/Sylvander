@@ -197,9 +197,9 @@ fn approval_modal_overlays_chat() {
     });
     state.apply(DomainEvent::ApprovalRequested {
         allowed_scopes: vec![
-            sylvander_protocol::ApprovalScope::Once,
-            sylvander_protocol::ApprovalScope::Session,
-            sylvander_protocol::ApprovalScope::Persistent,
+            sylvander_api::ApprovalScope::Once,
+            sylvander_api::ApprovalScope::Session,
+            sylvander_api::ApprovalScope::Persistent,
         ],
         batch_id: "batch-1".into(),
         tools: vec![sylvander_tui::app::ToolInfo {
@@ -295,8 +295,8 @@ fn approval_modal_batch_with_three_tools() {
     });
     state.apply(DomainEvent::ApprovalRequested {
         allowed_scopes: vec![
-            sylvander_protocol::ApprovalScope::Once,
-            sylvander_protocol::ApprovalScope::Session,
+            sylvander_api::ApprovalScope::Once,
+            sylvander_api::ApprovalScope::Session,
         ],
         batch_id: "batch-1".into(),
         tools: vec![
@@ -334,7 +334,7 @@ fn approval_modal_with_queue_header() {
     let mut state = AppState::new();
     // Two batches stack — second one should show "batch 2/2" header.
     state.apply(DomainEvent::ApprovalRequested {
-        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+        allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
         batch_id: "first".into(),
         tools: vec![ToolInfo {
             call_id: "a".into(),
@@ -343,7 +343,7 @@ fn approval_modal_with_queue_header() {
         }],
     });
     state.apply(DomainEvent::ApprovalRequested {
-        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+        allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
         batch_id: "second".into(),
         tools: vec![ToolInfo {
             call_id: "b".into(),
@@ -475,15 +475,15 @@ fn palette_shows_dynamic_command_source_and_rejections() {
 
     let mut state = AppState::new();
     state.connected = true;
-    let command = sylvander_protocol::UiCommandDescriptor {
+    let command = sylvander_api::UiCommandDescriptor {
         id: "workspace.security-review".into(),
         name: "security-review".into(),
         usage: "/security-review [scope]".into(),
         description: "Review a workspace scope".into(),
         hint: "workspace command".into(),
         source: "agent configuration".into(),
-        trust: sylvander_protocol::PlatformTrust::Workspace,
-        effect: sylvander_protocol::UiCommandEffect::SubmitPrompt {
+        trust: sylvander_api::PlatformTrust::Workspace,
+        effect: sylvander_api::UiCommandEffect::SubmitPrompt {
             template: "Review {{args}} for security issues.".into(),
         },
     };
@@ -496,7 +496,7 @@ fn palette_shows_dynamic_command_source_and_rejections() {
     untrusted.name = "external-review".into();
     untrusted.usage = "/external-review".into();
     untrusted.source = "third-party extension".into();
-    untrusted.trust = sylvander_protocol::PlatformTrust::External;
+    untrusted.trust = sylvander_api::PlatformTrust::External;
     state.platform.commands = vec![command, collision, untrusted];
 
     state.handle_key(&KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
@@ -527,34 +527,34 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
     let mut state = AppState::new();
     state.connected = true;
     state.metadata.model = "claude-sonnet".into();
-    state.metadata.reasoning_effort = sylvander_protocol::ReasoningEffort::Low;
+    state.metadata.reasoning_effort = sylvander_api::ReasoningEffort::Low;
     state.metadata.models = vec![
-        sylvander_protocol::ModelDescriptor {
+        sylvander_api::ModelDescriptor {
             id: "claude-sonnet".into(),
             provider: "anthropic-compatible".into(),
             capabilities: 0,
             capability_names: Vec::new(),
             reasoning_efforts: vec![
-                sylvander_protocol::ReasoningEffort::Off,
-                sylvander_protocol::ReasoningEffort::Low,
-                sylvander_protocol::ReasoningEffort::Medium,
-                sylvander_protocol::ReasoningEffort::High,
+                sylvander_api::ReasoningEffort::Off,
+                sylvander_api::ReasoningEffort::Low,
+                sylvander_api::ReasoningEffort::Medium,
+                sylvander_api::ReasoningEffort::High,
             ],
-            lifecycle: sylvander_protocol::ModelLifecycle::Active,
-            pricing: Some(sylvander_protocol::ModelPricing {
+            lifecycle: sylvander_api::ModelLifecycle::Active,
+            pricing: Some(sylvander_api::ModelPricing {
                 input_usd_micros_per_million: 3_000_000,
                 output_usd_micros_per_million: 15_000_000,
                 cache_write_usd_micros_per_million: None,
                 cache_read_usd_micros_per_million: None,
             }),
         },
-        sylvander_protocol::ModelDescriptor {
+        sylvander_api::ModelDescriptor {
             id: "fast-code".into(),
             provider: "anthropic-compatible".into(),
             capabilities: 0,
             capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
-            lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
+            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Off],
+            lifecycle: sylvander_api::ModelLifecycle::Deprecated {
                 replacement: Some("claude-sonnet".into()),
             },
             pricing: None,
@@ -574,7 +574,7 @@ fn workspace_rollback_requires_a_file_scoped_confirmation() {
     let mut state = AppState::new();
     state.apply(DomainEvent::WorkspaceRollbackPreviewed {
         session_id: "session-1".into(),
-        preview: sylvander_protocol::WorkspaceRollbackPreview {
+        preview: sylvander_api::WorkspaceRollbackPreview {
             turn_id: "turn-7".into(),
             files: vec!["src/lib.rs".into(), "docs/design.md".into()],
         },
@@ -588,10 +588,10 @@ fn permissions_picker_shows_workspace_scoped_runtime_policy() {
     state.connected = true;
     state.metadata.workspace = "/workspace/sylvander".into();
     state.metadata.approval_enabled = true;
-    state.metadata.permissions = sylvander_protocol::PermissionProfile {
-        file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
-        network_access: sylvander_protocol::NetworkAccess::Denied,
-        approval_policy: sylvander_protocol::ApprovalPolicy::Ask,
+    state.metadata.permissions = sylvander_api::PermissionProfile {
+        file_access: sylvander_api::FileAccess::WorkspaceWrite,
+        network_access: sylvander_api::NetworkAccess::Denied,
+        approval_policy: sylvander_api::ApprovalPolicy::Ask,
     };
     sylvander_tui::command::execute(
         sylvander_tui::command::parse("permissions").expect("parse"),

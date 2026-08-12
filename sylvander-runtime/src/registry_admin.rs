@@ -1,7 +1,7 @@
 //! Privileged administration of immutable runtime registries.
 
 use sha2::{Digest, Sha256};
-use sylvander_protocol::{
+use sylvander_api::{
     AuthenticatedPrincipal, CredentialGenerationView, CredentialReferenceKind,
     CredentialSecretReferenceDraft, ModelDefinitionDraft, ModelLifecycle, ModelLifecycleDraft,
     ModelPricing, ModelPricingDraft, ModelRevisionView, ProviderDefinitionDraft,

@@ -12,9 +12,7 @@ use sylvander_agent::identity::{
     AgentId as KernelAgentId, SessionId as KernelSessionId, UserId as KernelUserId,
 };
 use sylvander_agent::tool_context::ToolContext;
-use sylvander_protocol::{
-    AgentId, SessionContext, SessionId, SessionMetadata, UserId, UserProfileData,
-};
+use sylvander_api::{AgentId, SessionContext, SessionId, SessionMetadata, UserId, UserProfileData};
 
 use super::*;
 use crate::capability_runtime::{
@@ -616,7 +614,7 @@ async fn pending_confirmation_is_session_bound_and_decisions_are_single_use() {
                 &other_session,
                 &pending[0].candidate_id,
                 pending[0].expected_revision,
-                sylvander_protocol::MemoryConfirmationDecision::Confirm,
+                sylvander_api::MemoryConfirmationDecision::Confirm,
                 timestamp + 1,
             )
             .await,
@@ -633,7 +631,7 @@ async fn pending_confirmation_is_session_bound_and_decisions_are_single_use() {
                 &other_owner,
                 &pending[0].candidate_id,
                 pending[0].expected_revision,
-                sylvander_protocol::MemoryConfirmationDecision::Confirm,
+                sylvander_api::MemoryConfirmationDecision::Confirm,
                 timestamp + 1,
             )
             .await,
@@ -647,7 +645,7 @@ async fn pending_confirmation_is_session_bound_and_decisions_are_single_use() {
             &owner_session,
             &pending[0].candidate_id,
             pending[0].expected_revision,
-            sylvander_protocol::MemoryConfirmationDecision::Reject,
+            sylvander_api::MemoryConfirmationDecision::Reject,
             timestamp + 1,
         )
         .await
@@ -658,7 +656,7 @@ async fn pending_confirmation_is_session_bound_and_decisions_are_single_use() {
                 &owner_session,
                 &pending[0].candidate_id,
                 pending[0].expected_revision,
-                sylvander_protocol::MemoryConfirmationDecision::Reject,
+                sylvander_api::MemoryConfirmationDecision::Reject,
                 timestamp + 2,
             )
             .await,

@@ -13,8 +13,7 @@ implementation layer merely because all three serialize JSON.
 1. `sylvander-llm-core` is the provider-neutral contract between an Agent and
    model adapters.
 2. `sylvander-api` is the versioned wire contract between clients or Channels
-   and Runtime. The current crate is named `sylvander-protocol`; migration will
-   rename it after its Rust runtime contents have been removed.
+   and Runtime.
 3. Anthropic, OpenAI, and DashScope crates implement each provider's official
    wire protocol at the outer adapter edge.
 
@@ -72,8 +71,8 @@ contract is defined in
 
 ### API
 
-The eventual `sylvander-api` crate owns versioned, serializable DTOs and JSON
-Schema only:
+The `sylvander-api` crate owns versioned, serializable DTOs and JSON Schema
+only:
 
 - request, response, event, identifier, and redacted view shapes;
 - protocol negotiation and pure validation;
@@ -244,10 +243,10 @@ Migration is performed without compatibility aliases:
    remain unchanged.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with
    `ChannelHost`.
-7. **In progress:** the executable dependency/source gate now verifies Agent,
-   Protocol, Channel, provider, and Runtime boundaries and runs from the
-   security gate. Rename the pure wire crate to `sylvander-api` next, without a
-   compatibility crate.
+7. **Complete:** the executable dependency/source gate verifies Agent, API,
+   Channel, provider, and Runtime boundaries and runs from the security gate.
+   The pure wire crate is named `sylvander-api`; the old crate and compatibility
+   aliases do not exist.
 
 At each step, the new owner becomes authoritative before the previous owner is
 deleted. No deprecated alias or dual production path is retained.

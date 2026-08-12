@@ -18,7 +18,7 @@ use crate::theme;
 
 pub struct PermissionsPicker {
     row: usize,
-    profile: sylvander_protocol::PermissionProfile,
+    profile: sylvander_api::PermissionProfile,
 }
 
 impl PermissionsPicker {
@@ -32,31 +32,31 @@ impl PermissionsPicker {
     fn cycle(&mut self, forward: bool, approval_available: bool) {
         match self.row {
             0 => {
-                const VALUES: [sylvander_protocol::FileAccess; 3] = [
-                    sylvander_protocol::FileAccess::None,
-                    sylvander_protocol::FileAccess::ReadOnly,
-                    sylvander_protocol::FileAccess::WorkspaceWrite,
+                const VALUES: [sylvander_api::FileAccess; 3] = [
+                    sylvander_api::FileAccess::None,
+                    sylvander_api::FileAccess::ReadOnly,
+                    sylvander_api::FileAccess::WorkspaceWrite,
                 ];
                 self.profile.file_access = next(&VALUES, self.profile.file_access, forward);
             }
             1 => {
-                const VALUES: [sylvander_protocol::NetworkAccess; 2] = [
-                    sylvander_protocol::NetworkAccess::Denied,
-                    sylvander_protocol::NetworkAccess::Allowed,
+                const VALUES: [sylvander_api::NetworkAccess; 2] = [
+                    sylvander_api::NetworkAccess::Denied,
+                    sylvander_api::NetworkAccess::Allowed,
                 ];
                 self.profile.network_access = next(&VALUES, self.profile.network_access, forward);
             }
             _ => {
                 let values = if approval_available {
                     vec![
-                        sylvander_protocol::ApprovalPolicy::Ask,
-                        sylvander_protocol::ApprovalPolicy::Allow,
-                        sylvander_protocol::ApprovalPolicy::Deny,
+                        sylvander_api::ApprovalPolicy::Ask,
+                        sylvander_api::ApprovalPolicy::Allow,
+                        sylvander_api::ApprovalPolicy::Deny,
                     ]
                 } else {
                     vec![
-                        sylvander_protocol::ApprovalPolicy::Allow,
-                        sylvander_protocol::ApprovalPolicy::Deny,
+                        sylvander_api::ApprovalPolicy::Allow,
+                        sylvander_api::ApprovalPolicy::Deny,
                     ]
                 };
                 self.profile.approval_policy = next(&values, self.profile.approval_policy, forward);
@@ -191,24 +191,24 @@ impl Modal for PermissionsPicker {
     }
 }
 
-fn file_label(value: sylvander_protocol::FileAccess) -> &'static str {
+fn file_label(value: sylvander_api::FileAccess) -> &'static str {
     match value {
-        sylvander_protocol::FileAccess::None => "none",
-        sylvander_protocol::FileAccess::ReadOnly => "read only",
-        sylvander_protocol::FileAccess::WorkspaceWrite => "workspace write",
+        sylvander_api::FileAccess::None => "none",
+        sylvander_api::FileAccess::ReadOnly => "read only",
+        sylvander_api::FileAccess::WorkspaceWrite => "workspace write",
     }
 }
-fn network_label(value: sylvander_protocol::NetworkAccess) -> &'static str {
+fn network_label(value: sylvander_api::NetworkAccess) -> &'static str {
     match value {
-        sylvander_protocol::NetworkAccess::Denied => "denied",
-        sylvander_protocol::NetworkAccess::Allowed => "allowed",
+        sylvander_api::NetworkAccess::Denied => "denied",
+        sylvander_api::NetworkAccess::Allowed => "allowed",
     }
 }
-fn approval_label(value: sylvander_protocol::ApprovalPolicy) -> &'static str {
+fn approval_label(value: sylvander_api::ApprovalPolicy) -> &'static str {
     match value {
-        sylvander_protocol::ApprovalPolicy::Ask => "ask",
-        sylvander_protocol::ApprovalPolicy::Allow => "allow",
-        sylvander_protocol::ApprovalPolicy::Deny => "deny",
+        sylvander_api::ApprovalPolicy::Ask => "ask",
+        sylvander_api::ApprovalPolicy::Allow => "allow",
+        sylvander_api::ApprovalPolicy::Deny => "deny",
     }
 }
 

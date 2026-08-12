@@ -148,17 +148,7 @@ use crate::mcp_stdio::McpResultArtifactSink;
 #[cfg(test)]
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_agent::tools::MemoryStore;
-use sylvander_channel::{
-    AuthenticatedTransportIdentity, Channel, ChannelContext, ChannelReadiness,
-};
-use sylvander_channel::{BusDiagnostics, InProcessMessageBus, MessageBus, SubscriptionFilter};
-#[cfg(test)]
-use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
-#[cfg(test)]
-use sylvander_llm_core::{
-    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
-};
-use sylvander_protocol::{
+use sylvander_api::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AgentDescriptor, IdentityBindingCapabilities, IdentityBindingError, IdentityBindingErrorCode,
     IdentityBindingRequest, IdentityBindingResponse, MemoryConfirmationErrorCode,
@@ -171,7 +161,17 @@ use sylvander_protocol::{
     UserProfileCapabilities, UserProfileError, UserProfileErrorCode, UserProfileOperation,
     UserProfileRequest, UserProfileResponse,
 };
-use sylvander_protocol::{BusMessage, Recipient};
+use sylvander_api::{BusMessage, Recipient};
+use sylvander_channel::{
+    AuthenticatedTransportIdentity, Channel, ChannelContext, ChannelReadiness,
+};
+use sylvander_channel::{BusDiagnostics, InProcessMessageBus, MessageBus, SubscriptionFilter};
+#[cfg(test)]
+use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
+#[cfg(test)]
+use sylvander_llm_core::{
+    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+};
 
 use crate::agent_admin::{
     AgentAdminDispatch, AgentAdminService, is_agent_administrator, map_registry_error,
@@ -258,7 +258,7 @@ fn ensure_remote_mutation_mounts_are_transactional(
 }
 
 fn ensure_remote_mutation_mounts_are_transactional_with(
-    mounts: &[sylvander_protocol::SessionWorkspaceMount],
+    mounts: &[sylvander_api::SessionWorkspaceMount],
     canonical_mount: Option<&str>,
     is_remote: impl Fn(&str) -> bool,
 ) -> Result<(), String> {
@@ -770,13 +770,13 @@ impl RevisionedAgentRunProvider for RuntimeRevisionProvider {
 impl sylvander_channel::ChannelHost for RuntimeChannelHost {
     async fn reject_authentication(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        failure: sylvander_protocol::AuthenticationFailure,
-    ) -> sylvander_protocol::BoundaryError {
+        boundary: &sylvander_api::BoundaryContext,
+        failure: sylvander_api::AuthenticationFailure,
+    ) -> sylvander_api::BoundaryError {
         let operation = failure.operation();
         let error = if boundary.principal.is_some() {
-            sylvander_protocol::BoundaryError {
-                code: sylvander_protocol::BoundaryErrorCode::InvalidScope,
+            sylvander_api::BoundaryError {
+                code: sylvander_api::BoundaryErrorCode::InvalidScope,
                 operation: operation.into(),
                 request_id: boundary.request_id.clone(),
                 message: "authentication failure requires an unauthenticated boundary".into(),
@@ -788,7 +788,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 .check_authentication_failure(boundary, operation)
                 .await
             {
-                Ok(()) => sylvander_protocol::BoundaryError::unauthenticated(boundary, operation),
+                Ok(()) => sylvander_api::BoundaryError::unauthenticated(boundary, operation),
                 Err(error) => error,
             }
         };
@@ -803,9 +803,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn authorize_message(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        message: &sylvander_protocol::UiClientMessage,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        boundary: &sylvander_api::BoundaryContext,
+        message: &sylvander_api::UiClientMessage,
+    ) -> Result<(), sylvander_api::BoundaryError> {
         let result = async {
             self.boundary
                 .check(boundary, message, ui_operation(message))
@@ -823,8 +823,8 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn discover_agents(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-    ) -> Result<Vec<AgentDescriptor>, sylvander_protocol::BoundaryError> {
+        boundary: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<AgentDescriptor>, sylvander_api::BoundaryError> {
         require_principal(boundary, "discover_agents")?;
         let mut agents = Vec::new();
         for agent_id in self.agents.keys() {
@@ -847,7 +847,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 models: runtime_models.models,
                 default_prompt_profile: agent.definition.default_prompt_profile.clone(),
                 agent_workspace: agent.definition.agent_workspace.as_ref().map(|workspace| {
-                    sylvander_protocol::SessionWorkspaceBinding {
+                    sylvander_api::SessionWorkspaceBinding {
                         execution_target: workspace.execution_target.clone(),
                         path: workspace.path.clone().into(),
                         read_only: workspace.read_only,
@@ -862,8 +862,8 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn list_sessions(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-    ) -> Result<Vec<sylvander_protocol::UiSessionInfo>, sylvander_protocol::BoundaryError> {
+        boundary: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::UiSessionInfo>, sylvander_api::BoundaryError> {
         require_principal(boundary, "list_sessions")?;
         let user_id = self.effective_user_id(boundary, "list_sessions").await?;
         let sessions = self
@@ -890,7 +890,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             if !allowed || session.agents.is_empty() {
                 continue;
             }
-            visible.push(sylvander_protocol::UiSessionInfo {
+            visible.push(sylvander_api::UiSessionInfo {
                 id: session.id.0,
                 label: if session.name.is_empty() {
                     "untitled session".into()
@@ -906,9 +906,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn load_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<UiSessionHistory, sylvander_protocol::BoundaryError> {
+    ) -> Result<UiSessionHistory, sylvander_api::BoundaryError> {
         let session = self
             .owned_session(boundary, session_id, "load_session")
             .await?;
@@ -918,10 +918,10 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn rename_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
         label: String,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         self.owned_session(boundary, session_id, "rename_session")
             .await?;
         let label = label.trim().to_string();
@@ -946,9 +946,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn archive_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         let (_, agent) = self
             .owned_session_agent(boundary, session_id, "archive_session")
             .await?;
@@ -963,9 +963,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn restore_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         let session = self
             .owned_session_including_archived(boundary, session_id, "restore_session")
             .await?;
@@ -1017,11 +1017,11 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn fork_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
         completed_turns: Option<usize>,
         checkpoint: bool,
-    ) -> Result<UiSessionHistory, sylvander_protocol::BoundaryError> {
+    ) -> Result<UiSessionHistory, sylvander_api::BoundaryError> {
         if checkpoint && completed_turns.is_some() {
             return Err(boundary_failure(
                 boundary,
@@ -1077,10 +1077,10 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn resolve_external_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         channel_instance_id: &str,
         selectors: &BTreeMap<String, String>,
-    ) -> Result<Option<SessionId>, sylvander_protocol::BoundaryError> {
+    ) -> Result<Option<SessionId>, sylvander_api::BoundaryError> {
         require_principal(boundary, "resolve_external_session")?;
         if boundary.channel_instance_id != channel_instance_id
             || selectors.is_empty()
@@ -1094,7 +1094,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                     || value.chars().any(char::is_control)
             })
         {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
+            return Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 "resolve_external_session",
             ));
@@ -1130,7 +1130,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                     .current_agent_access_allowed(agent_id, boundary, "resolve_external_session")
                     .await?
                 {
-                    return Err(sylvander_protocol::BoundaryError::forbidden(
+                    return Err(sylvander_api::BoundaryError::forbidden(
                         boundary,
                         "resolve_external_session",
                     ));
@@ -1152,7 +1152,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         channel_instance_id: &str,
         session_id: &SessionId,
         key: &str,
-    ) -> Result<Option<String>, sylvander_protocol::BoundaryError> {
+    ) -> Result<Option<String>, sylvander_api::BoundaryError> {
         if channel_instance_id.is_empty()
             || channel_instance_id.len() > 128
             || key.is_empty()
@@ -1166,8 +1166,8 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             self.sessions
                 .get(session_id)
                 .await
-                .map_err(|_| sylvander_protocol::BoundaryError {
-                    code: sylvander_protocol::BoundaryErrorCode::InvalidScope,
+                .map_err(|_| sylvander_api::BoundaryError {
+                    code: sylvander_api::BoundaryErrorCode::InvalidScope,
                     operation: "session_external_value".into(),
                     request_id: String::new(),
                     message: "runtime session routing is unavailable".into(),
@@ -1193,18 +1193,18 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn create_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         request: SessionCreateRequest,
-    ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<SessionConfigState, sylvander_api::BoundaryError> {
         self.create_session_with_metadata(boundary, request, BTreeMap::new())
             .await
     }
 
     async fn session_config(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<SessionConfigState, sylvander_api::BoundaryError> {
         let session = self
             .owned_session(boundary, session_id, "get_session_config")
             .await?;
@@ -1225,9 +1225,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn update_session_config(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         request: SessionConfigUpdateRequest,
-    ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<SessionConfigState, sylvander_api::BoundaryError> {
         let session = self
             .owned_session(boundary, &request.session_id, "update_session_config")
             .await?;
@@ -1275,9 +1275,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn submit_feedback(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         feedback: RunFeedback,
-    ) -> Result<String, sylvander_protocol::BoundaryError> {
+    ) -> Result<String, sylvander_api::BoundaryError> {
         let principal = require_principal(boundary, "submit_feedback")?;
         if !feedback.target.is_well_formed() {
             return Err(boundary_failure(
@@ -1388,41 +1388,39 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn user_profile(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         request: UserProfileRequest,
     ) -> UserProfileResponse {
-        let message = sylvander_protocol::UiClientMessage::UserProfile { request };
+        let message = sylvander_api::UiClientMessage::UserProfile { request };
         if let Err(error) = self
             .boundary
             .check(boundary, &message, "user_profile")
             .await
         {
             let code = match error.code {
-                sylvander_protocol::BoundaryErrorCode::Unauthenticated => {
+                sylvander_api::BoundaryErrorCode::Unauthenticated => {
                     UserProfileErrorCode::Unauthenticated
                 }
-                sylvander_protocol::BoundaryErrorCode::RateLimited => {
-                    UserProfileErrorCode::RateLimited
-                }
-                sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => {
+                sylvander_api::BoundaryErrorCode::RateLimited => UserProfileErrorCode::RateLimited,
+                sylvander_api::BoundaryErrorCode::PayloadTooLarge => {
                     UserProfileErrorCode::InvalidRequest
                 }
                 _ => UserProfileErrorCode::Forbidden,
             };
             let operation = match &message {
-                sylvander_protocol::UiClientMessage::UserProfile { request } => request.operation(),
+                sylvander_api::UiClientMessage::UserProfile { request } => request.operation(),
                 _ => unreachable!(),
             };
             return user_profile_error(operation, code, None);
         }
-        let sylvander_protocol::UiClientMessage::UserProfile { request } = message else {
+        let sylvander_api::UiClientMessage::UserProfile { request } = message else {
             unreachable!()
         };
         let operation = request.operation();
         if let Err(error) = request.validate() {
             let code = if matches!(
                 error,
-                sylvander_protocol::UserProfileValidationError::UnsupportedVersion
+                sylvander_api::UserProfileValidationError::UnsupportedVersion
             ) {
                 UserProfileErrorCode::UnsupportedVersion
             } else {
@@ -1437,7 +1435,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             Ok(owner) => owner,
             Err(error) => {
                 let code = match error.code {
-                    sylvander_protocol::BoundaryErrorCode::Unauthenticated => {
+                    sylvander_api::BoundaryErrorCode::Unauthenticated => {
                         UserProfileErrorCode::Unauthenticated
                     }
                     _ => UserProfileErrorCode::Forbidden,
@@ -1555,24 +1553,24 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn memory_confirmation(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         request: MemoryConfirmationRequest,
     ) -> MemoryConfirmationResponse {
         let operation = request.operation();
-        let message = sylvander_protocol::UiClientMessage::MemoryConfirmation {
+        let message = sylvander_api::UiClientMessage::MemoryConfirmation {
             request: request.clone(),
         };
         if let Err(error) = self.boundary.check(boundary, &message, operation).await {
             let code = match error.code {
-                sylvander_protocol::BoundaryErrorCode::Unauthenticated => {
+                sylvander_api::BoundaryErrorCode::Unauthenticated => {
                     MemoryConfirmationErrorCode::Unauthenticated
                 }
-                sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => {
+                sylvander_api::BoundaryErrorCode::PayloadTooLarge => {
                     MemoryConfirmationErrorCode::InvalidRequest
                 }
-                sylvander_protocol::BoundaryErrorCode::Forbidden
-                | sylvander_protocol::BoundaryErrorCode::InvalidScope
-                | sylvander_protocol::BoundaryErrorCode::RateLimited => {
+                sylvander_api::BoundaryErrorCode::Forbidden
+                | sylvander_api::BoundaryErrorCode::InvalidScope
+                | sylvander_api::BoundaryErrorCode::RateLimited => {
                     MemoryConfirmationErrorCode::Forbidden
                 }
             };
@@ -1603,7 +1601,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             MemoryConfirmationRequest::List { session_id, .. } => {
                 match guardian.pending_confirmations(&session, now).await {
                     Ok(confirmations) => MemoryConfirmationResponse::Pending {
-                        version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                        version: sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
                         session_id,
                         confirmations,
                     },
@@ -1621,7 +1619,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 .await
             {
                 Ok(()) => MemoryConfirmationResponse::Recorded {
-                    version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                    version: sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
                     session_id,
                     candidate_id,
                     decision,
@@ -1633,7 +1631,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn identity_binding(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         identity: AuthenticatedTransportIdentity,
         request: IdentityBindingRequest,
     ) -> IdentityBindingResponse {
@@ -1648,17 +1646,17 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         };
         if let Err(error) = self.boundary.check_identity(boundary, &request).await {
             let code = match error.code {
-                sylvander_protocol::BoundaryErrorCode::Unauthenticated => {
+                sylvander_api::BoundaryErrorCode::Unauthenticated => {
                     IdentityBindingErrorCode::Unauthenticated
                 }
-                sylvander_protocol::BoundaryErrorCode::RateLimited => {
+                sylvander_api::BoundaryErrorCode::RateLimited => {
                     IdentityBindingErrorCode::RateLimited
                 }
-                sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => {
+                sylvander_api::BoundaryErrorCode::PayloadTooLarge => {
                     IdentityBindingErrorCode::InvalidRequest
                 }
-                sylvander_protocol::BoundaryErrorCode::Forbidden
-                | sylvander_protocol::BoundaryErrorCode::InvalidScope => {
+                sylvander_api::BoundaryErrorCode::Forbidden
+                | sylvander_api::BoundaryErrorCode::InvalidScope => {
                     IdentityBindingErrorCode::Forbidden
                 }
             };
@@ -1681,9 +1679,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn submit_chat(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         request: sylvander_channel::ExternalChatRequest,
-    ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_channel::SubmittedChat, sylvander_api::BoundaryError> {
         let sylvander_channel::ExternalChatRequest {
             existing_session,
             mut agent_id,
@@ -1693,7 +1691,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             attachments,
             external_meta,
         } = request;
-        let chat = sylvander_protocol::UiClientMessage::Chat {
+        let chat = sylvander_api::UiClientMessage::Chat {
             text: text.clone(),
             attachments: attachments.clone(),
             session_id: existing_session.as_ref().map(|id| id.0.clone()),
@@ -1707,7 +1705,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 .owned_session(boundary, &session_id, "submit_chat")
                 .await?;
             let [session_agent] = session.agents.as_slice() else {
-                return Err(sylvander_protocol::BoundaryError::forbidden(
+                return Err(sylvander_api::BoundaryError::forbidden(
                     boundary,
                     "submit_chat",
                 ));
@@ -1725,7 +1723,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             };
             self.authorize_message(
                 boundary,
-                &sylvander_protocol::UiClientMessage::CreateSession {
+                &sylvander_api::UiClientMessage::CreateSession {
                     request: create.clone(),
                 },
             )
@@ -1753,15 +1751,15 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 })?;
             let message = BusMessage {
                 session_id: session_id.clone(),
-                sender: sylvander_protocol::Sender::User(
+                sender: sylvander_api::Sender::User(
                     self.effective_user_id(boundary, "submit_chat").await?.0,
                 ),
                 recipient: Recipient::Agent(agent_id),
-                kind: sylvander_protocol::MessageKind::Chat,
+                kind: sylvander_api::MessageKind::Chat,
                 payload: text,
                 attachments,
                 timestamp: crate::session::now_secs(),
-                id: sylvander_protocol::MessageId::new(),
+                id: sylvander_api::MessageId::new(),
             };
             let feedback_target = self.evidence_run_id.as_ref().map(|run_id| {
                 crate::evidence::feedback_target(run_id, &format!("turn:{}", message.id.0))
@@ -1787,9 +1785,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn submit_control(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        message: sylvander_protocol::UiClientMessage,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        boundary: &sylvander_api::BoundaryContext,
+        message: sylvander_api::UiClientMessage,
+    ) -> Result<(), sylvander_api::BoundaryError> {
         let session_id = ui_session_id(&message)
             .map(SessionId::new)
             .ok_or_else(|| boundary_failure(boundary, "submit_control", "session is required"))?;
@@ -1797,9 +1795,10 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         let session = self
             .owned_session(boundary, &session_id, "submit_control")
             .await?;
-        let agent_id = session.agents.first().cloned().ok_or_else(|| {
-            sylvander_protocol::BoundaryError::forbidden(boundary, "submit_control")
-        })?;
+        let agent_id =
+            session.agents.first().cloned().ok_or_else(|| {
+                sylvander_api::BoundaryError::forbidden(boundary, "submit_control")
+            })?;
         let system = match message {
             ClientMessage::Approve {
                 call_id,
@@ -1807,7 +1806,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 scope,
                 reason,
                 ..
-            } => sylvander_protocol::SystemMessage::ApproveTool {
+            } => sylvander_api::SystemMessage::ApproveTool {
                 call_id,
                 approved,
                 scope,
@@ -1815,19 +1814,17 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             },
             ClientMessage::Answer {
                 call_id, answer, ..
-            } => sylvander_protocol::SystemMessage::AnswerQuestion { call_id, answer },
-            ClientMessage::Interrupt { .. } => sylvander_protocol::SystemMessage::InterruptTurn {
+            } => sylvander_api::SystemMessage::AnswerQuestion { call_id, answer },
+            ClientMessage::Interrupt { .. } => sylvander_api::SystemMessage::InterruptTurn {
                 session_id: session_id.clone(),
             },
             ClientMessage::ResolvePlan {
                 plan_id, decision, ..
-            } => sylvander_protocol::SystemMessage::ResolvePlan { plan_id, decision },
-            ClientMessage::CancelTask { task_id, .. } => {
-                sylvander_protocol::SystemMessage::CancelTask {
-                    session_id: session_id.clone(),
-                    task_id,
-                }
-            }
+            } => sylvander_api::SystemMessage::ResolvePlan { plan_id, decision },
+            ClientMessage::CancelTask { task_id, .. } => sylvander_api::SystemMessage::CancelTask {
+                session_id: session_id.clone(),
+                task_id,
+            },
             _ => {
                 return Err(boundary_failure(
                     boundary,
@@ -1839,13 +1836,13 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         self.bus
             .publish(BusMessage {
                 session_id,
-                sender: sylvander_protocol::Sender::System,
+                sender: sylvander_api::Sender::System,
                 recipient: Recipient::Agent(agent_id),
-                kind: sylvander_protocol::MessageKind::System(system),
+                kind: sylvander_api::MessageKind::System(system),
                 payload: String::new(),
                 attachments: Vec::new(),
                 timestamp: crate::session::now_secs(),
-                id: sylvander_protocol::MessageId::new(),
+                id: sylvander_api::MessageId::new(),
             })
             .await
             .map_err(|_| boundary_failure(boundary, "submit_control", "control dispatch failed"))
@@ -1853,9 +1850,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn context_report(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<sylvander_protocol::ContextReport, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_api::ContextReport, sylvander_api::BoundaryError> {
         let (session, agent) = self
             .owned_session_agent(boundary, session_id, "context_report")
             .await?;
@@ -1864,9 +1861,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn compact_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<sylvander_protocol::CompactionReport, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_api::CompactionReport, sylvander_api::BoundaryError> {
         let (_, agent) = self
             .owned_session_agent(boundary, session_id, "compact_session")
             .await?;
@@ -1879,10 +1876,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn preview_workspace_rollback(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<sylvander_protocol::WorkspaceRollbackPreview, sylvander_protocol::BoundaryError>
-    {
+    ) -> Result<sylvander_api::WorkspaceRollbackPreview, sylvander_api::BoundaryError> {
         let (_, agent) = self
             .owned_session_agent(boundary, session_id, "preview_workspace_rollback")
             .await?;
@@ -1891,7 +1887,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             .preview_workspace_rollback(session_id)
             .await
             .map_err(|error| boundary_failure(boundary, "preview_workspace_rollback", error))?;
-        Ok(sylvander_protocol::WorkspaceRollbackPreview {
+        Ok(sylvander_api::WorkspaceRollbackPreview {
             turn_id: preview.turn_id,
             files: preview.files,
         })
@@ -1899,11 +1895,10 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn rollback_workspace(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
         expected_turn_id: &str,
-    ) -> Result<sylvander_protocol::WorkspaceRollbackReport, sylvander_protocol::BoundaryError>
-    {
+    ) -> Result<sylvander_api::WorkspaceRollbackReport, sylvander_api::BoundaryError> {
         let (_, agent) = self
             .owned_session_agent(boundary, session_id, "rollback_workspace")
             .await?;
@@ -1912,7 +1907,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             .rollback_workspace_latest(session_id, expected_turn_id)
             .await
             .map_err(|error| boundary_failure(boundary, "rollback_workspace", error))?;
-        Ok(sylvander_protocol::WorkspaceRollbackReport {
+        Ok(sylvander_api::WorkspaceRollbackReport {
             turn_id: report.turn_id,
             restored: report.restored,
         })
@@ -1920,9 +1915,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn inspect_coding_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<sylvander_protocol::CodingSessionDiff, sylvander_protocol::BoundaryError> {
+    ) -> Result<sylvander_api::CodingSessionDiff, sylvander_api::BoundaryError> {
         let session = self
             .owned_session(boundary, session_id, "inspect_coding_session")
             .await?;
@@ -1939,7 +1934,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             .inspect(&session_id.0, target)
             .await
             .map_err(|error| boundary_failure(boundary, "inspect_coding_session", error))?;
-        Ok(sylvander_protocol::CodingSessionDiff {
+        Ok(sylvander_api::CodingSessionDiff {
             status: diff.status,
             patch: diff.patch,
         })
@@ -1947,9 +1942,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn accept_coding_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         let session = self
             .owned_session(boundary, session_id, "accept_coding_session")
             .await?;
@@ -1970,9 +1965,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn discard_coding_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         let (session, agent) = self
             .owned_session_agent(boundary, session_id, "discard_coding_session")
             .await?;
@@ -2010,9 +2005,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn delete_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         let (session, agent) = self
             .owned_session_agent(boundary, session_id, "delete_session")
             .await?;
@@ -2041,7 +2036,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn agent_admin(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         request: AgentAdminRequest,
     ) -> AgentAdminResponse {
         let (Some(registry), Some(provider)) = (
@@ -2206,7 +2201,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 
     async fn registry_admin(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         request: RegistryAdminRequest,
     ) -> RegistryAdminResponse {
         let Some(registry) = self.agent_registry.as_ref() else {
@@ -2312,10 +2307,10 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 impl RuntimeChannelHost {
     async fn session_history(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session: &StoredSession,
         operation: &str,
-    ) -> Result<UiSessionHistory, sylvander_protocol::BoundaryError> {
+    ) -> Result<UiSessionHistory, sylvander_api::BoundaryError> {
         let context = stored_session_context(session);
         let messages = self
             .sessions
@@ -2339,11 +2334,11 @@ impl RuntimeChannelHost {
 
     async fn persist_fork(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         agent: &ConfiguredAgent,
         fork: &StoredSession,
         messages: &[StoredMessage],
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+    ) -> Result<(), sylvander_api::BoundaryError> {
         self.sessions
             .save(fork)
             .await
@@ -2405,10 +2400,10 @@ impl RuntimeChannelHost {
 
     async fn create_session_with_metadata(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         request: SessionCreateRequest,
         external_meta: BTreeMap<String, String>,
-    ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
+    ) -> Result<SessionConfigState, sylvander_api::BoundaryError> {
         let user_id = self.effective_user_id(boundary, "create_session").await?;
         let label = request.label.trim().to_string();
         if label.is_empty() || label.len() > 200 {
@@ -2423,7 +2418,7 @@ impl RuntimeChannelHost {
             .as_deref()
             .is_some_and(|id| id != boundary.channel_instance_id)
         {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
+            return Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 "create_session",
             ));
@@ -2435,7 +2430,7 @@ impl RuntimeChannelHost {
             .current_agent_access_allowed(&request.agent_id, boundary, "create_session")
             .await?
         {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
+            return Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 "create_session",
             ));
@@ -2616,9 +2611,9 @@ impl RuntimeChannelHost {
     async fn active_agent(
         &self,
         agent_id: &AgentId,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         operation: &str,
-    ) -> Result<ConfiguredAgent, sylvander_protocol::BoundaryError> {
+    ) -> Result<ConfiguredAgent, sylvander_api::BoundaryError> {
         if let Some(provider) = &self.revision_provider {
             return provider
                 .active_agent(agent_id)
@@ -2633,9 +2628,9 @@ impl RuntimeChannelHost {
     async fn current_agent_access_allowed(
         &self,
         agent_id: &AgentId,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         operation: &str,
-    ) -> Result<bool, sylvander_protocol::BoundaryError> {
+    ) -> Result<bool, sylvander_api::BoundaryError> {
         if privileged_principal(boundary) {
             return Ok(true);
         }
@@ -2656,11 +2651,11 @@ impl RuntimeChannelHost {
 
     async fn bind_session_revision(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session: &StoredSession,
         mut agent: ConfiguredAgent,
         operation: &'static str,
-    ) -> Result<ConfiguredAgent, sylvander_protocol::BoundaryError> {
+    ) -> Result<ConfiguredAgent, sylvander_api::BoundaryError> {
         let Some(effective) = &session.effective_config else {
             return Ok(agent);
         };
@@ -2696,36 +2691,36 @@ impl RuntimeChannelHost {
 
     async fn authorize_message_inner(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        message: &sylvander_protocol::UiClientMessage,
-    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        boundary: &sylvander_api::BoundaryContext,
+        message: &sylvander_api::UiClientMessage,
+    ) -> Result<(), sylvander_api::BoundaryError> {
         require_principal(boundary, ui_operation(message))?;
         if matches!(
             message,
-            sylvander_protocol::UiClientMessage::AgentAdmin { .. }
-                | sylvander_protocol::UiClientMessage::RegistryAdmin { .. }
+            sylvander_api::UiClientMessage::AgentAdmin { .. }
+                | sylvander_api::UiClientMessage::RegistryAdmin { .. }
         ) && !is_agent_administrator(boundary.principal.as_ref())
         {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
+            return Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 ui_operation(message),
             ));
         }
-        if let sylvander_protocol::UiClientMessage::CreateSession { request } = message {
+        if let sylvander_api::UiClientMessage::CreateSession { request } = message {
             self.agents.get(&request.agent_id).ok_or_else(|| {
-                sylvander_protocol::BoundaryError::forbidden(boundary, "create_session")
+                sylvander_api::BoundaryError::forbidden(boundary, "create_session")
             })?;
             if !self
                 .current_agent_access_allowed(&request.agent_id, boundary, "create_session")
                 .await?
             {
-                return Err(sylvander_protocol::BoundaryError::forbidden(
+                return Err(sylvander_api::BoundaryError::forbidden(
                     boundary,
                     "create_session",
                 ));
             }
         }
-        if let sylvander_protocol::UiClientMessage::SubmitFeedback { feedback } = message {
+        if let sylvander_api::UiClientMessage::SubmitFeedback { feedback } = message {
             let store = self.evidence.as_ref().ok_or_else(|| {
                 boundary_failure(
                     boundary,
@@ -2749,15 +2744,15 @@ impl RuntimeChannelHost {
         }
         if matches!(
             message,
-            sylvander_protocol::UiClientMessage::SelectModel {
+            sylvander_api::UiClientMessage::SelectModel {
                 session_id: None,
                 ..
-            } | sylvander_protocol::UiClientMessage::SelectPermissions {
+            } | sylvander_api::UiClientMessage::SelectPermissions {
                 session_id: None,
                 ..
             }
         ) {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
+            return Err(sylvander_api::BoundaryError::forbidden(
                 boundary,
                 ui_operation(message),
             ));
@@ -2766,7 +2761,7 @@ impl RuntimeChannelHost {
             let session_id = SessionId::new(session_id);
             if matches!(
                 message,
-                sylvander_protocol::UiClientMessage::RestoreSession { .. }
+                sylvander_api::UiClientMessage::RestoreSession { .. }
             ) {
                 self.owned_session_including_archived(boundary, &session_id, ui_operation(message))
                     .await?;
@@ -2780,9 +2775,9 @@ impl RuntimeChannelHost {
 
     async fn record_denial(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
-        message: &sylvander_protocol::UiClientMessage,
-        error: &sylvander_protocol::BoundaryError,
+        boundary: &sylvander_api::BoundaryContext,
+        message: &sylvander_api::UiClientMessage,
+        error: &sylvander_api::BoundaryError,
     ) -> Result<(), String> {
         self.record_boundary_denial(
             boundary,
@@ -2795,21 +2790,21 @@ impl RuntimeChannelHost {
 
     async fn record_boundary_denial(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         operation: &str,
         resource_id: Option<&str>,
-        error: &sylvander_protocol::BoundaryError,
+        error: &sylvander_api::BoundaryError,
     ) -> Result<(), String> {
         let store = self
             .evidence
             .as_ref()
             .ok_or_else(|| "security audit store is unavailable".to_string())?;
         let code = match error.code {
-            sylvander_protocol::BoundaryErrorCode::Unauthenticated => "unauthenticated",
-            sylvander_protocol::BoundaryErrorCode::Forbidden => "forbidden",
-            sylvander_protocol::BoundaryErrorCode::InvalidScope => "invalid_scope",
-            sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => "payload_too_large",
-            sylvander_protocol::BoundaryErrorCode::RateLimited => "rate_limited",
+            sylvander_api::BoundaryErrorCode::Unauthenticated => "unauthenticated",
+            sylvander_api::BoundaryErrorCode::Forbidden => "forbidden",
+            sylvander_api::BoundaryErrorCode::InvalidScope => "invalid_scope",
+            sylvander_api::BoundaryErrorCode::PayloadTooLarge => "payload_too_large",
+            sylvander_api::BoundaryErrorCode::RateLimited => "rate_limited",
         };
         store
             .record_authorization_denial(AuthorizationDenial {
@@ -2832,35 +2827,29 @@ impl RuntimeChannelHost {
 
     async fn owned_session(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
         operation: &str,
-    ) -> Result<StoredSession, sylvander_protocol::BoundaryError> {
+    ) -> Result<StoredSession, sylvander_api::BoundaryError> {
         let user_id = self.effective_user_id(boundary, operation).await?;
         let session = self
             .sessions
             .get(session_id)
             .await
             .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?
-            .ok_or_else(|| sylvander_protocol::BoundaryError::forbidden(boundary, operation))?;
+            .ok_or_else(|| sylvander_api::BoundaryError::forbidden(boundary, operation))?;
         if session.metadata.user_id != user_id.0 && !privileged_principal(boundary) {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
-                boundary, operation,
-            ));
+            return Err(sylvander_api::BoundaryError::forbidden(boundary, operation));
         }
         if session.agents.is_empty() {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
-                boundary, operation,
-            ));
+            return Err(sylvander_api::BoundaryError::forbidden(boundary, operation));
         }
         for agent_id in &session.agents {
             if !self
                 .current_agent_access_allowed(agent_id, boundary, operation)
                 .await?
             {
-                return Err(sylvander_protocol::BoundaryError::forbidden(
-                    boundary, operation,
-                ));
+                return Err(sylvander_api::BoundaryError::forbidden(boundary, operation));
             }
         }
         if let Some(provider) = &self.revision_provider {
@@ -2877,35 +2866,29 @@ impl RuntimeChannelHost {
 
     async fn owned_session_including_archived(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
         operation: &str,
-    ) -> Result<StoredSession, sylvander_protocol::BoundaryError> {
+    ) -> Result<StoredSession, sylvander_api::BoundaryError> {
         let user_id = self.effective_user_id(boundary, operation).await?;
         let session = self
             .sessions
             .get_including_archived(session_id)
             .await
             .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?
-            .ok_or_else(|| sylvander_protocol::BoundaryError::forbidden(boundary, operation))?;
+            .ok_or_else(|| sylvander_api::BoundaryError::forbidden(boundary, operation))?;
         if session.metadata.user_id != user_id.0 && !privileged_principal(boundary) {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
-                boundary, operation,
-            ));
+            return Err(sylvander_api::BoundaryError::forbidden(boundary, operation));
         }
         if session.agents.is_empty() {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
-                boundary, operation,
-            ));
+            return Err(sylvander_api::BoundaryError::forbidden(boundary, operation));
         }
         for agent_id in &session.agents {
             if !self
                 .current_agent_access_allowed(agent_id, boundary, operation)
                 .await?
             {
-                return Err(sylvander_protocol::BoundaryError::forbidden(
-                    boundary, operation,
-                ));
+                return Err(sylvander_api::BoundaryError::forbidden(boundary, operation));
             }
         }
         Ok(session)
@@ -2913,11 +2896,11 @@ impl RuntimeChannelHost {
 
     async fn effective_user_id(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         operation: &str,
-    ) -> Result<UserId, sylvander_protocol::BoundaryError> {
+    ) -> Result<UserId, sylvander_api::BoundaryError> {
         let principal = require_principal(boundary, operation)?;
-        if principal.kind == sylvander_protocol::PrincipalKind::User
+        if principal.kind == sylvander_api::PrincipalKind::User
             && let Some(service) = &self.identity_bindings
         {
             return service
@@ -2943,10 +2926,10 @@ impl RuntimeChannelHost {
 
     async fn owned_session_agent(
         &self,
-        boundary: &sylvander_protocol::BoundaryContext,
+        boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
         operation: &str,
-    ) -> Result<(StoredSession, ConfiguredAgent), sylvander_protocol::BoundaryError> {
+    ) -> Result<(StoredSession, ConfiguredAgent), sylvander_api::BoundaryError> {
         let session = self.owned_session(boundary, session_id, operation).await?;
         let agent_id = session
             .agents
@@ -2956,9 +2939,7 @@ impl RuntimeChannelHost {
             (&self.revision_provider, &session.effective_config)
         {
             if &effective.agent_id != agent_id {
-                return Err(sylvander_protocol::BoundaryError::forbidden(
-                    boundary, operation,
-                ));
+                return Err(sylvander_api::BoundaryError::forbidden(boundary, operation));
             }
             provider
                 .configured_revision(agent_id, effective.agent_revision)
@@ -3085,15 +3066,15 @@ fn sha256_text(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
-fn privileged_principal(boundary: &sylvander_protocol::BoundaryContext) -> bool {
+fn privileged_principal(boundary: &sylvander_api::BoundaryContext) -> bool {
     boundary.principal.as_ref().is_some_and(|principal| {
-        principal.kind == sylvander_protocol::PrincipalKind::System || principal.has_role("admin")
+        principal.kind == sylvander_api::PrincipalKind::System || principal.has_role("admin")
     })
 }
 
 fn agent_access_allowed(
     access: &crate::config::AgentAccessConfig,
-    boundary: &sylvander_protocol::BoundaryContext,
+    boundary: &sylvander_api::BoundaryContext,
 ) -> bool {
     let Some(principal) = &boundary.principal else {
         return false;
@@ -3111,16 +3092,16 @@ fn agent_access_allowed(
 }
 
 fn require_principal<'a>(
-    boundary: &'a sylvander_protocol::BoundaryContext,
+    boundary: &'a sylvander_api::BoundaryContext,
     operation: &str,
-) -> Result<&'a sylvander_protocol::AuthenticatedPrincipal, sylvander_protocol::BoundaryError> {
+) -> Result<&'a sylvander_api::AuthenticatedPrincipal, sylvander_api::BoundaryError> {
     boundary
         .principal
         .as_ref()
-        .ok_or_else(|| sylvander_protocol::BoundaryError::unauthenticated(boundary, operation))
+        .ok_or_else(|| sylvander_api::BoundaryError::unauthenticated(boundary, operation))
 }
 
-fn valid_evidence_references(references: &[sylvander_protocol::EvidenceReference]) -> bool {
+fn valid_evidence_references(references: &[sylvander_api::EvidenceReference]) -> bool {
     references.len() <= 16
         && references.iter().all(|reference| {
             !reference.locator.trim().is_empty()
@@ -3132,12 +3113,12 @@ fn valid_evidence_references(references: &[sylvander_protocol::EvidenceReference
 }
 
 fn boundary_failure(
-    boundary: &sylvander_protocol::BoundaryContext,
+    boundary: &sylvander_api::BoundaryContext,
     operation: &str,
     message: impl Into<String>,
-) -> sylvander_protocol::BoundaryError {
-    sylvander_protocol::BoundaryError {
-        code: sylvander_protocol::BoundaryErrorCode::InvalidScope,
+) -> sylvander_api::BoundaryError {
+    sylvander_api::BoundaryError {
+        code: sylvander_api::BoundaryErrorCode::InvalidScope,
         operation: operation.into(),
         request_id: boundary.request_id.clone(),
         message: message.into(),
@@ -3185,7 +3166,7 @@ fn memory_confirmation_error(
         }
     };
     MemoryConfirmationResponse::Error {
-        version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+        version: sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
         operation: operation.into(),
         code,
         message: message.into(),
@@ -3229,7 +3210,7 @@ fn user_profile_error(
 
 fn user_profile_audit(
     id: String,
-    boundary: &sylvander_protocol::BoundaryContext,
+    boundary: &sylvander_api::BoundaryContext,
     owner: &UserId,
     operation: UserProfileOperation,
     outcome: &'static str,
@@ -3291,9 +3272,9 @@ const fn user_profile_error_name(code: UserProfileErrorCode) -> &'static str {
 }
 
 fn validate_external_metadata(
-    boundary: &sylvander_protocol::BoundaryContext,
+    boundary: &sylvander_api::BoundaryContext,
     metadata: &BTreeMap<String, String>,
-) -> Result<(), sylvander_protocol::BoundaryError> {
+) -> Result<(), sylvander_api::BoundaryError> {
     if metadata.len() > 32
         || metadata.iter().any(|(key, value)| {
             key.is_empty()
@@ -3389,8 +3370,8 @@ type RegistryAdministrationTarget = (&'static str, &'static str, String, Option<
 
 fn registry_administration_audit(
     id: String,
-    boundary: &sylvander_protocol::BoundaryContext,
-    principal: &sylvander_protocol::AuthenticatedPrincipal,
+    boundary: &sylvander_api::BoundaryContext,
+    principal: &sylvander_api::AuthenticatedPrincipal,
     target: &RegistryAdministrationTarget,
     outcome: &'static str,
     error_code: Option<String>,
@@ -3642,7 +3623,7 @@ const fn registry_admin_error_code(code: RegistryAdminErrorCode) -> &'static str
     }
 }
 
-fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
+fn ui_operation(message: &sylvander_api::UiClientMessage) -> &'static str {
     match message {
         ClientMessage::Hello { .. } => "hello",
         ClientMessage::Chat { .. } => "chat",
@@ -3683,8 +3664,8 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
     }
 }
 
-fn stored_session_context(session: &StoredSession) -> sylvander_protocol::SessionContext {
-    sylvander_protocol::SessionContext::new(
+fn stored_session_context(session: &StoredSession) -> sylvander_api::SessionContext {
+    sylvander_api::SessionContext::new(
         session.metadata.user_id.clone(),
         session
             .agents
@@ -3741,7 +3722,7 @@ fn ui_history_message(message: &StoredMessage) -> Option<UiHistoryMessage> {
     })
 }
 
-fn ui_session_id(message: &sylvander_protocol::UiClientMessage) -> Option<&str> {
+fn ui_session_id(message: &sylvander_api::UiClientMessage) -> Option<&str> {
     match message {
         ClientMessage::Chat { session_id, .. }
         | ClientMessage::GetContext { session_id }
@@ -5163,13 +5144,13 @@ async fn open_identity_binding_service(
 }
 
 fn identity_boundary_error(
-    operation: sylvander_protocol::IdentityBindingOperation,
+    operation: sylvander_api::IdentityBindingOperation,
     code: IdentityBindingErrorCode,
     message: &str,
     retry_after_ms: Option<u64>,
 ) -> IdentityBindingResponse {
     IdentityBindingResponse::Error {
-        version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+        version: sylvander_api::IDENTITY_BINDING_PROTOCOL_VERSION,
         error: IdentityBindingError {
             code,
             operation,

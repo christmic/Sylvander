@@ -1,6 +1,6 @@
 //! Pure, deterministic projection from bootstrap configuration to registry seeds.
 
-use sylvander_protocol::ModelLifecycle;
+use sylvander_api::ModelLifecycle;
 
 use crate::agent_registry::AgentRegistry;
 use crate::config::{ConfigError, ServerConfig};

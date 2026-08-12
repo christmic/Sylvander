@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use sylvander_protocol::ModelSelection;
+use sylvander_api::ModelSelection;
 use tempfile::tempdir;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};

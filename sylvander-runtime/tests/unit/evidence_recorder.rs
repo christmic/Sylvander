@@ -1,8 +1,8 @@
 use super::*;
 use crate::agent_definition::{AgentId, SessionId};
 use crate::evidence::{EvidenceEncryption, EvidenceGovernance, EvidenceScope, TurnQuery};
+use sylvander_api::MessageId;
 use sylvander_channel::InProcessMessageBus;
-use sylvander_protocol::MessageId;
 
 fn stream_message(event: StreamEvent) -> BusMessage {
     BusMessage {

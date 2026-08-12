@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 use crate::app::ToolInfo;
 use crate::event::DomainEvent;
 
-pub use sylvander_protocol::UiClientMessage as ClientMsg;
-pub use sylvander_protocol::{
+pub use sylvander_api::UiClientMessage as ClientMsg;
+pub use sylvander_api::{
     UiHistoryMessage as HistoryMessageMsg, UiServerMessage as ServerMsg,
     UiSessionInfo as SessionInfoMsg, UiToolInfo as ToolInfoMsg,
 };
@@ -82,14 +82,14 @@ impl UnixClient {
     }
 
     /// Establish a Unix socket connection and negotiate the UI protocol.
-    pub async fn connect(&mut self) -> std::io::Result<sylvander_protocol::UiProtocolWelcome> {
+    pub async fn connect(&mut self) -> std::io::Result<sylvander_api::UiProtocolWelcome> {
         let stream = tokio::net::UnixStream::connect(&self.path).await?;
         let (read, mut write) = stream.into_split();
         let hello = ClientMsg::Hello {
-            protocol: sylvander_protocol::UiProtocolHello {
+            protocol: sylvander_api::UiProtocolHello {
                 client_name: "sylvander-tui".into(),
-                min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
-                max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+                min_version: sylvander_api::UI_PROTOCOL_MIN_VERSION,
+                max_version: sylvander_api::UI_PROTOCOL_MAX_VERSION,
                 capabilities: tui_protocol_capabilities(),
             },
         };
@@ -135,8 +135,7 @@ impl UnixClient {
                 ));
             }
         };
-        if !(sylvander_protocol::UI_PROTOCOL_MIN_VERSION
-            ..=sylvander_protocol::UI_PROTOCOL_MAX_VERSION)
+        if !(sylvander_api::UI_PROTOCOL_MIN_VERSION..=sylvander_api::UI_PROTOCOL_MAX_VERSION)
             .contains(&welcome.version)
         {
             return Err(std::io::Error::new(
@@ -263,14 +262,14 @@ fn tui_protocol_capabilities() -> Vec<String> {
         "approval_scopes",
         "compaction",
         "diagnostics",
-        sylvander_protocol::FEEDBACK_CAPABILITY,
-        sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY,
+        sylvander_api::FEEDBACK_CAPABILITY,
+        sylvander_api::MEMORY_CONFIRMATION_CAPABILITY,
         "model_selection",
         "plans",
         "session_replay",
         "sessions",
         "tasks",
-        sylvander_protocol::USER_PROFILE_CAPABILITY,
+        sylvander_api::USER_PROFILE_CAPABILITY,
         "workspace_rollback",
     ]
     .into_iter()
@@ -319,13 +318,13 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::SessionConfig { state } => DomainEvent::SessionConfigLoaded { state },
         ServerMsg::MemoryConfirmation { response } => {
             let version = match &response {
-                sylvander_protocol::MemoryConfirmationResponse::Pending { version, .. }
-                | sylvander_protocol::MemoryConfirmationResponse::Recorded { version, .. }
-                | sylvander_protocol::MemoryConfirmationResponse::Error { version, .. } => *version,
+                sylvander_api::MemoryConfirmationResponse::Pending { version, .. }
+                | sylvander_api::MemoryConfirmationResponse::Recorded { version, .. }
+                | sylvander_api::MemoryConfirmationResponse::Error { version, .. } => *version,
             };
-            if version == sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION {
+            if version == sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION {
                 match response {
-                    sylvander_protocol::MemoryConfirmationResponse::Pending {
+                    sylvander_api::MemoryConfirmationResponse::Pending {
                         session_id,
                         confirmations,
                         ..
@@ -333,7 +332,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
                         session_id,
                         confirmations,
                     },
-                    sylvander_protocol::MemoryConfirmationResponse::Recorded {
+                    sylvander_api::MemoryConfirmationResponse::Recorded {
                         candidate_id,
                         decision,
                         ..
@@ -341,7 +340,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
                         candidate_id,
                         decision,
                     },
-                    sylvander_protocol::MemoryConfirmationResponse::Error { message, .. } => {
+                    sylvander_api::MemoryConfirmationResponse::Error { message, .. } => {
                         DomainEvent::MemoryConfirmationFailed { message }
                     }
                 }
@@ -349,7 +348,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
                 DomainEvent::ProtocolDiagnostic {
                     message: format!(
                         "memory confirmation protocol v{version} rejected; expected v{}",
-                        sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION
+                        sylvander_api::MEMORY_CONFIRMATION_PROTOCOL_VERSION
                     ),
                 }
             }

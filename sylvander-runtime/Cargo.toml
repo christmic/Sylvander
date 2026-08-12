@@ -13,7 +13,7 @@ sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-llm-core = { path = "../sylvander-llm-core" }
 sylvander-llm-dashscope = { path = "../sylvander-llm-dashscope" }
 sylvander-llm-openai = { path = "../sylvander-llm-openai" }
-sylvander-protocol = { path = "../sylvander-protocol" }
+sylvander-api = { path = "../sylvander-api" }
 tokio = { workspace = true, features = ["fs", "io-util", "process"] }
 futures-util = { workspace = true }
 async-trait = "0.1"

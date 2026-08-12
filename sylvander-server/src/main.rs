@@ -5,13 +5,13 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sylvander_channel::Channel;
-use sylvander_channel::credential::CredentialLeaseSource;
-use sylvander_protocol::AgentId;
-use sylvander_protocol::{
+use sylvander_api::AgentId;
+use sylvander_api::{
     ApprovalPolicy, FileAccess, ModelCapability, ModelDescriptor, ModelLifecycle, NetworkAccess,
     PermissionProfile, ReasoningEffort, SessionConfigOverrides, SessionWorkspaceBinding,
 };
+use sylvander_channel::Channel;
+use sylvander_channel::credential::CredentialLeaseSource;
 use sylvander_runtime::config::{
     ChannelTransportConfig, SecretRef, ServerConfig, SystemSecretResolver,
 };

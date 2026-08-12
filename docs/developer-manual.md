@@ -195,7 +195,7 @@ Security claim coverage:
 4. Resolves `cargo-audit` (system or `~/.cargo/bin`) and runs
    `cargo audit --no-yanked` with the cargo proxy cleared.
 5. Runs ten cross-cutting security tests covering malformed protocol
-   input (`sylvander-protocol`), path/command-argument injection and
+   input (`sylvander-api`), path/command-argument injection and
    cross-owner isolation (`sylvander-agent`), profile and restart
    isolation (`sylvander-runtime`), socket credentials and live-event
    isolation (`sylvander-channel-unix`), and secret redaction
@@ -474,7 +474,7 @@ the latest contract in the same bounded change.
 - Git history and small reversible commits are the rollback path before the
   first release.
 
-## 17. Schema evolution (`sylvander-protocol` codegen)
+## 17. Schema evolution (`sylvander-api` codegen)
 
 The protocol crate is the cross-language wire-type root. It is hand
 maintained, not `protoc`-generated. Under the latest-only policy:

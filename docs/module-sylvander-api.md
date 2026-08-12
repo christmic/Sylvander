@@ -1,11 +1,11 @@
-# Module Reference — `sylvander-protocol`
+# Module Reference — `sylvander-api`
 
-> 当前公共服务线协议与 JSON Schema crate；最终名称为 `sylvander-api`。
-> Source: [`sylvander-protocol/src/`](../sylvander-protocol/src)
+> 公共服务线协议与 JSON Schema crate。
+> Source: [`sylvander-api/src/`](../sylvander-api/src)
 
 ## 1. 是什么
 
-`sylvander-protocol` 只拥有客户端、Channel 与 Runtime 跨服务边界交换的版本化
+`sylvander-api` 只拥有客户端、Channel 与 Runtime 跨服务边界交换的版本化
 DTO、协议协商、纯校验和 JSON Schema。公开数据使用 `serde` 和
 `schemars::JsonSchema`；它们是 TUI、桌面和其他语言客户端代码生成的依据。
 
@@ -83,8 +83,8 @@ Channel MessageBus   AgentTurnRequest
 ## 6. Schema 与测试
 
 ```bash
-cargo run -p sylvander-protocol --example generate_ui_schema
-cargo test -p sylvander-protocol
+cargo run -p sylvander-api --example generate_ui_schema
+cargo test -p sylvander-api
 ```
 
 测试文件与领域一一对应：`identity.rs`、`model.rs`、`platform.rs`、`session.rs`、
