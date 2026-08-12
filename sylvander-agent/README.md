@@ -28,12 +28,14 @@ Agent 不是产品 Session、服务协议或基础设施组合根：
 
 Agent 只保留 workspace executor、变更日志和压缩产物的中立端口。host-local、SSH、
 OCI、MCP stdio、SQLite、变更 manifest、崩溃恢复及文件系统产物适配器均由 Runtime
-实现和选择。剩余边界迁移以
+实现和选择。后续结构演进以
 [`docs/agent-runtime-api-boundaries.md`](../docs/agent-runtime-api-boundaries.md) 为准。
 
-Agent 不再再导出服务消息总线类型；Runtime 与 Channel 必须从 API/Protocol 边界消费
-当前契约。逻辑 workspace mount 使用 Agent 自己的 `WorkspaceCapabilities`，Runtime
-必须从已认证的会话配置显式映射，不能把可反序列化的 API 权限对象直接注入工具。
+Agent 不导出服务消息总线类型。Rust 应用总线契约由 `sylvander-channel` 持有，消息
+负载才属于 API/Protocol；Runtime 负责组合两者。逻辑 workspace mount 使用 Agent
+自己的 `WorkspaceCapabilities`，Runtime 必须从已认证的会话配置显式映射，不能把
+可反序列化的 API 权限对象直接注入工具。Agent 的正常依赖图中，唯一第一方依赖是
+`sylvander-llm-core`。
 
 ## 最小执行
 

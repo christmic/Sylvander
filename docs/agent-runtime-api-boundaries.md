@@ -219,7 +219,7 @@ Migration is performed without compatibility aliases:
    stable retry, iteration, and compression policy.
 3. **Complete:** move `AgentRun`, `AgentRunEngine`, Session persistence, and
    public event mapping into Runtime.
-4. **In progress:** remove Agent's Protocol dependency and move concrete
+4. **Complete:** remove Agent's Protocol dependency and move concrete
    infrastructure below Runtime-owned ports. MCP stdio is Runtime-owned;
    durable SQLite relationship memory, integrity anchors, backup, and
    maintenance are Runtime-owned. The host-local, SSH, and OCI workspace
@@ -227,14 +227,16 @@ Migration is performed without compatibility aliases:
    until Runtime binds one. Workspace mutation journaling is now an Agent
    two-phase port with Runtime-owned manifests, crash recovery, and rollback;
    oversized tool-result persistence is likewise an Agent port with a
-   Runtime-owned, explicitly rooted filesystem adapter. The remaining work in
-   this step is the Agent's prompt-manifest, identity/memory, User Profile, and
-   Agent-definition Protocol coupling. The Agent bus re-export is deleted, and
-   workspace routing now consumes an Agent-owned capability value mapped by
-   Runtime.
-5. Move `MessageBus` and `InProcessMessageBus` out of Protocol; split the large
-   wire `types` module by API domain. Runtime and Channels already consume the
-   current bus contract directly instead of reaching it through Agent.
+   Runtime-owned, explicitly rooted filesystem adapter. Prompt evidence,
+   execution identity, User Profile snapshots, workspace capabilities, and
+   Agent-definition values now have Agent- or Runtime-owned domain types with
+   explicit Runtime projections at the API edge. Agent's normal dependency
+   graph contains only `sylvander-llm-core` among first-party crates.
+5. **In progress:** split the large wire `types` module by API domain.
+   `MessageBus`, subscription policy, delivery errors, diagnostics, and the
+   bounded `InProcessMessageBus` have moved to `sylvander-channel`; Protocol no
+   longer depends on Tokio or async-trait. Runtime and Channel implementations
+   consume the application port while message payloads remain Protocol DTOs.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with
    `ChannelHost`.
 7. Rename the pure wire crate to `sylvander-api` and add dependency-graph

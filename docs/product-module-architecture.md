@@ -76,6 +76,11 @@ configuration revisions, turn admission, persistence, resume, archive,
 interrupt, and subscription. It converts API `TurnRequest` values into
 `AgentTurnRequest` values and commits `AgentOutcome` atomically.
 
+The Rust-only `MessageBus` port and bounded in-process adapter live beside the
+Channel host contract in `sylvander-channel`. They carry Protocol DTOs but are
+not themselves wire protocol. Runtime owns their composition and lifecycle;
+Channels receive only the host and subscription capabilities they need.
+
 ### Agent supervisor
 
 The supervisor owns per-Session serialization, cancellation, bounded
@@ -207,8 +212,9 @@ a successfully observed operation.
 
 ## Service and presentation layers
 
-The eventual `sylvander-api` is a pure versioned wire/schema crate. It has no
-Tokio bus or in-process implementation.
+The eventual `sylvander-api`, currently named `sylvander-protocol`, is a pure
+versioned wire/schema crate. Its Tokio bus and in-process implementation have
+been removed.
 
 `sylvander-server` owns listeners, authentication middleware, request limits,
 shutdown, and Runtime construction. Channels translate native transports and
