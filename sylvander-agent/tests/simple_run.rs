@@ -336,7 +336,7 @@ async fn single_iteration_end_turn_returns_final_message() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(header("authorization", "Bearer test-key"))
+        .and(header("x-api-key", "test-key"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
             "type": "message",
@@ -463,8 +463,8 @@ async fn tool_use_triggers_tool_execution_and_continues() {
     assert_eq!(run.iterations, 2);
     assert_eq!(run.total_usage.input_tokens, 30);
     assert_eq!(run.total_usage.output_tokens, 13);
-    assert_eq!(run.total_usage.cache_creation_input_tokens, Some(7));
-    assert_eq!(run.total_usage.cache_read_input_tokens, Some(11));
+    assert_eq!(run.total_usage.cache_write_tokens, Some(7));
+    assert_eq!(run.total_usage.cache_read_tokens, Some(11));
     assert_eq!(run.final_message.usage, run.total_usage);
 
     let iteration_usage = events
@@ -485,8 +485,8 @@ async fn tool_use_triggers_tool_execution_and_continues() {
     assert_eq!(iteration_usage[1].0, run.total_usage);
     assert_eq!(iteration_usage[1].1.input_tokens, 20);
     assert_eq!(iteration_usage[1].1.output_tokens, 8);
-    assert_eq!(iteration_usage[1].1.cache_creation_input_tokens, None);
-    assert_eq!(iteration_usage[1].1.cache_read_input_tokens, Some(11));
+    assert_eq!(iteration_usage[1].1.cache_write_tokens, None);
+    assert_eq!(iteration_usage[1].1.cache_read_tokens, Some(11));
 
     // Verify tool was called and recorded
     let tool_called = {

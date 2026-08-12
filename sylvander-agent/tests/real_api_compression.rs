@@ -51,7 +51,7 @@ use sylvander_agent::compress::layers::{
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
-use sylvander_llm_anthropic::api::types::MessageParam;
+use sylvander_llm_core::OpaqueProviderState;
 
 fn optional_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
@@ -207,26 +207,17 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
 
     let big_body = "Z".repeat(10_000);
 
-    use sylvander_llm_anthropic::api::types::{
-        MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
-    };
     let initial = vec![
-        MessageParam {
-            role: MessageRole::Assistant,
-            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
-                "type": "tool_use",
-                "id": "toolu_big",
-                "name": "Read",
-                "input": {"file_path": "x"}
-            }))]),
-        },
-        MessageParam {
-            role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
-                "toolu_big",
-                &big_body,
-            ))]),
-        },
+        ChatMessage::assistant(vec![ContentBlock::ToolCall {
+            id: "toolu_big".into(),
+            name: "Read".into(),
+            arguments: json!({"file_path": "x"}),
+        }]),
+        ChatMessage::user_blocks(vec![ContentBlock::tool_result_text(
+            "toolu_big",
+            &big_body,
+            false,
+        )]),
         MessageParam::user("now summarize"),
     ];
 
@@ -285,29 +276,18 @@ async fn real_api_l2_condenses_old_tool_results() {
         return;
     };
 
-    use sylvander_llm_anthropic::api::types::{
-        MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
-    };
     let long_body = "Q".repeat(500);
 
     let mut initial: Vec<MessageParam> = Vec::new();
     for i in 0..5 {
-        initial.push(MessageParam {
-            role: MessageRole::Assistant,
-            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
-                "type": "tool_use",
-                "id": format!("toolu_{i}"),
-                "name": "Read",
-                "input": {"file_path": format!("f{i}.md")}
-            }))]),
-        });
-        initial.push(MessageParam {
-            role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
-                format!("toolu_{i}"),
-                &long_body,
-            ))]),
-        });
+        initial.push(ChatMessage::assistant(vec![ContentBlock::ToolCall {
+            id: format!("toolu_{i}"),
+            name: "Read".into(),
+            arguments: json!({"file_path": format!("f{i}.md")}),
+        }]));
+        initial.push(ChatMessage::user_blocks(vec![
+            ContentBlock::tool_result_text(format!("toolu_{i}"), &long_body, false),
+        ]));
     }
     initial.push(MessageParam::user("summarize everything"));
 
@@ -359,18 +339,14 @@ async fn real_api_l3_trims_old_thinking_block() {
         return;
     };
 
-    use sylvander_llm_anthropic::api::types::{
-        MessageParam, MessageRole, UserContent, UserContentBlock,
-    };
     let initial = vec![
-        MessageParam {
-            role: MessageRole::Assistant,
-            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
-                "type": "thinking",
-                "thinking": "Y".repeat(2000),
-                "signature": "sig_prepopulated"
-            }))]),
-        },
+        ChatMessage::assistant(vec![ContentBlock::Reasoning {
+            text: "Y".repeat(2000),
+            opaque_state: Some(OpaqueProviderState {
+                provider: "anthropic".into(),
+                data: json!({"signature": "sig_prepopulated"}),
+            }),
+        }]),
         MessageParam::user("now act on that reasoning"),
     ];
 

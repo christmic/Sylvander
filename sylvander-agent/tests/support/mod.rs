@@ -16,11 +16,11 @@ use sylvander_llm_anthropic::{
     api::{
         client::AnthropicClient,
         model::{ModelCapabilities as AnthropicModelCapabilities, ModelInfo as AnthropicModelInfo},
-        types::InputSchema,
     },
 };
 use sylvander_llm_core::{
-    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+    InputSchema, ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo,
+    ModelRef,
 };
 
 /// Build an Agent loop through the sole current provider-qualified API.

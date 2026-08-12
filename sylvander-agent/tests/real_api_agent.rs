@@ -83,7 +83,7 @@ async fn real_api_agent_loop_completes() {
         vec![MessageParam::user(&prompt)],
     ));
     let mut final_text = String::new();
-    let mut final_message: Option<Message> = None;
+    let mut final_message: Option<ModelResponse> = None;
 
     while let Some(event) = events.next().await {
         match event {
@@ -150,7 +150,7 @@ async fn real_api_agent_loop_completes() {
     eprintln!("{}", msg.text());
     eprintln!();
     eprintln!("=== Loop done ===");
-    eprintln!("Model: {}", msg.model);
+    eprintln!("Model: {}/{}", msg.model.provider, msg.model.model);
     eprintln!("Stop reason: {:?}", msg.stop_reason);
     eprintln!();
 

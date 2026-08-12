@@ -410,19 +410,13 @@ async fn real_use_case_l1_drops_orphan_tool_results() {
 
     // Construct initial messages with an orphan tool_result
     // (tool_use_id="orphan" never has a matching tool_use).
-    use serde_json::json;
-    use sylvander_llm_anthropic::api::types::{
-        MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
-    };
     let initial = vec![
-        MessageParam {
-            role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
-                "orphan",
-                "stale result from a previous turn",
-            ))]),
-        },
-        MessageParam::user("continue from where we left off"),
+        ChatMessage::user_blocks(vec![ContentBlock::tool_result_text(
+            "orphan",
+            "stale result from a previous turn",
+            false,
+        )]),
+        ChatMessage::user("continue from where we left off"),
     ];
 
     let _run = run_with_events(&loop_, initial, move |event| {
@@ -506,12 +500,8 @@ async fn real_use_case_l2_condenses_old_tool_results() {
         .await;
 
     // 5 user messages with long tool_results pre-loaded.
-    use serde_json::json;
-    use sylvander_llm_anthropic::api::types::{
-        MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
-    };
     let long_body = "Z".repeat(500);
-    let mut initial: Vec<MessageParam> = Vec::new();
+    let mut initial: Vec<ChatMessage> = Vec::new();
     // 5 stale user turns (each with an orphaned tool_result since
     // L1 will see them but no tool_use exists — actually L1 will
     // drop them, so the conversation only has 1 user message
@@ -526,26 +516,18 @@ async fn real_use_case_l2_condenses_old_tool_results() {
     // leaves them alone, then L2 condenses older ones.
     for i in 0..5 {
         // Add assistant message with tool_use
-        initial.push(MessageParam {
-            role: MessageRole::Assistant,
-            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
-                "type": "tool_use",
-                "id": format!("toolu_{i}"),
-                "name": "Read",
-                "input": {"file_path": format!("file{i}.md")}
-            }))]),
-        });
+        initial.push(ChatMessage::assistant(vec![ContentBlock::ToolCall {
+            id: format!("toolu_{i}"),
+            name: "Read".into(),
+            arguments: json!({"file_path": format!("file{i}.md")}),
+        }]));
         // Add user message with tool_result
-        initial.push(MessageParam {
-            role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
-                format!("toolu_{i}"),
-                &long_body,
-            ))]),
-        });
+        initial.push(ChatMessage::user_blocks(vec![
+            ContentBlock::tool_result_text(format!("toolu_{i}"), &long_body, false),
+        ]));
     }
     // Plus the user's current request (will trigger iter 1).
-    initial.push(MessageParam::user("now summarize"));
+    initial.push(ChatMessage::user("now summarize"));
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();

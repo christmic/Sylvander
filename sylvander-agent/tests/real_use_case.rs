@@ -190,14 +190,14 @@ async fn real_use_case_read_and_summarize() {
         run.final_message
             .content
             .iter()
-            .any(|b| matches!(b, sylvander_llm_anthropic::api::types::ContentBlock::Text(t) if t.text.contains("M1"))),
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("M1"))),
         "final message should mention M1"
     );
     assert!(
         run.final_message
             .content
             .iter()
-            .any(|b| matches!(b, sylvander_llm_anthropic::api::types::ContentBlock::Text(t) if t.text.contains("M3"))),
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("M3"))),
         "final message should mention M3"
     );
     assert_eq!(run.total_usage.input_tokens, 105);
@@ -343,7 +343,7 @@ async fn real_use_case_tool_error_recovery() {
         run.final_message
             .content
             .iter()
-            .any(|b| matches!(b, sylvander_llm_anthropic::api::types::ContentBlock::Text(t) if t.text.contains("does not exist"))),
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("does not exist"))),
         "final message should mention the missing file"
     );
 

@@ -41,7 +41,7 @@ fn qualified_run_builder(spec: AgentSpec, client: AnthropicClient) -> AgentRunBu
     let provider_id = spec.model.provider.clone();
     let model = spec.to_model_info().expect("valid test model");
     let exact = ProviderModelInfo {
-        reference: ModelRef::new(&provider_id, model.id),
+        reference: ModelRef::new(&provider_id, model.reference.model),
         context_window: model.context_window,
         max_output_tokens: model.max_output_tokens,
         capabilities: ProviderModelCapabilities::TOOL_USE,
