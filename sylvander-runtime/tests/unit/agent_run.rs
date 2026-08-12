@@ -1672,7 +1672,7 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
     let call = ToolRegistry::new()
         .register(tool.clone())
         .prepare(
-            "write",
+            "Write",
             serde_json::json!({"file_path":"file.txt","content":"after"}),
         )
         .unwrap();
