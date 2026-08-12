@@ -3,9 +3,7 @@
 mod support;
 
 use serde_json::json;
-use sylvander_agent::prelude::{
-    AgentExecutionContext, AgentLoopError, MessageParam, ToolContext, run,
-};
+use sylvander_agent::prelude::{AgentExecutionContext, AgentLoopError, MessageParam, ToolContext};
 use sylvander_agent::tool::{ToolHookConfig, ToolRegistry};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -55,7 +53,8 @@ async fn blocking_before_turn_hook_prevents_the_model_request() {
         .build()
         .expect("loop build");
 
-    let error = run(&loop_, vec![MessageParam::user("hello")])
+    let error = loop_
+        .run(vec![MessageParam::user("hello")])
         .await
         .expect_err("blocking hook must fail the turn");
 
@@ -119,7 +118,8 @@ async fn successful_turn_runs_before_and_after_hooks_once() {
         .build()
         .expect("loop build");
 
-    let result = run(&loop_, vec![MessageParam::user("hello")])
+    let result = loop_
+        .run(vec![MessageParam::user("hello")])
         .await
         .expect("turn succeeds");
 

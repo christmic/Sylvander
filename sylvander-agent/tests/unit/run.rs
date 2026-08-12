@@ -59,6 +59,38 @@ impl AgentRun {
     }
 }
 
+fn direct_turn(
+    run: &AgentRun,
+    model: ProviderModelInfo,
+    messages: Vec<ChatMessage>,
+) -> (
+    crate::request::AgentTurnRequest,
+    crate::execution_ports::AgentExecutionPorts,
+) {
+    let execution = AgentExecutionContext::restricted_for(
+        "test-user",
+        "router-agent",
+        "direct-model-selection-test",
+    );
+    let request = crate::request::AgentTurnRequest {
+        conversation: crate::conversation::ConversationSnapshot::new(messages),
+        model,
+        system_instructions: Vec::new(),
+        reasoning: None,
+        tools: run.inner.tools.clone(),
+        execution: execution.clone(),
+    };
+    let gateway = run.inner.invocation_gateway.clone();
+    let snapshot = crate::tool_invocation::ToolInvocationGateway::snapshot(gateway.as_ref());
+    let ports = crate::execution_ports::AgentExecutionPorts::new(
+        run.inner.model_provider.clone(),
+        ToolContext::new(execution),
+        gateway,
+        snapshot,
+    );
+    (request, ports)
+}
+
 #[test]
 fn approval_rejection_reason_is_trimmed_bounded_and_optional() {
     assert_eq!(normalize_rejection_reason(None), "rejected by user");
@@ -1071,19 +1103,11 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         let runtime = run.inner.runtime_models.read().await;
         runtime.available.get(&runtime.current).unwrap().clone()
     };
-    let mut snapshot = run
-        .inner
-        .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
-        .unwrap();
-    // This test dispatches the loop snapshot directly instead of entering an
-    // AgentRun turn, so it must supply the explicit context a real turn would.
-    snapshot.tool_context = ToolContext::new(AgentExecutionContext::restricted_for(
-        "test-user",
-        "router-agent",
-        "model-selection-test",
-    ));
-
-    crate::loop_::run(&snapshot, vec![ChatMessage::user("hello")])
+    let selected =
+        AgentRunInner::validate_turn_model(&selected, sylvander_protocol::ReasoningEffort::Off)
+            .unwrap();
+    let (request, ports) = direct_turn(&run, selected, vec![ChatMessage::user("hello")]);
+    crate::loop_::run(&run.inner.loop_config, request, ports)
         .await
         .unwrap();
     let requests = provider.requests.lock().unwrap();
@@ -1178,16 +1202,11 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         let runtime = run.inner.runtime_models.read().await;
         runtime.available.get(&runtime.current).unwrap().clone()
     };
-    let mut snapshot = run
-        .inner
-        .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
-        .unwrap();
-    snapshot.tool_context = ToolContext::new(AgentExecutionContext::restricted_for(
-        "test-user",
-        "router-agent",
-        "cross-provider-test",
-    ));
-    crate::loop_::run(&snapshot, vec![ChatMessage::user("hello")])
+    let selected =
+        AgentRunInner::validate_turn_model(&selected, sylvander_protocol::ReasoningEffort::Off)
+            .unwrap();
+    let (request, ports) = direct_turn(&run, selected, vec![ChatMessage::user("hello")]);
+    crate::loop_::run(&run.inner.loop_config, request, ports)
         .await
         .unwrap();
     assert_eq!(

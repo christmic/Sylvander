@@ -111,11 +111,12 @@ async fn tool_output_deltas_arrive_before_final_result() {
         .expect("build");
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = events.clone();
-    run_with_events(&loop_, vec![MessageParam::user("progress")], move |event| {
-        captured.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run");
+    loop_
+        .run_with_events(vec![MessageParam::user("progress")], move |event| {
+            captured.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run");
 
     let lifecycle = events
         .lock()
@@ -210,11 +211,12 @@ async fn run_burst_progress(include_control_tool: bool) -> Vec<AgentEvent> {
         .expect("build");
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = events.clone();
-    run_with_events(&loop_, vec![MessageParam::user("burst")], move |event| {
-        captured.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run");
+    loop_
+        .run_with_events(vec![MessageParam::user("burst")], move |event| {
+            captured.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run");
     Arc::try_unwrap(events).unwrap().into_inner().unwrap()
 }
 
@@ -348,7 +350,7 @@ async fn ordinary_tool_batch_starts_and_executes_concurrently() {
     let captured = events.clone();
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        run_with_events(&loop_, vec![MessageParam::user("parallel")], move |event| {
+        loop_.run_with_events(vec![MessageParam::user("parallel")], move |event| {
             captured.lock().unwrap().push(event);
         }),
     )
@@ -405,7 +407,8 @@ async fn exclusive_tool_calls_never_overlap_within_one_model_batch() {
         .build()
         .expect("build");
 
-    run(&loop_, vec![MessageParam::user("exclusive")])
+    loop_
+        .run(vec![MessageParam::user("exclusive")])
         .await
         .expect("run");
     assert_eq!(maximum.load(Ordering::SeqCst), 1);
@@ -436,13 +439,12 @@ async fn single_iteration_end_turn_returns_final_message() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("Hi")],
-        |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run should succeed");
+    let run = loop_
+        .run_with_events(vec![MessageParam::user("Hi")], |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run should succeed");
 
     assert_eq!(run.final_response.id, "msg_1");
     assert_eq!(run.iterations, 1);
@@ -532,13 +534,12 @@ async fn tool_use_triggers_tool_execution_and_continues() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("Get weather")],
-        |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run should succeed");
+    let run = loop_
+        .run_with_events(vec![MessageParam::user("Get weather")], |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run should succeed");
 
     assert_eq!(run.final_response.id, "msg_2");
     assert_eq!(run.iterations, 2);
@@ -618,8 +619,7 @@ async fn max_iterations_returns_the_last_partial_message() {
         .build()
         .expect("build");
 
-    let result =
-        sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Loop forever")]).await;
+    let result = loop_.run(vec![MessageParam::user("Loop forever")]).await;
 
     let result = result.expect("last partial message remains usable at the iteration cap");
     assert_eq!(result.iterations, 3);
@@ -681,7 +681,8 @@ async fn tool_error_continues_loop() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Try tool")])
+    let run = loop_
+        .run(vec![MessageParam::user("Try tool")])
         .await
         .expect("run should succeed even when tool errors");
 
@@ -737,7 +738,8 @@ async fn tool_not_found_records_error_and_continues() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Try missing")])
+    let run = loop_
+        .run(vec![MessageParam::user("Try missing")])
         .await
         .expect("run should succeed");
 
@@ -761,7 +763,7 @@ async fn llm_error_propagates_without_retry() {
         .build()
         .expect("build");
 
-    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Hi")]).await;
+    let result = loop_.run(vec![MessageParam::user("Hi")]).await;
 
     // 4xx is non-retryable — exactly one provider request is attempted.
     assert!(matches!(
@@ -797,13 +799,12 @@ async fn event_order_iteration_start_chunks_end() {
         .build()
         .expect("build");
 
-    sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("Think")],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run");
+    loop_
+        .run_with_events(vec![MessageParam::user("Think")], move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run");
 
     let events = events.lock().unwrap();
     let kinds: Vec<&'static str> = events

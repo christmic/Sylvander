@@ -11,7 +11,7 @@ use crate::execution_ports::AgentExecutionPorts;
 use crate::request::AgentTurnRequest;
 use crate::tool::ToolRegistry;
 use crate::tool_context::ToolContext;
-use crate::tool_invocation::RegistryBoundToolGateway;
+use crate::tool_invocation::{RegistryBoundToolGateway, ToolInvocationGateway};
 
 struct EmptyModelProvider;
 
@@ -42,11 +42,9 @@ fn request_fixture() -> AgentTurnRequest {
 
 fn ports(execution: AgentExecutionContext, tools: &ToolRegistry) -> AgentExecutionPorts {
     let model: Arc<dyn ModelProvider> = Arc::new(EmptyModelProvider);
-    AgentExecutionPorts::new(
-        model,
-        ToolContext::new(execution),
-        RegistryBoundToolGateway::new(tools.invocation_descriptors()),
-    )
+    let gateway = RegistryBoundToolGateway::new(tools.invocation_descriptors());
+    let snapshot = gateway.snapshot();
+    AgentExecutionPorts::new(model, ToolContext::new(execution), gateway, snapshot)
 }
 
 #[test]

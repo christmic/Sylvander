@@ -105,13 +105,13 @@ async fn edit_tool_e2e() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        vec![MessageParam::user("change foo to bar in file.txt")],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run");
+    let _run = loop_
+        .run_with_events(
+            vec![MessageParam::user("change foo to bar in file.txt")],
+            move |event| events_clone.lock().unwrap().push(event),
+        )
+        .await
+        .expect("run");
 
     let events = events.lock().unwrap();
     let tool_calls: Vec<&str> = events
@@ -201,13 +201,13 @@ async fn edit_tool_with_ambiguous_match_returns_error() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        vec![MessageParam::user("replace x in file.txt")],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run");
+    let _run = loop_
+        .run_with_events(
+            vec![MessageParam::user("replace x in file.txt")],
+            move |event| events_clone.lock().unwrap().push(event),
+        )
+        .await
+        .expect("run");
 
     // File content unchanged
     let content = std::fs::read_to_string(tmp.path().join("file.txt")).unwrap();

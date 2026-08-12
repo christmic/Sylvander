@@ -42,7 +42,7 @@ async fn tools_set_without_tool_use_capability_errors() {
         .build()
         .expect("build");
 
-    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
+    let result = loop_.run(vec![MessageParam::user("hi")]).await;
     assert!(matches!(
         result,
         Err(AgentLoopError::IncompatibleModel(ref msg)) if msg.contains("tool_use")
@@ -96,7 +96,7 @@ async fn llm_400_and_401_propagate_after_one_request() {
         .max_retries(3)
         .build()
         .expect("build");
-        let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
+        let result = loop_.run(vec![MessageParam::user("hi")]).await;
         assert!(matches!(
             result,
             Err(AgentLoopError::Provider { attempts: 1, .. })
@@ -125,7 +125,7 @@ async fn invalid_buffered_response_does_not_trigger_a_second_request() {
     .max_retries(3)
     .build()
     .expect("build");
-    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
+    let result = loop_.run(vec![MessageParam::user("hi")]).await;
 
     assert!(matches!(
         result,
@@ -166,16 +166,13 @@ async fn truncated_stream_reports_once_without_replaying_visible_delta() {
     .expect("build");
     let observed = Arc::new(Mutex::new((Vec::new(), 0usize)));
     let events = observed.clone();
-    let result = sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("hi")],
-        move |event| match event {
+    let result = loop_
+        .run_with_events(vec![MessageParam::user("hi")], move |event| match event {
             AgentEvent::TextChunk(text) => events.lock().unwrap().0.push(text),
             AgentEvent::ModelRetry { .. } => events.lock().unwrap().1 += 1,
             _ => {}
-        },
-    )
-    .await;
+        })
+        .await;
 
     assert!(matches!(
         result,
@@ -208,16 +205,13 @@ async fn llm_5xx_retries_then_propagates_after_max() {
 
     let retries = Arc::new(Mutex::new(Vec::new()));
     let observed = retries.clone();
-    let result = sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("hi")],
-        move |event| {
+    let result = loop_
+        .run_with_events(vec![MessageParam::user("hi")], move |event| {
             if let AgentEvent::ModelRetry { attempt, .. } = event {
                 observed.lock().unwrap().push(attempt);
             }
-        },
-    )
-    .await;
+        })
+        .await;
     match result {
         Err(AgentLoopError::Provider { attempts, .. }) => {
             assert_eq!(attempts, 3);
@@ -266,10 +260,8 @@ async fn llm_5xx_succeeds_after_retry() {
 
     let retries = Arc::new(Mutex::new(Vec::new()));
     let observed = retries.clone();
-    let run = sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("hi")],
-        move |event| {
+    let run = loop_
+        .run_with_events(vec![MessageParam::user("hi")], move |event| {
             if let AgentEvent::ModelRetry {
                 attempt,
                 max_attempts,
@@ -282,10 +274,9 @@ async fn llm_5xx_succeeds_after_retry() {
                     .unwrap()
                     .push((attempt, max_attempts, delay_ms));
             }
-        },
-    )
-    .await
-    .expect("run");
+        })
+        .await
+        .expect("run");
     assert_eq!(run.final_response.id, "msg_retry_ok");
     assert_eq!(run.iterations, 1);
     assert_eq!(retries.lock().unwrap().as_slice(), &[(1, 3, 100)]);
@@ -327,17 +318,14 @@ async fn llm_429_retries_and_succeeds() {
 
     let retries = Arc::new(Mutex::new(Vec::new()));
     let observed = retries.clone();
-    let run = sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("hi")],
-        move |event| {
+    let run = loop_
+        .run_with_events(vec![MessageParam::user("hi")], move |event| {
             if let AgentEvent::ModelRetry { attempt, .. } = event {
                 observed.lock().unwrap().push(attempt);
             }
-        },
-    )
-    .await
-    .expect("run");
+        })
+        .await
+        .expect("run");
     assert_eq!(run.final_response.id, "msg_429_ok");
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
     assert_eq!(retries.lock().unwrap().as_slice(), &[1, 2]);
@@ -362,7 +350,7 @@ async fn zero_max_retries_means_no_retry() {
         .build()
         .expect("build");
 
-    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
+    let result = loop_.run(vec![MessageParam::user("hi")]).await;
     match result {
         Err(AgentLoopError::Provider { attempts, .. }) => assert_eq!(attempts, 1),
         other => panic!("expected provider error, got {other:?}"),
@@ -396,7 +384,8 @@ async fn tool_use_capability_passes_validation() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
+    let run = loop_
+        .run(vec![MessageParam::user("hi")])
         .await
         .expect("run");
     assert_eq!(run.final_response.id, "msg_cap");
@@ -429,7 +418,8 @@ async fn thinking_capability_passes_validation() {
     // Cannot easily set thinking via builder — would need raw request.
     // Skip the thinking setup, just verify no validation error when
     // capability is present but not used.
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
+    let run = loop_
+        .run(vec![MessageParam::user("hi")])
         .await
         .expect("run");
     assert_eq!(run.final_response.id, "msg_thinking");
