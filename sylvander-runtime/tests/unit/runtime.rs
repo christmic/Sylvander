@@ -467,6 +467,58 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
     runtime.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn operational_readiness_tracks_execution_probe_failures() {
+    let directory = tempfile::tempdir().expect("temporary runtime directory");
+    let mut config = configured_memory_test_config(&directory, &[]);
+    config
+        .execution_targets
+        .push(config::ExecutionTargetConfig {
+            id: "container:missing".into(),
+            transport: config::ExecutionTransportConfig::Container {
+                runtime: directory
+                    .path()
+                    .join("missing-container-runtime")
+                    .display()
+                    .to_string(),
+                image: "review:latest".into(),
+                resources: config::ContainerResourceSettings::default(),
+            },
+        });
+    let runtime = Runtime::boot_config(config)
+        .await
+        .expect("configured runtime");
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let snapshot = runtime.operational_snapshot().await.unwrap();
+            if snapshot
+                .health_issues
+                .contains(&RuntimeHealthIssue::ExecutionTarget)
+            {
+                assert!(!snapshot.ready);
+                let target = snapshot
+                    .execution_targets
+                    .iter()
+                    .find(|target| target.target_id == "container:missing")
+                    .unwrap();
+                assert_eq!(
+                    target.status,
+                    crate::execution::ExecutionTargetStatus::Degraded
+                );
+                assert_eq!(target.last_probe_succeeded, Some(false));
+                assert_eq!(target.probe_failures, 1);
+                assert!(target.sandbox_enforced);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("execution failure must become visible");
+
+    runtime.shutdown().await.unwrap();
+}
+
 fn git(repository: &std::path::Path, arguments: &[&str]) {
     let output = std::process::Command::new("git")
         .args(arguments)
