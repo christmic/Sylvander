@@ -1461,8 +1461,8 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
     Ok(StoredMessage {
         id,
         session_id: SessionId::new(session_id),
-        user_id: sylvander_protocol::types::UserId::new(user_id),
-        agent_id: sylvander_protocol::types::AgentId::new(agent_id),
+        user_id: sylvander_protocol::UserId::new(user_id),
+        agent_id: sylvander_protocol::AgentId::new(agent_id),
         trace_id,
         priority,
         seq: u32::try_from(seq).unwrap_or(u32::MAX),

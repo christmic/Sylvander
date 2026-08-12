@@ -482,9 +482,9 @@ async fn list_filters_by_user() {
 
     let filter = SessionFilter {
         identity: Some(sylvander_protocol::Identity {
-            user_id: sylvander_protocol::types::UserId::new("alice"),
-            agent_id: sylvander_protocol::types::AgentId::new("agent-1"),
-            session_id: sylvander_protocol::types::SessionId::new("dummy"),
+            user_id: sylvander_protocol::UserId::new("alice"),
+            agent_id: sylvander_protocol::AgentId::new("agent-1"),
+            session_id: sylvander_protocol::SessionId::new("dummy"),
         }),
         ..Default::default()
     };

@@ -164,38 +164,6 @@ fn revision_pin_validation_rejects_each_zero_value() {
 }
 
 #[test]
-fn user_id_round_trips() {
-    let u: UserId = "alice".into();
-    assert_eq!(u.0, "alice");
-    let u2: UserId = String::from("bob").into();
-    assert_eq!(u2.0, "bob");
-    assert_eq!(u.to_string(), "alice");
-}
-
-#[test]
-fn user_id_system_sentinel_is_distinct() {
-    let sys = UserId::system();
-    let real = UserId::new("alice");
-    assert_ne!(sys, real);
-    assert_ne!(sys.0, "alice");
-}
-
-#[test]
-fn user_id_serializes_as_inner_string() {
-    let u = UserId::new("alice");
-    let json = serde_json::to_string(&u).unwrap();
-    assert_eq!(json, "\"alice\"");
-}
-
-#[test]
-fn three_id_types_share_a_constructor_pattern() {
-    // Smoke: AgentId / SessionId / UserId all have the same shape.
-    let _a: AgentId = "a".into();
-    let _s: SessionId = "s".into();
-    let _u: UserId = "u".into();
-}
-
-#[test]
 fn reasoning_effort_has_stable_provider_neutral_budgets() {
     assert_eq!(ReasoningEffort::Off.budget_tokens(), None);
     assert_eq!(ReasoningEffort::Low.budget_tokens(), Some(2_048));

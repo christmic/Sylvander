@@ -29,8 +29,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::{AgentId, SessionId, UserId};
 use crate::message::now_secs;
-use crate::types::{AgentId, SessionId, UserId};
 
 // ===========================================================================
 // Identity — "who" is asking
