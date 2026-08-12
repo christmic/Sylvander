@@ -16,6 +16,8 @@ pub(crate) struct ProviderDefinition {
     pub id: String,
     pub revision: u64,
     pub kind: String,
+    #[serde(default)]
+    pub features: BTreeSet<String>,
     pub base_url: String,
     pub credential_binding_id: String,
 }

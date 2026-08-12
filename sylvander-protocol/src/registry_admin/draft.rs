@@ -4,6 +4,8 @@
 //! reference metadata. Their custom `Debug` implementations never reveal the
 //! submitted configuration.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 /// Write-only Provider configuration accepted by lifecycle mutations.
@@ -11,6 +13,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct ProviderDefinitionDraft {
     pub kind: String,
+    #[serde(default)]
+    pub features: BTreeSet<String>,
     pub base_url: String,
     pub credential_binding_id: String,
 }

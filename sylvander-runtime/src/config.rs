@@ -520,6 +520,8 @@ pub struct ModelProviderConfig {
     pub id: String,
     #[serde(default = "default_anthropic_kind")]
     pub kind: String,
+    #[serde(default)]
+    pub features: Vec<String>,
     pub base_url: String,
     pub api_key: SecretRef,
     #[serde(default)]
@@ -958,10 +960,27 @@ impl ServerConfig {
         let mut provider_models = HashMap::new();
         for provider in &self.model_providers {
             require_text("model provider kind", &provider.kind, &mut errors);
-            if provider.kind != "anthropic_compatible" {
+            if !matches!(
+                provider.kind.as_str(),
+                "anthropic_compatible"
+                    | "anthropic_messages"
+                    | "openai_responses"
+                    | "openai_chat_completions"
+                    | "dashscope_generation"
+            ) {
                 errors.push(format!(
                     "model provider {} has unsupported kind {}",
                     provider.id, provider.kind
+                ));
+            }
+            if provider
+                .features
+                .iter()
+                .any(|feature| feature.trim().is_empty())
+            {
+                errors.push(format!(
+                    "model provider {} has a blank feature",
+                    provider.id
                 ));
             }
             require_text("model provider base_url", &provider.base_url, &mut errors);

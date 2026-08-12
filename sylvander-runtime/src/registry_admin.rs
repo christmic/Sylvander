@@ -845,6 +845,7 @@ fn provider_definition(
         id: provider_id,
         revision,
         kind: draft.kind,
+        features: draft.features,
         base_url: draft.base_url,
         credential_binding_id: draft.credential_binding_id,
     }
@@ -905,6 +906,7 @@ pub(crate) fn redact_provider_revision(
             provider_id: revision.definition.id.clone(),
             revision: revision.definition.revision,
             kind: revision.definition.kind.clone(),
+            features: revision.definition.features.clone(),
             base_url_sha256: sha256(&revision.definition.base_url),
             credential_binding_id_sha256: sha256(&revision.definition.credential_binding_id),
         },

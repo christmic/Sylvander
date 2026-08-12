@@ -14,6 +14,10 @@ use sylvander_llm_core::{
     ModelCapabilities, ModelProvider, ModelRef, ModelRequest, ProviderError, ProviderErrorKind,
     ProviderErrorPhase, ProviderFuture, validate_model_request_capabilities,
 };
+use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
+use sylvander_llm_openai::{
+    OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
+};
 
 use crate::credential_registry::{CredentialRegistryError, ResolvedCredential};
 use crate::registry_domain::{
@@ -105,6 +109,8 @@ pub(crate) struct RequestScopedAnthropicProvider {
     provider_id: String,
     provider_revision: u64,
     base_url: String,
+    kind: String,
+    features: std::collections::BTreeSet<String>,
     credential_binding_id: String,
     credentials: Arc<dyn ActiveCredentialSource>,
 }
@@ -121,7 +127,24 @@ impl RequestScopedAnthropicProvider {
             provider_id: provider_id.into(),
             provider_revision,
             base_url: base_url.into(),
+            kind: "anthropic_compatible".into(),
+            features: std::collections::BTreeSet::new(),
             credential_binding_id: credential_binding_id.into(),
+            credentials,
+        }
+    }
+
+    fn configured(
+        provider: ProviderDefinition,
+        credentials: Arc<dyn ActiveCredentialSource>,
+    ) -> Self {
+        Self {
+            provider_id: provider.id,
+            provider_revision: provider.revision,
+            base_url: provider.base_url,
+            kind: provider.kind,
+            features: provider.features,
+            credential_binding_id: provider.credential_binding_id,
             credentials,
         }
     }
@@ -163,18 +186,21 @@ impl AnthropicProviderFactory {
     pub(crate) fn validate_definition(
         provider: &ProviderDefinition,
     ) -> Result<(), ProviderFactoryError> {
-        if provider.kind != "anthropic_compatible" {
+        if !matches!(
+            provider.kind.as_str(),
+            "anthropic_compatible"
+                | "anthropic_messages"
+                | "openai_responses"
+                | "openai_chat_completions"
+                | "dashscope_generation"
+        ) {
             return Err(ProviderFactoryError::UnsupportedKind);
         }
         provider
             .validate()
             .map_err(|_| ProviderFactoryError::InvalidDefinition)?;
-        AnthropicClient::builder()
-            .api_key("factory-validation-only")
-            .base_url(&provider.base_url)
-            .build()
-            .map(|_| ())
-            .map_err(|_| ProviderFactoryError::InvalidDefinition)
+        url::Url::parse(&provider.base_url).map_err(|_| ProviderFactoryError::InvalidDefinition)?;
+        validate_features(provider)
     }
 
     fn preflight_model(
@@ -197,7 +223,7 @@ impl AnthropicProviderFactory {
             .map_err(|_| ProviderFactoryError::InvalidModelDefinition)?;
         if capabilities
             .into_iter()
-            .any(|capability| !anthropic_supports(capability))
+            .any(|capability| !protocol_supports(provider.kind.as_str(), capability))
         {
             return Err(ProviderFactoryError::UnsupportedModelCapability);
         }
@@ -221,11 +247,8 @@ impl ProviderAdapterFactory for AnthropicProviderFactory {
     ) -> Result<Arc<dyn ModelProvider>, ProviderFactoryError> {
         Self::validate_definition(&provider)?;
 
-        Ok(Arc::new(RequestScopedAnthropicProvider::new(
-            provider.id,
-            provider.revision,
-            provider.base_url,
-            provider.credential_binding_id,
+        Ok(Arc::new(RequestScopedAnthropicProvider::configured(
+            provider,
             credentials,
         )))
     }
@@ -244,16 +267,49 @@ pub(crate) enum ProviderFactoryError {
     ModelProviderMismatch,
     #[error("model capability is unsupported by provider adapter")]
     UnsupportedModelCapability,
+    #[error("provider feature is unsupported by selected protocol")]
+    UnsupportedFeature,
 }
 
-const fn anthropic_supports(capability: CanonicalModelCapability) -> bool {
-    match capability {
-        CanonicalModelCapability::ExtendedThinking
-        | CanonicalModelCapability::PromptCaching
-        | CanonicalModelCapability::StructuredOutput
-        | CanonicalModelCapability::ToolUse
-        | CanonicalModelCapability::Vision
-        | CanonicalModelCapability::DocumentInput => true,
+fn validate_features(provider: &ProviderDefinition) -> Result<(), ProviderFactoryError> {
+    let allowed: &[&str] = match provider.kind.as_str() {
+        "anthropic_compatible" | "anthropic_messages" => &[],
+        "openai_responses" => &["enable_thinking"],
+        "openai_chat_completions" => &[
+            "enable_thinking",
+            "max_completion_tokens",
+            "reasoning_content",
+        ],
+        "dashscope_generation" => &[
+            "enable_thinking",
+            "parallel_tool_calls",
+            "reasoning_content",
+            "response_format",
+            "thinking_budget",
+        ],
+        _ => return Err(ProviderFactoryError::UnsupportedKind),
+    };
+    provider
+        .features
+        .iter()
+        .all(|feature| allowed.contains(&feature.as_str()))
+        .then_some(())
+        .ok_or(ProviderFactoryError::UnsupportedFeature)
+}
+
+fn protocol_supports(kind: &str, capability: CanonicalModelCapability) -> bool {
+    match kind {
+        "anthropic_compatible" | "anthropic_messages" => true,
+        "openai_responses" => !matches!(capability, CanonicalModelCapability::PromptCaching),
+        "openai_chat_completions" => !matches!(
+            capability,
+            CanonicalModelCapability::PromptCaching | CanonicalModelCapability::DocumentInput
+        ),
+        "dashscope_generation" => !matches!(
+            capability,
+            CanonicalModelCapability::PromptCaching | CanonicalModelCapability::DocumentInput
+        ),
+        _ => false,
     }
 }
 
@@ -282,23 +338,56 @@ impl ModelProvider for RequestScopedAnthropicProvider {
                 lease_expires_at,
                 "provider credential lease opened"
             );
-            let client = AnthropicClient::builder()
-                .api_key(lease.secret().map_err(map_credential_error)?)
-                .base_url(&self.base_url)
-                .build()
-                .map_err(|_| {
-                    provider_error(
-                        ProviderErrorKind::InvalidRequest,
-                        "provider configuration is invalid",
-                    )
-                })?;
+            let secret = lease.secret().map_err(map_credential_error)?.to_owned();
             drop(lease);
-
-            AnthropicProvider::new(&self.provider_id, client)
-                .complete_stream(request)
-                .await
+            match self.kind.as_str() {
+                "anthropic_compatible" | "anthropic_messages" => {
+                    let client = AnthropicClient::builder()
+                        .api_key(secret)
+                        .base_url(&self.base_url)
+                        .build()
+                        .map_err(|_| provider_configuration_error())?;
+                    AnthropicProvider::new(&self.provider_id, client)
+                        .complete_stream(request)
+                        .await
+                }
+                "openai_responses" | "openai_chat_completions" => {
+                    let protocol = if self.kind == "openai_responses" {
+                        OpenAiProtocol::Responses
+                    } else {
+                        OpenAiProtocol::ChatCompletions
+                    };
+                    let provider = OpenAiProvider::new(OpenAiProviderConfig {
+                        provider_id: self.provider_id.clone(),
+                        base_url: url::Url::parse(&self.base_url)
+                            .map_err(|_| provider_configuration_error())?,
+                        api_key: secret,
+                        protocol,
+                        features: ProviderFeatures::new(self.features.iter().cloned()),
+                    })?;
+                    provider.complete_stream(request).await
+                }
+                "dashscope_generation" => {
+                    let provider = DashScopeProvider::new(DashScopeProviderConfig {
+                        provider_id: self.provider_id.clone(),
+                        base_url: url::Url::parse(&self.base_url)
+                            .map_err(|_| provider_configuration_error())?,
+                        api_key: secret,
+                        features: DashScopeFeatures::new(self.features.iter().cloned()),
+                    })?;
+                    provider.complete_stream(request).await
+                }
+                _ => Err(provider_configuration_error()),
+            }
         })
     }
+}
+
+fn provider_configuration_error() -> ProviderError {
+    provider_error(
+        ProviderErrorKind::InvalidRequest,
+        "provider configuration is invalid",
+    )
 }
 
 /// Immutable, fail-closed routing table for one pinned Agent revision.

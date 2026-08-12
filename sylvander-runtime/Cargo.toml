@@ -11,6 +11,8 @@ sylvander-agent = { path = "../sylvander-agent" }
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-llm-core = { path = "../sylvander-llm-core" }
+sylvander-llm-dashscope = { path = "../sylvander-llm-dashscope" }
+sylvander-llm-openai = { path = "../sylvander-llm-openai" }
 sylvander-protocol = { path = "../sylvander-protocol" }
 tokio = { workspace = true }
 async-trait = "0.1"

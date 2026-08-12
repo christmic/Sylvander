@@ -3,6 +3,8 @@
 //! Administrative reads return digests and non-secret lifecycle metadata
 //! rather than replaying write-only definitions or credential locators.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ModelLifecycle;
@@ -22,6 +24,8 @@ pub struct RedactedProviderDefinition {
     pub provider_id: String,
     pub revision: u64,
     pub kind: String,
+    #[serde(default)]
+    pub features: BTreeSet<String>,
     pub base_url_sha256: String,
     pub credential_binding_id_sha256: String,
 }

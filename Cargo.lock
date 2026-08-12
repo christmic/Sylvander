@@ -3070,6 +3070,8 @@ dependencies = [
  "sylvander-channel",
  "sylvander-llm-anthropic",
  "sylvander-llm-core",
+ "sylvander-llm-dashscope",
+ "sylvander-llm-openai",
  "sylvander-protocol",
  "tempfile",
  "thiserror 2.0.18",

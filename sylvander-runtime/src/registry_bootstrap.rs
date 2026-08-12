@@ -61,6 +61,7 @@ impl RegistryBootstrapPlan {
                 id: provider_id.clone(),
                 revision: 1,
                 kind: configured.kind.trim().to_owned(),
+                features: configured.features.iter().cloned().collect(),
                 base_url: configured.base_url.trim().to_owned(),
                 credential_binding_id: binding_id,
             });
