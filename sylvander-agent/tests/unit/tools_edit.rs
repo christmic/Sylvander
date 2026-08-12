@@ -246,9 +246,10 @@ async fn edit_multiline_old_string() {
 #[test]
 fn name_description_schema() {
     let tool = EditTool::new();
-    assert_eq!(tool.name(), "Edit");
-    assert!(tool.description().contains("replace"));
-    let json = serde_json::to_value(tool.input_schema()).unwrap();
+    let spec = tool.spec();
+    assert_eq!(spec.name, "Edit");
+    assert!(spec.description.contains("replace"));
+    let json = serde_json::to_value(spec.input_schema).unwrap();
     assert!(json["properties"]["old_string"].is_object());
     assert!(json["properties"]["new_string"].is_object());
     assert!(json["properties"]["replace_all"].is_object());

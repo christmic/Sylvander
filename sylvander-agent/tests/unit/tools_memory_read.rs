@@ -18,19 +18,20 @@ fn test_store() -> Arc<dyn MemoryStore> {
 async fn name_and_description() {
     let tool = MemoryReadTool::new(test_store());
     let _c = ctx();
-    assert_eq!(tool.name(), "read_memory");
-    assert!(!tool.description().is_empty());
+    let spec = tool.spec();
+    assert_eq!(spec.name, "read_memory");
+    assert!(!spec.description.is_empty());
 }
 
 #[tokio::test]
 async fn input_schema_has_query_field() {
     let tool = MemoryReadTool::new(test_store());
     let _c = ctx();
-    let schema = tool.input_schema();
-    let props = schema.schema.get("properties").expect("has properties");
+    let schema = tool.spec().input_schema;
+    let props = schema.get("properties").expect("has properties");
     assert!(props.get("query").is_some());
-    assert_eq!(schema.schema["additionalProperties"], json!(false));
-    let required = schema.schema.get("required").expect("has required");
+    assert_eq!(schema["additionalProperties"], json!(false));
+    let required = schema.get("required").expect("has required");
     assert!(
         required
             .as_array()

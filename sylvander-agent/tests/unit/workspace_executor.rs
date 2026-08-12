@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 
 use super::*;
-use crate::tool::Tool;
 use crate::tool_context::{Cap, ToolContext};
 use crate::tools::{CommandTool, EditTool, GitTool, ListTool, ReadTool, SearchTool, WriteTool};
 

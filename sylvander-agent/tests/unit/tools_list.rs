@@ -27,10 +27,10 @@ async fn lists_recursively_with_explicit_truncation() {
 
 #[test]
 fn schema_and_runtime_reject_unbounded_inputs() {
-    let schema = ListTool::new().input_schema();
-    assert_eq!(schema.schema["additionalProperties"], false);
+    let schema = ListTool::new().spec().input_schema;
+    assert_eq!(schema["additionalProperties"], false);
     assert_eq!(
-        schema.schema["properties"]["max_results"]["maximum"],
+        schema["properties"]["max_results"]["maximum"],
         MAX_QUERY_RESULTS
     );
     assert!(parse_max_results(Some(&json!(MAX_QUERY_RESULTS + 1))).is_err());

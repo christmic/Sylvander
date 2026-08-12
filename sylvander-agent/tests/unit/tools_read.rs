@@ -1,6 +1,8 @@
 use super::*;
 use crate::tool_context::ToolContext;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 
 fn ctx(root: &std::path::Path) -> ToolContext {
@@ -133,7 +135,6 @@ async fn read_path_outside_workdir_rejected() {
 
 #[tokio::test]
 async fn read_path_via_symlink_outside_workdir_rejected() {
-    use std::os::unix::fs::symlink;
     let (dir, workdir) = setup_workspace();
     // Create a symlink inside workdir that points outside it
     let outside_file = dir.path().parent().unwrap().join("outside.txt");
@@ -161,9 +162,10 @@ async fn read_path_via_symlink_outside_workdir_rejected() {
 #[test]
 fn name_description_schema() {
     let tool = ReadTool::new();
-    assert_eq!(tool.name(), "Read");
-    assert!(tool.description().contains("workspace"));
-    let schema = tool.input_schema();
+    let spec = tool.spec();
+    assert_eq!(spec.name, "Read");
+    assert!(spec.description.contains("workspace"));
+    let schema = spec.input_schema;
     // schema is the flattened JSON object, must contain file_path
     let json = serde_json::to_value(&schema).unwrap();
     assert!(json["properties"]["file_path"].is_object());

@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::Value as JsonValue;
 use sylvander_protocol::SessionContext;
 
 fn context(root: &std::path::Path) -> ToolContext {
@@ -43,11 +44,11 @@ async fn rejects_unknown_or_empty_input() {
 
 #[test]
 fn schema_is_strict_and_bounded() {
-    let schema = SearchTool::new().input_schema();
-    assert_eq!(schema.schema["additionalProperties"], false);
-    assert_eq!(schema.schema["required"], json!(["query"]));
+    let schema = SearchTool::new().spec().input_schema;
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["required"], json!(["query"]));
     assert_eq!(
-        schema.schema["properties"]["max_results"]["maximum"],
+        schema["properties"]["max_results"]["maximum"],
         MAX_QUERY_RESULTS
     );
 }

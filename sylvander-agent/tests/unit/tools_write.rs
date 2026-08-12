@@ -94,9 +94,10 @@ async fn write_missing_content_field() {
 #[test]
 fn name_description_schema() {
     let tool = WriteTool::new();
-    assert_eq!(tool.name(), "Write");
-    assert!(tool.description().contains("workspace"));
-    let json = serde_json::to_value(tool.input_schema()).unwrap();
+    let spec = tool.spec();
+    assert_eq!(spec.name, "Write");
+    assert!(spec.description.contains("workspace"));
+    let json = serde_json::to_value(spec.input_schema).unwrap();
     assert!(json["properties"]["file_path"].is_object());
     assert!(json["properties"]["content"].is_object());
     let required = json["required"].as_array().unwrap();
