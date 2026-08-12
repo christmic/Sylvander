@@ -4,7 +4,38 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
+use sylvander_agent::tool::{RegisteredTool, ToolDefinition, ToolRegistry};
+use sylvander_agent::tool_context::ToolContext;
+
 use super::*;
+
+#[async_trait]
+trait RuntimeToolTestExt {
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError>;
+}
+
+#[async_trait]
+impl<T> RuntimeToolTestExt for T
+where
+    T: RegisteredTool + Clone + 'static,
+{
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let name = self.spec().name;
+        let registry = ToolRegistry::new().register(self.clone());
+        let call = registry
+            .prepare(&name, input)
+            .map_err(|error| ToolError::Other(error.to_string()))?;
+        self.handle(context, &call).await
+    }
+}
 
 const FAKE_SERVER: &str = r#"
 import json
@@ -138,7 +169,7 @@ async fn real_process_handshake_discovery_call_and_shutdown() {
     assert!(feature.capabilities.contains(&"resources".to_owned()));
     client.probe_health().await.expect("health probe");
 
-    let context = crate::tool_context::defaults::system_tool_context();
+    let context = sylvander_agent::tool_context::defaults::system_tool_context();
     let output = tools[0]
         .execute(&context, json!({ "value": "hello" }))
         .await
@@ -204,7 +235,7 @@ async fn tool_call_timeout_is_reported_and_process_can_be_stopped() {
         .await
         .expect("connect");
     let tool = client.list_tools().await.expect("list tools").remove(0);
-    let context = crate::tool_context::defaults::system_tool_context();
+    let context = sylvander_agent::tool_context::defaults::system_tool_context();
 
     let error = tool
         .execute(&context, json!({ "sleep": true }))
@@ -261,7 +292,7 @@ async fn transport_failure_reconnects_for_the_next_tool_call_without_replaying_i
         .await
         .expect("connect");
     let tool = client.list_tools().await.expect("list tools").remove(0);
-    let context = crate::tool_context::defaults::system_tool_context();
+    let context = sylvander_agent::tool_context::defaults::system_tool_context();
 
     let error = tool
         .execute(&context, json!({ "crash": true }))
@@ -301,12 +332,12 @@ async fn reconnect_atomically_refreshes_the_dynamic_tool_catalog() {
         .await
         .expect("connect");
     client.list_tools().await.expect("initial discovery");
-    let registry = crate::tool::ToolRegistry::new().register_dynamic_source(client.clone());
+    let registry = ToolRegistry::new().register_dynamic_source(client.clone());
     assert!(registry.get("mcp__fake__echo").is_some());
     assert!(registry.get("mcp__fake__echo_v2").is_none());
 
     let tool = registry.get("mcp__fake__echo").expect("initial tool");
-    let context = crate::tool_context::defaults::system_tool_context();
+    let context = sylvander_agent::tool_context::defaults::system_tool_context();
     tool.execute(&context, json!({ "crash": true }))
         .await
         .expect_err("crashed call triggers reconnect");

@@ -1,9 +1,11 @@
-//! Minimal MCP stdio transport and registered-tool adapter.
+//! Runtime-owned MCP stdio transport and registered-tool adapter.
 //!
 //! The transport owns one server process and serializes JSON-RPC requests over
-//! newline-delimited JSON-RPC on stdin/stdout. Composition code can connect once,
-//! discover the tools, and register the returned [`McpTool`](crate::mcp_stdio::McpTool) values in the
-//! ordinary [`ToolRegistry`](crate::tool::ToolRegistry).
+//! newline-delimited JSON-RPC on stdin/stdout. Runtime composition connects,
+//! discovers tools, and registers the resulting implementations through
+//! Agent's provider-neutral dynamic-tool contract. Process lifecycle,
+//! reconnect, health, cancellation, and artifact persistence stay outside the
+//! Agent kernel because they require concrete operating-system authority.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -19,14 +21,13 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-use crate::spec::McpServerConfig;
-#[cfg(test)]
-use crate::tool::ToolTestExt as _;
-use crate::tool::{
+use sylvander_agent::spec::McpServerConfig;
+use sylvander_agent::tool::{
     DynamicToolSource, PreparedToolCall, RegisteredTool, ToolDefinition, ToolError, ToolExecutor,
     ToolOutput, ToolSourceFeature, ToolSourceKind, ToolSourceStatus, ToolSpec,
 };
-use crate::tool_context::ToolContext;
+use sylvander_agent::tool_context::ToolContext;
+use sylvander_agent::tool_invocation::ToolInvocationClass;
 use sylvander_llm_core::InputSchema;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -35,31 +36,32 @@ const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 const TOOL_RESULT_HEAD_BYTES: usize = 16 * 1024;
 const MCP_HEALTH_ACTIVE: u8 = 1;
 const MCP_HEALTH_DEGRADED: u8 = 2;
+#[cfg(test)]
 const MCP_HEALTH_UNAVAILABLE: u8 = 3;
 const MCP_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Complete MCP result handed to a Runtime-owned governed artifact store.
 #[derive(Debug, Clone)]
-pub struct McpResultArtifact {
-    pub user_id: String,
-    pub session_id: String,
-    pub server: String,
-    pub operation: String,
-    pub media_type: String,
-    pub payload: Vec<u8>,
-    pub created_at: i64,
+pub(crate) struct McpResultArtifact {
+    pub(crate) user_id: String,
+    pub(crate) session_id: String,
+    pub(crate) server: String,
+    pub(crate) operation: String,
+    pub(crate) media_type: String,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) created_at: i64,
 }
 
 /// Storage boundary for full MCP results. Implementations return an opaque,
 /// user-safe locator rather than a host filesystem path.
 #[async_trait]
-pub trait McpResultArtifactSink: Send + Sync {
+pub(crate) trait McpResultArtifactSink: Send + Sync {
     async fn persist(&self, artifact: McpResultArtifact) -> Result<String, String>;
 }
 
 /// Errors raised while starting or communicating with an MCP server.
 #[derive(Debug, Error)]
-pub enum McpError {
+pub(crate) enum McpError {
     #[error("failed to start MCP server {server}: {source}")]
     Spawn {
         server: String,
@@ -128,7 +130,7 @@ struct McpInner {
 
 /// A connected MCP stdio server.
 #[derive(Clone)]
-pub struct McpStdioClient {
+pub(crate) struct McpStdioClient {
     inner: Arc<McpInner>,
 }
 
@@ -188,7 +190,7 @@ impl std::fmt::Debug for McpStdioClient {
 
 impl McpStdioClient {
     /// Start a server, complete the MCP handshake, and return a live client.
-    pub async fn connect(
+    pub(crate) async fn connect(
         config: &McpServerConfig,
         request_timeout: Duration,
     ) -> Result<Self, McpError> {
@@ -200,7 +202,7 @@ impl McpStdioClient {
     /// Callers still receive a bounded summary. The durable JSON artifact is
     /// retained for later inspection, debugging, and evidence-driven
     /// improvement without flooding the model or UI.
-    pub async fn connect_with_result_artifact_sink(
+    pub(crate) async fn connect_with_result_artifact_sink(
         config: &McpServerConfig,
         request_timeout: Duration,
         sink: Arc<dyn McpResultArtifactSink>,
@@ -300,7 +302,7 @@ impl McpStdioClient {
     }
 
     /// Discover all tools currently advertised by the connected server.
-    pub async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
+    pub(crate) async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
         let result = self.request("tools/list", json!({})).await?;
         let tools = result
             .get("tools")
@@ -419,7 +421,8 @@ impl McpStdioClient {
     }
 
     /// Stop the child process and wait for it to exit.
-    pub async fn shutdown(&self) -> Result<(), McpError> {
+    #[cfg(test)]
+    pub(crate) async fn shutdown(&self) -> Result<(), McpError> {
         self.inner.shutdown.store(true, Ordering::Release);
         let mut child = self.inner.child.lock().await;
         let result = stop_child(&self.inner.server_name, &mut child).await;
@@ -430,7 +433,7 @@ impl McpStdioClient {
     }
 
     /// Probe the MCP transport without exposing server content.
-    pub async fn probe_health(&self) -> Result<(), McpError> {
+    pub(crate) async fn probe_health(&self) -> Result<(), McpError> {
         let generation = self.inner.generation.load(Ordering::Acquire);
         match self.request("ping", json!({})).await {
             Ok(_) => {
@@ -554,7 +557,7 @@ impl McpStdioClient {
                 operation: operation.to_owned(),
                 media_type: "application/json".into(),
                 payload,
-                created_at: crate::time::now_secs(),
+                created_at: crate::session::now_secs(),
             })
             .await
         {
@@ -752,7 +755,7 @@ async fn stop_child(server: &str, child: &mut Child) -> Result<(), McpError> {
 
 /// A discovered MCP tool adapted to Sylvander's ordinary tool interface.
 #[derive(Debug, Clone)]
-pub struct McpTool {
+pub(crate) struct McpTool {
     client: McpStdioClient,
     name: String,
     remote_name: String,
@@ -806,7 +809,7 @@ impl ToolDefinition for McpTool {
             self.name.clone(),
             self.description.clone(),
             self.input_schema.schema.clone(),
-            crate::tool_invocation::ToolInvocationClass::ArbitraryMcp,
+            ToolInvocationClass::ArbitraryMcp,
         )
     }
 }
@@ -891,7 +894,7 @@ impl ToolDefinition for McpResourceTool {
             self.name.clone(),
             description,
             input_schema.schema,
-            crate::tool_invocation::ToolInvocationClass::ArbitraryMcp,
+            ToolInvocationClass::ArbitraryMcp,
         )
     }
 }

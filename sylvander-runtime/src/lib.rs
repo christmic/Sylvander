@@ -66,6 +66,8 @@ mod identity_binding_service;
 #[cfg(test)]
 #[path = "../tests/unit/identity_binding_service.rs"]
 mod identity_binding_service_tests;
+/// Managed MCP stdio process, JSON-RPC transport, and Agent-tool adapter.
+pub(crate) mod mcp_stdio;
 mod memory_maintenance;
 #[allow(dead_code)] // internal API consumed by model routing/admin batches
 mod model_registry;
@@ -135,10 +137,10 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use crate::mcp_stdio::McpResultArtifactSink;
 use sylvander_agent::bus::{
     BusDiagnostics, BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
 };
-use sylvander_agent::mcp_stdio::McpResultArtifactSink;
 #[cfg(test)]
 use sylvander_agent::spec::AgentSpec;
 use sylvander_agent::spec::{AgentId, SessionId};

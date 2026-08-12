@@ -8,13 +8,13 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use crate::mcp_stdio::{McpResultArtifact, McpResultArtifactSink};
 use async_trait::async_trait;
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sylvander_agent::mcp_stdio::{McpResultArtifact, McpResultArtifactSink};
 
 use super::{EvidenceError, EvidenceStore};
 

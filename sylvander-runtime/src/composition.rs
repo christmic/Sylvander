@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::curated_memory::MemoryCandidateSink;
-use sylvander_agent::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::spec::{AgentSpec, ToolRef};
 use sylvander_agent::tool::ToolRegistry;

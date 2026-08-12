@@ -107,8 +107,6 @@ pub mod execution_context;
 pub mod execution_ports;
 /// Provider-compatible iterative model/tool execution loop.
 pub mod loop_;
-/// Managed MCP stdio client, discovery, and tool adapter.
-pub mod mcp_stdio;
 /// Provider-neutral result returned to the Runtime owner.
 pub mod outcome;
 /// Plan proposal and acknowledgement gate.
@@ -176,7 +174,6 @@ pub mod prelude {
     };
     pub use crate::execution_ports::AgentExecutionPorts;
     pub use crate::loop_::{AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events};
-    pub use crate::mcp_stdio::{McpError, McpStdioClient, McpTool};
     pub use crate::outcome::AgentOutcome;
     pub use crate::plan_gate::PlanDecision;
     pub use crate::request::AgentTurnRequest;

@@ -1,6 +1,6 @@
 use super::*;
 use crate::evidence::EvidenceEvent;
-use sylvander_agent::mcp_stdio::{McpResultArtifact, McpResultArtifactSink};
+use crate::mcp_stdio::{McpResultArtifact, McpResultArtifactSink};
 
 fn encryption(key_id: &str, byte: u8) -> EvidenceEncryption {
     EvidenceEncryption::from_secret(key_id, &[byte; 32]).expect("valid test key")
