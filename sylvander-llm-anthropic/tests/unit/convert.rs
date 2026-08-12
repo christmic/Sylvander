@@ -50,8 +50,10 @@ fn rich_neutral_request_maps_to_anthropic_wire() {
             input_schema: json!({"type": "object"}),
             cache_hint: Some(core::CacheHint::Ephemeral),
         }],
-        max_output_tokens: 1024,
-        reasoning: Some(core::ReasoningConfig { budget_tokens: 256 }),
+        max_output_tokens: 2048,
+        reasoning: Some(core::ReasoningConfig {
+            budget_tokens: 1024,
+        }),
         output_schema: Some(json!({"type": "object"})),
     };
     let mapped = request(&input).unwrap();
@@ -59,7 +61,8 @@ fn rich_neutral_request_maps_to_anthropic_wire() {
     assert_eq!(encoded["model"], "claude-test");
     assert_eq!(encoded["messages"][1]["content"][0]["signature"], "signed");
     assert_eq!(encoded["messages"][2]["content"][0]["type"], "tool_result");
-    assert_eq!(encoded["thinking"]["budget_tokens"], 256);
+    assert_eq!(encoded["thinking"]["type"], "enabled");
+    assert_eq!(encoded["thinking"]["budget_tokens"], 1024);
     assert_eq!(encoded["output_config"]["format"]["type"], "json_schema");
 }
 
@@ -110,6 +113,9 @@ fn response_preserves_content_stop_reason_and_usage() {
                     "read",
                     json!({"path": "/tmp/a"}),
                 )),
+                wire::ContentBlock::RedactedThinking(wire::RedactedThinkingBlock::new(
+                    "opaque-data",
+                )),
             ],
             model: "claude-test".into(),
             stop_reason: Some(wire::StopReason::StopSequence),
@@ -150,4 +156,28 @@ fn response_preserves_content_stop_reason_and_usage() {
     assert!(
         matches!(&mapped.content[2], core::ContentBlock::ToolCall { name, .. } if name == "read")
     );
+    assert!(matches!(
+        &mapped.content[3],
+        core::ContentBlock::Reasoning { text, opaque_state: Some(state) }
+            if text.is_empty() && state.data["redacted_thinking"] == "opaque-data"
+    ));
+}
+
+#[test]
+fn redacted_thinking_is_refed_without_modification() {
+    let message = core::ChatMessage {
+        role: core::ChatRole::Assistant,
+        content: vec![core::ContentBlock::Reasoning {
+            text: String::new(),
+            opaque_state: Some(core::OpaqueProviderState {
+                provider: "anthropic".into(),
+                data: json!({"redacted_thinking": "opaque-data"}),
+            }),
+        }],
+    };
+
+    let mapped = super::message(&message).unwrap();
+    let encoded = serde_json::to_value(mapped).unwrap();
+    assert_eq!(encoded["content"][0]["type"], "redacted_thinking");
+    assert_eq!(encoded["content"][0]["data"], "opaque-data");
 }

@@ -160,14 +160,19 @@ fn assistant_block(input: &core::ContentBlock) -> Result<wire::ContentBlock, cor
                 .as_ref()
                 .filter(|state| state.provider == "anthropic")
                 .ok_or_else(|| invalid("Anthropic reasoning requires Anthropic opaque state"))?;
-            let signature = state
-                .data
-                .get("signature")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("Anthropic reasoning state has no signature"))?;
-            Ok(wire::ContentBlock::Thinking(wire::ThinkingBlock::new(
-                text, signature,
-            )))
+            if let Some(signature) = state.data.get("signature").and_then(Value::as_str) {
+                return Ok(wire::ContentBlock::Thinking(wire::ThinkingBlock::new(
+                    text, signature,
+                )));
+            }
+            if let Some(data) = state.data.get("redacted_thinking").and_then(Value::as_str) {
+                return Ok(wire::ContentBlock::RedactedThinking(
+                    wire::RedactedThinkingBlock::new(data),
+                ));
+            }
+            Err(invalid(
+                "Anthropic reasoning state has no signature or redacted thinking data",
+            ))
         }
         _ => Err(invalid(
             "assistant messages contain unsupported input content",
@@ -240,6 +245,9 @@ pub(crate) fn response(provider: &str, input: wire::Message) -> core::ModelRespo
         }
         wire::StopReason::Refusal => core::StopReason::Refusal,
         wire::StopReason::PauseTurn => core::StopReason::Paused,
+        wire::StopReason::ModelContextWindowExceeded => {
+            core::StopReason::Other("model_context_window_exceeded".into())
+        }
         wire::StopReason::Other => core::StopReason::Other("anthropic_other".into()),
     };
     core::ModelResponse {
@@ -264,6 +272,13 @@ fn response_block(input: wire::ContentBlock) -> core::ContentBlock {
             opaque_state: Some(core::OpaqueProviderState {
                 provider: "anthropic".into(),
                 data: json!({"signature": value.signature}),
+            }),
+        },
+        wire::ContentBlock::RedactedThinking(value) => core::ContentBlock::Reasoning {
+            text: String::new(),
+            opaque_state: Some(core::OpaqueProviderState {
+                provider: "anthropic".into(),
+                data: json!({"redacted_thinking": value.data}),
             }),
         },
     }

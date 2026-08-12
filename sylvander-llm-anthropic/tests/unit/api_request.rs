@@ -66,12 +66,23 @@ fn validate_temperature_out_of_range_errors() {
 }
 
 #[test]
-fn validate_thinking_budget_greater_than_max_tokens_errors() {
+fn official_sdk_thinking_budget_bounds_are_enforced() {
+    // Derived from anthropic-sdk-python@009b035
+    // src/anthropic/types/thinking_config_enabled_param.py.
     let req = CreateMessageRequest::builder()
         .model("claude-sonnet-5-20260601")
-        .max_tokens(100)
+        .max_tokens(2048)
         .messages(vec![MessageParam::user("Hi")])
-        .thinking(200)
+        .thinking(2048)
+        .build()
+        .unwrap();
+    assert!(req.validate().is_err());
+
+    let req = CreateMessageRequest::builder()
+        .model("claude-sonnet-5-20260601")
+        .max_tokens(2048)
+        .messages(vec![MessageParam::user("Hi")])
+        .thinking(1023)
         .build()
         .unwrap();
     assert!(req.validate().is_err());

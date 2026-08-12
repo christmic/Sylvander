@@ -32,6 +32,8 @@ pub enum StopReason {
     /// Streaming classifier intervened to handle a potential policy
     /// violation.
     Refusal,
+    /// The model reached its context window limit.
+    ModelContextWindowExceeded,
     /// Unrecognized stop reason (e.g. `"abort"` from MiniMax-M3).
     /// Treat as terminal — log the raw response body for debugging.
     #[serde(other)]
@@ -50,6 +52,7 @@ impl StopReason {
             StopReason::EndTurn
                 | StopReason::StopSequence
                 | StopReason::Refusal
+                | StopReason::ModelContextWindowExceeded
                 | StopReason::Other
         )
     }

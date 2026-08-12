@@ -37,8 +37,8 @@ pub use batch::{
     MessageBatchResult, MessageBatchesPage, ProcessingStatus, Timestamp,
 };
 pub use block::{
-    ContentBlock, TextBlock, TextBlockKind, ThinkingBlock, ThinkingBlockKind, ToolUseBlock,
-    UserContent, UserContentBlock,
+    ContentBlock, RedactedThinkingBlock, RedactedThinkingBlockKind, TextBlock, TextBlockKind,
+    ThinkingBlock, ThinkingBlockKind, ToolUseBlock, UserContent, UserContentBlock,
 };
 pub use cache::{CacheControl, CacheControlKind, CacheTtl};
 pub use citation::{
@@ -51,7 +51,7 @@ pub use message::{Message, MessageKind, MessageParam, MessageRole, MessageTokens
 pub use output_config::{Effort, JsonOutputFormat, JsonOutputFormatKind, OutputConfig};
 pub use stop_reason::StopReason;
 pub use system_prompt::{SystemBlock, SystemPrompt, SystemTextBlock};
-pub use thinking::ThinkingConfig;
+pub use thinking::{ThinkingConfig, ThinkingDisplay};
 pub use tool::{InputSchema, Tool, ToolChoice};
 pub use tool_result::{RichToolResultBlock, ToolResultBlock, ToolResultContent};
 pub use usage::{CacheCreation, OutputTokensDetails, ServerToolUsage, ServiceTier, Usage};

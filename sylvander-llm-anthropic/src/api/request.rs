@@ -76,7 +76,7 @@ impl CreateMessageRequest {
     /// - `messages` is empty
     /// - `temperature` is outside `[0.0, 1.0]`
     /// - `top_p` is outside `[0.0, 1.0]`
-    /// - `thinking.budget_tokens > max_tokens`
+    /// - an enabled thinking budget is below 1024 or not below `max_tokens`
     pub fn validate(&self) -> Result<(), super::error::AnthropicError> {
         if self.messages.is_empty() {
             return Err(super::error::AnthropicError::Validation(
@@ -97,13 +97,18 @@ impl CreateMessageRequest {
                 "top_p {top_p} out of range [0.0, 1.0]"
             )));
         }
-        if let Some(thinking) = self.thinking
-            && thinking.budget_tokens > self.max_tokens
-        {
-            return Err(super::error::AnthropicError::Validation(format!(
-                "thinking.budget_tokens ({}) must be <= max_tokens ({})",
-                thinking.budget_tokens, self.max_tokens
-            )));
+        if let Some(budget_tokens) = self.thinking.and_then(ThinkingConfig::budget_tokens) {
+            if budget_tokens < 1024 {
+                return Err(super::error::AnthropicError::Validation(
+                    "thinking.budget_tokens must be at least 1024".into(),
+                ));
+            }
+            if budget_tokens >= self.max_tokens {
+                return Err(super::error::AnthropicError::Validation(format!(
+                    "thinking.budget_tokens ({budget_tokens}) must be less than max_tokens ({})",
+                    self.max_tokens
+                )));
+            }
         }
         Ok(())
     }
@@ -192,6 +197,13 @@ impl CreateMessageRequestBuilder {
     #[must_use]
     pub fn thinking(mut self, budget_tokens: u32) -> Self {
         self.thinking = Some(ThinkingConfig::new(budget_tokens));
+        self
+    }
+
+    /// Enable adaptive thinking for a model that supports it.
+    #[must_use]
+    pub fn adaptive_thinking(mut self) -> Self {
+        self.thinking = Some(ThinkingConfig::adaptive());
         self
     }
 

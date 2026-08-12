@@ -34,6 +34,12 @@ fn deserializes_snake_case() {
         serde_json::from_str::<StopReason>(r#""refusal""#).unwrap(),
         StopReason::Refusal
     );
+    // Derived from anthropic-sdk-python@009b035:
+    // src/anthropic/types/stop_reason.py.
+    assert_eq!(
+        serde_json::from_str::<StopReason>(r#""model_context_window_exceeded""#).unwrap(),
+        StopReason::ModelContextWindowExceeded
+    );
 }
 
 #[test]
@@ -55,6 +61,7 @@ fn roundtrip_all_variants() {
         StopReason::ToolUse,
         StopReason::PauseTurn,
         StopReason::Refusal,
+        StopReason::ModelContextWindowExceeded,
     ] {
         let s = serde_json::to_string(&reason).unwrap();
         let back: StopReason = serde_json::from_str(&s).unwrap();
@@ -68,6 +75,7 @@ fn is_terminal_classification() {
     assert!(StopReason::StopSequence.is_terminal());
     assert!(StopReason::Refusal.is_terminal());
     assert!(StopReason::Other.is_terminal());
+    assert!(StopReason::ModelContextWindowExceeded.is_terminal());
     assert!(!StopReason::ToolUse.is_terminal());
     assert!(!StopReason::MaxTokens.is_terminal());
     assert!(!StopReason::PauseTurn.is_terminal());

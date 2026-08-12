@@ -93,6 +93,12 @@ fn assistant_block_to_user_block(block: ContentBlock) -> super::block::UserConte
                 "signature": signature,
             }))
         }
+        ContentBlock::RedactedThinking(block) => {
+            super::block::UserContentBlock::Other(serde_json::json!({
+                "type": "redacted_thinking",
+                "data": block.data,
+            }))
+        }
         ContentBlock::ToolUse(tu) => super::block::UserContentBlock::Other(serde_json::json!({
             "type": "tool_use",
             "id": tu.id,

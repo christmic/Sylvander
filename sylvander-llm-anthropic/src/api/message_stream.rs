@@ -129,6 +129,7 @@ impl MessageStream {
                         }));
                     }
                 }
+                ContentBlock::RedactedThinking(_) => {}
             }
         }
         let state = MessageStreamState {
@@ -207,6 +208,9 @@ impl MessageStream {
                     content.push(ContentBlock::Thinking(ThinkingBlock::new(
                         thinking, signature,
                     )));
+                }
+                ContentBlock::RedactedThinking(block) => {
+                    content.push(ContentBlock::RedactedThinking(block.clone()));
                 }
             }
         }

@@ -19,6 +19,8 @@ pub enum ContentBlock {
     Text(TextBlock),
     /// Extended thinking block (model's internal reasoning).
     Thinking(ThinkingBlock),
+    /// Opaque safety-redacted thinking block.
+    RedactedThinking(RedactedThinkingBlock),
     /// Tool use block — the model is invoking a tool.
     ToolUse(ToolUseBlock),
 }
@@ -119,6 +121,35 @@ pub enum ThinkingBlockKind {
     /// Thinking block.
     #[serde(rename = "thinking")]
     Thinking,
+}
+
+/// Opaque encrypted thinking content returned after safety redaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedactedThinkingBlock {
+    /// Always `"redacted_thinking"`.
+    #[serde(rename = "type")]
+    pub kind: RedactedThinkingBlockKind,
+    /// Opaque encrypted content that must be passed back unchanged.
+    pub data: String,
+}
+
+impl RedactedThinkingBlock {
+    /// Construct an opaque redacted thinking block.
+    #[must_use]
+    pub fn new(data: impl Into<String>) -> Self {
+        Self {
+            kind: RedactedThinkingBlockKind::RedactedThinking,
+            data: data.into(),
+        }
+    }
+}
+
+/// Redacted thinking block discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RedactedThinkingBlockKind {
+    /// Redacted thinking block.
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking,
 }
 
 /// A model's tool invocation. The handler should execute the named tool

@@ -32,6 +32,17 @@ fn thinking_block_round_trip() {
 }
 
 #[test]
+fn official_sdk_redacted_thinking_round_trip() {
+    // Derived from anthropic-sdk-python@009b035:
+    // src/anthropic/types/redacted_thinking_block.py.
+    let block = ContentBlock::RedactedThinking(RedactedThinkingBlock::new("opaque-data"));
+    let json = serde_json::to_string(&block).unwrap();
+    assert_eq!(json, r#"{"type":"redacted_thinking","data":"opaque-data"}"#);
+    let back: ContentBlock = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, block);
+}
+
+#[test]
 fn tool_use_block_bare_round_trip() {
     let block = ToolUseBlock::new("toolu_abc", "Read", json!({"file_path": "/a/b.txt"}));
     let json = serde_json::to_string(&block).unwrap();
