@@ -182,3 +182,33 @@ fn redacted_thinking_is_refed_without_modification() {
     assert_eq!(encoded["content"][0]["type"], "redacted_thinking");
     assert_eq!(encoded["content"][0]["data"], "opaque-data");
 }
+
+#[test]
+fn official_adaptive_thinking_and_effort_shape_is_preserved() {
+    let mut input = core::ModelRequest {
+        request_id: "req-adaptive".into(),
+        model: core::ModelRef::new("anthropic", "claude-opus-4-6"),
+        system: Vec::new(),
+        messages: vec![core::ChatMessage::user("hello")],
+        tools: Vec::new(),
+        max_output_tokens: 1024,
+        reasoning: Some(core::ReasoningConfig {
+            budget_tokens: None,
+            effort: Some(core::ReasoningEffort::Low),
+        }),
+        output_schema: Some(json!({"type": "object"})),
+    };
+    let encoded = serde_json::to_value(request(&input).unwrap()).unwrap();
+    assert_eq!(encoded["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(encoded["output_config"]["effort"], "low");
+    assert_eq!(encoded["output_config"]["format"]["type"], "json_schema");
+
+    input.reasoning = Some(core::ReasoningConfig {
+        budget_tokens: None,
+        effort: Some(core::ReasoningEffort::Disabled),
+    });
+    input.output_schema = None;
+    let encoded = serde_json::to_value(request(&input).unwrap()).unwrap();
+    assert_eq!(encoded["thinking"], json!({"type": "disabled"}));
+    assert!(encoded.get("output_config").is_none());
+}

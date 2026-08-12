@@ -44,13 +44,16 @@ pub(crate) fn request(
             cache(definition, tool.cache_hint)
         })
         .collect();
-    let output_config = input
-        .output_schema
-        .clone()
-        .map(|schema| wire::OutputConfig {
-            effort: None,
-            format: Some(wire::JsonOutputFormat::new(schema)),
-        });
+    let effort = input
+        .reasoning
+        .and_then(|reasoning| reasoning.effort)
+        .filter(|effort| *effort != core::ReasoningEffort::Disabled)
+        .map(effort)
+        .transpose()?;
+    let format = input.output_schema.clone().map(wire::JsonOutputFormat::new);
+    let output_config =
+        (effort.is_some() || format.is_some()).then_some(wire::OutputConfig { effort, format });
+    let thinking = input.reasoning.map(thinking).transpose()?;
     Ok(CreateMessageRequest {
         model: input.model.model.clone(),
         max_tokens: input.max_output_tokens,
@@ -58,15 +61,40 @@ pub(crate) fn request(
         system,
         tools,
         tool_choice: None,
-        thinking: input
-            .reasoning
-            .and_then(|value| value.budget_tokens.map(wire::ThinkingConfig::new)),
+        thinking,
         output_config,
         temperature: None,
         top_p: None,
         top_k: None,
         stop_sequences: Vec::new(),
     })
+}
+
+fn thinking(input: core::ReasoningConfig) -> Result<wire::ThinkingConfig, core::ProviderError> {
+    if let Some(budget) = input.budget_tokens {
+        return Ok(wire::ThinkingConfig::new(budget));
+    }
+    match input.effort {
+        Some(core::ReasoningEffort::Disabled) => Ok(wire::ThinkingConfig::Disabled),
+        Some(core::ReasoningEffort::Minimal) => Err(unsupported(
+            "Anthropic Messages does not define minimal effort",
+        )),
+        Some(_) => Ok(wire::ThinkingConfig::adaptive()),
+        None => Ok(wire::ThinkingConfig::adaptive()),
+    }
+}
+
+fn effort(input: core::ReasoningEffort) -> Result<wire::Effort, core::ProviderError> {
+    match input {
+        core::ReasoningEffort::Low => Ok(wire::Effort::Low),
+        core::ReasoningEffort::Medium => Ok(wire::Effort::Medium),
+        core::ReasoningEffort::High => Ok(wire::Effort::High),
+        core::ReasoningEffort::Xhigh => Ok(wire::Effort::Xhigh),
+        core::ReasoningEffort::Max => Ok(wire::Effort::Max),
+        core::ReasoningEffort::Disabled | core::ReasoningEffort::Minimal => Err(unsupported(
+            "Anthropic Messages does not define this effort level",
+        )),
+    }
 }
 
 fn cache<T: Cacheable>(value: T, hint: Option<core::CacheHint>) -> T {
