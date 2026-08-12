@@ -40,11 +40,9 @@ approval/question decisions, and `Esc`/`Ctrl+C` interruption remain fixed safety
 contracts. `/help` and `/config` show the resolved bindings, not hard-coded
 defaults.
 
-## Ghostty desktop host contract
 
-The macOS Ghostty host removes inherited `NO_COLOR`, launches each session with
 `SYLVANDER_TUI_COLOR=truecolor`, and asks the terminal surface to publish
-`TERM=xterm-ghostty` plus `COLORTERM=truecolor`. This prevents a monochrome
+`TERM=xterm-256color` plus `COLORTERM=truecolor`. This prevents a monochrome
 parent environment from stripping the TUI palette. An explicit user override
 still wins when the TUI is launched outside the desktop host.
 
@@ -57,7 +55,6 @@ another window must not make the workspace opaque. The terminal TUI continues
 to render semantic foreground/background roles inside its PTY. A focused
 macOS regression test asserts the clear-glass host exists without an opaque
 root. See
-[`../../docs/sylvander-ghostty-architecture.md`](../../docs/sylvander-ghostty-architecture.md#7-transparency-and-terminal-color-contract).
 
 `/config` opens the resolved configuration in the searchable, copyable
 inspector. It reports the values captured at startup plus current server model,

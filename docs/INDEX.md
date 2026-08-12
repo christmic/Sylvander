@@ -45,7 +45,6 @@ Day-2 operator docs for keeping Sylvander production-ready.
   memory, and release-recovery drills to run before each release.
 - [release-closure.md](release-closure.md) — current release scope,
   reproducible gates, residual-risk non-claims.
-- [ghostty-release-verification.md](ghostty-release-verification.md) — macOS
   Release bundle, real Unix lifecycle, transparency/TrueColor, and visual
   operator checklist.
 - [performance-verification.md](performance-verification.md) —
@@ -61,7 +60,6 @@ Design notes for the platform, terminal substrate, and brand.
 
 - [sylvander-agent-platform.md](sylvander-agent-platform.md) — agent
   loop, tool/skill/MCP surface, supervisor layout.
-- [sylvander-ghostty-architecture.md](sylvander-ghostty-architecture.md) —
   Zig/GTK/macOS terminal substrate fork and how Sylvander embeds it.
 - [sylvander-desktop-ux-design.md](sylvander-desktop-ux-design.md) — native
   macOS session rail, terminal host, Inspector, commands, and visual system.
@@ -69,7 +67,6 @@ Design notes for the platform, terminal substrate, and brand.
   UI composition, focus, responsive dock, decision surfaces.
 - [sylvander-brand-system.md](sylvander-brand-system.md) — brand
   system, design tokens, visual assets catalog.
-- [design/README.md](design/README.md) — canonical TUI/Ghostty design entry
   point and approved brand/source asset map.
 
 ## Module references
@@ -136,9 +133,6 @@ and this index in the same change.
 - [module-sylvander-channel-wechat.md](module-sylvander-channel-wechat.md) —
   WeChat Work callback encryption/replay, renewable credentials, controls, and
   active-API delivery.
-- [token9-contracts/docs/ARCHITECTURE.md](../sylvander-token9/token9-contracts/docs/ARCHITECTURE.md) —
-  token9 management/read DTO ownership and generated-client ABI boundary.
-- [token9-server/docs/ARCHITECTURE.md](../sylvander-token9/token9-server/docs/ARCHITECTURE.md) —
   separately built local LLM gateway, routing, persistence, and deployment
   trust boundary.
 

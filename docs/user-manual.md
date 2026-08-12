@@ -117,7 +117,6 @@ self-use mode skips the integrity anchor.
 can build a local Release bundle with its embedded universal
 `sylvander-tui` helper, but a public bundle is installable release evidence
 only after Developer ID signing, notarization, and stapling pass. See
-[`ghostty-release-verification.md`](ghostty-release-verification.md).
 
 The application does not currently provision the server, write
 `server.toml`, or import Provider credentials. Configure and start the

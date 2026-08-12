@@ -7,8 +7,6 @@ deterministic default gates from deployment-specific acceptance journeys. The
 active
 [`production-expansion-checklist.md`](production-expansion-checklist.md) is
 fully checked. The same tracked implementation state passed the complete root
-workspace, nested Token9, security, performance, clean-room, and deterministic
-Ghostty matrices described below. The unified actor-aware capability router is
 also covered by focused Worker/Guardian, invocation, approval, artifact, and
 learning-opt-out tests.
 
@@ -55,7 +53,6 @@ cargo build --workspace --release --locked
 ./scripts/clean-room-verify.sh
 
 (
-  cd sylvander-token9
   cargo fmt --all -- --check
   cargo test --workspace --locked
   cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -70,7 +67,6 @@ newly generated production configuration, observes its Unix socket and durable
 databases, verifies the installed TUI, and requires a clean signal-driven
 shutdown.
 
-The nested token9 workspace is first-party code but intentionally does not
 participate in the root Cargo workspace. Its independent format, full-test,
 strict-Clippy, and warning-denied Rustdoc block above is therefore required; a
 green root workspace cannot stand in for it. `verify-docs.sh` requires one
@@ -92,7 +88,6 @@ human-directed revert, then reopen the durable store to verify terminal state.
 This is not evidence of an automatic or remote production rollout.
 
 The desktop-host gate is recorded in
-[`ghostty-release-verification.md`](ghostty-release-verification.md). It
 requires the full exact-v5 Swift suite, a clean Release universal bundled
 helper with strict local signature verification, and a real Unix-backed
 `ReleaseLocal` lifecycle with active/inactive transparency plus TrueColor
@@ -140,7 +135,6 @@ drift.
   `ReleaseLocal` configuration. Developer ID Release launch, distribution
   signing, notarization, and stapling still require the Apple identities and
   credentials documented in
-  [`sylvander-ghostty-architecture.md`](sylvander-ghostty-architecture.md).
 
 These are bounded environmental or explicit non-claims, not hidden fallback
 behavior.

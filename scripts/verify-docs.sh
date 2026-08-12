@@ -33,10 +33,6 @@ boundaries = {
     "sylvander-protocol/Cargo.toml": "docs/module-sylvander-protocol.md",
     "sylvander-runtime/Cargo.toml": "sylvander-runtime/docs/ARCHITECTURE.md",
     "sylvander-server/Cargo.toml": "docs/module-sylvander-server.md",
-    "sylvander-token9/token9-contracts/Cargo.toml":
-        "sylvander-token9/token9-contracts/docs/ARCHITECTURE.md",
-    "sylvander-token9/token9-server/Cargo.toml":
-        "sylvander-token9/token9-server/docs/ARCHITECTURE.md",
     "sylvander-tui/Cargo.toml": "sylvander-tui/docs/ARCHITECTURE.md",
 }
 
@@ -86,13 +82,10 @@ scan_roots = [
     root / "sylvander-llm-anthropic/docs",
     root / "sylvander-runtime/docs",
     root / "sylvander-tui/docs",
-    root / "sylvander-token9/token9-contracts/docs",
-    root / "sylvander-token9/token9-server/docs",
 ]
 markdown_files: set[Path] = {
     root / "sylvander-runtime/GUARDIAN.md",
     root / "sylvander-runtime/CREDENTIAL_AUDIT.md",
-    root / "sylvander-token9/README.md",
 }
 for scan_root in scan_roots:
     markdown_files.update(scan_root.rglob("*.md"))

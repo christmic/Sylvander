@@ -19,18 +19,7 @@ This manual assumes:
 
 It covers:
 
-- The Sylvander Rust workspace (server, agent, runtime, channels, TUI).
-- The ghostty `sylvander-ghostty/` subtree and its role as substrate.
-- The CI workflows that gate every PR.
-
 It does not cover:
-
-- The Anthropic Messages API contract — see
-  `sylvander-llm-anthropic/docs/`.
-- macOS `.app` packaging internals — see
-  `sylvander-ghostty/macos/AGENTS.md`.
-- Production data-backup strategy beyond what is enforced by the
-  integrity anchor (see [§20](#20-release-drill)).
 
 ## 2. Repo layout
 
@@ -38,57 +27,9 @@ The master tree is laid out as one product with layered Rust crates and
 one Zig subtree. The full tree-with-explanations lives in
 [AGENTS.md](../AGENTS.md); the summary is:
 
-```
-Sylvander/
-├── Cargo.toml              # workspace root; pins Rust 1.96
-├── AGENTS.md               # top-level agent guide (read first)
-├── .github/                # CI workflows (CI, clean-artifacts,
-│                           # milestone, nix, release-tag)
-├── scripts/                # clean-room / performance / security /
-│                           # ghostty-subtree shell scripts
-├── docs/                   # architecture & manual docs (this file)
-│
-├── sylvander-protocol/         # cross-language wire types (serde)
-├── sylvander-llm-anthropic/    # Anthropic Messages API client
-├── sylvander-agent/            # agent loop + tool registry + memory
-├── sylvander-runtime/          # boot / engine / session store glue
-├── sylvander-server/           # daemon binary
-├── sylvander-tui/              # terminal-UI client
-├── sylvander-channel/          # `Channel` trait
-├── sylvander-channel-dingtalk/ # DingTalk bot
-├── sylvander-channel-http/     # HTTP debug / webhook
-├── sylvander-channel-unix/     # Unix-domain socket
-├── sylvander-channel-ws/       # WebSocket (used by macOS app)
-├── sylvander-channel-telegram/ # Telegram bot
-└── sylvander-channel-wechat/   # WeChat Work bot
-```
-
-The Rust crates follow the composition and ownership boundaries documented in
-[AGENTS.md §"Project Layout"](../AGENTS.md). That map is an ownership guide,
-not a claim that every Cargo edge forms one strict linear stack. The ghostty
-subtree is a fork with rebrand patches; do not edit files listed in
-`sylvander-ghostty/SYNCUP.md §7.1`.
-
 ## 3. Toolchain
 
 The pinned versions for this repo:
-
-| Tool       | Version              | Source                                   |
-| ---------- | -------------------- | ---------------------------------------- |
-| Rust       | 1.96 (MSRV and CI)   | workspace `rust-version`, active CI jobs |
-| Zig        | 0.15.2               | Ghostty local/release build inputs       |
-| Xcode      | 26                   | local/release Ghostty application matrix |
-| macOS SDK  | 26                   | local/release Ghostty application matrix |
-| OpenSSL    | libssl-dev (Linux)   | `rust-linux` job apt-get line            |
-| SQLite     | libsqlite3-dev       | `rust-linux`, `tui-snapshots` jobs       |
-| protoc     | protobuf-compiler    | same jobs as above                       |
-
-Active CI installs Rust with `dtolnay/rust-toolchain@1.96`; the workspace
-`rust-version` independently enforces the same MSRV. The workflow still
-records Zig 0.15.2 setup and Xcode 26 selection for the disabled
-`zig-checked` / `zig-full` jobs, but those jobs are not current verification
-evidence. Local and release Ghostty verification must therefore execute the
-matrix in [`release-closure.md`](release-closure.md).
 
 ## 4. `rust-toolchain.toml` and toolchain pinning
 
@@ -117,13 +58,6 @@ cargo build --workspace --locked
 # Same, release profile (used by performance-verify.sh)
 cargo build --workspace --release --locked
 ```
-
-`--locked` is mandatory in CI and recommended locally; it stops the
-build if `Cargo.lock` would otherwise change. The
-`sylvander-ghostty/` subtree has a separate Zig/Xcode release matrix;
-run the active commands in `sylvander-ghostty/AGENTS.md` and
-[`ghostty-release-verification.md`](ghostty-release-verification.md). Disabled
-workflow jobs are not release evidence.
 
 To produce a daemon binary that matches clean-room verification:
 
@@ -181,20 +115,6 @@ Workspace lints are declared in `[workspace.lints.rust]` and
 set with module-repetition and over-bool exceptions deliberately
 relaxed.
 
-`sylvander-token9/` is a separate first-party Cargo workspace. Its two crates
-are included in the documentation-boundary audit but must be formatted,
-tested, linted, and documented from that directory:
-
-```sh
-(
-  cd sylvander-token9
-  cargo fmt --all -- --check
-  cargo test --workspace --locked -- --test-threads=1
-  cargo clippy --workspace --all-targets --locked -- -D warnings
-  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-)
-```
-
 ## 8. CI workflow tour
 
 The repository keeps several workflows under `.github/workflows/`. A workflow
@@ -204,38 +124,6 @@ but does not count as passing release evidence.
 ### ci.yml (`CI`, multi-job)
 
 Triggers on push to master, pull_request, and `workflow_dispatch`. Jobs:
-
-- **zig-module** — removed. The module it exercised disappeared when the
-  Ghostty subtree returned to upstream `main`.
-- **zig-checked** and **zig-full** — retained as disabled jobs (`if: false`).
-  They document the intended Zig 0.15.2 checked/full commands, but current
-  GitHub macOS image linker drift prevents them from acting as gates. The
-  full job additionally requires an enabled `macos-26-xlarge` runner.
-- **rust** — `macos-latest`. Runs `cargo build --workspace --locked`,
-  the macOS app helper contract via `build-sylvander-tui-universal.sh`
-  and `embed-sylvander-tui.sh`, compiles all tests with `--no-run`, then
-  runs the full workspace test suite serially with no skip list. It also
-  verifies universal-helper lipo and ad-hoc codesign contracts, then exports
-  that exact `HEAD` for the clean-room install/startup/shutdown gate.
-- **macos-swift** — `macos-latest`. Verifies `Sylvander-Info.plist`,
-  `Sylvander.sdef`, and `Sylvander.xcodeproj/project.pbxproj` exist and
-  have no `Ghostty-Info.plist` / `Ghostty.sdef` references.
-- **rust-fmt** — `macos-latest`. Runs both maintained Rust test-layout
-  guards, then `cargo fmt --all -- --check`.
-- **rust-clippy** — `macos-latest`. `cargo clippy --workspace
-  --all-targets --locked -- -D warnings`. Catches dead code and unused
-  imports before they leak to a release tag.
-- **rust-doc** — `macos-latest`. Builds workspace rustdoc with warnings
-  denied and runs `scripts/verify-docs.sh`.
-- **token9** — `macos-latest`. Independently runs format, serial tests,
-  clippy, and rustdoc for the nested Token9 workspace.
-- **rust-linux** — `ubuntu-latest`. `cargo build --workspace --locked`
-  after `apt-get install libssl-dev libsqlite3-dev
-  protobuf-compiler`. Catches macOS-only assumptions (Hardcoded
-  `/Users/foo`, Apple-only crates).
-- **tui-snapshots** — `ubuntu-latest`. `INSTA_UPDATE=no cargo test
-  -p sylvander-tui --test snapshots --locked`; uploads any
-  `.snap.new` artifacts on failure.
 
 Zig version is recorded by `env: ZIG_VERSION: "0.15.2"` and the disabled
 jobs use `cache: false`. Neither fact makes a disabled job release evidence.
@@ -344,10 +232,6 @@ Security claim coverage:
 Pass = "security verification passed".
 
 ### verify-docs.sh
-
-Checks that every first-party Cargo package has exactly one indexed boundary
-document and that maintained Markdown relative links resolve. This includes
-the root workspace and the separately built Token9 workspace.
 
 Pass = a count of verified crate boundaries and maintained Markdown files.
 
@@ -598,16 +482,6 @@ the latest contract in the same bounded change.
 The protocol crate is the cross-language wire-type root. It is hand
 maintained, not `protoc`-generated. Under the latest-only policy:
 
-- Bump the package `version` in `sylvander-protocol/Cargo.toml` when
-  changing the public contract.
-- Add `#[serde(default)]` only when absence has current-contract semantics,
-  not to preserve an unspecified legacy payload.
-- Remove obsolete fields and decoders when all current callers change.
-- The server, TUI, Ghostty host, and channels must all be updated together; CI's
-  `cargo build --workspace --locked` catches drift but **not**
-  semantic drift — write a contract test under
-  `sylvander-protocol/tests/`.
-
 ## 18. Configuration schema
 
 The authoritative reference is
@@ -648,13 +522,6 @@ subscriber in `sylvander-server/src/main.rs::init_tracing`:
 The project's authoritative list lives in
 [AGENTS.md §"What you should NOT do"](../AGENTS.md). Reproduced in
 summary:
-
-- Do not `git push --force` to `christmic/Sylvander@master` without
-  asking.
-- Do not delete files inside `sylvander-ghostty/` without checking
-  the drop list (`sylvander-ghostty/SYNCUP.md §7.1`).
-- Do not run `git subtree pull` by hand; use
-  `scripts/sync-ghostty-subtree.sh`.
 
 CI gotchas worth restating:
 

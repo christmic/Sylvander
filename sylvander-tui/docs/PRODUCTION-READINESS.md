@@ -146,8 +146,7 @@ completed backend feature.
 - [x] Reduced-motion and no-italic fallbacks preserve hierarchy.
 - [x] Narrow, standard, and wide layouts are snapshot-verified and the compiled
       TUI reflows across 40×18, 88×24, and 132×30 PTY surfaces.
-- [x] `screen-256color` and `xterm-ghostty` terminal contracts run through the
-      compiled PTY flow; native Ghostty session discovery, reconciliation,
+- [x] `screen-256color` and `xterm-256color` terminal contracts run through the
       activity, selection, and management tests pass in Xcode.
 - [x] The current supported-terminal scope does not claim native tmux
       integration. PTY reflow is verified for tmux's `screen-256color` surface;
