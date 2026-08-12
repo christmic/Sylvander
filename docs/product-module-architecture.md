@@ -58,6 +58,10 @@ The Agent owns policy declarations and ports, not infrastructure:
 - the Agent asks an injected authorization port for a decision;
 - the Agent asks an injected execution port to perform structured workspace or
   process work;
+- mutation tools use an injected two-phase journal port, while Runtime owns
+  snapshot layout, crash recovery, conflict detection, and rollback commands;
+- compression uses an artifact persistence port, while Runtime owns the
+  explicit storage root, identifier validation, retention, and cleanup policy;
 - the Agent never chooses a host path, container image, SSH endpoint, database,
   credential, or network bypass.
 
@@ -84,7 +88,9 @@ durable Session is the product record.
 The execution service implements the Agent's workspace and process ports. It
 maps logical workspace and target identifiers to concrete adapters, validates
 the prepared policy, starts the operation, collects bounded output and
-artifacts, and records the terminal execution fact.
+artifacts, and records the terminal execution fact. Host-local execution,
+workspace mutation manifests, rollback recovery, and filesystem-backed tool
+result artifacts are concrete Runtime adapters rather than Agent facilities.
 
 ### Authorization service
 

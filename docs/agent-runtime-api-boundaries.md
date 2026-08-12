@@ -224,8 +224,12 @@ Migration is performed without compatibility aliases:
    durable SQLite relationship memory, integrity anchors, backup, and
    maintenance are Runtime-owned. The host-local, SSH, and OCI workspace
    executors are Runtime-owned and Agent defaults to an unavailable executor
-   until Runtime binds one. Concrete workspace-journal and compression-disk
-   persistence still remain in Agent.
+   until Runtime binds one. Workspace mutation journaling is now an Agent
+   two-phase port with Runtime-owned manifests, crash recovery, and rollback;
+   oversized tool-result persistence is likewise an Agent port with a
+   Runtime-owned, explicitly rooted filesystem adapter. The remaining work in
+   this step is the Agent's Protocol dependency and any residual infrastructure
+   selected outside Runtime.
 5. Move `MessageBus` and `InProcessMessageBus` out of Protocol; split the large
    wire `types` module by API domain.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with

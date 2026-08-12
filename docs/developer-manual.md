@@ -354,9 +354,10 @@ statically couple a tool to a hard-coded model or provider.
 
 ## 12. Adding a new executor
 
-Executors implement `WorkspaceExecutor` in
-`sylvander-agent/src/workspace_executor.rs`. They dispatch workspace
-operations to local, SSH, or OCI container targets. The full contract lives in
+Executor contracts live in `sylvander-agent/src/workspace_executor.rs`;
+concrete local, SSH, and OCI adapters live under `sylvander-runtime/src/execution/`.
+Runtime selects an adapter and dispatches workspace operations to the bound
+target. The full contract lives in
 [`workspace-execution.md`](../sylvander-agent/docs/workspace-execution.md).
 
 A new executor must:

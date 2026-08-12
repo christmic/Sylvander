@@ -26,9 +26,10 @@ Agent 不是产品 Session、服务协议或基础设施组合根：
 - provider crate 只负责官方协议的 wire 编解码；
 - Channel/TUI/Desktop 通过 Runtime 的应用端口工作，不直接读取 Agent 存储。
 
-仓库仍有 `AgentRun`、Session SQLite、具体 workspace executor 和 MCP stdio 位于本
-crate，这是已记录的迁移状态，不是目标所有权。迁移顺序见
-[`docs/agent-runtime-api-boundaries.md`](../docs/agent-runtime-api-boundaries.md)。
+Agent 只保留 workspace executor、变更日志和压缩产物的中立端口。host-local、SSH、
+OCI、MCP stdio、SQLite、变更 manifest、崩溃恢复及文件系统产物适配器均由 Runtime
+实现和选择。剩余边界迁移以
+[`docs/agent-runtime-api-boundaries.md`](../docs/agent-runtime-api-boundaries.md) 为准。
 
 ## 最小执行
 
@@ -102,6 +103,10 @@ println!("finished after {} iterations", outcome.iterations);
 进程工具必须声明强制沙箱要求。只有能证明文件系统隔离、默认拒绝网络及资源限制
 均已生效的 executor 才能执行；本地或 SSH executor 不会冒充完整沙箱。Agent 本身
 是可信控制平面并运行在沙箱外，只有工具进程进入沙箱数据平面。
+
+Write/Edit 在写入前通过 `WorkspaceMutationJournal` 请求 Runtime 持久化回滚状态，
+写入成功后提交不透明句柄。Agent 不解析 manifest，也不执行恢复。超大工具结果同样
+只通过 `ToolResultDisk` 端口持久化；生产目录、生命周期和路径安全由 Runtime 决定。
 
 ## 循环语义
 
