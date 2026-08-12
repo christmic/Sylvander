@@ -1,7 +1,6 @@
 use super::*;
 use std::sync::Mutex;
 use sylvander_agent::bus::InProcessMessageBus;
-use sylvander_agent::session_store::SqliteSessionStore;
 
 use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationMethod, ClassifiedPreference, IdentityBindingAction,
@@ -201,10 +200,7 @@ async fn registry_admin_default_fails_closed_without_reflecting_request() {
 
 #[tokio::test]
 async fn external_chat_fails_closed_without_runtime_authorizer() {
-    let context = ChannelContext::new(
-        Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-    );
+    let context = ChannelContext::new(Arc::new(InProcessMessageBus::new()));
     let boundary = BoundaryContext::authenticated(
         AuthenticatedPrincipal::user("telegram:bot-a:42", AuthenticationMethod::PlatformIdentity),
         "bot-a",
@@ -297,7 +293,6 @@ fn external_controls_are_typed_and_require_an_existing_session() {
 async fn identity_binding_defaults_to_no_capability_and_denial() {
     let context = ChannelContext::with_runtime_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
         Arc::new(DefaultUiService),
         None,
     );
@@ -378,7 +373,6 @@ async fn authenticated_channel_context_derives_the_only_transport_identity() {
     });
     let context = ChannelContext::with_runtime_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
         service.clone(),
         None,
     );
@@ -406,7 +400,6 @@ async fn unauthenticated_or_non_user_ingress_never_reaches_identity_service() {
     });
     let context = ChannelContext::with_runtime_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
         service.clone(),
         None,
     );

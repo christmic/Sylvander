@@ -3,16 +3,15 @@
 //! Abstract [`Channel`] trait — the contract between the agent system
 //! and external communication channels (TUI, Telegram, HTTP API, ...).
 //!
-//! Channel implementations depend ONLY on this crate (+ `sylvander-agent`
-//! for message types). They do NOT depend on `sylvander-runtime`.
+//! Channel implementations depend on this contract and protocol DTOs. They do
+//! not receive Runtime persistence backends or concrete Agent runs.
 //!
 //! # Responsibilities
 //!
 //! A channel is responsible for:
 //! 1. Receiving messages in its native protocol
-//! 2. Extracting protocol metadata → storing in session
-//! 3. Mapping external identifiers → internal [`SessionId`]
-//! 4. Submitting authenticated operations to the runtime-owned [`UiService`]
+//! 2. Mapping native input into authenticated protocol DTOs
+//! 3. Submitting operations to the runtime-owned [`UiService`]
 //! 5. Rendering bus events (streaming text, tool calls, approvals)
 //!    in channel-native format
 //!
@@ -24,7 +23,7 @@
 //! ├──────────────────────────────────────────────┤
 //! │  sylvander-channel  (this crate)              │  ← Channel trait
 //! ├──────────────────────────────────────────────┤
-//! │  sylvander-agent    (bus, session_store)      │  ← agent types
+//! │  Runtime host ports + protocol DTOs            │  ← owned boundaries
 //! └──────────────────────────────────────────────┘
 //! ```
 
@@ -37,7 +36,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 
 use sylvander_agent::bus::{BusError, BusMessage, MessageBus, SubscriptionFilter};
-use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
     AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
@@ -499,8 +497,8 @@ pub fn unavailable_registry_admin_response() -> RegistryAdminResponse {
 ///
 /// - The channel MUST NOT call engine or agent methods directly
 /// - Mutations and controls flow through [`UiService`]
-/// - Session mapping (external ID → `SessionId`) is the channel's
-///   responsibility, using the session store's metadata
+/// - Session lookup and mutation go through [`UiService`]; channels never
+///   receive the Runtime's persistence backend
 #[async_trait]
 pub trait Channel: Send + Sync {
     /// Human-readable channel name (for logging).
@@ -511,7 +509,7 @@ pub trait Channel: Send + Sync {
     /// The channel should:
     /// - Listen for external messages (stdin, webhook, polling, ...)
     /// - Subscribe to the bus for agent events
-    /// - Map external IDs → session IDs via [`ChannelContext::sessions`]
+    /// - Ask [`UiService`] to resolve or create Runtime sessions
     /// - Submit normalized messages through [`ChannelContext::submit_control`]
     ///   or [`submit_external_chat`]
     ///
@@ -533,8 +531,6 @@ pub struct ChannelContext {
     /// Event subscription is exposed through [`ChannelContext::subscribe`].
     /// Channels never receive a public bus publisher.
     bus: Arc<dyn MessageBus>,
-    /// Session persistence and external-ID mapping.
-    pub sessions: Arc<dyn SessionStore>,
     /// Runtime-owned UI application service. Channels adapt transports only.
     pub ui: Option<Arc<dyn UiService>>,
     /// Runtime-owned startup handshake. Channel implementations call
@@ -547,10 +543,9 @@ pub struct ChannelContext {
 impl ChannelContext {
     /// Construct a test or explicitly ephemeral context without Runtime UI services.
     #[must_use]
-    pub fn new(bus: Arc<dyn MessageBus>, sessions: Arc<dyn SessionStore>) -> Self {
+    pub fn new(bus: Arc<dyn MessageBus>) -> Self {
         Self {
             bus,
-            sessions,
             ui: None,
             readiness: None,
             session_defaults: SessionConfigOverrides::default(),
@@ -561,25 +556,22 @@ impl ChannelContext {
     #[must_use]
     pub fn with_runtime_services(
         bus: Arc<dyn MessageBus>,
-        sessions: Arc<dyn SessionStore>,
         ui: Arc<dyn UiService>,
         readiness: Option<ChannelReadiness>,
     ) -> Self {
-        Self::with_services(bus, sessions, Some(ui), readiness)
+        Self::with_services(bus, Some(ui), readiness)
     }
 
     #[doc(hidden)]
     #[must_use]
     pub fn with_runtime_services_and_defaults(
         bus: Arc<dyn MessageBus>,
-        sessions: Arc<dyn SessionStore>,
         ui: Arc<dyn UiService>,
         readiness: Option<ChannelReadiness>,
         session_defaults: SessionConfigOverrides,
     ) -> Self {
         Self {
             bus,
-            sessions,
             ui: Some(ui),
             readiness,
             session_defaults,
@@ -590,13 +582,11 @@ impl ChannelContext {
     #[must_use]
     pub fn with_services(
         bus: Arc<dyn MessageBus>,
-        sessions: Arc<dyn SessionStore>,
         ui: Option<Arc<dyn UiService>>,
         readiness: Option<ChannelReadiness>,
     ) -> Self {
         Self {
             bus,
-            sessions,
             ui,
             readiness,
             session_defaults: SessionConfigOverrides::default(),
