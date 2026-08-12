@@ -65,6 +65,11 @@ dependencies.
 Runtime may depend on Agent, API, provider adapters, and infrastructure. No
 lower layer may depend back on Runtime.
 
+Runtime also owns the single configured storage facade, the built-in
+observability pipeline, and the execution service. Their full product-level
+contract is defined in
+[`product-module-architecture.md`](product-module-architecture.md).
+
 ### API
 
 The eventual `sylvander-api` crate owns versioned, serializable DTOs and JSON
@@ -100,6 +105,10 @@ product identity, wire data, and execution authority.
 
 The Agent may maintain conversation messages while it runs. Runtime owns when
 that conversation becomes durable Session history.
+
+The Agent is trusted control-plane code that uses Runtime's sandboxed execution
+service. It is not placed inside each tool sandbox. Whole-worker isolation is a
+separate deployment hardening layer and never replaces per-tool policy.
 
 ## Target dependency graph
 
