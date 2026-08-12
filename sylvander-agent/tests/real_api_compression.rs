@@ -113,11 +113,12 @@ async fn real_api_l1_drops_prepopulated_orphan() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run against real API");
+    let _run = loop_
+        .run_with_events(initial, move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run against real API");
 
     let events = events.lock().unwrap();
     // No orphan to drop — just verify the pipeline ran.
@@ -161,8 +162,7 @@ async fn real_api_l4_smoke_test() {
         .build()
         .expect("build");
 
-    let result = run_with_events(
-        &loop_,
+    let result = loop_.run_with_events(
         vec![MessageParam::user(
             "List 10 distinct colors. For each, give its hex code and one sentence describing when to use it."
         )],
@@ -235,11 +235,12 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run against real API");
+    let _run = loop_
+        .run_with_events(initial, move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run against real API");
 
     let events = events.lock().unwrap();
     let l0_active: Vec<_> = events
@@ -303,11 +304,12 @@ async fn real_api_l2_condenses_old_tool_results() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run against real API");
+    let _run = loop_
+        .run_with_events(initial, move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run against real API");
 
     let events = events.lock().unwrap();
     let l2_active: Vec<_> = events
@@ -366,11 +368,12 @@ async fn real_api_l3_trims_old_thinking_block() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run against real API");
+    let _run = loop_
+        .run_with_events(initial, move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run against real API");
 
     let events = events.lock().unwrap();
     let l3_active: Vec<_> = events

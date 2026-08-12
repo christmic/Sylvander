@@ -178,15 +178,15 @@ async fn real_use_case_read_and_summarize() {
         .expect("build");
 
     // === Run the agent loop with reactive event delivery ===
-    let run = sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("Summarize /tmp/notes.md")],
-        move |event| {
-            events_clone.lock().unwrap().push(event);
-        },
-    )
-    .await
-    .expect("run should succeed");
+    let run = loop_
+        .run_with_events(
+            vec![MessageParam::user("Summarize /tmp/notes.md")],
+            move |event| {
+                events_clone.lock().unwrap().push(event);
+            },
+        )
+        .await
+        .expect("run should succeed");
 
     // === Verify the result ===
     assert_eq!(
@@ -335,15 +335,15 @@ async fn real_use_case_tool_error_recovery() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run_with_events(
-        &loop_,
-        vec![MessageParam::user("Read /nonexistent")],
-        move |event| {
-            events_clone.lock().unwrap().push(event);
-        },
-    )
-    .await
-    .expect("run should succeed even with tool error");
+    let run = loop_
+        .run_with_events(
+            vec![MessageParam::user("Read /nonexistent")],
+            move |event| {
+                events_clone.lock().unwrap().push(event);
+            },
+        )
+        .await
+        .expect("run should succeed even with tool error");
 
     assert_eq!(run.iterations, 2);
     assert!(

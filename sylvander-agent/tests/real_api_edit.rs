@@ -75,11 +75,12 @@ async fn real_api_edit_tool_e2e() {
                   \"TODO: implement feature\" to \"DONE: feature shipped\". \
                   Do not rewrite the whole file — just change that one line.";
 
-    let _run = run_with_events(&loop_, vec![MessageParam::user(prompt)], move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run against real API");
+    let _run = loop_
+        .run_with_events(vec![MessageParam::user(prompt)], move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run against real API");
 
     let events = events.lock().unwrap();
     let tool_calls: Vec<&str> = events

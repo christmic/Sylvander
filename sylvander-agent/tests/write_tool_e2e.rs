@@ -128,15 +128,15 @@ async fn write_tool_e2e() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        vec![MessageParam::user(
-            "Read notes.md then write notes2.md with the same content",
-        )],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run");
+    let _run = loop_
+        .run_with_events(
+            vec![MessageParam::user(
+                "Read notes.md then write notes2.md with the same content",
+            )],
+            move |event| events_clone.lock().unwrap().push(event),
+        )
+        .await
+        .expect("run");
 
     let events = events.lock().unwrap();
 
@@ -224,13 +224,13 @@ async fn write_creates_nested_dirs() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        vec![MessageParam::user("write to deep/nested/file.txt")],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run");
+    let _run = loop_
+        .run_with_events(
+            vec![MessageParam::user("write to deep/nested/file.txt")],
+            move |event| events_clone.lock().unwrap().push(event),
+        )
+        .await
+        .expect("run");
 
     // File was created with parent dirs
     let path = tmp.path().join("deep/nested/file.txt");

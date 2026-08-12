@@ -78,10 +78,7 @@ async fn real_api_agent_loop_completes() {
         .expect("build");
 
     // Use the new run_stream API (post-R1 refactor)
-    let mut events = Box::pin(sylvander_agent::prelude::run_stream(
-        &loop_,
-        vec![MessageParam::user(&prompt)],
-    ));
+    let mut events = Box::pin(loop_.run_stream(vec![MessageParam::user(&prompt)]));
     let mut final_text = String::new();
     let mut final_message: Option<ModelResponse> = None;
 
@@ -176,10 +173,7 @@ async fn real_api_streaming_events_in_order() {
         .expect("build");
 
     // Verify event order is exactly: IterationStart, [chunks], IterationEnd, Done
-    let mut events = Box::pin(sylvander_agent::prelude::run_stream(
-        &loop_,
-        vec![MessageParam::user(&prompt)],
-    ));
+    let mut events = Box::pin(loop_.run_stream(vec![MessageParam::user(&prompt)]));
     let mut saw_iteration_start = false;
     let mut saw_iteration_end_before_done = false;
     let mut saw_done = false;

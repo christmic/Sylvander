@@ -142,13 +142,13 @@ async fn real_use_case_l0_offloads_huge_read_result() {
         .build()
         .expect("build");
 
-    let run = run_with_events(
-        &loop_,
-        vec![MessageParam::user("Summarize notes.md")],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run");
+    let run = loop_
+        .run_with_events(
+            vec![MessageParam::user("Summarize notes.md")],
+            move |event| events_clone.lock().unwrap().push(event),
+        )
+        .await
+        .expect("run");
 
     // === Verify run completed correctly ===
     assert_eq!(run.iterations, 2, "expected tool_use + end_turn");
@@ -314,13 +314,12 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
         .build()
         .expect("build");
 
-    let run = run_with_events(
-        &loop_,
-        vec![MessageParam::user("Process files")],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
-    .await
-    .expect("run");
+    let run = loop_
+        .run_with_events(vec![MessageParam::user("Process files")], move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run");
 
     let events = events.lock().unwrap();
 
@@ -419,11 +418,12 @@ async fn real_use_case_l1_drops_orphan_tool_results() {
         ChatMessage::user("continue from where we left off"),
     ];
 
-    let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run");
+    let _run = loop_
+        .run_with_events(initial, move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run");
 
     let events = events.lock().unwrap();
     let l1_events: Vec<_> = events
@@ -543,11 +543,12 @@ async fn real_use_case_l2_condenses_old_tool_results() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run");
+    let _run = loop_
+        .run_with_events(initial, move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run");
 
     let events = events.lock().unwrap();
     let l2_events: Vec<_> = events
@@ -637,11 +638,12 @@ async fn real_use_case_l3_trims_old_thinking_blocks() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(&loop_, vec![MessageParam::user("read x")], move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run");
+    let _run = loop_
+        .run_with_events(vec![MessageParam::user("read x")], move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run");
 
     let events = events.lock().unwrap();
     let all_event_kinds: Vec<String> = events
@@ -763,11 +765,12 @@ async fn real_use_case_l4_summarizes_at_high_usage() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(&loop_, vec![MessageParam::user("hi")], move |event| {
-        events_clone.lock().unwrap().push(event);
-    })
-    .await
-    .expect("run");
+    let _run = loop_
+        .run_with_events(vec![MessageParam::user("hi")], move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
+        .await
+        .expect("run");
 
     let events = events.lock().unwrap();
     let l4_events: Vec<_> = events
