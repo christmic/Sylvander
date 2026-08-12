@@ -79,8 +79,7 @@ fn thinking(input: core::ReasoningConfig) -> Result<wire::ThinkingConfig, core::
         Some(core::ReasoningEffort::Minimal) => Err(unsupported(
             "Anthropic Messages does not define minimal effort",
         )),
-        Some(_) => Ok(wire::ThinkingConfig::adaptive()),
-        None => Ok(wire::ThinkingConfig::adaptive()),
+        Some(_) | None => Ok(wire::ThinkingConfig::adaptive()),
     }
 }
 

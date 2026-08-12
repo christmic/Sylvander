@@ -35,7 +35,7 @@ pub(crate) fn events(
                     if protocol == OpenAiProtocol::ChatCompletions && !completed {
                         completed = true;
                         let state = chat.take().ok_or_else(|| protocol_error("chat stream completed twice"))?;
-                        yield ModelStreamEvent::Completed(state.finish()?);
+                        yield ModelStreamEvent::Completed(Box::new(state.finish()?));
                     }
                     continue;
                 }
@@ -51,7 +51,7 @@ pub(crate) fn events(
                     }
                     OpenAiProtocol::ChatCompletions => {
                         let state = chat.as_mut().ok_or_else(|| protocol_error("chat event followed completion"))?;
-                        for event in state.push(&value)? {
+                        for event in state.push(&value) {
                             yield event;
                         }
                     }
@@ -63,7 +63,7 @@ pub(crate) fn events(
                 && chat.as_ref().is_some_and(|state| state.saw_chunk)
             {
                 let state = chat.take().ok_or_else(|| protocol_error("chat stream state is missing"))?;
-                yield ModelStreamEvent::Completed(state.finish()?);
+                yield ModelStreamEvent::Completed(Box::new(state.finish()?));
             } else {
                 Err(protocol_error("provider stream ended before completion"))?;
             }
@@ -117,9 +117,9 @@ fn response_event(provider: &str, value: Value) -> Result<Option<ModelStreamEven
             let response = value
                 .get("response")
                 .ok_or_else(|| protocol_error("completed event has no response"))?;
-            Ok(Some(ModelStreamEvent::Completed(parse_response(
+            Ok(Some(ModelStreamEvent::Completed(Box::new(parse_response(
                 provider, response,
-            )?)))
+            )?))))
         }
         Some("error" | "response.failed") => {
             Err(protocol_error("provider reported a streaming failure"))
@@ -233,7 +233,7 @@ impl ChatState {
         }
     }
 
-    fn push(&mut self, value: &Value) -> Result<Vec<ModelStreamEvent>, ProviderError> {
+    fn push(&mut self, value: &Value) -> Vec<ModelStreamEvent> {
         self.saw_chunk = true;
         if let Some(id) = value.get("id").and_then(Value::as_str) {
             self.id = id.into();
@@ -296,7 +296,7 @@ impl ChatState {
                 }
             }
         }
-        Ok(events)
+        events
     }
 
     fn finish(self) -> Result<ModelResponse, ProviderError> {

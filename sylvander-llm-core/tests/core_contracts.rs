@@ -65,8 +65,9 @@ impl ModelProvider for FakeProvider {
                 stop_reason: StopReason::EndTurn,
                 usage: TokenUsage::default(),
             };
-            let stream: ModelEventStream =
-                Box::pin(stream::iter([Ok(ModelStreamEvent::Completed(response))]));
+            let stream: ModelEventStream = Box::pin(stream::iter([Ok(
+                ModelStreamEvent::Completed(Box::new(response)),
+            )]));
             Ok(stream)
         })
     }
@@ -155,7 +156,7 @@ fn rich_request_and_response_round_trip_without_provider_wire_types() {
         request
     );
 
-    let event = ModelStreamEvent::Completed(ModelResponse {
+    let event = ModelStreamEvent::Completed(Box::new(ModelResponse {
         id: "message-1".into(),
         model: request.model.clone(),
         content: vec![
@@ -183,7 +184,7 @@ fn rich_request_and_response_round_trip_without_provider_wire_types() {
                 ..TokenUsageDetails::default()
             },
         },
-    });
+    }));
     let event_json = serde_json::to_string(&event).unwrap();
     assert_eq!(
         serde_json::from_str::<ModelStreamEvent>(&event_json).unwrap(),

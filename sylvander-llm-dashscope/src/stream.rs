@@ -28,20 +28,20 @@ pub(crate) fn events(response: Response, _provider: String, model: ModelRef) -> 
                 let value: Value = serde_json::from_str(&data)
                     .map_err(|_| protocol_error("provider emitted invalid SSE JSON"))?;
                 let current = state.as_mut().ok_or_else(|| protocol_error("event followed completion"))?;
-                for event in current.push(&value)? {
+                for event in current.push(&value) {
                     yield event;
                 }
                 if current.finished() {
                     completed = true;
                     let final_state = state.take().ok_or_else(|| protocol_error("stream state is missing"))?;
-                    yield ModelStreamEvent::Completed(final_state.finish()?);
+                    yield ModelStreamEvent::Completed(Box::new(final_state.finish()?));
                 }
             }
         }
         if !completed {
             let final_state = state.take().ok_or_else(|| protocol_error("stream state is missing"))?;
             if final_state.saw_chunk {
-                yield ModelStreamEvent::Completed(final_state.finish()?);
+                yield ModelStreamEvent::Completed(Box::new(final_state.finish()?));
             } else {
                 Err(protocol_error("provider stream ended before output"))?;
             }
@@ -80,7 +80,7 @@ impl State {
         }
     }
 
-    fn push(&mut self, value: &Value) -> Result<Vec<ModelStreamEvent>, ProviderError> {
+    fn push(&mut self, value: &Value) -> Vec<ModelStreamEvent> {
         self.saw_chunk = true;
         if let Some(id) = value.get("request_id").and_then(Value::as_str) {
             self.request_id = id.into();
@@ -162,7 +162,7 @@ impl State {
         {
             self.finish_reason = Some(reason.into());
         }
-        Ok(events)
+        events
     }
 
     fn finished(&self) -> bool {

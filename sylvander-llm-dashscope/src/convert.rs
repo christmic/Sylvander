@@ -110,7 +110,7 @@ fn append_message(
             ContentBlock::Image { image } if message.role == ChatRole::User => {
                 output.push(json!({
                     "role": "user",
-                    "content": [{"image": media_url(&image.source)?}],
+                    "content": [{"image": media_url(&image.source)}],
                 }));
             }
             ContentBlock::Reasoning { .. } => {}
@@ -147,10 +147,10 @@ fn result_text(content: &[ToolResultContent]) -> Result<String, ProviderError> {
     Ok(result)
 }
 
-fn media_url(source: &MediaSource) -> Result<String, ProviderError> {
+fn media_url(source: &MediaSource) -> String {
     match source {
-        MediaSource::Url { url } => Ok(url.clone()),
-        MediaSource::Base64 { media_type, data } => Ok(format!("data:{media_type};base64,{data}")),
+        MediaSource::Url { url } => url.clone(),
+        MediaSource::Base64 { media_type, data } => format!("data:{media_type};base64,{data}"),
     }
 }
 

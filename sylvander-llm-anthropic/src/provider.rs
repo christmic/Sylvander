@@ -109,9 +109,8 @@ impl Stream for NeutralStream {
                             "model provider stream ended before completion",
                         ))));
                     };
-                    return Poll::Ready(Some(Ok(ModelStreamEvent::Completed(convert::response(
-                        &self.provider,
-                        message,
+                    return Poll::Ready(Some(Ok(ModelStreamEvent::Completed(Box::new(
+                        convert::response(&self.provider, message),
                     )))));
                 }
                 Poll::Pending => return Poll::Pending,

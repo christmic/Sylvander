@@ -363,5 +363,5 @@ pub enum ModelStreamEvent {
     /// Incremental model reasoning.
     ReasoningDelta(String),
     /// Exactly one terminal assembled response.
-    Completed(ModelResponse),
+    Completed(Box<ModelResponse>),
 }

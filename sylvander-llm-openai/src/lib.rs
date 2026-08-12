@@ -1,4 +1,4 @@
-//! OpenAI Responses and Chat Completions protocol adapters.
+//! `OpenAI` Responses and Chat Completions protocol adapters.
 //!
 //! The caller supplies the endpoint, credential, protocol, and provider feature
 //! switches explicitly. This crate never reads process environment variables.
@@ -25,7 +25,7 @@ pub enum OpenAiProtocol {
     ChatCompletions,
 }
 
-/// Explicit provider extensions allowed on top of an OpenAI protocol.
+/// Explicit provider extensions allowed on top of an `OpenAI` protocol.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderFeatures {
     enabled: BTreeSet<String>,

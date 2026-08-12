@@ -104,7 +104,7 @@ fn response_items(
                     }
                     ContentBlock::Image { image } => content.push(json!({
                         "type": "input_image",
-                        "image_url": media_url(&image.source)?,
+                        "image_url": media_url(&image.source),
                     })),
                     ContentBlock::ToolResult {
                         call_id,
@@ -260,7 +260,7 @@ fn chat_messages(
             ContentBlock::Image { image } if message.role == ChatRole::User => {
                 output.push(json!({
                     "role": "user",
-                    "content": [{"type": "image_url", "image_url": {"url": media_url(&image.source)?}}],
+                    "content": [{"type": "image_url", "image_url": {"url": media_url(&image.source)}}],
                 }));
             }
             ContentBlock::Reasoning { .. } => {}
@@ -293,10 +293,10 @@ fn result_text(content: &[ToolResultContent]) -> Result<String, ProviderError> {
     Ok(result)
 }
 
-fn media_url(source: &MediaSource) -> Result<String, ProviderError> {
+fn media_url(source: &MediaSource) -> String {
     match source {
-        MediaSource::Url { url } => Ok(url.clone()),
-        MediaSource::Base64 { media_type, data } => Ok(format!("data:{media_type};base64,{data}")),
+        MediaSource::Url { url } => url.clone(),
+        MediaSource::Base64 { media_type, data } => format!("data:{media_type};base64,{data}"),
     }
 }
 

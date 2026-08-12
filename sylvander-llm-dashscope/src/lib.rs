@@ -1,4 +1,4 @@
-//! Native DashScope Generation protocol adapter.
+//! Native `DashScope` Generation protocol adapter.
 //!
 //! Endpoint, credential, and provider feature switches are explicit constructor
 //! inputs. This crate never reads process environment variables.
@@ -36,7 +36,7 @@ impl DashScopeFeatures {
     }
 }
 
-/// Explicit native DashScope provider configuration.
+/// Explicit native `DashScope` provider configuration.
 #[derive(Clone)]
 pub struct DashScopeProviderConfig {
     pub provider_id: String,
