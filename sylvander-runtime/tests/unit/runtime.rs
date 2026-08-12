@@ -488,9 +488,7 @@ async fn wait_for_guardian_events(
 ) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let result = guardian
-                .drain_once(sylvander_agent::session::now_secs())
-                .await;
+            let result = guardian.drain_once(crate::session::now_secs()).await;
             if guardian.completed_event_count() == expected_events
                 && guardian.canonical_record_count() == expected_records
             {
@@ -1374,7 +1372,7 @@ async fn attach_memory_session(
     runtime: &Runtime,
     agent: &str,
     user: &str,
-) -> sylvander_agent::run::AuthenticatedSession {
+) -> crate::agent_run::AuthenticatedSession {
     let boundary = sylvander_protocol::BoundaryContext::authenticated(
         sylvander_protocol::AuthenticatedPrincipal {
             id: sylvander_protocol::PrincipalId::new(user),
@@ -1460,12 +1458,8 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         user_id: "alice".into(),
     }];
     let runtime = Runtime::boot_config(config).await.unwrap();
-    let context = ChannelContext::with_runtime_services(
-        runtime.bus(),
-        runtime.session_store.clone(),
-        runtime.ui_service.clone(),
-        None,
-    );
+    let context =
+        ChannelContext::with_runtime_services(runtime.bus(), runtime.ui_service.clone(), None);
     assert_eq!(
         context.identity_binding_capabilities(),
         IdentityBindingCapabilities::current()
@@ -2910,12 +2904,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "telegram",
         "telegram-update-1",
     );
-    let channel_context = ChannelContext::with_runtime_services(
-        runtime.bus(),
-        runtime.session_store.clone(),
-        runtime.ui_service.clone(),
-        None,
-    );
+    let channel_context =
+        ChannelContext::with_runtime_services(runtime.bus(), runtime.ui_service.clone(), None);
     let mut platform_submission = sylvander_channel::submit_external_chat(
         &channel_context,
         &platform_boundary,

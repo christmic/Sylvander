@@ -4,7 +4,7 @@ use crate::tools::memory::{InMemoryMemoryStore, MemoryAppend};
 
 use crate::tool_context::ToolContext;
 fn ctx() -> ToolContext {
-    ToolContext::application(AgentExecutionContext::restricted_for("u", "a", "s"))
+    ToolContext::for_runtime(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_capability(crate::tool_context::Cap::Read)
         .with_capability(crate::tool_context::Cap::Write)
         .with_capability(crate::tool_context::Cap::MemoryRead)

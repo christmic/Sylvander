@@ -1,4 +1,4 @@
-//! End-to-end tests for streaming events on the bus.
+//! End-to-end tests for Runtime-owned AgentRun streaming events.
 //!
 //! Verifies that `AgentRun::handle_message` publishes `StreamEvent`
 //! variants (`TextDelta`, `ToolCall`, `ToolResult`, Done, etc.) to the bus
@@ -11,9 +11,6 @@ use std::sync::Arc;
 use serde_json::json;
 use sylvander_agent::bus::{PlanDecision, StreamEvent};
 use sylvander_agent::prelude::*;
-use sylvander_agent::session_store::{
-    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
-};
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
@@ -21,6 +18,12 @@ use sylvander_llm_core::{
 use sylvander_protocol::{
     PermissionProfile, ReasoningEffort, SessionConfigProvenance, SessionConfigSource,
     SessionConfigSourceKind, SessionEffectiveConfig,
+};
+use sylvander_runtime::agent_run::{AgentRun, AgentRunBuilder};
+use sylvander_runtime::agent_supervisor::AgentRunEngine;
+use sylvander_runtime::session::SessionMetadata;
+use sylvander_runtime::storage::session::{
+    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -332,7 +335,7 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
         }),
         payload: String::new(),
         attachments: Vec::new(),
-        timestamp: sylvander_agent::session::now_secs(),
+        timestamp: sylvander_runtime::session::now_secs(),
         id: MessageId::new(),
     })
     .await
@@ -482,7 +485,7 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
         }),
         payload: String::new(),
         attachments: Vec::new(),
-        timestamp: sylvander_agent::session::now_secs(),
+        timestamp: sylvander_runtime::session::now_secs(),
         id: MessageId::new(),
     })
     .await

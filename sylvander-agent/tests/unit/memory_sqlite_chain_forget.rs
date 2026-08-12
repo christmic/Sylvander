@@ -3,7 +3,7 @@ use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryOwner};
 
 fn worker(user: &str, agent: &str) -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+    MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(
         user, agent, "session",
     ))
 }

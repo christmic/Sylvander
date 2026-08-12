@@ -6,7 +6,7 @@ use crate::tools::memory::{
 };
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+    MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(
         "alice", "agent-a", "session",
     ))
 }
@@ -15,7 +15,7 @@ fn worker() -> MemoryExecutionContext {
 async fn audit_is_content_safe_append_only_and_cas_consistent() {
     let store = SqliteMemoryStore::open_in_memory().unwrap();
     let raw_trace = format!("SECRET-trace\n\0{}", "x".repeat(128 * 1024));
-    let ctx = MemoryExecutionContext::application_worker(
+    let ctx = MemoryExecutionContext::for_runtime_worker(
         &AgentExecutionContext::restricted_for("alice", "agent-a", "session")
             .with_trace_id(&raw_trace),
     );
@@ -162,7 +162,7 @@ async fn expired_rows_are_hidden_from_get_and_search() {
             connection
                 .execute(
                     "UPDATE relationship_memories SET expires_at = ?1 WHERE id = ?2",
-                    params![crate::session::now_secs(), entry.id],
+                    params![crate::time::now_secs(), entry.id],
                 )
                 .map_err(store_error)?;
             Ok(())
@@ -351,7 +351,7 @@ async fn inactive_mutations_are_indistinguishable_from_missing() {
             connection
                 .execute(
                     "UPDATE relationship_memories SET expires_at = ?1 WHERE id = ?2",
-                    params![crate::session::now_secs(), expired.id],
+                    params![crate::time::now_secs(), expired.id],
                 )
                 .map_err(store_error)?;
             Ok(())

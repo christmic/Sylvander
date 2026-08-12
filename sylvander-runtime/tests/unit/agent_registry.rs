@@ -1,6 +1,6 @@
 use tempfile::tempdir;
 
-use sylvander_agent::session_store::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
+use crate::storage::session::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 
 use super::{
     AgentRegistry, AgentRegistryError, REGISTRY_COMPONENT, REGISTRY_SCHEMA_OBJECT_NAMES,

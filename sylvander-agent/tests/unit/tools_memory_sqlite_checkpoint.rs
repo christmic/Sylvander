@@ -31,7 +31,7 @@ fn open(database: &Path, anchor: &Path, batch: u32) -> SqliteMemoryStore {
 }
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+    MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(
         "alice",
         "agent-a",
         "session-a",

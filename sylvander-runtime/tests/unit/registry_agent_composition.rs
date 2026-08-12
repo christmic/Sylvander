@@ -3,11 +3,9 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
+use crate::storage::session::{SessionLifetime, SessionStore, SqliteSessionStore, StoredSession};
 use serde_json::json;
 use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
-use sylvander_agent::session_store::{
-    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
-};
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_protocol::{
     AgentId, AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, BusMessage,
@@ -486,7 +484,7 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
         .unwrap_err();
     assert!(matches!(
         error,
-        sylvander_agent::run::AgentRunError::Loop(
+        crate::agent_run::AgentRunError::Loop(
             sylvander_agent::error::AgentLoopError::Provider { attempts: 1, source }
         ) if source.kind == sylvander_llm_core::ProviderErrorKind::Authentication
     ));
@@ -636,7 +634,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     assert!(
         matches!(
         &beta_error,
-        sylvander_agent::run::AgentRunError::Loop(
+        crate::agent_run::AgentRunError::Loop(
             sylvander_agent::error::AgentLoopError::Provider { attempts: 1, source }
         ) if source.kind == sylvander_llm_core::ProviderErrorKind::Authentication
         ),

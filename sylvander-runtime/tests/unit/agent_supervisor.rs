@@ -1,6 +1,6 @@
 use super::*;
-use crate::bus::{InProcessMessageBus, Recipient};
 use crate::test_support::qualified_anthropic_run_builder;
+use sylvander_agent::bus::{InProcessMessageBus, Recipient};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
 struct TestRevisionProvider {
@@ -257,9 +257,9 @@ async fn create_session_notifies_agents() {
     // Now subscribe to the agent's inbox to observe JoinSession
     let mut observer = engine
         .bus()
-        .subscribe(crate::bus::SubscriptionFilter::for_agent(AgentId::new(
-            "agent-1",
-        )))
+        .subscribe(sylvander_agent::bus::SubscriptionFilter::for_agent(
+            AgentId::new("agent-1"),
+        ))
         .await
         .expect("subscribe");
 

@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::storage::session::SessionLifetime;
 use async_trait::async_trait;
 use rusqlite::Connection;
 use serde_json::json;
 use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::session_store::SessionLifetime;
 use sylvander_agent::tool_context::ToolContext;
 use sylvander_protocol::{
     AgentId, SessionContext, SessionId, SessionMetadata, UserId, UserProfileData,
@@ -19,7 +19,7 @@ use crate::capability_runtime::{
 };
 
 fn now() -> i64 {
-    sylvander_agent::session::now_secs()
+    crate::session::now_secs()
 }
 
 fn digest(seed: char) -> String {

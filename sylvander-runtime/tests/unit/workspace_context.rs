@@ -1,5 +1,5 @@
 use super::*;
-use crate::workspace_executor::LocalExecutor;
+use sylvander_agent::workspace_executor::LocalExecutor;
 
 impl<'a> WorkspaceContextSource<'a> {
     fn root(executor: &'a dyn WorkspaceExecutor, target: WorkspaceTarget) -> Self {

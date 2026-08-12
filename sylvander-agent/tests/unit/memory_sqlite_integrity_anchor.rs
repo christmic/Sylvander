@@ -99,7 +99,7 @@ fn test_anchor(endpoint: &str, timeout: Duration, retries: u8) -> HttpMemoryInte
 }
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+    MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(
         "alice",
         "agent-a",
         "session-a",

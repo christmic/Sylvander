@@ -17,7 +17,7 @@ impl UserProfileProvider for Absent {
 #[tokio::test]
 async fn provider_is_object_safe_and_subject_is_runtime_derived() {
     let provider: Arc<dyn UserProfileProvider> = Arc::new(Absent);
-    let subject = UserProfileSubject::authenticated(
+    let subject = UserProfileSubject::from_authenticated_runtime(
         UserId::new("stable-user"),
         AgentId::new("agent"),
         SessionId::new("session"),

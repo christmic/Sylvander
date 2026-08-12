@@ -7,7 +7,7 @@ use crate::tools::memory::{
 const SENTINEL: &str = "SECRET-injected-SQL-relationship_memories";
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+    MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(
         "alice", "agent-a", "session",
     ))
 }

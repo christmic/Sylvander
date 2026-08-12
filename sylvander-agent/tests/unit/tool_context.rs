@@ -21,7 +21,7 @@ fn new_wraps_execution_context_in_arc() {
 
 #[test]
 fn application_context_issues_memory_authority() {
-    let ctx = ToolContext::application(execution());
+    let ctx = ToolContext::for_runtime(execution());
     assert_eq!(
         ctx.memory_context().relationship_owner().unwrap(),
         crate::tools::memory::MemoryOwner::Relationship {

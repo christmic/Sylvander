@@ -216,7 +216,7 @@ fn required_layer_fails_closed_instead_of_silently_truncating() {
 async fn relationship_retrieval_uses_query_and_never_returns_superseded_heads() {
     let store = InMemoryMemoryStore::new();
     let execution = AgentExecutionContext::restricted_for("user", "agent", "session");
-    let context = MemoryExecutionContext::application_worker(&execution);
+    let context = MemoryExecutionContext::for_runtime_worker(&execution);
     let relevant = store
         .append_relationship(
             &context,
@@ -247,7 +247,7 @@ async fn relationship_retrieval_uses_query_and_never_returns_superseded_heads() 
         &context,
         "please inspect the Rust workspace",
         TurnContextBudgets::default().relationship_memory,
-        crate::session::now_secs(),
+        crate::time::now_secs(),
     )
     .await
     .unwrap();
@@ -293,7 +293,7 @@ async fn workspace_retrieval_returns_only_matching_bounded_lines() {
     inputs.extend_retrieved(TurnContextLayerKind::WorkspaceKnowledge, results);
     let mut budgets = TurnContextBudgets::default();
     budgets.workspace_knowledge.max_items = 1;
-    let composed = compose_turn_context(inputs, &budgets, crate::session::now_secs()).unwrap();
+    let composed = compose_turn_context(inputs, &budgets, crate::time::now_secs()).unwrap();
     assert_eq!(composed.manifest.layers[0].included_items.len(), 1);
     assert_eq!(composed.manifest.layers[0].omitted_items, 1);
 }

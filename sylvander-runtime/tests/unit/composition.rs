@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::*;
+use crate::storage::session::SqliteSessionStore;
 use sylvander_agent::bus::InProcessMessageBus;
-use sylvander_agent::session_store::SqliteSessionStore;
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_protocol::ModelSelection;
 

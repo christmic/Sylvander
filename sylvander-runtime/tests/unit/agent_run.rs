@@ -1,10 +1,10 @@
 use super::*;
-use crate::bus::{InProcessMessageBus, Recipient};
-use crate::compress::error::CompactionFailureCode;
 use crate::test_support::qualified_anthropic_run_builder;
-use crate::tool::ToolTestExt as _;
-use crate::tools::memory::InMemoryMemoryStore;
 use std::path::PathBuf;
+use sylvander_agent::bus::{InProcessMessageBus, Recipient};
+use sylvander_agent::compress::error::CompactionFailureCode;
+use sylvander_agent::tool::ToolExecutor as _;
+use sylvander_agent::tools::memory::InMemoryMemoryStore;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_core::ModelInfo as ProviderModelInfo;
 
@@ -64,16 +64,16 @@ fn direct_turn(
     model: ProviderModelInfo,
     messages: Vec<ChatMessage>,
 ) -> (
-    crate::request::AgentTurnRequest,
-    crate::execution_ports::AgentExecutionPorts,
+    sylvander_agent::request::AgentTurnRequest,
+    sylvander_agent::execution_ports::AgentExecutionPorts,
 ) {
     let execution = AgentExecutionContext::restricted_for(
         "test-user",
         "router-agent",
         "direct-model-selection-test",
     );
-    let request = crate::request::AgentTurnRequest {
-        conversation: crate::conversation::ConversationSnapshot::new(messages),
+    let request = sylvander_agent::request::AgentTurnRequest {
+        conversation: sylvander_agent::conversation::ConversationSnapshot::new(messages),
         model,
         system_instructions: Vec::new(),
         reasoning: None,
@@ -81,8 +81,9 @@ fn direct_turn(
         execution: execution.clone(),
     };
     let gateway = run.inner.invocation_gateway.clone();
-    let snapshot = crate::tool_invocation::ToolInvocationGateway::snapshot(gateway.as_ref());
-    let ports = crate::execution_ports::AgentExecutionPorts::new(
+    let snapshot =
+        sylvander_agent::tool_invocation::ToolInvocationGateway::snapshot(gateway.as_ref());
+    let ports = sylvander_agent::execution_ports::AgentExecutionPorts::new(
         run.inner.model_provider.clone(),
         ToolContext::new(execution),
         gateway,
@@ -241,13 +242,13 @@ fn profile_with_learning(do_not_learn: bool) -> sylvander_protocol::UserProfileV
 }
 
 #[async_trait::async_trait]
-impl crate::user_profile_provider::UserProfileProvider for FixedUserProfile {
+impl sylvander_agent::user_profile_provider::UserProfileProvider for FixedUserProfile {
     async fn current_profile(
         &self,
-        _subject: &crate::user_profile_provider::UserProfileSubject,
+        _subject: &sylvander_agent::user_profile_provider::UserProfileSubject,
     ) -> Result<
         Option<sylvander_protocol::UserProfileView>,
-        crate::user_profile_provider::UserProfileProviderError,
+        sylvander_agent::user_profile_provider::UserProfileProviderError,
     > {
         Ok(Some(self.0.clone()))
     }
@@ -256,15 +257,15 @@ impl crate::user_profile_provider::UserProfileProvider for FixedUserProfile {
 struct UnavailableUserProfile;
 
 #[async_trait::async_trait]
-impl crate::user_profile_provider::UserProfileProvider for UnavailableUserProfile {
+impl sylvander_agent::user_profile_provider::UserProfileProvider for UnavailableUserProfile {
     async fn current_profile(
         &self,
-        _subject: &crate::user_profile_provider::UserProfileSubject,
+        _subject: &sylvander_agent::user_profile_provider::UserProfileSubject,
     ) -> Result<
         Option<sylvander_protocol::UserProfileView>,
-        crate::user_profile_provider::UserProfileProviderError,
+        sylvander_agent::user_profile_provider::UserProfileProviderError,
     > {
-        Err(crate::user_profile_provider::UserProfileProviderError::Unavailable)
+        Err(sylvander_agent::user_profile_provider::UserProfileProviderError::Unavailable)
     }
 }
 
@@ -289,7 +290,7 @@ impl WorkspaceExecutor for MarkerWorkspaceExecutor {
         &self,
         target: &WorkspaceTarget,
         _relative_path: &str,
-    ) -> Result<Vec<u8>, crate::workspace_executor::WorkspaceExecutorError> {
+    ) -> Result<Vec<u8>, sylvander_agent::workspace_executor::WorkspaceExecutorError> {
         self.reads.lock().unwrap().push(target.clone());
         Ok(self.marker.to_vec())
     }
@@ -299,7 +300,7 @@ impl WorkspaceExecutor for MarkerWorkspaceExecutor {
         _target: &WorkspaceTarget,
         _relative_path: &str,
         _content: &[u8],
-    ) -> Result<(), crate::workspace_executor::WorkspaceExecutorError> {
+    ) -> Result<(), sylvander_agent::workspace_executor::WorkspaceExecutorError> {
         Ok(())
     }
 
@@ -309,38 +310,40 @@ impl WorkspaceExecutor for MarkerWorkspaceExecutor {
         _command: &str,
         _timeout: std::time::Duration,
     ) -> Result<
-        crate::workspace_executor::WorkspaceCommandOutput,
-        crate::workspace_executor::WorkspaceExecutorError,
+        sylvander_agent::workspace_executor::WorkspaceCommandOutput,
+        sylvander_agent::workspace_executor::WorkspaceExecutorError,
     > {
-        Ok(crate::workspace_executor::WorkspaceCommandOutput {
-            success: true,
-            status_code: Some(0),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
-            stdout_total_bytes: 0,
-            stderr_total_bytes: 0,
-        })
+        Ok(
+            sylvander_agent::workspace_executor::WorkspaceCommandOutput {
+                success: true,
+                status_code: Some(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_total_bytes: 0,
+                stderr_total_bytes: 0,
+            },
+        )
     }
 
     async fn list(
         &self,
         _target: &WorkspaceTarget,
-        request: crate::workspace_executor::WorkspaceListRequest,
+        request: sylvander_agent::workspace_executor::WorkspaceListRequest,
     ) -> Result<
-        crate::workspace_executor::WorkspaceListResult,
-        crate::workspace_executor::WorkspaceExecutorError,
+        sylvander_agent::workspace_executor::WorkspaceListResult,
+        sylvander_agent::workspace_executor::WorkspaceExecutorError,
     > {
         let entries = (request.relative_path == ".")
-            .then(|| crate::workspace_executor::WorkspaceListEntry {
+            .then(|| sylvander_agent::workspace_executor::WorkspaceListEntry {
                 relative_path: "AGENTS.md".into(),
-                kind: crate::workspace_executor::WorkspaceEntryKind::File,
+                kind: sylvander_agent::workspace_executor::WorkspaceEntryKind::File,
                 size: self.marker.len() as u64,
             })
             .into_iter()
             .collect();
-        Ok(crate::workspace_executor::WorkspaceListResult {
+        Ok(sylvander_agent::workspace_executor::WorkspaceListResult {
             entries,
             truncated: false,
         })
@@ -483,8 +486,8 @@ impl FailingSessionStore {
         Self { inner, fail }
     }
 
-    fn injected() -> crate::session_store::SessionStoreError {
-        crate::session_store::SessionStoreError::Store("private injected detail".into())
+    fn injected() -> crate::storage::session::SessionStoreError {
+        crate::storage::session::SessionStoreError::Store("private injected detail".into())
     }
 }
 
@@ -492,14 +495,14 @@ impl FailingSessionStore {
 impl SessionStore for FailingSessionStore {
     async fn list_persistent(
         &self,
-    ) -> Result<Vec<StoredSession>, crate::session_store::SessionStoreError> {
+    ) -> Result<Vec<StoredSession>, crate::storage::session::SessionStoreError> {
         self.inner.list_persistent().await
     }
 
     async fn save(
         &self,
         session: &StoredSession,
-    ) -> Result<(), crate::session_store::SessionStoreError> {
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
         if self.fail == SessionStoreFailPoint::Save {
             return Err(Self::injected());
         }
@@ -509,8 +512,8 @@ impl SessionStore for FailingSessionStore {
     async fn patch_metadata(
         &self,
         id: &SessionId,
-        patch: crate::session_store::SessionMetadataPatch,
-    ) -> Result<(), crate::session_store::SessionStoreError> {
+        patch: crate::storage::session::SessionMetadataPatch,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
         self.inner.patch_metadata(id, patch).await
     }
 
@@ -520,7 +523,7 @@ impl SessionStore for FailingSessionStore {
         expected_revision: u64,
         overrides: sylvander_protocol::SessionConfigOverrides,
         effective: sylvander_protocol::SessionEffectiveConfig,
-    ) -> Result<u64, crate::session_store::SessionStoreError> {
+    ) -> Result<u64, crate::storage::session::SessionStoreError> {
         self.inner
             .update_config(id, expected_revision, overrides, effective)
             .await
@@ -530,7 +533,8 @@ impl SessionStore for FailingSessionStore {
         &self,
         context: &sylvander_protocol::SessionContext,
         start: TurnStart,
-    ) -> Result<crate::session_store::StoredMessage, crate::session_store::SessionStoreError> {
+    ) -> Result<crate::storage::session::StoredMessage, crate::storage::session::SessionStoreError>
+    {
         if self.fail == SessionStoreFailPoint::BeginTurn {
             return Err(Self::injected());
         }
@@ -542,17 +546,23 @@ impl SessionStore for FailingSessionStore {
         session_id: &SessionId,
         turn_id: &str,
     ) -> Result<
-        Option<crate::session_store::TurnConfigSnapshot>,
-        crate::session_store::SessionStoreError,
+        Option<crate::storage::session::TurnConfigSnapshot>,
+        crate::storage::session::SessionStoreError,
     > {
         self.inner.turn_config(session_id, turn_id).await
     }
 
-    async fn archive(&self, id: &SessionId) -> Result<(), crate::session_store::SessionStoreError> {
+    async fn archive(
+        &self,
+        id: &SessionId,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
         self.inner.archive(id).await
     }
 
-    async fn restore(&self, id: &SessionId) -> Result<(), crate::session_store::SessionStoreError> {
+    async fn restore(
+        &self,
+        id: &SessionId,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
         self.inner.restore(id).await
     }
 
@@ -562,7 +572,8 @@ impl SessionStore for FailingSessionStore {
         input_tokens: u32,
         output_tokens: u32,
         cost_nano_usd: Option<u64>,
-    ) -> Result<crate::session_store::SessionUsage, crate::session_store::SessionStoreError> {
+    ) -> Result<crate::storage::session::SessionUsage, crate::storage::session::SessionStoreError>
+    {
         if self.fail == SessionStoreFailPoint::RecordUsage {
             return Err(Self::injected());
         }
@@ -574,18 +585,22 @@ impl SessionStore for FailingSessionStore {
     async fn usage(
         &self,
         id: &SessionId,
-    ) -> Result<crate::session_store::SessionUsage, crate::session_store::SessionStoreError> {
+    ) -> Result<crate::storage::session::SessionUsage, crate::storage::session::SessionStoreError>
+    {
         self.inner.usage(id).await
     }
 
-    async fn delete(&self, id: &SessionId) -> Result<(), crate::session_store::SessionStoreError> {
+    async fn delete(
+        &self,
+        id: &SessionId,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
         self.inner.delete(id).await
     }
 
     async fn get(
         &self,
         id: &SessionId,
-    ) -> Result<Option<StoredSession>, crate::session_store::SessionStoreError> {
+    ) -> Result<Option<StoredSession>, crate::storage::session::SessionStoreError> {
         if self.fail == SessionStoreFailPoint::Get {
             return Err(Self::injected());
         }
@@ -595,8 +610,8 @@ impl SessionStore for FailingSessionStore {
     async fn list(
         &self,
         context: &sylvander_protocol::SessionContext,
-        filter: crate::session_store::SessionFilter,
-    ) -> Result<Vec<StoredSession>, crate::session_store::SessionStoreError> {
+        filter: crate::storage::session::SessionFilter,
+    ) -> Result<Vec<StoredSession>, crate::storage::session::SessionStoreError> {
         self.inner.list(context, filter).await
     }
 
@@ -605,7 +620,7 @@ impl SessionStore for FailingSessionStore {
         context: &sylvander_protocol::SessionContext,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<StoredSession>, crate::session_store::SessionStoreError> {
+    ) -> Result<Vec<StoredSession>, crate::storage::session::SessionStoreError> {
         self.inner.search(context, query, limit).await
     }
 
@@ -618,7 +633,8 @@ impl SessionStore for FailingSessionStore {
         model_id: Option<&str>,
         tool_name: Option<&str>,
         parent_msg_id: Option<i64>,
-    ) -> Result<crate::session_store::StoredMessage, crate::session_store::SessionStoreError> {
+    ) -> Result<crate::storage::session::StoredMessage, crate::storage::session::SessionStoreError>
+    {
         if self.fail == SessionStoreFailPoint::AppendMessage {
             return Err(Self::injected());
         }
@@ -641,8 +657,10 @@ impl SessionStore for FailingSessionStore {
         session_id: &SessionId,
         include_summarized: bool,
         limit: Option<usize>,
-    ) -> Result<Vec<crate::session_store::StoredMessage>, crate::session_store::SessionStoreError>
-    {
+    ) -> Result<
+        Vec<crate::storage::session::StoredMessage>,
+        crate::storage::session::SessionStoreError,
+    > {
         if self.fail == SessionStoreFailPoint::ReadHistory {
             return Err(Self::injected());
         }
@@ -655,7 +673,7 @@ impl SessionStore for FailingSessionStore {
         &self,
         session_id: &SessionId,
         seq_range: std::ops::Range<u32>,
-    ) -> Result<(), crate::session_store::SessionStoreError> {
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
         self.inner.mark_summarized(session_id, seq_range).await
     }
 
@@ -664,7 +682,7 @@ impl SessionStore for FailingSessionStore {
         context: &sylvander_protocol::SessionContext,
         session_id: &SessionId,
         messages: Vec<ReplacementMessage>,
-    ) -> Result<(), crate::session_store::SessionStoreError> {
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
         if self.fail == SessionStoreFailPoint::ReplaceHistory {
             return Err(Self::injected());
         }
@@ -677,7 +695,7 @@ impl SessionStore for FailingSessionStore {
         &self,
         context: &sylvander_protocol::SessionContext,
         session_id: &SessionId,
-    ) -> Result<u64, crate::session_store::SessionStoreError> {
+    ) -> Result<u64, crate::storage::session::SessionStoreError> {
         self.inner.count_active_messages(context, session_id).await
     }
 }
@@ -694,13 +712,13 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
     .unwrap();
 
     let store: Arc<dyn SessionStore> = Arc::new(
-        crate::session_store::SqliteSessionStore::open_in_memory()
+        crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
             .unwrap(),
     );
     let (spec, _) = test_spec_and_client();
     let resolver = Arc::new(
-        crate::prompt::PromptResolver::new(
+        sylvander_agent::prompt::PromptResolver::new(
             "agent:test-agent@1".into(),
             spec.persona.system_prompt.clone(),
             Vec::new(),
@@ -785,7 +803,7 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
     let memory = Arc::new(InMemoryMemoryStore::new());
     let memory_caller =
         AgentExecutionContext::restricted_for("user-1", "test-agent", "memory-seed");
-    let memory_context = MemoryExecutionContext::application_worker(&memory_caller);
+    let memory_context = MemoryExecutionContext::for_runtime_worker(&memory_caller);
     memory
         .append_relationship(
             &memory_context,
@@ -802,7 +820,7 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
         .unwrap();
 
     let store: Arc<dyn SessionStore> = Arc::new(
-        crate::session_store::SqliteSessionStore::open_in_memory()
+        crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
             .unwrap(),
     );
@@ -812,7 +830,7 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
         model_id: spec.model.model_name.clone(),
     };
     let resolver = Arc::new(
-        crate::prompt::PromptResolver::new(
+        sylvander_agent::prompt::PromptResolver::new(
             "agent:test-agent@3".into(),
             "agent persona".into(),
             Vec::new(),
@@ -913,7 +931,7 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
         .unwrap();
     assert_eq!(
         manifest.schema_version,
-        crate::turn_context::TURN_CONTEXT_SCHEMA_VERSION
+        sylvander_agent::turn_context::TURN_CONTEXT_SCHEMA_VERSION
     );
     assert_eq!(manifest.layers.len(), 6);
     assert_eq!(manifest.aggregate_sha256.len(), 64);
@@ -942,7 +960,7 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let database = directory.path().join("sessions.db");
         let store: Arc<dyn SessionStore> = Arc::new(
-            crate::session_store::SqliteSessionStore::open(&database)
+            crate::storage::session::SqliteSessionStore::open(&database)
                 .await
                 .expect("store"),
         );
@@ -952,7 +970,7 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
             model_id: spec.model.model_name.clone(),
         };
         let resolver = Arc::new(
-            crate::prompt::PromptResolver::new(
+            sylvander_agent::prompt::PromptResolver::new(
                 "agent:test-agent@1".into(),
                 spec.persona.system_prompt.clone(),
                 Vec::new(),
@@ -1107,7 +1125,7 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         AgentRunInner::validate_turn_model(&selected, sylvander_protocol::ReasoningEffort::Off)
             .unwrap();
     let (request, ports) = direct_turn(&run, selected, vec![ChatMessage::user("hello")]);
-    crate::loop_::run(&run.inner.loop_config, request, ports)
+    sylvander_agent::loop_::run(&run.inner.loop_config, request, ports)
         .await
         .unwrap();
     let requests = provider.requests.lock().unwrap();
@@ -1206,7 +1224,7 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         AgentRunInner::validate_turn_model(&selected, sylvander_protocol::ReasoningEffort::Off)
             .unwrap();
     let (request, ports) = direct_turn(&run, selected, vec![ChatMessage::user("hello")]);
-    crate::loop_::run(&run.inner.loop_config, request, ports)
+    sylvander_agent::loop_::run(&run.inner.loop_config, request, ports)
         .await
         .unwrap();
     assert_eq!(
@@ -1309,13 +1327,13 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
         .id("test-agent")
         .name("Test")
         .model_name("test-model")
-        .mcp_server(crate::spec::McpServerConfig {
+        .mcp_server(sylvander_agent::spec::McpServerConfig {
             name: "search".into(),
             command: "/opt/bin/search-mcp".into(),
             args: vec!["--token".into(), "also-secret".into()],
             envs: std::collections::HashMap::from([("SEARCH_TOKEN".into(), "super-secret".into())]),
         })
-        .ui_command(crate::spec::UiCommandConfig {
+        .ui_command(sylvander_agent::spec::UiCommandConfig {
             id: "security-review".into(),
             name: "security-review".into(),
             usage: "/security-review [scope]".into(),
@@ -1323,7 +1341,7 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
             hint: "workspace".into(),
             prompt: "Review {{args}} for security issues.".into(),
         })
-        .tool_presentations(vec![crate::spec::ToolPresentationConfig {
+        .tool_presentations(vec![sylvander_agent::spec::ToolPresentationConfig {
             tool_name: "search".into(),
             label: "Search".into(),
             kind: sylvander_protocol::ToolPresentationKind::Search,
@@ -1383,7 +1401,7 @@ fn platform_snapshot_reports_runtime_override_without_activating_declarations() 
         .id("test-agent")
         .name("Test")
         .model_name("test-model")
-        .memory_store(crate::spec::MemoryStoreConfig {
+        .memory_store(sylvander_agent::spec::MemoryStoreConfig {
             store_type: "sqlite".into(),
             path: PathBuf::from("/private/sentinel-memory.db"),
         })
@@ -1436,7 +1454,7 @@ fn agent_memory_declarations_are_not_implicit_runtime_fallbacks() {
         .id("test-agent")
         .name("Test")
         .model_name("test-model")
-        .memory_store(crate::spec::MemoryStoreConfig {
+        .memory_store(sylvander_agent::spec::MemoryStoreConfig {
             store_type: "unsupported-future-store".into(),
             path: PathBuf::from("/private/never-open-this-store"),
         })
@@ -1650,13 +1668,15 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
     .with_fs_root(workspace.path())
     .with_capability(Cap::Write)
     .with_workspace_journal(run.inner.workspace_journal.clone().unwrap());
-    crate::tools::WriteTool::new()
-        .execute(
-            &context,
+    let tool = sylvander_agent::tools::WriteTool::new();
+    let call = ToolRegistry::new()
+        .register(tool.clone())
+        .prepare(
+            "write",
             serde_json::json!({"file_path":"file.txt","content":"after"}),
         )
-        .await
         .unwrap();
+    tool.handle(&context, &call).await.unwrap();
 
     let preview = run.preview_workspace_rollback(&session_id).await.unwrap();
     assert_eq!(preview.files, vec!["file.txt"]);
@@ -1984,7 +2004,7 @@ async fn effective_workspace_mounts_route_file_operations_by_logical_reference()
     ];
     let executors = [(
         "local".into(),
-        Arc::new(crate::workspace_executor::LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+        Arc::new(sylvander_agent::workspace_executor::LocalExecutor) as Arc<dyn WorkspaceExecutor>,
     )]
     .into_iter()
     .collect();
@@ -2052,7 +2072,7 @@ async fn unknown_execution_target_is_explicitly_unavailable() {
         .unwrap_err();
     assert!(matches!(
         error,
-        crate::workspace_executor::WorkspaceExecutorError::Unavailable(target)
+        sylvander_agent::workspace_executor::WorkspaceExecutorError::Unavailable(target)
             if target == "ssh:missing"
     ));
 }
@@ -2194,13 +2214,13 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
     ] {
         bus.publish(BusMessage {
             session_id: session_a.clone(),
-            sender: crate::bus::Sender::System,
-            recipient: crate::bus::Recipient::Agent(AgentId::new("test-agent")),
+            sender: sylvander_agent::bus::Sender::System,
+            recipient: sylvander_agent::bus::Recipient::Agent(AgentId::new("test-agent")),
             kind: MessageKind::System(kind),
             payload: String::new(),
             attachments: Vec::new(),
             timestamp: crate::session::now_secs(),
-            id: crate::bus::MessageId::new(),
+            id: sylvander_agent::bus::MessageId::new(),
         })
         .await
         .unwrap();
@@ -2239,14 +2259,14 @@ async fn failing_persistent_run(
     SessionMetadata,
 ) {
     let inner: Arc<dyn SessionStore> = Arc::new(
-        crate::session_store::SqliteSessionStore::open_in_memory()
+        crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
             .expect("store"),
     );
     let store: Arc<dyn SessionStore> = Arc::new(FailingSessionStore::new(inner.clone(), fail));
     let (spec, _) = test_spec_and_client();
     let resolver = Arc::new(
-        crate::prompt::PromptResolver::new(
+        sylvander_agent::prompt::PromptResolver::new(
             "agent:test-agent@1".into(),
             spec.persona.system_prompt.clone(),
             Vec::new(),
@@ -2451,7 +2471,7 @@ async fn compacted_history_write_failure_keeps_live_and_durable_history_unchange
     let replacement = vec![ChatMessage::user(
         "[Earlier conversation summary]\nimportant decision",
     )];
-    let layers = vec![crate::compress::layer::LayerReport {
+    let layers = vec![sylvander_agent::compress::layer::LayerReport {
         name: "auto_compact".into(),
         removed_count: 2,
         freed_tokens: 100,
@@ -2486,7 +2506,7 @@ async fn durable_session_history_restores_into_agent_context() {
     let (spec, client) = test_spec_and_client();
     let agent_id = spec.id.clone();
     let store: Arc<dyn SessionStore> = Arc::new(
-        crate::session_store::SqliteSessionStore::open_in_memory()
+        crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
             .expect("store"),
     );
@@ -2539,7 +2559,7 @@ async fn direct_join_persists_an_auditable_effective_configuration() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
     let resolver = Arc::new(
-        crate::prompt::PromptResolver::new(
+        sylvander_agent::prompt::PromptResolver::new(
             "agent:test-agent@1".into(),
             spec.persona.system_prompt.clone(),
             Vec::new(),
@@ -2549,7 +2569,7 @@ async fn direct_join_persists_an_auditable_effective_configuration() {
         .expect("resolver"),
     );
     let store: Arc<dyn SessionStore> = Arc::new(
-        crate::session_store::SqliteSessionStore::open_in_memory()
+        crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
             .expect("store"),
     );
@@ -2586,7 +2606,7 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
     let (spec, client) = test_spec_and_client();
     let agent_id = spec.id.clone();
     let store: Arc<dyn SessionStore> = Arc::new(
-        crate::session_store::SqliteSessionStore::open_in_memory()
+        crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
             .expect("store"),
     );
@@ -2636,7 +2656,7 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
         ChatMessage::user("recent one"),
         ChatMessage::user("recent two"),
     ];
-    let layers = vec![crate::compress::layer::LayerReport {
+    let layers = vec![sylvander_agent::compress::layer::LayerReport {
         name: "auto_compact".into(),
         removed_count: 4,
         freed_tokens: 500,
@@ -2767,7 +2787,7 @@ async fn remember_is_system_driven() {
         .recall(
             &session,
             "dark mode",
-            crate::tools::memory::MemoryFilter::default(),
+            sylvander_agent::tools::memory::MemoryFilter::default(),
         )
         .await
         .expect("search");
@@ -2796,7 +2816,7 @@ async fn remember_derives_identity_from_attached_session() {
 
     assert_eq!(
         entry.owner,
-        crate::tools::memory::MemoryOwner::Relationship {
+        sylvander_agent::tools::memory::MemoryOwner::Relationship {
             user_id: sylvander_protocol::types::UserId::new("actual-user"),
             agent_id: run.id().clone(),
         }
@@ -2805,7 +2825,7 @@ async fn remember_derives_identity_from_attached_session() {
         run.recall(
             &session,
             "caller-owned",
-            crate::tools::memory::MemoryFilter::default(),
+            sylvander_agent::tools::memory::MemoryFilter::default(),
         )
         .await
         .unwrap()
@@ -2818,9 +2838,13 @@ async fn remember_derives_identity_from_attached_session() {
 async fn remember_denies_opt_out_missing_and_unavailable_profile_authority() {
     let providers = [
         Some(Arc::new(FixedUserProfile(profile_with_learning(true)))
-            as Arc<dyn crate::user_profile_provider::UserProfileProvider>),
+            as Arc<
+                dyn sylvander_agent::user_profile_provider::UserProfileProvider,
+            >),
         Some(Arc::new(UnavailableUserProfile)
-            as Arc<dyn crate::user_profile_provider::UserProfileProvider>),
+            as Arc<
+                dyn sylvander_agent::user_profile_provider::UserProfileProvider,
+            >),
         None,
     ];
     for provider in providers {
@@ -2843,7 +2867,7 @@ async fn remember_denies_opt_out_missing_and_unavailable_profile_authority() {
             run.recall(
                 &session,
                 "must not persist",
-                crate::tools::memory::MemoryFilter::default(),
+                sylvander_agent::tools::memory::MemoryFilter::default(),
             )
             .await
             .unwrap()
@@ -2883,12 +2907,12 @@ fn typed_attachments_become_provider_content_blocks() {
         SessionId::new("s1"),
         "u1",
         "review this",
-        vec![crate::bus::MessageAttachment {
+        vec![sylvander_agent::bus::MessageAttachment {
             id: "a1".into(),
-            kind: crate::bus::AttachmentKind::File,
+            kind: sylvander_agent::bus::AttachmentKind::File,
             name: "src/main.rs".into(),
             mime_type: "text/x-rust".into(),
-            content: crate::bus::AttachmentContent::Text {
+            content: sylvander_agent::bus::AttachmentContent::Text {
                 text: "fn main() {}".into(),
             },
             byte_count: 12,

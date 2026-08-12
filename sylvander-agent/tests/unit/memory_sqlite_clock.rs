@@ -25,7 +25,7 @@ impl MemoryClock for TestClock {
 }
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+    MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(
         "alice", "agent-a", "clock",
     ))
 }

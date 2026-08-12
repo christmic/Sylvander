@@ -160,7 +160,7 @@ async fn runtime_boot_uses_external_acquire_renew_rotation_and_failure() {
     configured
         .attach_authenticated_session(
             session.clone(),
-            sylvander_agent::session::SessionMetadata {
+            crate::session::SessionMetadata {
                 workspace: directory.path().to_path_buf(),
                 name: "external lease".into(),
                 user_id: "user-1".into(),

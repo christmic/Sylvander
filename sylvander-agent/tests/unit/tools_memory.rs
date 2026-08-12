@@ -19,7 +19,7 @@ fn execution(user: &str, agent: &str, session: &str) -> AgentExecutionContext {
 }
 
 fn worker(execution: &AgentExecutionContext) -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(execution)
+    MemoryExecutionContext::for_runtime_worker(execution)
 }
 
 fn privileged(actor: MemoryActorKind) -> MemoryExecutionContext {
@@ -442,7 +442,7 @@ fn append_builders_preserve_caller_fields_only() {
 fn application_context_hashes_untrusted_trace_identifiers() {
     let raw_trace = format!("private\n\0{}", "x".repeat(128 * 1024));
     let execution = execution("alice", "a1", "s1").with_trace_id(&raw_trace);
-    let worker = MemoryExecutionContext::application_worker(&execution);
+    let worker = MemoryExecutionContext::for_runtime_worker(&execution);
     assert_eq!(worker.actor(), MemoryActorKind::Worker);
     assert_eq!(worker.user_id(), Some(&UserId::new("alice")));
     assert_eq!(worker.agent_id(), Some(&AgentId::new("a1")));
