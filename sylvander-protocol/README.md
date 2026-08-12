@@ -14,6 +14,18 @@ Rust 进程内的 `MessageBus`、订阅过滤、背压错误、诊断与默认�
 `sylvander-channel` 持有；它们传递本 crate 的 `BusMessage`，但不是线协议的一部分。
 Runtime 是唯一同时组合 Protocol DTO、Channel 应用端口和 Agent 执行的生产层。
 
+## 领域模块
+
+- `identity`：Agent、Session、User 的稳定公共标识；
+- `message`：消息信封、附件、流式事件和系统控制 DTO；
+- `feedback`：Runtime 证据绑定的用户评价 DTO；
+- `ui`：客户端与服务端顶层消息；
+- `agent_admin`、`registry_admin`、`identity_binding`、`user_profile`、
+  `memory_confirmation`：各自独立版本化的服务子协议。
+
+crate 根重新导出公共 DTO，供普通调用者使用；领域模块路径用于所有权清晰的内部实现
+和文档。拆分不得改变 serde 形状、Schema 名称或协议版本。
+
 ## 依赖约束
 
 - 允许 Serde、JSON Schema、UUID 和纯校验依赖；

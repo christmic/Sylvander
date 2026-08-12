@@ -237,6 +237,9 @@ Migration is performed without compatibility aliases:
    bounded `InProcessMessageBus` have moved to `sylvander-channel`; Protocol no
    longer depends on Tokio or async-trait. Runtime and Channel implementations
    consume the application port while message payloads remain Protocol DTOs.
+   Message/event envelopes, public identities, and evidence-bound feedback now
+   have dedicated `message`, `identity`, and `feedback` modules with their
+   tests; crate-root DTO names and wire/schema shapes remain unchanged.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with
    `ChannelHost`.
 7. Rename the pure wire crate to `sylvander-api` and add dependency-graph
