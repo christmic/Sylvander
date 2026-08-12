@@ -57,6 +57,7 @@ use crate::compress::error::{CompactionError, CompactionFailureCode};
 use crate::compress::layer::CompressionLayer;
 use crate::curated_memory::{CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope};
 use crate::error::AgentLoopError;
+use crate::execution_context::{AgentExecutionContext, ExecutionWorkspace};
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
 use crate::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
@@ -1209,12 +1210,12 @@ impl AgentRun {
         let session = sessions
             .get(session_id)
             .ok_or(MemoryStoreError::AccessDenied)?;
-        let caller = sylvander_protocol::SessionContext::new(
+        let execution = AgentExecutionContext::restricted_for(
             session.metadata.user_id.clone(),
-            self.inner.id.clone(),
-            session_id.clone(),
+            self.inner.id.0.clone(),
+            session_id.0.clone(),
         );
-        Ok(MemoryExecutionContext::application_worker(&caller))
+        Ok(MemoryExecutionContext::application_worker(&execution))
     }
 
     /// Trusted application relationship write (NOT a model tool).
@@ -2351,12 +2352,12 @@ impl AgentRunInner {
                 .await
                 .contains(&session_id)
         {
-            let caller = sylvander_protocol::SessionContext::new(
+            let execution = AgentExecutionContext::restricted_for(
                 session_metadata.user_id.clone(),
-                self.id.clone(),
-                session_id.clone(),
+                self.id.0.clone(),
+                session_id.0.clone(),
             );
-            let memory_context = MemoryExecutionContext::application_worker(&caller);
+            let memory_context = MemoryExecutionContext::application_worker(&execution);
             let relationship = retrieve_relationship_context(
                 memory.as_ref(),
                 &memory_context,
@@ -3186,19 +3187,6 @@ fn tool_context_for_permissions(
     turn_id: Option<&str>,
 ) -> ToolContext {
     let metadata = execution.metadata;
-    let mut session = sylvander_protocol::SessionContext::new(
-        metadata.user_id.clone(),
-        agent_id.clone(),
-        session_id.clone(),
-    );
-    if let Some(turn_id) = turn_id {
-        session = session.with_trace_id(turn_id);
-    }
-    let mut context = if trusted_memory {
-        ToolContext::application(session)
-    } else {
-        ToolContext::new(session)
-    };
     let binding = execution.effective_config.and_then(|config| {
         select_workspace_binding(
             config.user_workspace.as_ref(),
@@ -3212,6 +3200,25 @@ fn tool_context_for_permissions(
     let permission_read_only =
         permissions.file_access != sylvander_protocol::FileAccess::WorkspaceWrite;
     let read_only = permission_read_only || binding.is_some_and(|binding| binding.read_only);
+    let mut agent_execution = AgentExecutionContext::restricted_for(
+        metadata.user_id.clone(),
+        agent_id.0.clone(),
+        session_id.0.clone(),
+    )
+    .with_started_at_unix_secs(now_secs())
+    .with_workspace(ExecutionWorkspace {
+        workspace_id: "primary".into(),
+        target_id: target_id.to_owned(),
+        read_only,
+    });
+    if let Some(turn_id) = turn_id {
+        agent_execution = agent_execution.with_trace_id(turn_id);
+    }
+    let mut context = if trusted_memory {
+        ToolContext::application(agent_execution)
+    } else {
+        ToolContext::new(agent_execution)
+    };
     let target = WorkspaceTarget {
         id: target_id.to_owned(),
         workspace_path: workspace.to_path_buf(),

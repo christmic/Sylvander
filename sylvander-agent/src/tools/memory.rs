@@ -18,9 +18,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sylvander_protocol::SessionContext;
 use sylvander_protocol::types::{AgentId, SessionId, UserId};
 
+use crate::execution_context::AgentExecutionContext;
 pub const MAX_MEMORY_CONTENT_BYTES: usize = 16 * 1024;
 pub const MAX_MEMORY_QUERY_BYTES: usize = 4 * 1024;
 pub const MAX_MEMORY_TAGS: usize = 32;
@@ -116,15 +116,15 @@ enum MemoryAuthority {
 
 /// Identity snapshot derived by the Agent application for one memory
 /// operation. Ordinary Rust callers can hold and forward this opaque value,
-/// but cannot mint authority from a caller-created [`SessionContext`].
+/// but cannot mint authority from a caller-created execution context.
 ///
 /// Ordinary callers cannot issue application memory authority:
 ///
 /// ```compile_fail
 /// use sylvander_agent::tools::MemoryExecutionContext;
-/// use sylvander_protocol::SessionContext;
-/// let session = SessionContext::new("forged-user", "agent", "session");
-/// let _ = MemoryExecutionContext::application_worker(&session);
+/// use sylvander_agent::execution_context::AgentExecutionContext;
+/// let execution = AgentExecutionContext::restricted_for("forged-user", "agent", "session");
+/// let _ = MemoryExecutionContext::application_worker(&execution);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryExecutionContext {
@@ -141,35 +141,35 @@ impl MemoryExecutionContext {
     /// Create an application-issued Worker context.
     ///
     /// This constructor is crate-private so ordinary tools and plugins cannot
-    /// turn a caller-created [`SessionContext`] into trusted provenance.
+    /// turn a caller-created execution context into trusted provenance.
     #[must_use]
-    pub(crate) fn application_worker(session: &SessionContext) -> Self {
+    pub(crate) fn application_worker(execution: &AgentExecutionContext) -> Self {
         Self {
             authority: MemoryAuthority::ApplicationIssued,
             actor: MemoryActorKind::Worker,
-            user_id: Some(session.identity.user_id.clone()),
-            agent_id: Some(session.identity.agent_id.clone()),
-            session_id: Some(session.identity.session_id.clone()),
+            user_id: Some(UserId::new(&execution.actor.user_id)),
+            agent_id: Some(AgentId::new(&execution.actor.agent_id)),
+            session_id: Some(SessionId::new(&execution.actor.session_id)),
             authorized_workspace_ids: Vec::new(),
             // Trace identifiers cross a persistence boundary below this type.
             // Keep correlation without retaining caller-controlled text.
-            trace_id: session.request.trace_id.as_deref().map(memory_trace_digest),
+            trace_id: execution.trace_id.as_deref().map(memory_trace_digest),
         }
     }
 
     #[must_use]
-    pub(crate) fn untrusted(session: &SessionContext) -> Self {
+    pub(crate) fn untrusted(execution: &AgentExecutionContext) -> Self {
         Self {
             authority: MemoryAuthority::Untrusted,
             actor: MemoryActorKind::Worker,
-            user_id: Some(session.identity.user_id.clone()),
-            agent_id: Some(session.identity.agent_id.clone()),
-            session_id: Some(session.identity.session_id.clone()),
+            user_id: Some(UserId::new(&execution.actor.user_id)),
+            agent_id: Some(AgentId::new(&execution.actor.agent_id)),
+            session_id: Some(SessionId::new(&execution.actor.session_id)),
             authorized_workspace_ids: Vec::new(),
             // Trace identifiers cross a persistence boundary below this type.
             // Keep correlation while ensuring provenance and audit records can
             // never retain caller-controlled text, controls, or unbounded data.
-            trace_id: session.request.trace_id.as_deref().map(memory_trace_digest),
+            trace_id: execution.trace_id.as_deref().map(memory_trace_digest),
         }
     }
 

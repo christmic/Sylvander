@@ -39,7 +39,7 @@
 //!     .qualified_router(build_provider())
 //!     .provider_model(exact_model)
 //!     .tool_context(
-//!         ToolContext::new(sylvander_protocol::SessionContext::new(
+//!         ToolContext::new(AgentExecutionContext::restricted_for(
 //!             "user", "agent", "session",
 //!         ))
 //!         .with_fs_root("/tmp")

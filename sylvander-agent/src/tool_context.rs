@@ -4,40 +4,36 @@
 //!
 //! Sylvander uses two distinct context types for different scopes:
 //!
-//! - [`sylvander_protocol::SessionContext`] — "who, where, when, why":
-//!   identity, origin, request metadata, free-form attributes. Lives
-//!   the entire session. Cross-crate. Adds fields without breaking
-//!   call sites.
+//! - [`AgentExecutionContext`](crate::execution_context::AgentExecutionContext)
+//!   — Runtime-validated actor, logical workspace, capabilities, timeout, and
+//!   correlation for one Agent execution. It is deliberately not a wire type.
 //!
 //! - [`ToolContext`](crate::tool_context::ToolContext) (this struct) — "everything a single tool
-//!   invocation needs": owns a `SessionContext` for identity +
+//!   invocation needs": owns an `AgentExecutionContext` for authority +
 //!   tool-specific concerns (execution budget, surface capabilities).
 //!   Short-lived: created per tool call by the agent loop.
 //!
 //! Tool implementations should:
-//! - Read `ctx.session.identity.{user_id, agent_id, session_id}` for
+//! - Read `ctx.execution.actor.{user_id, agent_id, session_id}` for
 //!   namespacing and access control.
 //! - Read `ctx.surface.fs_root` for the file root instead of holding
 //!   their own `workdir` field.
 //! - Respect `ctx.budget.timeout`.
 //! - Check `ctx.surface.capabilities` for the operations they need.
 //!
-//! # Distinction from `SessionContext`
+//! # Distinction from a product Session
 //!
-//! `SessionContext` is "who is asking"; `ToolContext` is "everything
-//! the tool needs to run". Adding tool-specific fields (cancellation
-//! tokens, retry budgets, sandboxing) goes here, not in
-//! `SessionContext`. Adding identity / origin fields goes in
-//! `SessionContext`. The split is stable: new fields never have to
-//! cross the line.
+//! Runtime's Session record owns durable lifecycle and API identity.
+//! `ToolContext` contains only the trusted execution snapshot and injected
+//! ports needed for one prepared call. A tool cannot load or mutate product
+//! Session state through this value.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sylvander_protocol::SessionContext;
-
+use crate::execution_context::{AgentExecutionContext, ExecutionActor};
 use crate::workspace_executor::{
     LocalExecutor, UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget,
 };
@@ -48,10 +44,8 @@ use crate::workspace_executor::{
 /// it around freely.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
-    /// Session-scoped identity / origin / request metadata.
-    /// Wrapped in `Arc` so a tool can hold a reference past the
-    /// invocation lifetime (e.g. for async background work).
-    pub session: Arc<SessionContext>,
+    /// Runtime-issued non-wire identity and authority snapshot.
+    pub execution: Arc<AgentExecutionContext>,
 
     /// Execution budget for this tool call.
     pub budget: ExecutionBudget,
@@ -86,10 +80,10 @@ impl ToolContext {
     /// later adds surface capabilities. Agent application code uses the
     /// crate-private constructor below after resolving a real session.
     #[must_use]
-    pub fn new(session: SessionContext) -> Self {
-        let memory_context = crate::tools::memory::MemoryExecutionContext::untrusted(&session);
+    pub fn new(execution: AgentExecutionContext) -> Self {
+        let memory_context = crate::tools::memory::MemoryExecutionContext::untrusted(&execution);
         Self {
-            session: Arc::new(session),
+            execution: Arc::new(execution),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
             executor: Arc::new(LocalExecutor),
@@ -101,11 +95,11 @@ impl ToolContext {
     }
 
     #[must_use]
-    pub(crate) fn application(session: SessionContext) -> Self {
+    pub(crate) fn application(execution: AgentExecutionContext) -> Self {
         let memory_context =
-            crate::tools::memory::MemoryExecutionContext::application_worker(&session);
+            crate::tools::memory::MemoryExecutionContext::application_worker(&execution);
         Self {
-            session: Arc::new(session),
+            execution: Arc::new(execution),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
             executor: Arc::new(LocalExecutor),
@@ -123,7 +117,11 @@ impl ToolContext {
     /// identity. `AgentLoop::run_stream` refuses to run with this sentinel.
     #[must_use]
     pub(crate) fn inert_agent_run_template() -> Self {
-        let mut context = Self::new(SessionContext::system());
+        let mut context = Self::new(AgentExecutionContext::restricted(ExecutionActor::new(
+            "__system_user__",
+            "__system_agent__",
+            "__system_session__",
+        )));
         context.executor = Arc::new(UnavailableExecutor::new("__inert_agent_run_template__"));
         context.execution_target = WorkspaceTarget {
             id: "__inert_agent_run_template__".into(),
@@ -248,19 +246,24 @@ impl ToolContext {
     // Tools frequently need these; the shortcuts save 50 chars per
     // call site and make the typed read obvious to code review.
 
-    /// Convenience: `ctx.session.identity.user_id`.
-    pub fn user_id(&self) -> &sylvander_protocol::types::UserId {
-        &self.session.identity.user_id
+    /// Runtime-validated user identity.
+    pub fn user_id(&self) -> &str {
+        &self.execution.actor.user_id
     }
 
-    /// Convenience: `ctx.session.identity.agent_id`.
-    pub fn agent_id(&self) -> &sylvander_protocol::types::AgentId {
-        &self.session.identity.agent_id
+    /// Runtime-pinned Agent identity.
+    pub fn agent_id(&self) -> &str {
+        &self.execution.actor.agent_id
     }
 
-    /// Convenience: `ctx.session.identity.session_id`.
-    pub fn session_id(&self) -> &sylvander_protocol::types::SessionId {
-        &self.session.identity.session_id
+    /// Product Session identity used for authorization and correlation only.
+    pub fn session_id(&self) -> &str {
+        &self.execution.actor.session_id
+    }
+
+    /// Runtime-assigned turn correlation identifier.
+    pub fn trace_id(&self) -> Option<&str> {
+        self.execution.trace_id.as_deref()
     }
 }
 
@@ -365,15 +368,19 @@ impl ToolContext {
     }
 }
 
-/// Convenience constructors for `SessionContext` values used when the
-/// caller has not supplied one. Kept in their own module so callers
-/// don't have to scroll past struct definitions.
+/// Convenience constructors for explicit restricted execution contexts.
 pub mod defaults {
     /// Build an explicit `ToolContext` for trusted system-originated actions
     /// and tests that do not execute workspace tools.
     #[must_use]
     pub fn system_tool_context() -> super::ToolContext {
-        super::ToolContext::new(sylvander_protocol::SessionContext::system())
+        super::ToolContext::new(
+            crate::execution_context::AgentExecutionContext::restricted_for(
+                "__system_user__",
+                "__system_agent__",
+                "__system_session__",
+            ),
+        )
     }
 }
 

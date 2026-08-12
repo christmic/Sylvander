@@ -154,13 +154,13 @@ impl ToolExecutor for EditTool {
         };
 
         let prepared = if let Some(journal) = &ctx.workspace_journal {
-            let turn_id = ctx.session.request.trace_id.as_deref().ok_or_else(|| {
+            let turn_id = ctx.trace_id().ok_or_else(|| {
                 ToolError::Other("workspace journal requires a turn trace id".into())
             })?;
             Some(
                 journal
                     .prepare(
-                        &ctx.session_id().0,
+                        ctx.session_id(),
                         turn_id,
                         &target.workspace_path,
                         path_str,

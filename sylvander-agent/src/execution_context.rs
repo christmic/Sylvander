@@ -82,6 +82,8 @@ pub struct AgentExecutionContext {
     pub capabilities: BTreeSet<ExecutionCapability>,
     /// Overall tool-operation timeout selected by Runtime.
     pub timeout: Option<Duration>,
+    /// Runtime wall-clock timestamp when this execution was admitted.
+    pub started_at_unix_secs: i64,
     /// Bounded correlation identifier; it grants no authority.
     pub trace_id: Option<String>,
 }
@@ -95,8 +97,19 @@ impl AgentExecutionContext {
             workspace: None,
             capabilities: BTreeSet::new(),
             timeout: None,
+            started_at_unix_secs: 0,
             trace_id: None,
         }
+    }
+
+    /// Construct a restricted context from already validated identities.
+    #[must_use]
+    pub fn restricted_for(
+        user_id: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self::restricted(ExecutionActor::new(user_id, agent_id, session_id))
     }
 
     /// Attach the logical workspace already selected by Runtime.
@@ -117,6 +130,13 @@ impl AgentExecutionContext {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Record Runtime's trusted admission timestamp.
+    #[must_use]
+    pub const fn with_started_at_unix_secs(mut self, started_at_unix_secs: i64) -> Self {
+        self.started_at_unix_secs = started_at_unix_secs;
         self
     }
 

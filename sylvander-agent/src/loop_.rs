@@ -1228,13 +1228,8 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         timeout,
         progress,
     } = request;
-    let session_id = &tool_context.session.identity.session_id;
-    let trace_id = tool_context
-        .session
-        .request
-        .trace_id
-        .as_deref()
-        .unwrap_or("");
+    let session_id = tool_context.session_id();
+    let trace_id = tool_context.trace_id().unwrap_or("");
     tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, "tool execution started");
     let prepared_call = match prepared_call {
         Ok(call) => call,

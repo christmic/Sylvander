@@ -831,8 +831,8 @@ impl ToolExecutor for McpTool {
             .call_tool(
                 &self.remote_name,
                 call.input().clone(),
-                &ctx.user_id().0,
-                &ctx.session_id().0,
+                ctx.user_id(),
+                ctx.session_id(),
             )
             .await
             .map_err(|error| match error {
@@ -931,7 +931,7 @@ impl ToolExecutor for McpResourceTool {
                     .filter(|uri| !uri.is_empty())
                     .ok_or_else(|| ToolError::Other("resource URI is required".into()))?;
                 self.client
-                    .read_resource(uri, &ctx.user_id().0, &ctx.session_id().0)
+                    .read_resource(uri, ctx.user_id(), ctx.session_id())
                     .await
                     .map_err(|error| ToolError::Other(error.to_string()))
             }
