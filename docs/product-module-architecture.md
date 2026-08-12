@@ -243,7 +243,8 @@ reviewed separately.
 
 ## Architectural verification
 
-CI must eventually enforce:
+`scripts/verify-architecture.sh` enforces the currently machine-checkable
+dependency and source boundaries and is invoked by the release security gate:
 
 - Agent's only first-party dependency is `sylvander-llm-core`;
 - API has no Tokio, Agent, Runtime, provider, database, or network dependency;
@@ -251,5 +252,9 @@ CI must eventually enforce:
 - provider adapters depend only on `sylvander-llm-core` among Sylvander crates;
 - only Runtime joins Agent and API;
 - concrete SQLite, OCI, SSH, MCP, and network clients do not appear in Agent;
-- all public client completion paths require a committed Runtime storage
-  outcome and emit a terminal observability fact.
+- the deleted Protocol `types` path cannot return, and boundary crates cannot
+  introduce function-local Rust imports.
+
+The remaining behavioral gate—every public client completion requires both a
+committed Runtime storage outcome and a terminal observability fact—must be
+proved by Runtime integration tests rather than inferred from Cargo metadata.

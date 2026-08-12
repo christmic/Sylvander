@@ -107,6 +107,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 # First-party crate-boundary index and maintained relative links
 ./scripts/verify-docs.sh
+
+# Architectural dependency and boundary-source invariants
+./scripts/verify-architecture.sh
 ```
 
 Workspace lints are declared in `[workspace.lints.rust]` and
@@ -180,15 +183,18 @@ Pass = "local performance verification passed".
 
 Security claim coverage:
 
-1. `git grep` for high-confidence secret patterns (`sk-...`, AWS keys,
+1. Runs `verify-architecture.sh` before security checks so a release cannot
+   join Agent/API outside Runtime or reintroduce runtime dependencies in the
+   public protocol.
+2. `git grep` for high-confidence secret patterns (`sk-...`, AWS keys,
    `BEGIN ... PRIVATE KEY`, `gh[pousr]_...`). One known false-positive
    in `sylvander-tui/src/tool_presenter.rs:1151` is whitelisted via
    `grep -v`.
-2. `cargo metadata --locked --no-deps` to confirm the lockfile parses
+3. `cargo metadata --locked --no-deps` to confirm the lockfile parses
    without network.
-3. Resolves `cargo-audit` (system or `~/.cargo/bin`) and runs
+4. Resolves `cargo-audit` (system or `~/.cargo/bin`) and runs
    `cargo audit --no-yanked` with the cargo proxy cleared.
-4. Runs ten cross-cutting security tests covering malformed protocol
+5. Runs ten cross-cutting security tests covering malformed protocol
    input (`sylvander-protocol`), path/command-argument injection and
    cross-owner isolation (`sylvander-agent`), profile and restart
    isolation (`sylvander-runtime`), socket credentials and live-event
@@ -196,6 +202,17 @@ Security claim coverage:
    (`sylvander-tui`).
 
 Pass = "security verification passed".
+
+### verify-architecture.sh
+
+Reads locked Cargo metadata and fails when Agent has a first-party dependency
+other than `sylvander-llm-core`, Protocol gains runtime/infrastructure
+dependencies, a Channel depends on Agent, a provider adapter depends on another
+first-party layer, or a crate other than Runtime joins Agent and Protocol. It
+also rejects the removed Protocol `types` path and nested Rust `use`
+declarations in Agent, Channel, and Protocol sources.
+
+Pass = both dependency-graph and boundary-source verification messages.
 
 ### verify-docs.sh
 

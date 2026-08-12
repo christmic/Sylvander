@@ -244,8 +244,10 @@ Migration is performed without compatibility aliases:
    remain unchanged.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with
    `ChannelHost`.
-7. **In progress:** add dependency-graph verification to CI, then rename the
-   pure wire crate to `sylvander-api` without a compatibility crate.
+7. **In progress:** the executable dependency/source gate now verifies Agent,
+   Protocol, Channel, provider, and Runtime boundaries and runs from the
+   security gate. Rename the pure wire crate to `sylvander-api` next, without a
+   compatibility crate.
 
 At each step, the new owner becomes authoritative before the previous owner is
 deleted. No deprecated alias or dual production path is retained.
