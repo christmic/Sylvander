@@ -581,16 +581,17 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 
 ### P3 — Location-transparent execution and coding isolation
 
-- [x] **P3.1 Executor contract:** local reference implementation plus a shared
-  conformance suite for filesystem, process, environment, cancellation,
-  streaming, limits, and Git operations.
+- [x] **P3.1 Executor contract:** Agent-owned neutral port plus Runtime-owned
+  local implementation and conformance suite for filesystem, process,
+  environment, cancellation, streaming, limits, and Git operations.
 - [x] **P3.2 Executor-backed tools:** migrate Read/Write/Edit and add bounded
   List/Search/Command/Git operations without exposing backend location to the
   Agent loop.
 
-  Current evidence: the first local slice provides `WorkspaceExecutor`,
-  `WorkspaceTarget`, and `LocalExecutor`; Read/Write/Edit/Command delegate to
-  it, session workspace bindings select the target per turn, read-only is
+  Current evidence: Agent provides `WorkspaceExecutor` and `WorkspaceTarget`;
+  Runtime owns `LocalExecutor` and injects it explicitly. Read/Write/Edit/
+  Command delegate through the port, session workspace bindings select the
+  target per turn, read-only is
   enforced as the intersection of workspace and permission policy, configured
   local roots bound accepted workspaces, and unknown adapters never execute
   against a same-named host path. The OpenSSH adapter uses fixed batch-mode

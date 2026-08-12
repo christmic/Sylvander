@@ -10,8 +10,8 @@ The normative target and migration rules are documented in
 [`../../docs/agent-runtime-api-boundaries.md`](../../docs/agent-runtime-api-boundaries.md).
 Runtime now owns `AgentRun`, supervision, Session persistence, public event
 mapping, MCP process transport, and durable relationship-memory persistence.
-The remaining bus, concrete local workspace/process implementation, and
-product-Protocol dependencies in this crate are migration debt, not the
+The remaining bus, concrete workspace-journal/compression-disk persistence,
+and product-Protocol dependencies in this crate are migration debt, not the
 intended boundary.
 
 ## Internal layers
@@ -38,9 +38,10 @@ Runtime Agent service
 - `tool` and `tool_context` define the invocation boundary. Tools receive
   Runtime-derived identity, workspace, capability, and execution-budget data;
   model arguments are never authority.
-- `workspace_executor` currently contains the neutral workspace port and a
-  legacy local implementation. The port remains Agent-owned; concrete local,
-  SSH, and OCI implementations belong to Runtime.
+- `workspace_executor` contains only the neutral workspace port, values,
+  router, bounds, and fail-closed unavailable sentinel. Concrete local, SSH,
+  and OCI implementations live in Runtime. `ToolContext` never grants host
+  access merely because a filesystem path was supplied.
 - `tools` contains Agent-owned definitions and prepared-call handlers. Concrete
   storage and process services are injected through the execution context.
   Relationship-memory domain values, validation, and the `MemoryStore` port

@@ -95,8 +95,10 @@ crate without retaining a second production path.
   contract is in
   [`../GUARDIAN.md`](../GUARDIAN.md).
 - `execution`, `git_worktree`, and `remote_git_worktree` own location-neutral
-  workspace selection plus isolated local/host-backed and SSH coding
-  worktrees.
+  workspace selection, the concrete host-local/SSH/OCI adapters, and isolated
+  local/host-backed and SSH coding worktrees. The local adapter enforces path,
+  output, deadline, and process-tree cancellation bounds but truthfully
+  reports no sandbox isolation.
 - `storage::memory` owns the closed SQLite relationship-memory backend,
   authenticated file/HTTP integrity anchors, finite retention, evidence
   checkpoints, backup rotation, and offline restore. Agent owns only the

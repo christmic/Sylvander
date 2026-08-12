@@ -222,8 +222,10 @@ Migration is performed without compatibility aliases:
 4. **In progress:** remove Agent's Protocol dependency and move concrete
    infrastructure below Runtime-owned ports. MCP stdio is Runtime-owned;
    durable SQLite relationship memory, integrity anchors, backup, and
-   maintenance are Runtime-owned. The legacy concrete local filesystem/process
-   implementation remains in Agent.
+   maintenance are Runtime-owned. The host-local, SSH, and OCI workspace
+   executors are Runtime-owned and Agent defaults to an unavailable executor
+   until Runtime binds one. Concrete workspace-journal and compression-disk
+   persistence still remain in Agent.
 5. Move `MessageBus` and `InProcessMessageBus` out of Protocol; split the large
    wire `types` module by API domain.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with

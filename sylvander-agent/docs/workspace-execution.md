@@ -23,23 +23,25 @@ falls back to the process directory or a same-named host path.
 
 Command environment overrides are limited to 64 entries. Names must use shell
 identifier syntax, names are at most 128 bytes, values are at most 8 KiB, and
-NUL is rejected. The local executor overlays accepted values only for the
+NUL is rejected. Runtime's local adapter overlays accepted values only for the
 spawned command. Backends that do not implement overrides reject a non-empty
 map instead of silently dropping it.
 
 ## Bounds and cancellation
 
 Query result count, line width, output bytes, and duration are clamped by the
-executor. Local commands concurrently drain stdout and stderr, preserve a
-bounded head/tail with exact totals, and emit Unicode-safe progress. Each
-command runs in its own process group. Timeout or future cancellation
-terminates the whole group so descendants cannot outlive the Agent turn.
+executor. Runtime's local adapter concurrently drains stdout and stderr,
+preserves a bounded head/tail with exact totals, and emits Unicode-safe
+progress. Each command runs in its own process group. Timeout or future
+cancellation terminates the whole group so descendants cannot outlive the
+Agent turn.
 
-The reusable core conformance test covers file read/write, bounded reads,
-list/search, environment, ordinary and streaming commands, and the read-only
-inspection boundary through both `LocalExecutor` and `WorkspaceRouter`.
-Separate regressions cover query limits, read-only mounts, output pressure,
-UTF-8 chunk boundaries, timeout, dropped futures, and unavailable targets.
+Agent tests cover executor injection, logical mount routing, prepared-policy
+bounds, capability denial, and unavailable-target behavior through test
+doubles. Runtime tests own concrete `LocalExecutor` conformance: file
+read/write, bounded reads, list/search, environment, streaming, read-only
+enforcement, output pressure, UTF-8 chunk boundaries, timeout, and dropped
+future cancellation.
 
 The OpenSSH executor uses strict host-key verification, a deployment-owned
 known-hosts file, bounded control connection reuse, and a remote process-group

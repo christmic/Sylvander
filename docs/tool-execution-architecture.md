@@ -59,6 +59,10 @@ backend: every operation uses a disposable container with an explicit bind
 mode, `--network=none`, read-only root filesystem, private temporary storage,
 no new privileges, dropped capabilities, and memory, CPU, and PID ceilings.
 
+Agent owns only this port and its neutral routing policy. Runtime owns all
+three concrete executors and must inject one explicitly; constructing a
+`ToolContext` or attaching a filesystem root never grants host-local access.
+
 This release does not claim native Seatbelt, bubblewrap, Windows token/WFP, or
 approved-network proxy support. `ToolNetworkPolicy::FullAfterApproval` remains
 non-executable until a backend can enforce that policy without falling back to

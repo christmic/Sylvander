@@ -604,3 +604,7 @@ fn shell_command(command: &str) -> tokio::process::Command {
     process.args(["/C", command]);
     process
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/execution_local.rs"]
+mod tests;
