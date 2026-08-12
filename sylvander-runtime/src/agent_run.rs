@@ -49,7 +49,7 @@ use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::approval_store::{
     ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory, approval_policy_revision,
 };
-use crate::execution::LocalExecutor;
+use crate::execution::RuntimeExecutionService;
 use crate::observability::{
     RuntimeEvent, RuntimeFailureKind, RuntimeObservability, RuntimePersistenceOperation,
 };
@@ -203,8 +203,8 @@ pub(crate) struct AgentRunInner {
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
     workspace_journal: Option<Arc<WorkspaceJournal>>,
-    /// Server-owned executor adapters keyed by exact execution-target id.
-    workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    /// Immutable Runtime-owned execution environment registry.
+    execution_service: RuntimeExecutionService,
     skill_features: std::sync::RwLock<Vec<sylvander_api::PlatformFeature>>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
@@ -2495,7 +2495,7 @@ impl AgentRunInner {
             task_workspace,
             workspace_mounts,
             session_metadata.workspace.as_path(),
-            &self.workspace_executors,
+            &self.execution_service,
             &self.skill_features,
             &msg.payload,
             self.turn_context_budgets.workspace_knowledge,
@@ -2721,7 +2721,7 @@ impl AgentRunInner {
             ToolSessionExecution {
                 metadata: &session_metadata,
                 effective_config: effective_config.as_ref(),
-                workspace_executors: &self.workspace_executors,
+                execution_service: &self.execution_service,
             },
             &self.id,
             &session_id,
@@ -3272,7 +3272,7 @@ async fn workspace_turn_context(
     task_workspace: Option<&sylvander_api::SessionWorkspaceBinding>,
     workspace_mounts: &[sylvander_api::SessionWorkspaceMount],
     fallback_task_workspace: &Path,
-    workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    execution_service: &RuntimeExecutionService,
     skill_features: &std::sync::RwLock<Vec<sylvander_api::PlatformFeature>>,
     query: &str,
     budget: sylvander_agent::turn_context::TurnContextBudget,
@@ -3298,11 +3298,11 @@ async fn workspace_turn_context(
     ));
     let agent_executor = agent_target
         .as_ref()
-        .map(|target| workspace_context_executor(workspace_executors, target))
+        .map(|target| workspace_context_executor(execution_service, target))
         .transpose()?;
     let task_executor = task_target
         .as_ref()
-        .map(|target| workspace_context_executor(workspace_executors, target))
+        .map(|target| workspace_context_executor(execution_service, target))
         .transpose()?;
     let context = workspace_context::discover_with_report(
         agent_target
@@ -3431,10 +3431,10 @@ fn workspace_target(binding: &sylvander_api::SessionWorkspaceBinding) -> Workspa
 }
 
 fn workspace_context_executor<'a>(
-    workspace_executors: &'a HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    execution_service: &'a RuntimeExecutionService,
     target: &WorkspaceTarget,
 ) -> Result<&'a Arc<dyn WorkspaceExecutor>, AgentRunError> {
-    workspace_executors.get(&target.id).ok_or_else(|| {
+    execution_service.resolve(&target.id).ok_or_else(|| {
         AgentRunError::Configuration(format!(
             "execution target `{}` is unavailable on this server",
             target.id
@@ -3501,7 +3501,7 @@ impl TurnCorrelation {
 struct ToolSessionExecution<'a> {
     metadata: &'a SessionMetadata,
     effective_config: Option<&'a sylvander_api::SessionEffectiveConfig>,
-    workspace_executors: &'a HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    execution_service: &'a RuntimeExecutionService,
 }
 
 fn tool_context_for_permissions(
@@ -3556,12 +3556,8 @@ fn tool_context_for_permissions(
         .map_or_else(
             || {
                 execution
-                    .workspace_executors
-                    .get(target_id)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        Arc::new(UnavailableExecutor::new(target_id)) as Arc<dyn WorkspaceExecutor>
-                    })
+                    .execution_service
+                    .resolve_or_unavailable(target_id)
             },
             |config| {
                 let default_reference = config
@@ -3583,14 +3579,8 @@ fn tool_context_for_permissions(
                         capabilities.command = false;
                     }
                     let executor = execution
-                        .workspace_executors
-                        .get(&mount.binding.execution_target)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            Arc::new(UnavailableExecutor::new(
-                                mount.binding.execution_target.clone(),
-                            )) as Arc<dyn WorkspaceExecutor>
-                        });
+                        .execution_service
+                        .resolve_or_unavailable(&mount.binding.execution_target);
                     (
                         mount.reference.clone(),
                         MountedWorkspace {
@@ -3680,7 +3670,7 @@ pub struct AgentRunBuilder {
     approval_rules: Vec<sylvander_agent::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
     workspace_journal_path: Option<PathBuf>,
-    workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    execution_service: Option<RuntimeExecutionService>,
     invocation_gateway: Option<Arc<dyn sylvander_agent::tool_invocation::ToolInvocationGateway>>,
 }
 
@@ -3690,10 +3680,6 @@ impl AgentRunBuilder {
         router: Arc<dyn ModelProvider>,
         model: ModelInfo,
     ) -> Self {
-        let workspace_executors = HashMap::from([(
-            "local".to_owned(),
-            Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
-        )]);
         Self {
             spec,
             router,
@@ -3715,7 +3701,7 @@ impl AgentRunBuilder {
             approval_rules: Vec::new(),
             approval_store_path: None,
             workspace_journal_path: None,
-            workspace_executors,
+            execution_service: Some(RuntimeExecutionService::standalone_local()),
             invocation_gateway: None,
         }
     }
@@ -3849,17 +3835,10 @@ impl AgentRunBuilder {
         self
     }
 
-    /// Register the adapter responsible for one exact execution target.
-    ///
-    /// `local` is registered by default and can be replaced explicitly (for
-    /// example by a sandbox adapter). Unknown target ids remain unavailable.
+    /// Inject the immutable execution environments selected by Runtime.
     #[must_use]
-    pub fn workspace_executor(
-        mut self,
-        target_id: impl Into<String>,
-        executor: Arc<dyn WorkspaceExecutor>,
-    ) -> Self {
-        self.workspace_executors.insert(target_id.into(), executor);
+    pub(crate) fn execution_service(mut self, service: RuntimeExecutionService) -> Self {
+        self.execution_service = Some(service);
         self
     }
 
@@ -3881,11 +3860,9 @@ impl AgentRunBuilder {
     pub fn build_with_session_issuer(
         self,
     ) -> Result<(AgentRun, AgentSessionIssuer), AgentRunError> {
-        if self.workspace_executors.keys().any(String::is_empty) {
-            return Err(AgentRunError::Build(
-                "workspace executor target id must not be empty".into(),
-            ));
-        }
+        let execution_service = self
+            .execution_service
+            .ok_or_else(|| AgentRunError::Build("Runtime execution service is required".into()))?;
         let id = self.spec.id.clone();
         let bus = self
             .bus
@@ -4002,7 +3979,7 @@ impl AgentRunBuilder {
                 turn_context_manifests: RwLock::new(HashMap::new()),
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
-                workspace_executors: self.workspace_executors,
+                execution_service,
                 skill_features: std::sync::RwLock::new(Vec::new()),
                 bus,
                 observability: self.observability,

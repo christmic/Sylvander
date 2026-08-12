@@ -1,4 +1,5 @@
 use super::*;
+use crate::execution::LocalExecutor;
 use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
 use sylvander_agent::compress::error::CompactionFailureCode;
@@ -45,7 +46,7 @@ async fn with_workspace_context(
     task_workspace: Option<&sylvander_api::SessionWorkspaceBinding>,
     workspace_mounts: &[sylvander_api::SessionWorkspaceMount],
     fallback_task_workspace: &Path,
-    workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    execution_service: &crate::execution::RuntimeExecutionService,
     skill_features: &std::sync::RwLock<Vec<sylvander_api::PlatformFeature>>,
 ) -> Result<String, AgentRunError> {
     let workspace = workspace_turn_context(
@@ -53,7 +54,7 @@ async fn with_workspace_context(
         task_workspace,
         workspace_mounts,
         fallback_task_workspace,
-        workspace_executors,
+        execution_service,
         skill_features,
         "",
         TurnContextBudgets::default().workspace_knowledge,
@@ -185,10 +186,11 @@ async fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
     )
     .unwrap();
 
-    let executors = HashMap::from([(
+    let execution_service = crate::execution::RuntimeExecutionService::new([(
         "local".to_owned(),
         Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
-    )]);
+    )])
+    .unwrap();
     let skill_features = std::sync::RwLock::new(Vec::new());
     let mounts = vec![sylvander_api::SessionWorkspaceMount {
         reference: "docs".into(),
@@ -221,7 +223,7 @@ async fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
         }),
         &mounts,
         task.path(),
-        &executors,
+        &execution_service,
         &skill_features,
     )
     .await
@@ -382,7 +384,7 @@ impl WorkspaceExecutor for MarkerWorkspaceExecutor {
 async fn workspace_prompt_uses_each_execution_target_without_local_filesystem_access() {
     let agent = Arc::new(MarkerWorkspaceExecutor::new(b"remote-agent-guide"));
     let task = Arc::new(MarkerWorkspaceExecutor::new(b"remote-task-guide"));
-    let executors = HashMap::from([
+    let execution_service = crate::execution::RuntimeExecutionService::new([
         (
             "ssh:agent".to_owned(),
             agent.clone() as Arc<dyn WorkspaceExecutor>,
@@ -391,7 +393,8 @@ async fn workspace_prompt_uses_each_execution_target_without_local_filesystem_ac
             "ssh:task".to_owned(),
             task.clone() as Arc<dyn WorkspaceExecutor>,
         ),
-    ]);
+    ])
+    .unwrap();
     let prompt = with_workspace_context(
         "base".into(),
         Some(&sylvander_api::SessionWorkspaceBinding {
@@ -408,7 +411,7 @@ async fn workspace_prompt_uses_each_execution_target_without_local_filesystem_ac
         }),
         &[],
         Path::new("/attached/task"),
-        &executors,
+        &execution_service,
         &std::sync::RwLock::new(Vec::new()),
     )
     .await
@@ -1908,14 +1911,12 @@ async fn runtime_permissions_are_validated_against_operator_capabilities() {
 #[test]
 fn permission_profile_builds_a_workspace_scoped_tool_context() {
     let metadata = test_metadata();
+    let execution_service = crate::execution::RuntimeExecutionService::standalone_local();
     let context = tool_context_for_permissions(
         ToolSessionExecution {
             metadata: &metadata,
             effective_config: None,
-            workspace_executors: &HashMap::from([(
-                "local".to_owned(),
-                Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
-            )]),
+            execution_service: &execution_service,
         },
         &AgentId::new("agent"),
         &SessionId::new("session"),
@@ -1943,20 +1944,29 @@ fn permission_profile_builds_a_workspace_scoped_tool_context() {
 }
 
 #[test]
-fn builder_registers_local_and_injected_workspace_executors() {
+fn builder_uses_one_immutable_runtime_execution_service() {
     let (spec, client) = test_spec_and_client();
     let remote: Arc<dyn WorkspaceExecutor> = Arc::new(MarkerWorkspaceExecutor::new(b"remote"));
+    let execution_service = crate::execution::RuntimeExecutionService::new([
+        (
+            "local".to_owned(),
+            Arc::new(crate::execution::LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+        ),
+        ("ssh:build".to_owned(), remote.clone()),
+    ])
+    .unwrap();
     let run = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
-        .workspace_executor("ssh:build", remote.clone())
+        .execution_service(execution_service)
         .build()
         .expect("build");
 
-    assert!(run.inner.workspace_executors.contains_key("local"));
+    assert!(run.inner.execution_service.resolve("local").is_some());
     assert!(Arc::ptr_eq(
-        run.inner.workspace_executors.get("ssh:build").unwrap(),
+        run.inner.execution_service.resolve("ssh:build").unwrap(),
         &remote
     ));
+    assert!(run.inner.execution_service.resolve("unknown").is_none());
 }
 
 #[tokio::test]
@@ -1964,15 +1974,16 @@ async fn turn_context_resolves_the_effective_execution_target() {
     let metadata = test_metadata();
     let effective = remote_effective_config("ssh:build", "/remote/project");
     let remote = Arc::new(MarkerWorkspaceExecutor::new(b"remote"));
-    let executors = HashMap::from([(
+    let execution_service = crate::execution::RuntimeExecutionService::new([(
         "ssh:build".to_owned(),
         remote.clone() as Arc<dyn WorkspaceExecutor>,
-    )]);
+    )])
+    .unwrap();
     let context = tool_context_for_permissions(
         ToolSessionExecution {
             metadata: &metadata,
             effective_config: Some(&effective),
-            workspace_executors: &executors,
+            execution_service: &execution_service,
         },
         &AgentId::new("agent"),
         &SessionId::new("session"),
@@ -2008,14 +2019,20 @@ async fn executor_resolution_is_rebuilt_after_agent_restart() {
     let (spec, client) = test_spec_and_client();
     let before_restart = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
-        .workspace_executor("container:dev", old)
+        .execution_service(
+            crate::execution::RuntimeExecutionService::new([("container:dev".into(), old)])
+                .unwrap(),
+        )
         .build()
         .unwrap();
     drop(before_restart);
     let (spec, client) = test_spec_and_client();
     let after_restart = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
-        .workspace_executor("container:dev", new)
+        .execution_service(
+            crate::execution::RuntimeExecutionService::new([("container:dev".into(), new)])
+                .unwrap(),
+        )
         .build()
         .unwrap();
     let permissions = sylvander_api::PermissionProfile::default();
@@ -2023,7 +2040,7 @@ async fn executor_resolution_is_rebuilt_after_agent_restart() {
         ToolSessionExecution {
             metadata: &metadata,
             effective_config: Some(&effective),
-            workspace_executors: &after_restart.inner.workspace_executors,
+            execution_service: &after_restart.inner.execution_service,
         },
         &AgentId::new("agent"),
         &SessionId::new("restored-session"),
@@ -2082,17 +2099,16 @@ async fn effective_workspace_mounts_route_file_operations_by_logical_reference()
             },
         },
     ];
-    let executors = [(
+    let execution_service = crate::execution::RuntimeExecutionService::new([(
         "local".into(),
         Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
-    )]
-    .into_iter()
-    .collect();
+    )])
+    .unwrap();
     let context = tool_context_for_permissions(
         ToolSessionExecution {
             metadata: &metadata,
             effective_config: Some(&effective),
-            workspace_executors: &executors,
+            execution_service: &execution_service,
         },
         &AgentId::new("agent"),
         &SessionId::new("session"),
@@ -2131,11 +2147,12 @@ async fn effective_workspace_mounts_route_file_operations_by_logical_reference()
 async fn unknown_execution_target_is_explicitly_unavailable() {
     let metadata = test_metadata();
     let effective = remote_effective_config("ssh:missing", "/remote/project");
+    let execution_service = crate::execution::RuntimeExecutionService::new([]).unwrap();
     let context = tool_context_for_permissions(
         ToolSessionExecution {
             metadata: &metadata,
             effective_config: Some(&effective),
-            workspace_executors: &HashMap::new(),
+            execution_service: &execution_service,
         },
         &AgentId::new("agent"),
         &SessionId::new("session"),

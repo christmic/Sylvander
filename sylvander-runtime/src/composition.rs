@@ -40,7 +40,9 @@ use crate::config::{AgentDefinitionConfig, ExecutionTransportConfig, ServerConfi
 use crate::config::{ModelDefinitionConfig, ModelProviderConfig, SecretResolver};
 use crate::credential_audit::CredentialOperationAuditLedger;
 use crate::credential_registry::CredentialSecretResolver;
-use crate::execution::{ContainerExecutor, ContainerResourcePolicy, SshExecutor};
+use crate::execution::{
+    ContainerExecutor, ContainerResourcePolicy, LocalExecutor, RuntimeExecutionService, SshExecutor,
+};
 use crate::guardian_runtime::WorkerToolGatewayFactory;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
 #[doc(hidden)]
@@ -222,9 +224,9 @@ pub(crate) fn build_agent(
     if let Some(provider) = user_profiles {
         builder = builder.user_profile_provider(provider);
     }
-    builder = apply_execution_targets(config, builder, |reference| {
+    builder = builder.execution_service(build_execution_service(config, |reference| {
         secrets.resolve(reference).map_err(|_| ())
-    })?;
+    })?);
     let (run, session_issuer) = apply_server_run_settings(config, builder)
         .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
@@ -253,6 +255,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     registry: crate::agent_registry::AgentRegistry,
     bus: Arc<dyn MessageBus>,
     observability: RuntimeObservability,
+    execution_service: RuntimeExecutionService,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Option<Arc<dyn UserProfileProvider>>,
@@ -362,6 +365,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     let mut builder = AgentRun::qualified_router_builder(spec.clone(), Arc::new(router), primary)
         .bus(bus)
         .observability(observability)
+        .execution_service(execution_service)
         .session_store(sessions)
         .memory(memory.clone())
         .override_tools(tools)
@@ -378,9 +382,6 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     if let Some(gateway) = invocation_gateway {
         builder = builder.invocation_gateway(gateway);
     }
-    builder = apply_execution_targets(config, builder, |reference| {
-        resolver.resolve_credential(reference)
-    })?;
     let (run, session_issuer) = apply_server_run_settings(config, builder)
         .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
@@ -891,11 +892,16 @@ fn apply_server_run_settings(
     builder
 }
 
-fn apply_execution_targets(
+pub(crate) fn build_execution_service(
     config: &ServerConfig,
-    mut builder: crate::agent_run::AgentRunBuilder,
     resolve: impl Fn(&crate::config::SecretRef) -> Result<crate::config::SecretValue, ()>,
-) -> Result<crate::agent_run::AgentRunBuilder, CompositionError> {
+) -> Result<RuntimeExecutionService, CompositionError> {
+    // `local` is Runtime's built-in host adapter and remains an exact target;
+    // it is not a fallback for any other identifier.
+    let mut executors = HashMap::from([(
+        "local".to_owned(),
+        Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+    )]);
     for target in &config.execution_targets {
         let executor: Arc<dyn WorkspaceExecutor> = match &target.transport {
             ExecutionTransportConfig::Ssh {
@@ -932,11 +938,12 @@ fn apply_execution_targets(
                     })
                     .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
             ),
-            ExecutionTransportConfig::Local { .. } => continue,
+            ExecutionTransportConfig::Local { .. } => Arc::new(LocalExecutor),
         };
-        builder = builder.workspace_executor(target.id.clone(), executor);
+        executors.insert(target.id.clone(), executor);
     }
-    Ok(builder)
+    RuntimeExecutionService::new(executors)
+        .map_err(|_| CompositionError::ExecutionTarget("registry".into()))
 }
 
 fn versioned_registry_revision_bindings(

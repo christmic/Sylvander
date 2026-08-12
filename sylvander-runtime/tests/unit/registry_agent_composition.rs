@@ -404,6 +404,7 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
         registry.clone(),
         bus,
         RuntimeObservability::new(),
+        build_execution_service(&config, |_| Err(())).unwrap(),
         sessions,
         Arc::new(InMemoryMemoryStore::new()),
         None,

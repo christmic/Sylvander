@@ -193,7 +193,8 @@ use crate::agent_supervisor::{AgentRunEngine, RevisionedAgentRunProvider};
 #[cfg(test)]
 use crate::composition::default_tools;
 use crate::composition::{
-    ConfiguredAgent, build_registry_agent_versioned_with_resolver, resolve_session_config,
+    ConfiguredAgent, build_execution_service, build_registry_agent_versioned_with_resolver,
+    resolve_session_config,
 };
 use crate::config::{
     MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
@@ -204,6 +205,7 @@ use crate::evidence::{
     AdministrationAudit, AuthorizationDenial, EvidenceArtifactSink, EvidenceEncryption,
     EvidenceGovernance, EvidenceRecorder, EvidenceStore,
 };
+use crate::execution::RuntimeExecutionService;
 use crate::guardian_runtime::{
     GuardianRuntime, GuardianRuntimeError, GuardianRuntimeSettings, WorkerToolGatewayFactory,
 };
@@ -520,6 +522,7 @@ struct RuntimeRevisionProvider {
     registry: AgentRegistry,
     bus: Arc<dyn MessageBus>,
     observability: RuntimeObservability,
+    execution_service: RuntimeExecutionService,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Arc<dyn sylvander_agent::user_profile_provider::UserProfileProvider>,
@@ -548,6 +551,7 @@ impl RuntimeRevisionProvider {
             self.registry.clone(),
             self.bus.clone(),
             self.observability.clone(),
+            self.execution_service.clone(),
             self.sessions.clone(),
             self.memory.clone(),
             Some(self.user_profiles.clone()),
@@ -4241,6 +4245,10 @@ impl Runtime {
             WorkerToolGatewayFactory::open(&guardian_settings, guardian_now, user_profiles.clone())
                 .await
                 .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let execution_service = build_execution_service(&config, |reference| {
+            credential_resolver.resolve_credential(reference)
+        })
+        .map_err(|error| RuntimeError::Composition(error.to_string()))?;
         let mut agents = Vec::with_capacity(config.agents.len());
         for definition in &config.agents {
             let snapshot = agent_registry
@@ -4254,6 +4262,7 @@ impl Runtime {
                     agent_registry.clone(),
                     bus.clone(),
                     observability.clone(),
+                    execution_service.clone(),
                     session_store.clone(),
                     memory_store.clone(),
                     Some(Arc::new(user_profiles.clone())),
@@ -4276,6 +4285,7 @@ impl Runtime {
             registry: agent_registry.clone(),
             bus: bus.clone(),
             observability: observability.clone(),
+            execution_service,
             sessions: session_store.clone(),
             memory: memory_store.clone(),
             user_profiles: Arc::new(user_profiles.clone()),
