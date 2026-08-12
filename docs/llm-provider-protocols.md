@@ -1,0 +1,120 @@
+# LLM Provider Protocol Evidence and Compatibility
+
+This document is the implementation contract for Sylvander's LLM adapters. A
+wire field, event, or provider-specific behavior must be supported by the
+locally checked-out official SDK source or by the provider's official API
+documentation. Compatibility must not be inferred from third-party clients.
+
+## Reproducible official baselines
+
+The following sibling repositories are the evidence snapshots used for this
+work. The commit is part of the compatibility contract; updating an adapter
+requires recording and reviewing a newer official commit.
+
+| Protocol owner | Local checkout | Commit | Release ancestry |
+| --- | --- | --- | --- |
+| Anthropic | `../anthropic-sdk-python` | `009b035305e0724ce108ebd796935f91711fc6e1` | after `v0.121.0` |
+| OpenAI | `../openai-python` | `a1eeab58db02de46717ccebaf1eb83e314fa86ff` | after `v3.0.0` |
+| Alibaba Cloud DashScope | `../dashscope-sdk-python` | `397e02b02596e29b03d3ec7159c3610d6dac65e6` | after `v1.26.6` |
+
+Primary source and test paths reviewed for each protocol:
+
+- Anthropic Messages: `src/anthropic/resources/messages/messages.py`,
+  `src/anthropic/types/`, `src/anthropic/lib/streaming/`, and
+  `tests/api_resources/test_messages.py` in the Anthropic checkout.
+- OpenAI Responses: `src/openai/resources/responses/responses.py`,
+  `src/openai/types/responses/`, and `tests/api_resources/test_responses.py` in
+  the OpenAI checkout.
+- OpenAI Chat Completions:
+  `src/openai/resources/chat/completions/completions.py`,
+  `src/openai/types/chat/`, and
+  `tests/api_resources/chat/test_completions.py` in the OpenAI checkout.
+- DashScope Generation: `dashscope/aigc/generation.py`,
+  `dashscope/api_entities/dashscope_response.py`, `tests/unit/test_messages.py`,
+  and `tests/unit/test_http_api.py` in the DashScope checkout.
+
+## Protocol identity and provider identity
+
+A protocol kind identifies a wire contract. A provider ID identifies an
+independently configured service using that contract. They are not aliases.
+The supported protocol kinds are:
+
+- `anthropic_messages`
+- `openai_responses`
+- `openai_chat_completions`
+- `dashscope_generation`
+
+For example, `openai`, `qwen-openai`, and `deepseek` may be different provider
+IDs using `openai_chat_completions`, while `qwen-dashscope` uses
+`dashscope_generation`. A provider definition always supplies its base URL and
+credential binding explicitly. LLM adapter constructors always receive the
+resolved API key and base URL as arguments and never discover credentials or
+endpoints from environment variables.
+
+## Feature contract
+
+Model capabilities describe what a selected model can do. Provider features
+describe optional wire behavior implemented by a particular endpoint. A
+provider definition stores a validated set of feature names and the runtime
+passes that set into its protocol adapter. Unknown features are rejected.
+
+Initial feature vocabulary:
+
+| Protocol | Feature switches |
+| --- | --- |
+| Anthropic Messages | `adaptive_thinking`, `prompt_caching`, `structured_outputs` |
+| OpenAI Responses | `reasoning`, `prompt_caching`, `parallel_tool_calls`, `strict_tools` |
+| OpenAI Chat Completions | `developer_role`, `reasoning`, `prompt_caching`, `parallel_tool_calls`, `stream_usage`, `strict_tools` |
+| DashScope Generation | `incremental_output`, `thinking`, `preserve_thinking`, `parallel_tool_calls`, `structured_output` |
+
+A feature switch only permits its wire behavior; request conversion must still
+check the selected model's declared capabilities. Protocol-specific typed
+feature structures are constructed from the persisted names before any HTTP
+request is made. Arbitrary provider JSON is not accepted as a feature switch.
+
+## Usage preservation
+
+`TokenUsage` keeps normalized input, output, cache-write, and cache-read counts.
+Typed details preserve reported protocol dimensions such as Anthropic cache
+TTL buckets and thinking tokens, and OpenAI audio, reasoning, and prediction
+tokens. An absent optional field means the provider omitted it and is distinct
+from a reported zero. Adapter tests must assert both totals and details.
+
+Provider-specific non-token usage metadata, including Anthropic service tier,
+inference geography, and server-tool request counts, remains typed in the
+Anthropic wire response. It must not be silently converted into token counts.
+
+## Test provenance and model matrix
+
+Each adapter has two test layers:
+
+1. Official-derived contract tests reproduce request and response examples or
+   event sequences from the pinned official SDK tests. Test names and comments
+   identify the source SDK path and commit. They run against local mock HTTP/SSE
+   servers and require no credentials.
+2. Sylvander-owned regression tests cover neutral conversion, feature gating,
+   malformed streams, preserved token dimensions, and provider/model routing.
+
+The routing and serialization matrix must cover distinct model families rather
+than testing one model string repeatedly:
+
+| Protocol | Required model profiles |
+| --- | --- |
+| Anthropic Messages | current Claude model, Claude model with extended/adaptive thinking |
+| OpenAI Responses | current GPT model, current reasoning model |
+| OpenAI Chat Completions | OpenAI GPT model, Qwen OpenAI-compatible model, DeepSeek OpenAI-compatible model |
+| DashScope Generation | Qwen non-thinking model, Qwen thinking model, Qwen tool-calling model |
+
+These are wire-level model profiles, not live conformance claims. A model is
+listed as supported only when its request shape is validated by the official
+provider documentation or SDK and represented by a passing fixture. Optional
+credential-gated live tests may supplement this matrix but are never the sole
+evidence.
+
+## Rust source layout
+
+All imports in new or modified Rust modules belong in the module-level import
+section. Function- or block-local `use` declarations are forbidden unless a
+compiler, macro, or conditional-compilation constraint makes them unavoidable;
+such an exception requires an adjacent `// Local import required: ...` comment.
+CI scans modified Rust files for undocumented local imports.

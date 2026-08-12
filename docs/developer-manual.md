@@ -115,6 +115,17 @@ Workspace lints are declared in `[workspace.lints.rust]` and
 set with module-repetition and over-bool exceptions deliberately
 relaxed.
 
+### Rust import placement
+
+All namespace imports belong in the module import section. A `use` declaration
+inside a function, method, `impl`, match arm, test body, or other nested scope is
+forbidden. Use a fully qualified path if a module-level short name would be
+ambiguous. The only exception is a compiler, macro-expansion, or
+conditional-compilation constraint that makes module-level import impossible;
+such an exception must include an English `// Local import required: ...`
+comment. See [`AGENTS.md`](../AGENTS.md) for the normative rule and verification
+requirements.
+
 ## 8. CI workflow tour
 
 The repository keeps several workflows under `.github/workflows/`. A workflow
