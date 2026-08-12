@@ -114,16 +114,16 @@ enum MemoryAuthority {
     ApplicationIssued,
 }
 
-/// Identity snapshot derived by the Agent application for one memory
-/// operation. Ordinary Rust callers can hold and forward this opaque value,
-/// but cannot mint authority from a caller-created execution context.
+/// Identity snapshot derived by the trusted Runtime for one memory operation.
 ///
-/// Ordinary callers cannot issue application memory authority:
+/// This is an application boundary, not a model-visible constructor. Runtime
+/// must derive the execution identity from authenticated state before issuing
+/// the context; tools and Channels only receive the opaque result.
 ///
-/// ```compile_fail
+/// ```no_run
 /// use sylvander_agent::tools::MemoryExecutionContext;
 /// use sylvander_agent::execution_context::AgentExecutionContext;
-/// let execution = AgentExecutionContext::restricted_for("forged-user", "agent", "session");
+/// let execution = AgentExecutionContext::restricted_for("trusted-user", "agent", "session");
 /// let _ = MemoryExecutionContext::for_runtime_worker(&execution);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
