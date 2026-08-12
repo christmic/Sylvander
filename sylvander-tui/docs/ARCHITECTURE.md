@@ -168,8 +168,8 @@ Feature modules provide semantic rows and key handling; they do not calculate
 independent popup rectangles. Centered bordered dialogs and per-feature surface
 geometry are prohibited. The standalone TUI loads one conversation at a time;
 `SessionsOverlay` is an internal historical name for the `/resume` Focus Picker,
-not a multi-session navigation component. Ghostty-hosted multi-session layout is
-outside this module and runs independent TUI processes.
+not a multi-session navigation component. Multi-session layout belongs to a
+separate client using the public Runtime protocol.
 
 Tool rendering is forward-compatible by default. Unknown tool names retain
 their call identity, bounded generic input, streamed/final output, and terminal

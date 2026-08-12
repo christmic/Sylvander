@@ -45,5 +45,6 @@ Transports do not publish approval messages directly to the Agent bus.
 Unix and WebSocket expose the complete typed UI protocol directly. HTTP uses
 bounded authenticated chat ingress. All adapters share stable instance
 registration, Runtime readiness, health, restart/backoff, failure isolation,
-and cooperative drain. The TUI remains a single-session Unix client; Ghostty
-owns multi-session presentation.
+and cooperative drain. The TUI remains a single-session Unix client;
+multi-session presentation belongs to a separate client over the public
+Runtime protocol.

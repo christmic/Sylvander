@@ -7,7 +7,7 @@
 > Updated: 2026-07-13
 
 This document defines what Sylvander looks and feels like in a terminal. It does
-not define Agent control flow, public protocol events, Token9, or Ghostty native
+not define Agent control flow, public protocol events, or external desktop
 window management.
 
 ## 1. Product experience
@@ -96,9 +96,9 @@ presence model.
   loaded session only after the user selects one and the service acknowledges it.
 - Leaving that picker restores the same transcript, Composer draft, and scroll
   position.
-- A Ghostty-based host may run several independent TUI processes and provide its
-  own session sidebar. That host navigation is outside this document and must
-  not leak into the standalone TUI.
+- A separate client may present several sessions through the public Runtime
+  protocol. Its navigation is outside this document and must not leak into the
+  standalone TUI.
 
 ## 4. Horizontal layout
 
@@ -390,7 +390,7 @@ never the sole carrier of risk, selection, or state.
 - Implementation labels such as `single-select`, `batch`, or `call_id` in UI copy.
 - Duplicating an inline plan inside a second review popup.
 - A permanent or temporary session sidebar inside the standalone TUI.
-- Top tabs for Ghostty sessions.
+- Top tabs for multiple sessions.
 - A model/session/header strip above the transcript.
 - A different or simplified mascot at narrow widths.
 

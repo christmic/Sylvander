@@ -24,7 +24,7 @@ pub mod diagnostics;
 pub mod dirty;
 /// Typed intents and service events consumed by the application loop.
 pub mod event;
-/// Optional authenticated Ghostty host-capability bridge.
+/// Optional authenticated desktop host-capability bridge.
 pub mod host_bridge;
 /// Unicode-safe editor state, cursor movement, and text insertion.
 pub mod input;

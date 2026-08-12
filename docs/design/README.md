@@ -8,12 +8,9 @@ black-canvas, Seed-Crab direction.
 
 1. [`../sylvander-tui-ux-design.md`](../sylvander-tui-ux-design.md) — normative
    TUI layout, transcript, composer, responsive, and visual rules.
-2. [`../sylvander-desktop-ux-design.md`](../sylvander-desktop-ux-design.md) —
-   normative Ghostty desktop shell, multi-session rail, Inspector, and native
-   visual rules.
-3. [`../sylvander-brand-system.md`](../sylvander-brand-system.md) — normative
+2. [`../sylvander-brand-system.md`](../sylvander-brand-system.md) — normative
    product character and brand behavior.
-4. [`sylvander-design-tokens.json`](sylvander-design-tokens.json) — machine-readable
+3. [`sylvander-design-tokens.json`](sylvander-design-tokens.json) — machine-readable
    colors and terminal-cell measurements.
 
 When an SVG differs from the Markdown specification, the Markdown specification
@@ -77,7 +74,8 @@ compact Agent-turn marker is a presence mark, not a fallback logo.
   edge as those rules and grows upward from one row.
 - Session/model/branch/tool state lives in the bottom status row.
 - The standalone TUI owns one active session. `/resume` is a temporary picker;
-  only a Ghostty host may provide persistent multi-session navigation.
+  persistent multi-session navigation belongs to a separate client using the
+  public Runtime protocol.
 - Decisions use a bottom Decision Dock, selectors use a bottom Focus Picker, and
   long content uses a Review View. Generic centered dialogs are prohibited.
 

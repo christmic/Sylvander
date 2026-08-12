@@ -57,8 +57,9 @@ reported immediately.
 - Adapter bind, serve, or subscription errors return to the supervisor; they
   do not panic the process.
 
-The TUI is a single-session Unix client. Multi-session presentation belongs to
-the Ghostty host and does not change this channel lifecycle contract.
+The TUI is a single-session Unix client. A separate client may provide
+multi-session presentation over the public Runtime protocol without changing
+this channel lifecycle contract.
 
 ## Executable acceptance
 

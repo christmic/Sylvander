@@ -80,7 +80,7 @@
       <text class="note dim" y="30">This is a temporary retrieval surface.</text>
       <text class="note dim" y="54">Rows are candidates, not live sessions.</text>
       <text class="note dim" y="78">No sidebar, unread badges, or simultaneous state.</text>
-      <text class="note dim" y="102">Ghostty owns multi-session navigation outside the TUI.</text>
+      <text class="note dim" y="102">Multi-session navigation belongs to a separate client.</text>
     </g>
   </g>
 </svg>

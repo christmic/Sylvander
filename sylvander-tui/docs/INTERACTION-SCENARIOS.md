@@ -300,8 +300,8 @@ background investigations stop after 600 seconds.
 
 The standalone TUI owns one active session. This browser is a temporary Focus
 Picker for loading a different persisted session; it is not a sidebar and does
-not imply that several sessions are active at once. Multi-session navigation is
-owned only by a Ghostty host running independent TUI processes.
+not imply that several sessions are active at once. Multi-session navigation
+belongs to a separate client using the public Runtime protocol.
 
 - Opening the browser requests current persisted session metadata from the
   service and merges it with locally observed sessions.

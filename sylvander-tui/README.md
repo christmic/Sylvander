@@ -2,7 +2,7 @@
 
 Terminal-native client for the Sylvander Agent. This crate owns terminal input,
 application interaction state, the Unix Agent service adapter, and Ratatui
-presentation. It does not own the Agent loop, Token9, or Ghostty window UI.
+presentation. It does not own the Agent loop or any desktop window manager.
 
 The transcript follows Claude Code's familiar visual grammar: unframed `❯`
 user turns, `⏺` Agent/activity leads, `⎿` child tools, and one ruled live
@@ -47,10 +47,11 @@ The equivalent environment variables are `SYLVANDER_SOCKET`,
 environment values. Omitting `--session` preserves the Welcome and session
 picker flow.
 
-When Ghostty supplies a session-scoped host capability, the bound TUI also
+When an optional trusted desktop host supplies a session-scoped capability, the bound TUI also
 exposes `/preview image <workspace-path>` and `/preview web <https-url>`. The
-host socket and random capability token are injected by Ghostty, are not shown
-in `/config`, and must not be configured manually for ordinary standalone use.
+host socket and random capability token are injected by that host, are not
+shown in `/config`, and must not be configured manually for ordinary
+standalone use.
 
 Select another built-in theme:
 

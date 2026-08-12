@@ -1,6 +1,6 @@
 //! Bounded, authenticated requests to an optional desktop host.
 //!
-//! The TUI can ask its Ghostty host to preview an image or web target without
+//! The TUI can ask a trusted desktop host to preview an image or web target without
 //! importing desktop APIs into presentation code. Requests use one
 //! line-delimited JSON frame, a short timeout, and a bounded response.
 

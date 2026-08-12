@@ -278,7 +278,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "preview",
         usage: "/preview <image|web> <path-or-url>",
         description: "Open a resource in the trusted desktop host",
-        hint: "Ghostty host only",
+        hint: "trusted host only",
     },
     CommandSpec {
         id: CommandId::Status,
