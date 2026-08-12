@@ -1,9 +1,11 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryOwner};
-use sylvander_protocol::SessionContext;
 
 fn worker(user: &str, agent: &str) -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&SessionContext::new(user, agent, "session"))
+    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+        user, agent, "session",
+    ))
 }
 
 fn relationship_owner(user: &str, agent: &str) -> MemoryOwner {

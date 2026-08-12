@@ -1,12 +1,14 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{
     Importance, MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryKind,
     MemoryReference,
 };
-use sylvander_protocol::SessionContext;
 
 fn worker(user: &str, agent: &str) -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&SessionContext::new(user, agent, "session"))
+    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+        user, agent, "session",
+    ))
 }
 
 #[tokio::test]

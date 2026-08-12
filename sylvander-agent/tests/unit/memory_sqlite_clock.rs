@@ -1,9 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use sylvander_protocol::SessionContext;
-
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryPatch};
 
 #[derive(Debug)]
@@ -26,7 +25,9 @@ impl MemoryClock for TestClock {
 }
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&SessionContext::new("alice", "agent-a", "clock"))
+    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+        "alice", "agent-a", "clock",
+    ))
 }
 
 fn policy() -> RelationshipMemoryRetentionPolicy {

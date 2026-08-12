@@ -12,8 +12,8 @@ use super::{
     MemoryIntegrityConfig, MonotonicMemoryAnchor, RelationshipMemoryRetentionPolicy,
     SqliteMemoryStore,
 };
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryStore};
-use sylvander_protocol::SessionContext;
 
 const TOKEN: &[u8] = b"remote-anchor-test-token";
 const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
@@ -99,7 +99,7 @@ fn test_anchor(endpoint: &str, timeout: Duration, retries: u8) -> HttpMemoryInte
 }
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&SessionContext::new(
+    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
         "alice",
         "agent-a",
         "session-a",

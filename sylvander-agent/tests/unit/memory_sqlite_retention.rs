@@ -1,11 +1,13 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{
     MemoryAppend, MemoryExecutionContext, MemoryExpiryPatch, MemoryPatch, MemoryStoreError,
 };
-use sylvander_protocol::SessionContext;
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&SessionContext::new("alice", "agent-a", "session"))
+    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+        "alice", "agent-a", "session",
+    ))
 }
 
 fn policy(revision: u64, batch: u32) -> RelationshipMemoryRetentionPolicy {

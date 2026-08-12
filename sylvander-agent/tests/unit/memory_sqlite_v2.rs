@@ -1,12 +1,14 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{
     Importance, MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryExpiryPatch,
     MemoryFilter, MemoryPatch, MemoryReference,
 };
-use sylvander_protocol::SessionContext;
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&SessionContext::new("alice", "agent-a", "session"))
+    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
+        "alice", "agent-a", "session",
+    ))
 }
 
 #[tokio::test]
@@ -14,7 +16,8 @@ async fn audit_is_content_safe_append_only_and_cas_consistent() {
     let store = SqliteMemoryStore::open_in_memory().unwrap();
     let raw_trace = format!("SECRET-trace\n\0{}", "x".repeat(128 * 1024));
     let ctx = MemoryExecutionContext::application_worker(
-        &SessionContext::new("alice", "agent-a", "session").with_trace_id(&raw_trace),
+        &AgentExecutionContext::restricted_for("alice", "agent-a", "session")
+            .with_trace_id(&raw_trace),
     );
     let sentinel = "SECRET-memory-payload";
     let mut append = MemoryAppend::new(sentinel)

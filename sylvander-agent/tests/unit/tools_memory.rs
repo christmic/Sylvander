@@ -14,12 +14,12 @@ impl MemoryExecutionContext {
     }
 }
 
-fn session(user: &str, agent: &str, session: &str) -> SessionContext {
-    SessionContext::new(user, agent, session)
+fn execution(user: &str, agent: &str, session: &str) -> AgentExecutionContext {
+    AgentExecutionContext::restricted_for(user, agent, session)
 }
 
-fn worker(session: &SessionContext) -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(session)
+fn worker(execution: &AgentExecutionContext) -> MemoryExecutionContext {
+    MemoryExecutionContext::application_worker(execution)
 }
 
 fn privileged(actor: MemoryActorKind) -> MemoryExecutionContext {
@@ -37,7 +37,7 @@ fn privileged(actor: MemoryActorKind) -> MemoryExecutionContext {
 #[tokio::test]
 async fn relationship_append_search_and_filters() {
     let store = InMemoryMemoryStore::new();
-    let alice = session("alice", "a1", "s1");
+    let alice = execution("alice", "a1", "s1");
     let ctx = worker(&alice);
     let preference = store
         .append_relationship(
@@ -82,9 +82,9 @@ async fn relationship_append_search_and_filters() {
 #[tokio::test]
 async fn relationship_operations_isolate_user_and_agent() {
     let store = InMemoryMemoryStore::new();
-    let alice = worker(&session("alice", "a1", "s1"));
-    let bob = worker(&session("bob", "a1", "s2"));
-    let other_agent = worker(&session("alice", "a2", "s3"));
+    let alice = worker(&execution("alice", "a1", "s1"));
+    let bob = worker(&execution("bob", "a1", "s2"));
+    let other_agent = worker(&execution("alice", "a2", "s3"));
     let entry = store
         .append_relationship(&alice, MemoryAppend::new("alice secret"))
         .await
@@ -120,8 +120,8 @@ async fn relationship_operations_isolate_user_and_agent() {
 #[tokio::test]
 async fn foreign_and_missing_deletes_are_indistinguishable() {
     let store = InMemoryMemoryStore::new();
-    let alice = worker(&session("alice", "a1", "s1"));
-    let bob = worker(&session("bob", "a1", "s2"));
+    let alice = worker(&execution("alice", "a1", "s1"));
+    let bob = worker(&execution("bob", "a1", "s2"));
     let entry = store
         .append_relationship(&alice, MemoryAppend::new("keep"))
         .await
@@ -210,7 +210,7 @@ async fn incomplete_worker_context_fails_closed() {
 #[tokio::test]
 async fn public_memory_bounds_fail_closed() {
     let store = InMemoryMemoryStore::new();
-    let ctx = worker(&session("alice", "a1", "s1"));
+    let ctx = worker(&execution("alice", "a1", "s1"));
     assert!(matches!(
         store
             .append_relationship(
@@ -275,7 +275,7 @@ async fn public_memory_bounds_fail_closed() {
 #[tokio::test]
 async fn delete_owned_entry() {
     let store = InMemoryMemoryStore::new();
-    let ctx = worker(&session("alice", "a1", "s1"));
+    let ctx = worker(&execution("alice", "a1", "s1"));
     let entry = store
         .append_relationship(&ctx, MemoryAppend::new("drop"))
         .await
@@ -302,7 +302,7 @@ async fn delete_owned_entry() {
 #[tokio::test]
 async fn delete_restricts_live_supersession_references() {
     let store = InMemoryMemoryStore::new();
-    let ctx = worker(&session("alice", "a1", "s1"));
+    let ctx = worker(&execution("alice", "a1", "s1"));
     let original = store
         .append_relationship(&ctx, MemoryAppend::new("old"))
         .await
@@ -328,7 +328,7 @@ async fn delete_restricts_live_supersession_references() {
 async fn only_expiry_patch_adopts_current_retention_policy_revision() {
     let policy = RelationshipMemoryRetentionPolicy::new(2, 2, 3, 1, 2, 10).unwrap();
     let store = InMemoryMemoryStore::with_retention_policy(policy);
-    let ctx = worker(&session("alice", "a1", "s1"));
+    let ctx = worker(&execution("alice", "a1", "s1"));
     let entry = store
         .append_relationship(&ctx, MemoryAppend::new("before"))
         .await
@@ -366,7 +366,7 @@ async fn only_expiry_patch_adopts_current_retention_policy_revision() {
 #[tokio::test]
 async fn update_and_supersede_are_cas_guarded_and_hide_inactive() {
     let store = InMemoryMemoryStore::new();
-    let ctx = worker(&session("alice", "a1", "s1"));
+    let ctx = worker(&execution("alice", "a1", "s1"));
     let original = store
         .append_relationship(&ctx, MemoryAppend::new("old").with_ttl(60))
         .await
@@ -441,8 +441,8 @@ fn append_builders_preserve_caller_fields_only() {
 #[test]
 fn application_context_hashes_untrusted_trace_identifiers() {
     let raw_trace = format!("private\n\0{}", "x".repeat(128 * 1024));
-    let session = session("alice", "a1", "s1").with_trace_id(&raw_trace);
-    let worker = MemoryExecutionContext::application_worker(&session);
+    let execution = execution("alice", "a1", "s1").with_trace_id(&raw_trace);
+    let worker = MemoryExecutionContext::application_worker(&execution);
     assert_eq!(worker.actor(), MemoryActorKind::Worker);
     assert_eq!(worker.user_id(), Some(&UserId::new("alice")));
     assert_eq!(worker.agent_id(), Some(&AgentId::new("a1")));
@@ -468,7 +468,7 @@ fn application_context_hashes_untrusted_trace_identifiers() {
 async fn retention_policy_applies_default_and_rejects_unbounded_lifetimes() {
     let policy = RelationshipMemoryRetentionPolicy::new(7, 2, 3, 1, 2, 10).unwrap();
     let store = InMemoryMemoryStore::with_retention_policy(policy);
-    let ctx = worker(&session("alice", "a1", "s1"));
+    let ctx = worker(&execution("alice", "a1", "s1"));
     let defaulted = store
         .append_relationship(&ctx, MemoryAppend::new("default"))
         .await

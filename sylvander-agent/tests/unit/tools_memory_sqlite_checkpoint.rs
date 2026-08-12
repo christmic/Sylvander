@@ -2,9 +2,9 @@ use std::path::Path;
 use std::sync::{Arc, Barrier};
 
 use rusqlite::Connection;
-use sylvander_protocol::SessionContext;
 
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{
     MemoryAppend, MemoryExecutionContext, MemoryStore, RelationshipMemoryRetentionPolicy,
 };
@@ -31,7 +31,7 @@ fn open(database: &Path, anchor: &Path, batch: u32) -> SqliteMemoryStore {
 }
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&SessionContext::new(
+    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
         "alice",
         "agent-a",
         "session-a",

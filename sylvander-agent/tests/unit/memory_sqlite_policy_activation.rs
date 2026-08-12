@@ -1,6 +1,6 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryStore};
-use sylvander_protocol::SessionContext;
 
 const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
 
@@ -22,7 +22,7 @@ fn open(
 }
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::application_worker(&SessionContext::new(
+    MemoryExecutionContext::application_worker(&AgentExecutionContext::restricted_for(
         "alice",
         "agent-a",
         "session-a",
