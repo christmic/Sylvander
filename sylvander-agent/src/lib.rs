@@ -103,6 +103,8 @@ pub mod event;
 /// Trusted, non-wire authority for one Agent execution.
 pub mod execution_context;
 pub mod execution_ports;
+/// Non-wire identities used by Agent-domain records and ports.
+pub mod identity;
 /// Provider-compatible iterative model/tool execution loop.
 pub mod loop_;
 /// Provider-neutral result returned to the Runtime owner.

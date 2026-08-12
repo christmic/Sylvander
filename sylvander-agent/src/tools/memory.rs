@@ -18,9 +18,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sylvander_protocol::types::{AgentId, SessionId, UserId};
 
 use crate::execution_context::AgentExecutionContext;
+use crate::identity::{AgentId, SessionId, UserId};
 pub const MAX_MEMORY_CONTENT_BYTES: usize = 16 * 1024;
 pub const MAX_MEMORY_QUERY_BYTES: usize = 4 * 1024;
 pub const MAX_MEMORY_TAGS: usize = 32;

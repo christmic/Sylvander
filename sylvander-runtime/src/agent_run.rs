@@ -71,6 +71,9 @@ use sylvander_agent::error::AgentLoopError;
 use sylvander_agent::event::ModelRetryCause;
 use sylvander_agent::execution_context::{AgentExecutionContext, ExecutionWorkspace};
 use sylvander_agent::execution_ports::AgentExecutionPorts;
+use sylvander_agent::identity::{
+    AgentId as KernelAgentId, SessionId as KernelSessionId, UserId as KernelUserId,
+};
 use sylvander_agent::loop_::{self, AgentLoop};
 use sylvander_agent::plan_gate::{PlanDecision, PlanGate};
 use sylvander_agent::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
@@ -1912,9 +1915,9 @@ impl AgentRunInner {
             ));
         }
         let subject = UserProfileSubject::from_authenticated_runtime(
-            sylvander_protocol::UserId::new(metadata.user_id.clone()),
-            self.id.clone(),
-            session_id.clone(),
+            KernelUserId::new(metadata.user_id.clone()),
+            KernelAgentId::new(self.id.0.clone()),
+            KernelSessionId::new(session_id.0.clone()),
         );
         provider
             .current_profile(&subject)
@@ -2501,9 +2504,9 @@ impl AgentRunInner {
                 );
             }
             let subject = CuratedContextSubject {
-                user_id: sylvander_protocol::UserId::new(&session_metadata.user_id),
-                agent_id: self.id.clone(),
-                session_id: session_id.clone(),
+                user_id: KernelUserId::new(&session_metadata.user_id),
+                agent_id: KernelAgentId::new(self.id.0.clone()),
+                session_id: KernelSessionId::new(session_id.0.clone()),
                 workspace_ids: workspace_ids.into_iter().collect(),
             };
             let max_items = self

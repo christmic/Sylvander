@@ -8,6 +8,9 @@ use async_trait::async_trait;
 use rusqlite::Connection;
 use serde_json::json;
 use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::identity::{
+    AgentId as KernelAgentId, SessionId as KernelSessionId, UserId as KernelUserId,
+};
 use sylvander_agent::tool_context::ToolContext;
 use sylvander_protocol::{
     AgentId, SessionContext, SessionId, SessionMetadata, UserId, UserProfileData,
@@ -462,9 +465,9 @@ async fn typed_candidates_commit_all_four_scopes_and_become_retrievable_context(
         .canonical
         .retrieve(
             &CuratedContextSubject {
-                user_id: UserId::new("user-a"),
-                agent_id: AgentId::new("agent-a"),
-                session_id: SessionId::new("context-session"),
+                user_id: KernelUserId::new("user-a"),
+                agent_id: KernelAgentId::new("agent-a"),
+                session_id: KernelSessionId::new("context-session"),
                 workspace_ids: vec!["workspace-a".into()],
             },
             "guardian",

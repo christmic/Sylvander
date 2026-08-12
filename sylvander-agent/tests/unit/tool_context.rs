@@ -1,5 +1,5 @@
 use super::*;
-use sylvander_protocol::types::{AgentId, UserId};
+use crate::identity::{AgentId, UserId};
 
 fn execution() -> AgentExecutionContext {
     AgentExecutionContext::restricted_for("alice", "code-assistant", "sess-1")

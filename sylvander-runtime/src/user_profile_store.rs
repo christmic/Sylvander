@@ -317,7 +317,7 @@ impl UserProfileProvider for UserProfileStore {
         &self,
         subject: &UserProfileSubject,
     ) -> Result<Option<UserProfileView>, UserProfileProviderError> {
-        self.read(subject.user_id().clone())
+        self.read(sylvander_protocol::UserId::new(subject.user_id().0.clone()))
             .await
             .map(|profile| profile.map(StoredUserProfile::into_view))
             .map_err(|_| UserProfileProviderError::Unavailable)

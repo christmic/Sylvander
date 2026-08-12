@@ -2835,8 +2835,8 @@ async fn remember_derives_identity_from_attached_session() {
     assert_eq!(
         entry.owner,
         sylvander_agent::tools::memory::MemoryOwner::Relationship {
-            user_id: sylvander_protocol::types::UserId::new("actual-user"),
-            agent_id: run.id().clone(),
+            user_id: KernelUserId::new("actual-user"),
+            agent_id: KernelAgentId::new(run.id().0.clone()),
         }
     );
     assert_eq!(

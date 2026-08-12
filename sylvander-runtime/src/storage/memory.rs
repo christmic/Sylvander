@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
-use sylvander_protocol::types::{AgentId, UserId};
 
+use sylvander_agent::identity::{AgentId, SessionId, UserId};
 use sylvander_agent::tools::memory::{
     Importance, MAX_MEMORY_QUERY_BYTES, MAX_MEMORY_RESULTS, MemoryAppend, MemoryEntry,
     MemoryExecutionContext, MemoryFilter, MemoryOwner, MemoryPatch, MemoryProvenance,
@@ -1528,9 +1528,7 @@ fn decode_row(
             actor: parse_actor(row.get::<_, String>(14)?.as_str(), 14)?,
             user_id: row.get::<_, Option<String>>(15)?.map(UserId::new),
             agent_id: row.get::<_, Option<String>>(16)?.map(AgentId::new),
-            session_id: row
-                .get::<_, Option<String>>(17)?
-                .map(sylvander_protocol::types::SessionId::new),
+            session_id: row.get::<_, Option<String>>(17)?.map(SessionId::new),
             trace_id: row.get(18)?,
             source: parse_source(row.get::<_, String>(19)?.as_str(), 19)?,
             trusted: row.get::<_, i64>(20)? == 1,

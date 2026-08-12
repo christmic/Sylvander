@@ -1,7 +1,9 @@
 //! Runtime-injected access to the authenticated user's current profile.
 
 use async_trait::async_trait;
-use sylvander_protocol::{AgentId, SessionId, UserId, UserProfileView};
+use sylvander_protocol::UserProfileView;
+
+use crate::identity::{AgentId, SessionId, UserId};
 
 /// Runtime-derived query subject. External callers may inspect it to perform
 /// the lookup, but cannot construct it or replace its owner.

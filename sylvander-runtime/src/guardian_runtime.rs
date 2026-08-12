@@ -27,7 +27,7 @@ use sylvander_agent::tool_invocation::{
     ToolInvocationRequest, ToolInvocationSnapshot,
 };
 use sylvander_agent::tools::MemoryOwner;
-use sylvander_protocol::{SessionContext, UserId};
+use sylvander_protocol::{AgentId, SessionContext, UserId};
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
@@ -887,7 +887,7 @@ impl MemoryCandidateSink for GuardianCandidateGateway {
         };
         if self
             .learning_preferences
-            .do_not_learn(&user_id)
+            .do_not_learn(&UserId::new(user_id.0.clone()))
             .await
             .map_err(|()| MemoryCandidateError::Unavailable)?
         {
@@ -957,8 +957,8 @@ impl MemoryCandidateSink for GuardianCandidateGateway {
             },
         };
         let owner = RuntimeOwnerScope::guardian(
-            agent_id,
-            Some(user_id),
+            AgentId::new(agent_id.0),
+            Some(UserId::new(user_id.0)),
             workspace_id.into_iter().collect(),
         );
         let available_at = now_seconds();

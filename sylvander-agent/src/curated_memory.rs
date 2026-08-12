@@ -6,8 +6,8 @@
 //! [`ToolContext`](crate::tool_context::ToolContext).
 
 use async_trait::async_trait;
-use sylvander_protocol::{AgentId, SessionId, UserId};
 
+use crate::identity::{AgentId, SessionId, UserId};
 use crate::tool_context::ToolContext;
 
 /// Governed destination proposed by a Worker.
