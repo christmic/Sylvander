@@ -48,7 +48,11 @@ impl RuntimeStorage {
 #[allow(dead_code)]
 // operator recovery wiring is composed through Runtime services in a later batch
 pub(crate) mod memory;
-/// Session metadata, transcript, usage, and turn-snapshot persistence.
+/// Session metadata, transcript, usage, and authoritative turn lifecycle.
+///
+/// A successful turn commits its assistant message and terminal state through
+/// this module. The separate Evidence recorder is an asynchronous governance
+/// projection and must never be used as the Session commit authority.
 pub mod session;
 /// Filesystem adapter for oversized tool-result artifacts.
 #[allow(dead_code)]

@@ -106,15 +106,20 @@ crate without retaining a second production path.
   Runtime selects, opens, maintains, and injects the concrete store.
 - `storage::RuntimeStorage` is the crate-private composition root for durable
   repositories. It currently closes public access to the selected Session and
-  relationship-memory handles. Other Runtime-owned stores and cross-domain
-  transactions remain to be folded into this facade; see
+  relationship-memory handles. Session schema v2 makes turn lifecycle
+  authoritative: admission commits user input, configuration, and `running`;
+  successful completion commits assistant output and `completed` in one
+  transaction. Other Runtime-owned stores and cross-domain transactions remain
+  to be folded into this facade; see
   [`application-services.md`](application-services.md) for exact status.
 - `observability` is the closed typed lifecycle recorder. Its first slice
   covers authorized chat admission, message-bus dispatch, turn terminals,
   model retries, tool terminals, and durable Session operations with
   content-free counters and structured facts in the Runtime operational
-  snapshot. One recorder is shared by initial and lazy Agent revisions. It
-  does not yet claim durable observation or atomic storage/observation commit.
+  snapshot. One recorder is shared by initial and lazy Agent revisions. The
+  durable Session turn is the product terminal authority; Evidence remains a
+  separate asynchronous governance projection. Metric durability and sink
+  health remain incomplete.
 - `mcp_stdio` owns the MCP child process, JSON-RPC protocol, health probing,
   cancellation, reconnect, discovery, and governed result-artifact handoff.
   Agent receives only implementations of its generic dynamic-tool contract.
@@ -136,13 +141,14 @@ crate without retaining a second production path.
 3. Production sessions are durable. Runtime has no process-local session
    creation API or ephemeral health count; session creation must commit its
    record before Agent attachment. A persistent-session read, turn start,
-   usage, assistant append, restore, or history replacement failure is a typed
-   terminal error and cannot publish a successful turn.
+   usage, turn completion, restore, or history replacement failure is a typed
+   terminal error and cannot publish a successful turn. Assistant output and
+   the completed terminal commit atomically before public `Done`.
 4. Current-schema effective session configuration is persisted at creation
    with its optimistic revision, immutable Agent/Provider/Model pins,
    workspace/executor selection, and prompt manifest. Model overrides are
    provider-qualified and may shadow Agent defaults only after registry and
-   capability validation. Session schema version 1 and the current registry
+   capability validation. Session schema version 2 and the current registry
    component version are latest-only contracts: missing pins/manifests, a
    non-current ledger, or any non-exact schema fails closed without migration,
    repair, downgrade, or in-memory fallback. Workspace and execution-target

@@ -147,11 +147,18 @@ Channel/API request
   -> Runtime authentication and Session authorization
   -> Runtime loads the pinned Session snapshot
   -> Runtime resolves model, tools, context, and execution adapters
+  -> Runtime atomically commits user input + immutable config + running turn
   -> Runtime constructs AgentTurnRequest
   -> Agent emits AgentEvent and returns AgentOutcome
-  -> Runtime atomically persists history and usage
+  -> Runtime atomically commits assistant output + completed turn terminal
   -> Runtime maps and publishes API StreamEvent values
 ```
+
+An interrupted or failed execution commits the corresponding content-free
+turn terminal before Runtime publishes it when the durable turn has started.
+Provider-iteration usage remains a separate bounded transaction today; the
+larger cross-repository transaction described in the product architecture is
+still future work.
 
 The Agent-level lifecycle remains:
 

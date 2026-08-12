@@ -46,10 +46,13 @@ public backend trait.
 Current implementation status: the crate-private `RuntimeStorage` composition
 root owns the exact Session and relationship-memory repository handles selected
 at boot. `Runtime` no longer exposes either repository as a public field.
-Registry, profile, evidence, audit, Guardian, and artifact stores still open
-through their existing Runtime-owned services; there is not yet a cross-domain
-transaction or one backend health record. Those are remaining implementation
-work, not capabilities callers may assume today.
+Session schema v2 stores explicit turn lifecycle. Turn admission is atomic
+with user input and immutable configuration; successful completion is atomic
+with assistant output. Registry, profile, evidence, audit, Guardian, and
+artifact stores still open through their existing Runtime-owned services;
+there is not yet a cross-domain transaction or one backend health record.
+Those are remaining implementation work, not capabilities callers may assume
+today.
 
 ## Built-in observability
 
@@ -65,8 +68,10 @@ terminal facts. One recorder is composed at Runtime boot and injected into
 every current and lazily recomposed Agent revision. It updates built-in
 counters, emits structured tracing, and exposes the counters through the
 operational snapshot. Existing durable evidence remains a separate path;
-durable observation, sink-failure health, resource histograms, and an atomic
-storage/terminal-observation commit rule remain incomplete.
+it is an asynchronous governance projection rather than Session commit
+authority. The durable Session terminal commits before the matching built-in
+terminal fact and public event. Durable metric aggregation, sink-failure
+health, and resource histograms remain incomplete.
 
 ### Design evidence
 

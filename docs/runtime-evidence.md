@@ -5,6 +5,21 @@ evaluated, and converted into reviewed improvements. This store complements
 operational logs; it is not a transcript dump and it does not authorize an
 Agent to edit or deploy itself.
 
+## Authority boundary
+
+Evidence is a governance and analysis projection, not the commit record for a
+live Session. The authoritative product turn lives in Runtime's Session store:
+turn admission commits user input, immutable effective configuration, and the
+`running` state together; successful completion commits assistant output and
+the `completed` state together. Runtime publishes a public terminal only after
+that transaction and its built-in terminal fact.
+
+The Evidence recorder subscribes to already-published bus messages and writes
+its own run/turn/step model asynchronously. Its failure is operationally
+important, but it cannot retroactively change a committed Session turn or be
+mistaken for the transaction that authorized `Done`. This separation avoids
+two ledgers competing to define product truth.
+
 ## Data model
 
 The SQLite evidence store normalizes six layers:

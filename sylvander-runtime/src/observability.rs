@@ -39,7 +39,7 @@ pub(crate) enum RuntimePersistenceOperation {
     BeginTurn,
     /// Accumulate one provider iteration's usage.
     RecordUsage,
-    /// Persist the terminal assistant message.
+    /// Atomically persist the terminal assistant message and completed turn.
     CompleteTurn,
     /// Persist a failed or interrupted terminal.
     FinishTurn,

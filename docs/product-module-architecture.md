@@ -193,9 +193,14 @@ and health ownership are unified.
 
 Implementation status: `RuntimeStorage` currently owns the boot-selected
 Session and relationship-memory repositories and `Runtime` exposes neither
-backend publicly. The other Runtime stores, shared cross-domain transaction,
-backup lifecycle, and unified health record remain incomplete. Callers must
-not infer those target capabilities from this architecture contract.
+backend publicly. Session schema v2 promotes turns to durable lifecycle
+records. `begin_turn` commits the user message, immutable effective config,
+and `running` state together; `complete_turn` commits the assistant message
+and `completed` terminal together. Failed and interrupted terminals are also
+persisted before their public event when a durable turn exists. The other
+Runtime stores, cross-repository transactions, backup lifecycle, and unified
+health record remain incomplete. Callers must not infer those target
+capabilities from this architecture contract.
 
 ## Built-in observability
 
@@ -222,9 +227,12 @@ Implementation status: the closed typed `RuntimeEvent` recorder now covers
 authorized chat admission, message-bus dispatch, turn and tool terminals,
 model retries, and Session persistence outcomes. Runtime shares one recorder
 with every Agent revision, feeding content-safe counters, structured tracing,
-and the operational snapshot. Evidence recording remains separate. Durable
-aggregation, resource histograms, sink-failure health, and the atomic terminal
-observability commit rule remain incomplete.
+and the operational snapshot. The Session turn record is the authoritative
+durable terminal; Runtime records the matching in-process terminal and only
+then publishes the public terminal. Evidence recording remains a separate,
+asynchronous governance projection of bus traffic and is never used to decide
+whether a turn committed. Durable metric aggregation, resource histograms,
+and sink-failure health remain incomplete.
 
 ## Service and presentation layers
 
