@@ -126,60 +126,15 @@ such an exception must include an English `// Local import required: ...`
 comment. See [`AGENTS.md`](../AGENTS.md) for the normative rule and verification
 requirements.
 
-## 8. CI workflow tour
+## 8. Automation boundary
 
-The repository keeps several workflows under `.github/workflows/`. A workflow
-file or job that exists with `if: false` documents future verification intent
-but does not count as passing release evidence.
+The slim repository currently contains no tracked `.github/workflows/`
+directory. Do not cite historical desktop, Zig, Nix, notarization, or artifact
+jobs as current verification. The authoritative local gates are the commands
+in `docs/release-closure.md` and the maintained scripts under `scripts/`.
 
-### ci.yml (`CI`, multi-job)
-
-Triggers on push to master, pull_request, and `workflow_dispatch`. Jobs:
-
-Zig version is recorded by `env: ZIG_VERSION: "0.15.2"` and the disabled
-jobs use `cache: false`. Neither fact makes a disabled job release evidence.
-
-### clean-artifacts.yml (`Clean old artifacts`)
-
-Triggers weekly (`cron: "0 3 * * 0"`) and manually. Required secret:
-`GITHUB_TOKEN` (with `actions: write`). Walks the artifact list paginated,
-filters by `created_at`, `DELETE`s anything older than 14 days. Intended
-to offset the per-minute cost of `macos-26-xlarge` jobs.
-
-### milestone.yml (`Milestone sync`)
-
-Triggers when a PR is `closed` (and merges). Required secret:
-`GITHUB_TOKEN` (`issues: write`). Parses `Closes #N`, `Fixes #N`,
-`Resolves #N` from the PR body; picks the open milestone with the
-lowest number; assigns each linked issue to that milestone.
-
-### nix.yml (`Nix shell build`)
-
-The workflow file triggers on push, PR, and manual dispatch, but its only job
-is currently disabled with `if: false`. It records the intended
-`macos-26-xlarge` + `nixpkgs#zig_0_15` checked/test matrix and an unauthenticated
-Cachix setup. Until the Zig/macOS runner drift and runner availability are
-resolved and the job is re-enabled, Nix is not closure evidence.
-
-### release-tag.yml (`Release tag`)
-
-Triggers on `v*.*.*` tag pushes and `workflow_dispatch`. Required
-secrets:
-
-- `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD` — Developer ID
-  certificate.
-- `MACOS_SIGNING_IDENTITY` — `codesign -s` identity.
-- `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` — notarytool
-  credentials.
-
-Builds the universal `.app` via `zig build` + `xcodebuild archive`,
-notarizes with `xcrun notarytool submit --wait`, staples with `xcrun
-stapler`, validates with `xcrun stapler validate` and `spctl
---assess`. Uploads `Sylvander.app.zip` plus sha256 (30-day retention)
-and creates a **draft** GitHub Release.
-
-`concurrency.cancel-in-progress` is `false` here — never cancel a
-release in progress.
+If CI is introduced later, it must execute those same gates against one exact
+commit. A disabled or advisory job is never release evidence.
 
 ## 9. Local verification scripts
 
@@ -534,7 +489,7 @@ The project's authoritative list lives in
 [AGENTS.md §"What you should NOT do"](../AGENTS.md). Reproduced in
 summary:
 
-CI gotchas worth restating:
+Verification gotchas worth restating:
 
 - `INSTA_UPDATE=no` is required for the snapshot job — setting
   `INSTA_UPDATE=anything` silently regenerates visual layout, and
@@ -542,15 +497,13 @@ CI gotchas worth restating:
 - The workspace test gate has no name-based skip list. If a provider fixture
   drifts, update the fixture or the current provider contract in the same
   bounded change; do not hide the failure behind `--skip`.
-- The CI `rust-linux` job is intentionally build-only — the wiremock
-  tests need a running server. Do not add Linux-only test runs in PR
-  without confirming the server is reachable from the job.
+- Protocol contract tests use local mock HTTP/SSE servers and require no live
+  provider credential. Credential-gated tests remain supplemental evidence.
 - Rust test bodies belong under each crate's `tests/` tree. Production modules
   may expose a test-only `#[path = "../tests/unit/…"]` bridge for white-box
   access; never put test bodies back under `src/`.
-- The Nix job is disabled and cannot be cited as verification evidence. If it
-  is re-enabled, preserve the explicit unauthenticated cache posture unless a
-  maintained Cachix account is deliberately introduced.
+- No tracked CI workflow currently substitutes for running the documented
+  local release gates.
 
 ## 21. Release drill
 

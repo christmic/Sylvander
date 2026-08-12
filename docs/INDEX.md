@@ -31,6 +31,9 @@ Wire contracts the server implements, audited as the latest interface.
   user identity binding via link codes and trusted issuers.
 - [user-profile-protocol.md](user-profile-protocol.md) — global user
   profile envelope, schema, deletion tombstones, capability advert.
+- [llm-provider-protocols.md](llm-provider-protocols.md) — official SDK
+  baselines, protocol kinds, Provider feature switches, token accounting, and
+  model-family test matrix.
 
 ## Operations
 
@@ -44,15 +47,13 @@ Day-2 operator docs for keeping Sylvander production-ready.
 - [recovery-drills.md](recovery-drills.md) — restart, channel, worktree,
   memory, and release-recovery drills to run before each release.
 - [release-closure.md](release-closure.md) — current release scope,
-  reproducible gates, residual-risk non-claims.
-  Release bundle, real Unix lifecycle, transparency/TrueColor, and visual
-  operator checklist.
+  reproducible gates, and residual-risk non-claims.
 - [performance-verification.md](performance-verification.md) —
   performance verification methodology and budget table.
 - [security-verification.md](security-verification.md) — security
   verification methodology and tracked-secret scans.
 - [production-expansion-checklist.md](production-expansion-checklist.md) —
-  ordered production completion ledger and same-commit closure evidence.
+  historical pre-slim production completion ledger and closure evidence.
 
 ## Architecture
 
@@ -60,14 +61,10 @@ Design notes for the platform, terminal substrate, and brand.
 
 - [sylvander-agent-platform.md](sylvander-agent-platform.md) — agent
   loop, tool/skill/MCP surface, supervisor layout.
-  Zig/GTK/macOS terminal substrate fork and how Sylvander embeds it.
-- [sylvander-desktop-ux-design.md](sylvander-desktop-ux-design.md) — native
-  macOS session rail, terminal host, Inspector, commands, and visual system.
 - [sylvander-tui-ux-design.md](sylvander-tui-ux-design.md) — terminal
   UI composition, focus, responsive dock, decision surfaces.
 - [sylvander-brand-system.md](sylvander-brand-system.md) — brand
-  system, design tokens, visual assets catalog.
-  point and approved brand/source asset map.
+  system, design tokens, and approved visual assets.
 
 ## Module references
 
@@ -102,6 +99,9 @@ and this index in the same change.
   transport-neutral ingress, channel ownership, and adapter rules.
 - [sylvander-llm-anthropic/docs/ARCHITECTURE.md](../sylvander-llm-anthropic/docs/ARCHITECTURE.md) —
   provider adapter, conversion, streaming, and failure ownership.
+- [llm-provider-protocols.md](llm-provider-protocols.md) — shared module
+  boundary for the OpenAI Responses, OpenAI Chat Completions, and native
+  DashScope protocol adapters.
 - [sylvander-tui/docs/ARCHITECTURE.md](../sylvander-tui/docs/ARCHITECTURE.md) —
   terminal client layers, service seam, and presentation state.
 - [sylvander-tui/docs/CONFIGURATION.md](../sylvander-tui/docs/CONFIGURATION.md) —

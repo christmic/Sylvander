@@ -83,8 +83,10 @@ dependency graph contains only `sylvander-llm-core` among LLM crates.
 `TokenUsage` keeps normalized input, output, cache-write, and cache-read counts.
 Typed details preserve reported protocol dimensions such as Anthropic cache
 TTL buckets and thinking tokens, and OpenAI audio, reasoning, and prediction
-tokens. An absent optional field means the provider omitted it and is distinct
-from a reported zero. Adapter tests must assert both totals and details.
+tokens. Native DashScope Generation preserves its reported cached prompt and
+reasoning token details. An absent optional field means the provider omitted it
+and is distinct from a reported zero. Adapter tests must assert both totals and
+details.
 
 Provider-specific non-token usage metadata, including Anthropic service tier,
 inference geography, and server-tool request counts, remains typed in the

@@ -25,7 +25,7 @@ requests_per_minute = 240
 
 [[model_providers]]
 id = "primary"
-kind = "anthropic_compatible"
+kind = "anthropic_messages"
 base_url = "https://api.anthropic.com"
 
 [model_providers.api_key]

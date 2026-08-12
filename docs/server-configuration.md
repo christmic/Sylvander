@@ -171,6 +171,20 @@ An Agent's `spec.model.provider` and `spec.model.model_name` select its default.
 The runtime constructs a separate provider client for each Agent and exposes
 that provider's model catalog to compatible clients.
 
+Each provider explicitly declares one protocol `kind`, its `base_url`, one
+credential binding, and a validated `features` set. Current kinds are
+`anthropic_messages`, `openai_responses`, `openai_chat_completions`, and
+`dashscope_generation`; `anthropic_compatible` remains accepted only for
+stored legacy configuration. Provider identity is independent of protocol, so
+multiple Qwen, DeepSeek, OpenAI, or internal services may use the same wire
+kind without sharing credentials or feature switches. Runtime resolves the
+secret per request and passes URL, secret, protocol, and features explicitly
+to the adapter; LLM crates do not read environment variables.
+
+The exact feature vocabulary and official SDK evidence are maintained in
+[`llm-provider-protocols.md`](llm-provider-protocols.md). Unknown features fail
+provider construction instead of being forwarded as arbitrary JSON.
+
 `spec.model.allowed_models` is an explicit, non-empty list of qualified
 `(provider_id, model_id)` identities and must contain the Agent default.
 Duplicates, unknown Provider or Model identities, and an omitted/empty list

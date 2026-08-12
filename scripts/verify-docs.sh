@@ -30,6 +30,8 @@ boundaries = {
     "sylvander-channel-ws/Cargo.toml": "docs/module-sylvander-channel-ws.md",
     "sylvander-llm-anthropic/Cargo.toml": "sylvander-llm-anthropic/docs/ARCHITECTURE.md",
     "sylvander-llm-core/Cargo.toml": "docs/module-sylvander-llm-core.md",
+    "sylvander-llm-dashscope/Cargo.toml": "docs/llm-provider-protocols.md",
+    "sylvander-llm-openai/Cargo.toml": "docs/llm-provider-protocols.md",
     "sylvander-protocol/Cargo.toml": "docs/module-sylvander-protocol.md",
     "sylvander-runtime/Cargo.toml": "sylvander-runtime/docs/ARCHITECTURE.md",
     "sylvander-server/Cargo.toml": "docs/module-sylvander-server.md",

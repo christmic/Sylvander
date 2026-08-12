@@ -111,21 +111,7 @@ self-use mode skips the integrity anchor.
 
 ## 4. Installation
 
-### 4.1 macOS application bundle
-
-`Sylvander.app` is the macOS desktop-host distribution target. The repository
-can build a local Release bundle with its embedded universal
-`sylvander-tui` helper, but a public bundle is installable release evidence
-only after Developer ID signing, notarization, and stapling pass. See
-
-The application does not currently provision the server, write
-`server.toml`, or import Provider credentials. Configure and start the
-server separately, then launch the app against its Unix socket (the default is
-`/tmp/sylvander.sock`; `SYLVANDER_SOCKET` overrides it for the desktop host).
-Sparkle code is present in the upstream host, but no public Sylvander update
-channel should be assumed until a signed release feed is published.
-
-### 4.2 Standalone daemon from source
+### 4.1 Standalone daemon from source
 
 Build the server with the workspace's pinned toolchain:
 
@@ -146,7 +132,7 @@ at `target/debug/sylvander`. A release build uses
 `cargo build --release -p sylvander-server --locked` and produces
 `target/release/sylvander`.
 
-### 4.3 First-run layout
+### 4.2 First-run layout
 
 Sylvander creates its data directory and the default session/evidence/
 memory/profile databases on first successful startup. `SYLVANDER_CONFIG` is
@@ -164,7 +150,7 @@ the anchor parent is missing or writable by the database writer.
 Follow [`getting-started.md`](getting-started.md). It is the canonical,
 tested path for choosing a product surface, copying the self-use profile,
 providing its one configured Provider secret, starting the server, and
-connecting either the standalone TUI or `Sylvander.app`.
+connecting the standalone TUI or another supported channel client.
 
 This manual does not repeat those commands so onboarding has one source of
 truth. Return here after the first session for daily Agent, workspace,
@@ -262,17 +248,19 @@ configuration, supervised channels, and shutdown contract. `self_use` relaxes
 only the explicitly documented production trust prerequisites; it is not a
 fallback when production configuration is invalid.
 
-## 8. Anthropic setup
+## 8. Model providers and LLM protocols
 
-Sylvander talks to any Anthropic-compatible upstream that accepts the
-`/v1/messages` POST format. Provider URL, models, capabilities, lifecycle, and
-pricing are declared under `[[model_providers]]`; only the secret value may
-come from an environment/file `SecretRef`.
+Sylvander supports Anthropic Messages, OpenAI Responses, OpenAI Chat
+Completions, and native DashScope Generation. Provider URL, protocol kind,
+feature switches, models, capabilities, lifecycle, and pricing are declared
+under `[[model_providers]]`; only the secret value may come from a Runtime
+environment/file `SecretRef`. LLM adapters receive the resolved URL and secret
+explicitly and never inspect process environment variables.
 
 ```toml
 [[model_providers]]
 id = "primary"
-kind = "anthropic_compatible"
+kind = "anthropic_messages"
 base_url = "https://api.anthropic.com"
 
 [model_providers.api_key]
@@ -285,6 +273,12 @@ context_window = 200000
 max_output_tokens = 32000
 capabilities = ["tool_use", "vision", "prompt_caching"]
 ```
+
+Supported current protocol kinds and optional feature switches are documented
+in [`llm-provider-protocols.md`](llm-provider-protocols.md). Several provider
+entries may select the same protocol kind. For example, separate `qwen` and
+`deepseek` entries may both use `openai_chat_completions` while retaining
+different URLs, credentials, features, and model catalogs.
 
 Agent defaults, prompt profiles, and session overrides reference the qualified
 pair `(provider_id, model_id)`. A bare model environment variable or
@@ -317,8 +311,8 @@ values are never persisted in the session or evidence databases.
 
 ### 8.3 Examples
 
-Official Anthropic uses the configuration above and only exports the referenced
-secret:
+Official Anthropic uses the configuration above and only exports the
+Runtime-referenced secret:
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...

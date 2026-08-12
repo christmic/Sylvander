@@ -1,14 +1,12 @@
 # Current release baseline and deployment gates
 
-Status date: 2026-07-18
+Status date: 2026-08-12
 
 This record closes the implemented local product scope and separates
 deterministic default gates from deployment-specific acceptance journeys. The
-active
-[`production-expansion-checklist.md`](production-expansion-checklist.md) is
-fully checked. The same tracked implementation state passed the complete root
-also covered by focused Worker/Guardian, invocation, approval, artifact, and
-learning-opt-out tests.
+[`production-expansion-checklist.md`](production-expansion-checklist.md) file
+is retained as historical pre-slim evidence for its referenced commit. The
+current repository does not include the former desktop or Token9 modules.
 
 ## Supported release scope
 
@@ -67,11 +65,9 @@ newly generated production configuration, observes its Unix socket and durable
 databases, verifies the installed TUI, and requires a clean signal-driven
 shutdown.
 
-participate in the root Cargo workspace. Its independent format, full-test,
-strict-Clippy, and warning-denied Rustdoc block above is therefore required; a
-green root workspace cannot stand in for it. `verify-docs.sh` requires one
-indexed module boundary for all 16 first-party Cargo packages and rejects
-broken relative links in the maintained documentation set.
+`verify-docs.sh` requires one indexed module boundary for all 16 current
+first-party Cargo packages and rejects broken relative links in maintained
+documentation.
 
 The real-client gate compiles the TUI and drives it through a pseudo-terminal.
 It covers protocol negotiation, keyboard submission, streamed output, AskUser,
@@ -87,15 +83,6 @@ temporary Git repositories prove both a successful observed merge and a clean
 human-directed revert, then reopen the durable store to verify terminal state.
 This is not evidence of an automatic or remote production rollout.
 
-The desktop-host gate is recorded in
-requires the full exact-v5 Swift suite, a clean Release universal bundled
-helper with strict local signature verification, and a real Unix-backed
-`ReleaseLocal` lifecycle with active/inactive transparency plus TrueColor
-inspection. Those deterministic local checks close the implementation gate.
-A consistently Developer ID-signed Release lifecycle, notarization, and
-stapling are external distribution prerequisites; `ReleaseLocal` is not
-evidence that those credentialed deployment checks passed.
-
 The security gate reports no RustSec vulnerability in locked dependencies and
 covers malformed protocol input, path and command-argument injection,
 cross-owner isolation, redaction, tracked-secret scanning, and learned-data
@@ -103,9 +90,10 @@ deletion. The performance gate completes the locked release build and verifies
 bounded concurrent delivery, parallel tools, long transcripts, large local
 workspaces, bursts, and executor ceilings within the documented budgets.
 
-No critical or high-severity defect is recorded in the supported scope. The
-closure matrix completed with a clean worktree and no generated snapshot
-drift.
+A release may claim no critical or high-severity defect only after the matrix
+above completes against its exact tracked commit with no generated snapshot
+drift. Historical evidence from the pre-slim repository is not evidence for a
+new release commit.
 
 ## Residual risk and non-claims
 
@@ -128,13 +116,5 @@ drift.
   evidence; native interactive SSH-terminal and tmux process integration remain
   unadvertised unless a deployment supplies and passes their acceptance
   journey.
-- Local ad-hoc Release signing verifies bundle structure, universal helper,
-  and nested code signatures. It does not provide the Team ID needed for
-  hardened library validation of the embedded Sparkle framework; local
-  lifecycle/visual inspection therefore uses the separately entitled
-  `ReleaseLocal` configuration. Developer ID Release launch, distribution
-  signing, notarization, and stapling still require the Apple identities and
-  credentials documented in
-
 These are bounded environmental or explicit non-claims, not hidden fallback
 behavior.

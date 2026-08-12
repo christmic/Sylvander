@@ -1,8 +1,14 @@
 # Sylvander Production Expansion Checklist
 
-Status: active normative checklist
+Status: historical pre-slim completion record
 
 Updated: 2026-07-18
+
+> This document records the product boundary at the referenced 2026-07-18
+> closure commit. The desktop and Token9 modules described below were later
+> extracted from this repository and are not part of the current product.
+> Current entry points and supported modules are listed in `docs/INDEX.md` and
+> `docs/getting-started.md`.
 
 This checklist replaces the former “future”, “deferred”, and “low-priority”
 labels for work that is now in the active product scope. An item is complete
