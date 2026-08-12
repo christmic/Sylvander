@@ -90,8 +90,6 @@
 pub mod approval;
 /// One-shot AskUser prompt/answer gate for an Agent run.
 pub mod ask_user_gate;
-/// In-process message bus, stream events, and subscription filtering.
-pub mod bus;
 /// Context-window compaction contracts and pipeline implementations.
 pub mod compress;
 /// Model-visible conversation snapshot owned only for one execution.
@@ -152,10 +150,6 @@ pub(crate) mod test_workspace;
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
-    pub use crate::bus::{
-        AgentStatus, BusError, BusMessage, InProcessMessageBus, MessageBus, MessageId, MessageKind,
-        Recipient, Sender, StreamEvent, SubscriptionFilter, SystemMessage,
-    };
     pub use crate::compress::{
         AutoCompactLlm, CompressContext, DEFAULT_SUMMARY_PROMPT,
         layer::{

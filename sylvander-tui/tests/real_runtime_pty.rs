@@ -10,10 +10,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::json;
-use sylvander_agent::prelude::{
-    AgentSpec, InProcessMessageBus, MessageBus, MessageKind, StreamEvent, SubscriptionFilter,
-    ToolRegistry,
-};
+use sylvander_agent::prelude::{AgentSpec, ToolRegistry};
 use sylvander_agent::tools::{AskUserTool, WriteTool};
 use sylvander_channel::{Channel, ChannelContext, ChannelHost};
 use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
@@ -23,10 +20,11 @@ use sylvander_llm_core::{
 };
 use sylvander_protocol::{
     AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, BusMessage,
-    FileAccess, NetworkAccess, PermissionProfile, ReasoningEffort, RunFeedback,
-    SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind, SessionConfigState,
-    SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig, SessionId,
-    SessionMetadata, UiClientMessage, UiSessionInfo,
+    FileAccess, InProcessMessageBus, MessageBus, MessageKind, NetworkAccess, PermissionProfile,
+    ReasoningEffort, RunFeedback, SessionConfigProvenance, SessionConfigSource,
+    SessionConfigSourceKind, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
+    SessionEffectiveConfig, SessionId, SessionMetadata, StreamEvent, SubscriptionFilter,
+    UiClientMessage, UiSessionInfo,
 };
 use sylvander_runtime::agent_run::{AgentRun, AgentSessionIssuer};
 use sylvander_runtime::agent_supervisor::AgentRunEngine;
@@ -535,13 +533,13 @@ impl ChannelHost for HarnessChannelHost {
         self.bus
             .publish(BusMessage {
                 session_id: session_id.clone(),
-                sender: sylvander_agent::bus::Sender::User(principal.into()),
-                recipient: sylvander_agent::bus::Recipient::Agent(request.agent_id),
+                sender: sylvander_protocol::Sender::User(principal.into()),
+                recipient: sylvander_protocol::Recipient::Agent(request.agent_id),
                 kind: MessageKind::Chat,
                 payload: request.text,
                 attachments: request.attachments,
                 timestamp: sylvander_runtime::session::now_secs(),
-                id: sylvander_agent::bus::MessageId::new(),
+                id: sylvander_protocol::MessageId::new(),
             })
             .await
             .map_err(|error| {
@@ -576,7 +574,7 @@ impl ChannelHost for HarnessChannelHost {
                 scope,
                 reason,
                 ..
-            } => sylvander_agent::bus::SystemMessage::ApproveTool {
+            } => sylvander_protocol::SystemMessage::ApproveTool {
                 call_id,
                 approved,
                 scope,
@@ -584,24 +582,22 @@ impl ChannelHost for HarnessChannelHost {
             },
             UiClientMessage::Answer {
                 call_id, answer, ..
-            } => sylvander_agent::bus::SystemMessage::AnswerQuestion { call_id, answer },
-            UiClientMessage::Interrupt { .. } => {
-                sylvander_agent::bus::SystemMessage::InterruptTurn {
-                    session_id: SessionId::new(&session_id),
-                }
-            }
+            } => sylvander_protocol::SystemMessage::AnswerQuestion { call_id, answer },
+            UiClientMessage::Interrupt { .. } => sylvander_protocol::SystemMessage::InterruptTurn {
+                session_id: SessionId::new(&session_id),
+            },
             _ => return Err(BoundaryError::forbidden(boundary, "submit_control")),
         };
         self.bus
             .publish(BusMessage {
                 session_id: SessionId::new(session_id),
-                sender: sylvander_agent::bus::Sender::System,
-                recipient: sylvander_agent::bus::Recipient::Agent(self.agent_id.clone()),
+                sender: sylvander_protocol::Sender::System,
+                recipient: sylvander_protocol::Recipient::Agent(self.agent_id.clone()),
                 kind: MessageKind::System(system),
                 payload: String::new(),
                 attachments: Vec::new(),
                 timestamp: sylvander_runtime::session::now_secs(),
-                id: sylvander_agent::bus::MessageId::new(),
+                id: sylvander_protocol::MessageId::new(),
             })
             .await
             .map_err(|error| {
