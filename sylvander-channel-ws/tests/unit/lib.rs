@@ -2,8 +2,7 @@ use std::collections::BTreeSet;
 
 use super::*;
 use sylvander_agent::bus::InProcessMessageBus;
-use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
-use sylvander_channel::UiService;
+use sylvander_channel::ChannelHost;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
@@ -40,16 +39,16 @@ impl CredentialLeaseSource for RotatingLeaseSource {
     }
 }
 
-struct SessionConfigUi {
+struct SessionConfigHost {
     states: Mutex<HashMap<String, sylvander_protocol::SessionConfigState>>,
 }
 
-struct CredentialRegistryUi {
+struct CredentialRegistryHost {
     received: Mutex<Option<sylvander_protocol::RegistryAdminRequest>>,
 }
 
 #[async_trait]
-impl UiService for CredentialRegistryUi {
+impl ChannelHost for CredentialRegistryHost {
     async fn authorize_message(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -211,7 +210,7 @@ fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
 }
 
 #[async_trait]
-impl UiService for SessionConfigUi {
+impl ChannelHost for SessionConfigHost {
     async fn authorize_message(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -401,7 +400,7 @@ impl UiService for SessionConfigUi {
 async fn welcome_declares_administration_and_credential_lifecycle_capabilities() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("test".into()),
         None,
         None,
     );
@@ -447,11 +446,11 @@ async fn welcome_declares_administration_and_credential_lifecycle_capabilities()
 }
 
 #[tokio::test]
-async fn list_sessions_dispatches_to_runtime_ui_service_and_returns_typed_rows() {
+async fn list_sessions_dispatches_to_runtime_channel_host_and_returns_typed_rows() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        Some(Arc::new(SessionConfigUi {
+        Some("test".into()),
+        Some(Arc::new(SessionConfigHost {
             states: Mutex::new(HashMap::from([
                 ("session-b".into(), config_state("session-b")),
                 ("session-a".into(), config_state("session-a")),
@@ -498,7 +497,7 @@ fn hello(version: u16) -> ClientMsg {
 async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("test".into()),
         None,
         None,
     );
@@ -597,12 +596,12 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
 
 #[tokio::test]
 async fn credential_mutation_requires_the_current_protocol_before_dispatch() {
-    let ui = Arc::new(CredentialRegistryUi {
+    let ui = Arc::new(CredentialRegistryHost {
         received: Mutex::new(None),
     });
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("test".into()),
         Some(ui.clone()),
         None,
     );
@@ -685,11 +684,11 @@ async fn credential_mutation_requires_the_current_protocol_before_dispatch() {
 }
 
 #[tokio::test]
-async fn agent_admin_dispatches_through_the_ui_service() {
+async fn agent_admin_dispatches_through_the_channel_host() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        Some(Arc::new(SessionConfigUi {
+        Some("test".into()),
+        Some(Arc::new(SessionConfigHost {
             states: Mutex::new(HashMap::new()),
         })),
         None,
@@ -736,8 +735,8 @@ async fn agent_admin_dispatches_through_the_ui_service() {
 async fn identity_binding_round_trip_uses_authenticated_websocket_ingress() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        Some(Arc::new(CredentialRegistryUi {
+        Some("test".into()),
+        Some(Arc::new(CredentialRegistryHost {
             received: Mutex::new(None),
         })),
         None,
@@ -781,10 +780,10 @@ async fn identity_binding_round_trip_uses_authenticated_websocket_ingress() {
 }
 
 #[tokio::test]
-async fn registry_admin_without_ui_service_returns_content_free_error() {
+async fn registry_admin_without_channel_host_returns_content_free_error() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("test".into()),
         None,
         None,
     );
@@ -832,8 +831,8 @@ async fn dispatch_registry_admin_as(
 ) -> ServerMsg {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        Some(Arc::new(SessionConfigUi {
+        Some("test".into()),
+        Some(Arc::new(SessionConfigHost {
             states: Mutex::new(HashMap::new()),
         })),
         None,
@@ -889,12 +888,12 @@ async fn credential_binding_create_dispatches_reference_without_echoing_it() {
     const BINDING_ID: &str = "credential/private-provider";
     const ENVIRONMENT_NAME: &str = "SYLVANDER_PRIVATE_PROVIDER_TOKEN";
 
-    let ui = Arc::new(CredentialRegistryUi {
+    let ui = Arc::new(CredentialRegistryHost {
         received: Mutex::new(None),
     });
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("test".into()),
         Some(ui.clone()),
         None,
     );
@@ -981,7 +980,7 @@ fn message_limit_is_configurable() {
 }
 
 #[async_trait]
-impl UiService for DenyAgentAccess {
+impl ChannelHost for DenyAgentAccess {
     async fn reject_authentication(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -1104,7 +1103,7 @@ async fn websocket_upgrade_uses_live_rotating_bearer_lease() {
     let state = AppState {
         ctx: Arc::new(ChannelContext::with_services(
             Arc::new(InProcessMessageBus::new()),
-            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some("test".into()),
             None,
             None,
         )),
@@ -1156,11 +1155,9 @@ async fn websocket_upgrade_uses_live_rotating_bearer_lease() {
 
 #[tokio::test]
 async fn first_chat_cannot_create_a_session_without_agent_access() {
-    let sessions: Arc<dyn SessionStore> =
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        sessions.clone(),
+        Some("test".into()),
         Some(Arc::new(DenyAgentAccess)),
         None,
     );
@@ -1190,7 +1187,6 @@ async fn first_chat_cannot_create_a_session_without_agent_access() {
         Some(ServerMsg::BoundaryDenied { error })
             if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
     ));
-    assert!(sessions.list_persistent().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1198,7 +1194,7 @@ async fn authentication_rejection_uses_runtime_status() {
     let state = AppState {
         ctx: Arc::new(ChannelContext::with_services(
             Arc::new(InProcessMessageBus::new()),
-            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some("test".into()),
             Some(Arc::new(DenyAgentAccess)),
             None,
         )),
@@ -1217,7 +1213,7 @@ async fn authentication_rejection_uses_runtime_status() {
 
 #[tokio::test]
 async fn selection_updates_only_the_addressed_session() {
-    let ui = Arc::new(SessionConfigUi {
+    let ui = Arc::new(SessionConfigHost {
         states: Mutex::new(HashMap::from([
             ("session-a".into(), config_state("session-a")),
             ("session-b".into(), config_state("session-b")),
@@ -1225,7 +1221,7 @@ async fn selection_updates_only_the_addressed_session() {
     });
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+        Some("test".into()),
         Some(ui.clone()),
         None,
     );
@@ -1291,8 +1287,8 @@ async fn session_prompt_is_redacted_from_the_websocket_payload() {
     };
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-        Some(Arc::new(SessionConfigUi {
+        Some("test".into()),
+        Some(Arc::new(SessionConfigHost {
             states: Mutex::new(HashMap::from([("session-secret".into(), state)])),
         })),
         None,
@@ -1332,7 +1328,7 @@ async fn session_prompt_is_redacted_from_the_websocket_payload() {
 
 #[tokio::test]
 async fn unavailable_qualified_selection_fails_without_mutating_session() {
-    let ui = Arc::new(SessionConfigUi {
+    let ui = Arc::new(SessionConfigHost {
         states: Mutex::new(HashMap::from([(
             "session-a".into(),
             config_state("session-a"),
@@ -1340,7 +1336,7 @@ async fn unavailable_qualified_selection_fails_without_mutating_session() {
     });
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+        Some("test".into()),
         Some(ui.clone()),
         None,
     );

@@ -89,15 +89,15 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     }
 
     fn registry(&self) -> &crate::agent_registry::AgentRegistry {
-        self.runtime.ui_service.agent_registry.as_ref().unwrap()
+        self.runtime.channel_host.agent_registry.as_ref().unwrap()
     }
 
     async fn update_cross_provider_revision(&self) {
         let mut definition = self.config.agents[0].clone();
         definition.revision = 2;
         definition.spec.model.allowed_models = vec![model("beta"), model("alpha")];
-        let response = sylvander_channel::UiService::agent_admin(
-            self.runtime.ui_service.as_ref(),
+        let response = sylvander_channel::ChannelHost::agent_admin(
+            self.runtime.channel_host.as_ref(),
             &self.administrator,
             AgentAdminRequest::UpdateDefinition {
                 expected_active_revision: 1,
@@ -119,8 +119,8 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     }
 
     async fn activate_revision_two(&self) -> AgentAdminResponse {
-        sylvander_channel::UiService::agent_admin(
-            self.runtime.ui_service.as_ref(),
+        sylvander_channel::ChannelHost::agent_admin(
+            self.runtime.channel_host.as_ref(),
             &self.administrator,
             AgentAdminRequest::ActivateRevision {
                 agent_id: AgentId::new("assistant"),
@@ -215,8 +215,8 @@ async fn cross_provider_update_pins_native_v3_and_survives_head_drift() {
                 AgentAdminResult::RevisionActivated { active_revision: 2, .. }
             )
     ));
-    let rolled_back = sylvander_channel::UiService::agent_admin(
-        fixture.runtime.ui_service.as_ref(),
+    let rolled_back = sylvander_channel::ChannelHost::agent_admin(
+        fixture.runtime.channel_host.as_ref(),
         &fixture.administrator,
         AgentAdminRequest::RollbackRevision {
             agent_id: AgentId::new("assistant"),
@@ -280,7 +280,7 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     principal.roles.push("admin".into());
     let administrator =
         BoundaryContext::authenticated(principal, "admin-test", "internal", "dynamic-restart");
-    let registry = runtime.ui_service.agent_registry.as_ref().unwrap();
+    let registry = runtime.channel_host.agent_registry.as_ref().unwrap();
     let binding_id = registry
         .load_active_provider("alpha")
         .await
@@ -289,8 +289,8 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
         .definition
         .credential_binding_id;
 
-    let provider = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let provider = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::CreateProvider {
             provider_id: "beta".into(),
@@ -304,8 +304,8 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     )
     .await;
     assert!(matches!(provider, RegistryAdminResponse::Success { .. }));
-    let model_response = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let model_response = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::CreateModel {
             provider_id: "beta".into(),
@@ -339,8 +339,8 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     let mut next = config.agents[0].clone();
     next.revision = 2;
     next.spec.model.allowed_models = vec![model("alpha"), model("beta")];
-    let updated = sylvander_channel::UiService::agent_admin(
-        runtime.ui_service.as_ref(),
+    let updated = sylvander_channel::ChannelHost::agent_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         AgentAdminRequest::UpdateDefinition {
             expected_active_revision: 1,
@@ -350,8 +350,8 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     .await;
     assert!(matches!(updated, AgentAdminResponse::Success { .. }));
     assert!(matches!(
-        sylvander_channel::UiService::agent_admin(
-            runtime.ui_service.as_ref(),
+        sylvander_channel::ChannelHost::agent_admin(
+            runtime.channel_host.as_ref(),
             &administrator,
             AgentAdminRequest::ActivateRevision {
                 agent_id: AgentId::new("assistant"),
@@ -363,13 +363,15 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
         AgentAdminResponse::Success { .. }
     ));
 
-    let discovered =
-        sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &administrator)
-            .await
-            .unwrap();
+    let discovered = sylvander_channel::ChannelHost::discover_agents(
+        runtime.channel_host.as_ref(),
+        &administrator,
+    )
+    .await
+    .unwrap();
     assert_dynamic_beta_descriptor(&discovered);
-    let created = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &administrator,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -383,8 +385,8 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     assert_eq!(created.effective.model_selection(), model("alpha"));
     assert_eq!(created.effective.agent_revision, 2);
 
-    let unchanged = sylvander_channel::UiService::session_config(
-        runtime.ui_service.as_ref(),
+    let unchanged = sylvander_channel::ChannelHost::session_config(
+        runtime.channel_host.as_ref(),
         &administrator,
         &created.session_id,
     )
@@ -393,8 +395,8 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     assert_eq!(unchanged.revision, created.revision);
     assert_eq!(unchanged.overrides, created.overrides);
 
-    let updated = sylvander_channel::UiService::update_session_config(
-        runtime.ui_service.as_ref(),
+    let updated = sylvander_channel::ChannelHost::update_session_config(
+        runtime.channel_host.as_ref(),
         &administrator,
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
@@ -414,15 +416,15 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     runtime.shutdown().await.unwrap();
 
     let restarted = Runtime::boot_config(original).await.unwrap();
-    let rediscovered = sylvander_channel::UiService::discover_agents(
-        restarted.ui_service.as_ref(),
+    let rediscovered = sylvander_channel::ChannelHost::discover_agents(
+        restarted.channel_host.as_ref(),
         &administrator,
     )
     .await
     .unwrap();
     assert_dynamic_beta_descriptor(&rediscovered);
-    let restored = sylvander_channel::UiService::session_config(
-        restarted.ui_service.as_ref(),
+    let restored = sylvander_channel::ChannelHost::session_config(
+        restarted.channel_host.as_ref(),
         &administrator,
         &created.session_id,
     )
@@ -432,7 +434,7 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     assert_eq!(restored.overrides, updated.overrides);
     assert_eq!(restored.effective, updated.effective);
     let active = restarted
-        .ui_service
+        .channel_host
         .agent_registry
         .as_ref()
         .unwrap()
@@ -443,7 +445,7 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
     assert_eq!(active.definition.revision, 2);
     assert_eq!(active.definition.spec.model.provider, "alpha");
     let snapshot = restarted
-        .ui_service
+        .channel_host
         .agent_registry
         .as_ref()
         .unwrap()

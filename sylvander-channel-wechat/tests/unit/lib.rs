@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex as StdMutex, RwLock};
 use sylvander_agent::bus::InProcessMessageBus;
-use sylvander_channel::UiService;
+use sylvander_channel::ChannelHost;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
@@ -172,7 +172,7 @@ fn unix_now() -> i64 {
 struct AuthenticationRecorder(AtomicUsize);
 
 #[async_trait]
-impl UiService for AuthenticationRecorder {
+impl ChannelHost for AuthenticationRecorder {
     async fn reject_authentication(
         &self,
         boundary: &BoundaryContext,

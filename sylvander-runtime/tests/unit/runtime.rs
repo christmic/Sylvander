@@ -610,8 +610,8 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         user_workspace: Some(requested_workspace.clone()),
         ..SessionConfigOverrides::default()
     };
-    let created = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -689,8 +689,8 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         .unwrap();
     assert_eq!(attached.metadata.workspace, effective_workspace);
 
-    let updated = sylvander_channel::UiService::update_session_config(
-        runtime.ui_service.as_ref(),
+    let updated = sylvander_channel::ChannelHost::update_session_config(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
@@ -714,8 +714,8 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
 
     let changed_workspace = directory.path().join("different");
     std::fs::create_dir(&changed_workspace).unwrap();
-    let error = sylvander_channel::UiService::update_session_config(
-        runtime.ui_service.as_ref(),
+    let error = sylvander_channel::ChannelHost::update_session_config(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
@@ -787,8 +787,8 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
     };
 
     let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-    let created = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -827,8 +827,8 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
         "before\n"
     );
 
-    let diff = sylvander_channel::UiService::inspect_coding_session(
-        runtime.ui_service.as_ref(),
+    let diff = sylvander_channel::ChannelHost::inspect_coding_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -838,8 +838,8 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
     assert!(diff.status.contains("?? generated.txt"));
     assert!(diff.patch.contains("+accepted"));
     assert!(diff.patch.contains("+generated"));
-    sylvander_channel::UiService::accept_coding_session(
-        runtime.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::accept_coding_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -853,8 +853,8 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
     drop(runtime);
 
     let restarted = Runtime::boot_config(config).await.unwrap();
-    let resumed = sylvander_channel::UiService::session_config(
-        restarted.ui_service.as_ref(),
+    let resumed = sylvander_channel::ChannelHost::session_config(
+        restarted.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -865,8 +865,8 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
     assert_eq!(resumed.effective.model_id, "model-a");
     assert_eq!(resumed.effective.user_workspace.unwrap().path, worktree);
     assert_eq!(resumed.overrides, overrides);
-    let clean = sylvander_channel::UiService::inspect_coding_session(
-        restarted.ui_service.as_ref(),
+    let clean = sylvander_channel::ChannelHost::inspect_coding_session(
+        restarted.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -884,16 +884,16 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
         .await
         .unwrap();
     assert!(output.success);
-    let pending = sylvander_channel::UiService::inspect_coding_session(
-        restarted.ui_service.as_ref(),
+    let pending = sylvander_channel::ChannelHost::inspect_coding_session(
+        restarted.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
     .await
     .unwrap();
     assert!(pending.patch.contains("+discarded"));
-    sylvander_channel::UiService::discard_coding_session(
-        restarted.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::discard_coding_session(
+        restarted.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -961,8 +961,8 @@ async fn container_coding_session_runs_in_worktree_and_survives_restart() {
     };
 
     let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-    let created = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -997,8 +997,8 @@ async fn container_coding_session_runs_in_worktree_and_survives_restart() {
         .await
         .unwrap();
     assert!(output.success);
-    let diff = sylvander_channel::UiService::inspect_coding_session(
-        runtime.ui_service.as_ref(),
+    let diff = sylvander_channel::ChannelHost::inspect_coding_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -1006,8 +1006,8 @@ async fn container_coding_session_runs_in_worktree_and_survives_restart() {
     .unwrap();
     assert!(diff.patch.contains("+accepted"));
     assert!(diff.patch.contains("+generated"));
-    sylvander_channel::UiService::accept_coding_session(
-        runtime.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::accept_coding_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -1021,8 +1021,8 @@ async fn container_coding_session_runs_in_worktree_and_survives_restart() {
     drop(runtime);
 
     let restarted = Runtime::boot_config(config).await.unwrap();
-    let resumed = sylvander_channel::UiService::session_config(
-        restarted.ui_service.as_ref(),
+    let resumed = sylvander_channel::ChannelHost::session_config(
+        restarted.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -1037,8 +1037,8 @@ async fn container_coding_session_runs_in_worktree_and_survives_restart() {
         )
         .await
         .unwrap();
-    sylvander_channel::UiService::discard_coding_session(
-        restarted.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::discard_coding_session(
+        restarted.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -1052,23 +1052,23 @@ async fn container_coding_session_runs_in_worktree_and_survives_restart() {
     restarted.shutdown().await.unwrap();
 }
 
-fn ui_service_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> RuntimeUiService {
-    RuntimeUiService {
-        engine: runtime.ui_service.engine.clone(),
+fn channel_host_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> RuntimeChannelHost {
+    RuntimeChannelHost {
+        engine: runtime.channel_host.engine.clone(),
         bus,
-        sessions: runtime.ui_service.sessions.clone(),
-        agents: runtime.ui_service.agents.clone(),
-        agent_registry: runtime.ui_service.agent_registry.clone(),
-        revision_provider: runtime.ui_service.revision_provider.clone(),
-        credential_resolver: runtime.ui_service.credential_resolver.clone(),
-        credential_audit: runtime.ui_service.credential_audit.clone(),
-        evidence: runtime.ui_service.evidence.clone(),
-        evidence_run_id: runtime.ui_service.evidence_run_id.clone(),
-        guardian: runtime.ui_service.guardian.clone(),
-        identity_bindings: runtime.ui_service.identity_bindings.clone(),
-        user_profiles: runtime.ui_service.user_profiles.clone(),
-        worktrees: runtime.ui_service.worktrees.clone(),
-        boundary: runtime.ui_service.boundary.clone(),
+        sessions: runtime.channel_host.sessions.clone(),
+        agents: runtime.channel_host.agents.clone(),
+        agent_registry: runtime.channel_host.agent_registry.clone(),
+        revision_provider: runtime.channel_host.revision_provider.clone(),
+        credential_resolver: runtime.channel_host.credential_resolver.clone(),
+        credential_audit: runtime.channel_host.credential_audit.clone(),
+        evidence: runtime.channel_host.evidence.clone(),
+        evidence_run_id: runtime.channel_host.evidence_run_id.clone(),
+        guardian: runtime.channel_host.guardian.clone(),
+        identity_bindings: runtime.channel_host.identity_bindings.clone(),
+        user_profiles: runtime.channel_host.user_profiles.clone(),
+        worktrees: runtime.channel_host.worktrees.clone(),
+        boundary: runtime.channel_host.boundary.clone(),
     }
 }
 
@@ -1110,9 +1110,9 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     let initial_agent = agent.run.list_sessions().await;
 
     let join_bus = Arc::new(InstrumentedBus::rejecting_publish());
-    let mut join_failure = ui_service_with_bus(&runtime, Arc::new(InProcessMessageBus::new()));
+    let mut join_failure = channel_host_with_bus(&runtime, Arc::new(InProcessMessageBus::new()));
     join_failure.engine = Arc::new(AgentRunEngine::new(join_bus.clone()));
-    sylvander_channel::UiService::submit_chat(&join_failure, &boundary, request(None))
+    sylvander_channel::ChannelHost::submit_chat(&join_failure, &boundary, request(None))
         .await
         .expect_err("engine attach failure must reject a new session");
     assert_eq!(join_bus.operations(), ["publish"]);
@@ -1128,8 +1128,8 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
         (false, true, vec!["subscribe", "publish_chat"]),
     ] {
         let bus = Arc::new(InstrumentedBus::new(fail_subscribe, fail_publish));
-        let service = ui_service_with_bus(&runtime, bus.clone());
-        sylvander_channel::UiService::submit_chat(&service, &boundary, request(None))
+        let service = channel_host_with_bus(&runtime, bus.clone());
+        sylvander_channel::ChannelHost::submit_chat(&service, &boundary, request(None))
             .await
             .expect_err("injected delivery failure must reject a new session");
         assert_eq!(bus.operations(), expected);
@@ -1150,8 +1150,8 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
         assert_eq!(agent.run.list_sessions().await, initial_agent);
     }
 
-    let existing = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let existing = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -1163,8 +1163,8 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     .await
     .unwrap();
     let failing_bus = Arc::new(InstrumentedBus::new(false, true));
-    let failing_service = ui_service_with_bus(&runtime, failing_bus);
-    sylvander_channel::UiService::submit_chat(
+    let failing_service = channel_host_with_bus(&runtime, failing_bus);
+    sylvander_channel::ChannelHost::submit_chat(
         &failing_service,
         &boundary,
         request(Some(existing.session_id.clone())),
@@ -1195,10 +1195,10 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     );
 
     let selected_agent_bus = Arc::new(InstrumentedBus::new(false, false));
-    let selected_agent_service = ui_service_with_bus(&runtime, selected_agent_bus);
+    let selected_agent_service = channel_host_with_bus(&runtime, selected_agent_bus);
     let mut existing_request = request(Some(existing.session_id.clone()));
     existing_request.agent_id = AgentId::new("different-channel-default");
-    let mut selected_submission = sylvander_channel::UiService::submit_chat(
+    let mut selected_submission = sylvander_channel::ChannelHost::submit_chat(
         &selected_agent_service,
         &boundary,
         existing_request,
@@ -1212,9 +1212,9 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     );
 
     let success_bus = Arc::new(InstrumentedBus::new(false, false));
-    let success_service = ui_service_with_bus(&runtime, success_bus.clone());
+    let success_service = channel_host_with_bus(&runtime, success_bus.clone());
     let mut submitted =
-        sylvander_channel::UiService::submit_chat(&success_service, &boundary, request(None))
+        sylvander_channel::ChannelHost::submit_chat(&success_service, &boundary, request(None))
             .await
             .unwrap();
     assert_eq!(success_bus.operations(), ["subscribe", "publish_chat"]);
@@ -1243,8 +1243,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         "test",
         "owner-request",
     );
-    let session = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let session = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &owner,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -1255,8 +1255,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     )
     .await
     .unwrap();
-    let owner_context = sylvander_channel::UiService::context_report(
-        runtime.ui_service.as_ref(),
+    let owner_context = sylvander_channel::ChannelHost::context_report(
+        runtime.channel_host.as_ref(),
         &owner,
         &session.session_id,
     )
@@ -1273,8 +1273,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         "attacker-request",
     );
 
-    let context = sylvander_channel::UiService::context_report(
-        runtime.ui_service.as_ref(),
+    let context = sylvander_channel::ChannelHost::context_report(
+        runtime.channel_host.as_ref(),
         &attacker,
         &session.session_id,
     )
@@ -1284,8 +1284,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         context.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    let compact = sylvander_channel::UiService::compact_session(
-        runtime.ui_service.as_ref(),
+    let compact = sylvander_channel::ChannelHost::compact_session(
+        runtime.channel_host.as_ref(),
         &attacker,
         &session.session_id,
     )
@@ -1295,8 +1295,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         compact.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    let preview = sylvander_channel::UiService::preview_workspace_rollback(
-        runtime.ui_service.as_ref(),
+    let preview = sylvander_channel::ChannelHost::preview_workspace_rollback(
+        runtime.channel_host.as_ref(),
         &attacker,
         &session.session_id,
     )
@@ -1306,8 +1306,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         preview.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    let rollback = sylvander_channel::UiService::rollback_workspace(
-        runtime.ui_service.as_ref(),
+    let rollback = sylvander_channel::ChannelHost::rollback_workspace(
+        runtime.channel_host.as_ref(),
         &attacker,
         &session.session_id,
         "turn-1",
@@ -1319,8 +1319,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
 
-    let load_denial = sylvander_channel::UiService::load_session(
-        runtime.ui_service.as_ref(),
+    let load_denial = sylvander_channel::ChannelHost::load_session(
+        runtime.channel_host.as_ref(),
         &attacker,
         &session.session_id,
     )
@@ -1330,16 +1330,16 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         load_denial.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    sylvander_channel::UiService::rename_session(
-        runtime.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::rename_session(
+        runtime.channel_host.as_ref(),
         &owner,
         &session.session_id,
         "renamed by runtime".into(),
     )
     .await
     .expect("the Runtime must own metadata mutation");
-    let loaded = sylvander_channel::UiService::load_session(
-        runtime.ui_service.as_ref(),
+    let loaded = sylvander_channel::ChannelHost::load_session(
+        runtime.channel_host.as_ref(),
         &owner,
         &session.session_id,
     )
@@ -1347,8 +1347,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     .expect("the owner may load its durable history");
     assert_eq!(loaded.session.label, "renamed by runtime");
 
-    sylvander_channel::UiService::archive_session(
-        runtime.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::archive_session(
+        runtime.channel_host.as_ref(),
         &owner,
         &session.session_id,
     )
@@ -1362,8 +1362,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
             .unwrap()
             .is_none()
     );
-    sylvander_channel::UiService::restore_session(
-        runtime.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::restore_session(
+        runtime.channel_host.as_ref(),
         &owner,
         &session.session_id,
     )
@@ -1378,8 +1378,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
             .is_some()
     );
 
-    let deletion = sylvander_channel::UiService::delete_session(
-        runtime.ui_service.as_ref(),
+    let deletion = sylvander_channel::ChannelHost::delete_session(
+        runtime.channel_host.as_ref(),
         &attacker,
         &session.session_id,
     )
@@ -1389,8 +1389,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         deletion.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    sylvander_channel::UiService::delete_session(
-        runtime.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::delete_session(
+        runtime.channel_host.as_ref(),
         &owner,
         &session.session_id,
     )
@@ -1443,8 +1443,8 @@ async fn attach_memory_session(
         "unix",
         format!("memory-test-{}", uuid::Uuid::new_v4()),
     );
-    let created = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionCreateRequest {
             agent_id: AgentId::new(agent),
@@ -1520,7 +1520,7 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
     let context = ChannelContext::with_runtime_services(
         runtime.bus(),
         "terminal",
-        runtime.ui_service.clone(),
+        runtime.channel_host.clone(),
         None,
     );
     assert_eq!(
@@ -1581,8 +1581,8 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         IdentityBindingResponse::Resolved { binding, .. }
             if binding.user_id == UserId::new("alice") && binding.revision == 1
     ));
-    let profile_created = sylvander_channel::UiService::user_profile(
-        runtime.ui_service.as_ref(),
+    let profile_created = sylvander_channel::ChannelHost::user_profile(
+        runtime.channel_host.as_ref(),
         &local,
         UserProfileRequest {
             version: USER_PROFILE_PROTOCOL_VERSION,
@@ -1596,8 +1596,8 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         profile_created,
         UserProfileResponse::Created { profile, .. } if profile.revision == 1
     ));
-    let profile_from_external = sylvander_channel::UiService::user_profile(
-        runtime.ui_service.as_ref(),
+    let profile_from_external = sylvander_channel::ChannelHost::user_profile(
+        runtime.channel_host.as_ref(),
         &external,
         UserProfileRequest {
             version: USER_PROFILE_PROTOCOL_VERSION,
@@ -1610,7 +1610,7 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         UserProfileResponse::Read { profile, .. } if profile.revision == 1
     ));
     let profile_audits = runtime
-        .ui_service
+        .channel_host
         .evidence
         .as_ref()
         .unwrap()
@@ -1627,8 +1627,8 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
             && audit.resource_kind == "user_profile"
             && audit.outcome == "succeeded"
     }));
-    let created = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &local,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -1639,8 +1639,8 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
     )
     .await
     .unwrap();
-    let from_external = sylvander_channel::UiService::session_config(
-        runtime.ui_service.as_ref(),
+    let from_external = sylvander_channel::ChannelHost::session_config(
+        runtime.channel_host.as_ref(),
         &external,
         &created.session_id,
     )
@@ -1968,7 +1968,7 @@ allowed_models = [
     session.effective_config = Some(effective);
 
     let closed = close_session_revision_pins(
-        runtime.ui_service.agent_registry.as_ref().unwrap(),
+        runtime.channel_host.agent_registry.as_ref().unwrap(),
         &session,
         agent,
     )
@@ -2691,7 +2691,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         effective.provenance.user_workspace.kind,
         sylvander_protocol::SessionConfigSourceKind::SessionOverride
     );
-    let registry = runtime.ui_service.agent_registry.as_ref().unwrap();
+    let registry = runtime.channel_host.agent_registry.as_ref().unwrap();
     let active_agent = runtime
         .configured_agent(&AgentId::new("assistant"))
         .unwrap();
@@ -2780,8 +2780,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "request-create",
     );
     let before_invalid_create = runtime.session_store.list_persistent().await.unwrap().len();
-    let invalid_create = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let invalid_create = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &owner,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -2805,8 +2805,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         before_invalid_create,
         "invalid session prompt must fail before session persistence"
     );
-    let created = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &owner,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -2833,8 +2833,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     assert_eq!(stored.effective_config, Some(created.effective));
     assert!(stored.metadata.user_id.starts_with("unlinked:v1:"));
     assert_eq!(stored.external_meta["channel_id"], "tui-local");
-    let invalid_update = sylvander_channel::UiService::update_session_config(
-        runtime.ui_service.as_ref(),
+    let invalid_update = sylvander_channel::ChannelHost::update_session_config(
+        runtime.channel_host.as_ref(),
         &owner,
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
@@ -2871,8 +2871,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .is_err(),
         "a session revision binding must never be reused for another Agent"
     );
-    let peer = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let peer = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &owner,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -2888,8 +2888,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         network_access: sylvander_protocol::NetworkAccess::Denied,
         approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
     };
-    let selected = sylvander_channel::UiService::update_session_config(
-        runtime.ui_service.as_ref(),
+    let selected = sylvander_channel::ChannelHost::update_session_config(
+        runtime.channel_host.as_ref(),
         &owner,
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
@@ -2907,8 +2907,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .await
     .unwrap();
     assert_eq!(selected.effective.permissions, restricted);
-    let peer_after = sylvander_channel::UiService::session_config(
-        runtime.ui_service.as_ref(),
+    let peer_after = sylvander_channel::ChannelHost::session_config(
+        runtime.channel_host.as_ref(),
         &owner,
         &peer.session_id,
     )
@@ -2918,8 +2918,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         peer_after, peer,
         "one session override must not leak to another"
     );
-    let missing_session = sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    let missing_session = sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &owner,
         &sylvander_protocol::UiClientMessage::SelectModel {
             session_id: None,
@@ -2945,8 +2945,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "unix",
         "request-cross-instance",
     );
-    let denial = sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    let denial = sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &other_terminal,
         &sylvander_protocol::UiClientMessage::GetSessionConfig {
             session_id: created.session_id.0.clone(),
@@ -2970,7 +2970,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let channel_context = ChannelContext::with_runtime_services(
         runtime.bus(),
         "bot-a",
-        runtime.ui_service.clone(),
+        runtime.channel_host.clone(),
         None,
     );
     let mut platform_submission = sylvander_channel::submit_external_chat(
@@ -3059,7 +3059,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let other_context = ChannelContext::with_runtime_services(
         runtime.bus(),
         "bot-b",
-        runtime.ui_service.clone(),
+        runtime.channel_host.clone(),
         None,
     );
     assert_eq!(
@@ -3128,13 +3128,13 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "request-read",
     );
     assert!(
-        sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &stranger,)
+        sylvander_channel::ChannelHost::discover_agents(runtime.channel_host.as_ref(), &stranger,)
             .await
             .unwrap()
             .is_empty()
     );
-    let denial = sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    let denial = sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &stranger,
         &sylvander_protocol::UiClientMessage::CreateSession {
             request: SessionCreateRequest {
@@ -3151,8 +3151,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         denial.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    let denial = sylvander_channel::UiService::session_config(
-        runtime.ui_service.as_ref(),
+    let denial = sylvander_channel::ChannelHost::session_config(
+        runtime.channel_host.as_ref(),
         &stranger,
         &created.session_id,
     )
@@ -3162,8 +3162,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         denial.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    let chat_denial = sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    let chat_denial = sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &stranger,
         &sylvander_protocol::UiClientMessage::Chat {
             text: "cross-session attempt".into(),
@@ -3183,8 +3183,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "websocket",
         "request-ping",
     );
-    let denial = sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    let denial = sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &unauthenticated,
         &sylvander_protocol::UiClientMessage::Ping,
     )
@@ -3199,8 +3199,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "websocket",
         "request-authentication-failure",
     );
-    let authentication_denial = sylvander_channel::UiService::reject_authentication(
-        runtime.ui_service.as_ref(),
+    let authentication_denial = sylvander_channel::ChannelHost::reject_authentication(
+        runtime.channel_host.as_ref(),
         &authentication_boundary,
         sylvander_protocol::AuthenticationFailure::new(
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -3254,8 +3254,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let feedback_message = sylvander_protocol::UiClientMessage::SubmitFeedback {
         feedback: feedback.clone(),
     };
-    let feedback_id = sylvander_channel::UiService::submit_feedback(
-        runtime.ui_service.as_ref(),
+    let feedback_id = sylvander_channel::ChannelHost::submit_feedback(
+        runtime.channel_host.as_ref(),
         &owner,
         feedback,
     )
@@ -3286,8 +3286,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .expect("configured Runtime must start Guardian");
     wait_for_guardian_events(guardian, 1, 0).await;
     assert_eq!(guardian.canonical_record_count(), 0);
-    let denial = sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    let denial = sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &stranger,
         &feedback_message,
     )
@@ -3357,8 +3357,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         system_prompt: "must not persist".into(),
     }];
     uncomposable.default_prompt_profile = Some("wrong-provider".into());
-    let rejected = sylvander_channel::UiService::agent_admin(
-        runtime.ui_service.as_ref(),
+    let rejected = sylvander_channel::ChannelHost::agent_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::AgentAdminRequest::UpdateDefinition {
             expected_active_revision: original_revision,
@@ -3380,8 +3380,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         ),
         "unexpected rejection response: {rejected:?}"
     );
-    let inspected = sylvander_channel::UiService::agent_admin(
-        runtime.ui_service.as_ref(),
+    let inspected = sylvander_channel::ChannelHost::agent_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::AgentAdminRequest::ListRevisions {
             agent_id: next_definition.spec.id.clone(),
@@ -3411,8 +3411,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let update_message = sylvander_protocol::UiClientMessage::AgentAdmin {
         request: update_request.clone(),
     };
-    let denial = sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    let denial = sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &owner,
         &update_message,
     )
@@ -3422,8 +3422,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         denial.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &administrator,
         &update_message,
     )
@@ -3437,23 +3437,23 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         request: registry_request.clone(),
     };
     assert!(
-        sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
+        sylvander_channel::ChannelHost::authorize_message(
+            runtime.channel_host.as_ref(),
             &owner,
             &registry_message,
         )
         .await
         .is_err()
     );
-    sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &administrator,
         &registry_message,
     )
     .await
     .expect("administrators may reach the registry administration seam");
-    let unauthorized_registry = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let unauthorized_registry = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &owner,
         registry_request.clone(),
     )
@@ -3463,8 +3463,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         sylvander_protocol::RegistryAdminResponse::Error { error }
             if error.code == sylvander_protocol::RegistryAdminErrorCode::Unauthorized
     ));
-    let inspected_provider = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let inspected_provider = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         registry_request,
     )
@@ -3480,8 +3480,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
                     && revision.definition.revision == 1
             )
     ));
-    let missing_provider_revision = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let missing_provider_revision = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
             provider_id: "primary".into(),
@@ -3505,8 +3505,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .unwrap()
         .definition
         .credential_binding_id;
-    let create_provider = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let create_provider = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::CreateProvider {
             provider_id: "secondary".into(),
@@ -3523,8 +3523,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         create_provider,
         sylvander_protocol::RegistryAdminResponse::Success { .. }
     ));
-    let create_model = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let create_model = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::CreateModel {
             provider_id: "secondary".into(),
@@ -3544,8 +3544,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         sylvander_protocol::RegistryAdminResponse::Success { .. }
     ));
     let binding_id = "credential/runtime-audit";
-    let create_credential = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let create_credential = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
             binding_id: binding_id.into(),
@@ -3559,8 +3559,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         create_credential,
         sylvander_protocol::RegistryAdminResponse::Success { .. }
     ));
-    let stage_credential = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let stage_credential = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::StageCredentialGeneration {
             binding_id: binding_id.into(),
@@ -3576,8 +3576,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         stage_credential,
         sylvander_protocol::RegistryAdminResponse::Success { .. }
     ));
-    let activate_credential = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let activate_credential = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::ActivateCredentialGeneration {
             binding_id: binding_id.into(),
@@ -3590,8 +3590,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         activate_credential,
         sylvander_protocol::RegistryAdminResponse::Success { .. }
     ));
-    let conflict = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let conflict = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::RollbackCredentialGeneration {
             binding_id: binding_id.into(),
@@ -3606,8 +3606,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             if error.code
                 == sylvander_protocol::RegistryAdminErrorCode::ActiveGenerationConflict
     ));
-    let rollback_credential = sylvander_channel::UiService::registry_admin(
-        runtime.ui_service.as_ref(),
+    let rollback_credential = sylvander_channel::ChannelHost::registry_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::RegistryAdminRequest::RollbackCredentialGeneration {
             binding_id: binding_id.into(),
@@ -3681,8 +3681,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .iter()
             .any(|denial| denial.operation == "registry_admin")
     );
-    let updated = sylvander_channel::UiService::agent_admin(
-        runtime.ui_service.as_ref(),
+    let updated = sylvander_channel::ChannelHost::agent_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         update_request,
     )
@@ -3697,8 +3697,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
                         && !revision.active
             )
     ));
-    let activated = sylvander_channel::UiService::agent_admin(
-        runtime.ui_service.as_ref(),
+    let activated = sylvander_channel::ChannelHost::agent_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::AgentAdminRequest::ActivateRevision {
             agent_id: next_definition.spec.id.clone(),
@@ -3718,14 +3718,16 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
                 } if *active_revision == next_definition.revision
             )
     ));
-    let discovered =
-        sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &administrator)
-            .await
-            .unwrap();
+    let discovered = sylvander_channel::ChannelHost::discover_agents(
+        runtime.channel_host.as_ref(),
+        &administrator,
+    )
+    .await
+    .unwrap();
     assert_eq!(discovered[0].revision, next_definition.revision);
     assert_eq!(discovered[0].name, next_definition.spec.name);
-    let activated_session = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let activated_session = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &administrator,
         SessionCreateRequest {
             agent_id: next_definition.spec.id.clone(),
@@ -3861,8 +3863,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         );
     }
 
-    let stale_activation = sylvander_channel::UiService::agent_admin(
-        runtime.ui_service.as_ref(),
+    let stale_activation = sylvander_channel::ChannelHost::agent_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::AgentAdminRequest::ActivateRevision {
             agent_id: next_definition.spec.id.clone(),
@@ -3880,17 +3882,19 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             }
         }
     ));
-    let after_conflict =
-        sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &administrator)
-            .await
-            .unwrap();
+    let after_conflict = sylvander_channel::ChannelHost::discover_agents(
+        runtime.channel_host.as_ref(),
+        &administrator,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         after_conflict[0].revision, next_definition.revision,
         "an optimistic conflict must not move the active revision"
     );
 
-    let rolled_back = sylvander_channel::UiService::agent_admin(
-        runtime.ui_service.as_ref(),
+    let rolled_back = sylvander_channel::ChannelHost::agent_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::AgentAdminRequest::RollbackRevision {
             agent_id: next_definition.spec.id.clone(),
@@ -3910,8 +3914,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
                 } if *active_revision == original_revision
             )
     ));
-    let rolled_back_session = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let rolled_back_session = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &administrator,
         SessionCreateRequest {
             agent_id: next_definition.spec.id.clone(),
@@ -3926,8 +3930,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         rolled_back_session.effective.agent_revision, original_revision,
         "rollback must affect new sessions without restarting"
     );
-    let reactivated = sylvander_channel::UiService::agent_admin(
-        runtime.ui_service.as_ref(),
+    let reactivated = sylvander_channel::ChannelHost::agent_admin(
+        runtime.channel_host.as_ref(),
         &administrator,
         sylvander_protocol::AgentAdminRequest::ActivateRevision {
             agent_id: next_definition.spec.id.clone(),
@@ -3981,8 +3985,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
                     .as_str(),
                 )
     }));
-    let owner_denial = sylvander_channel::UiService::authorize_message(
-        runtime.ui_service.as_ref(),
+    let owner_denial = sylvander_channel::ChannelHost::authorize_message(
+        runtime.channel_host.as_ref(),
         &owner,
         &sylvander_protocol::UiClientMessage::GetSessionConfig {
             session_id: created.session_id.0.clone(),
@@ -3995,13 +3999,13 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
     assert!(
-        sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &owner)
+        sylvander_channel::ChannelHost::discover_agents(runtime.channel_host.as_ref(), &owner)
             .await
             .unwrap()
             .is_empty()
     );
-    let direct_denial = sylvander_channel::UiService::session_config(
-        runtime.ui_service.as_ref(),
+    let direct_denial = sylvander_channel::ChannelHost::session_config(
+        runtime.channel_host.as_ref(),
         &owner,
         &created.session_id,
     )
@@ -4011,8 +4015,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         direct_denial.code,
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
-    let feedback_denial = sylvander_channel::UiService::submit_feedback(
-        runtime.ui_service.as_ref(),
+    let feedback_denial = sylvander_channel::ChannelHost::submit_feedback(
+        runtime.channel_host.as_ref(),
         &owner,
         RunFeedback {
             target: crate::evidence::feedback_target("feedback-auth-run", "feedback-auth-turn"),
@@ -4053,8 +4057,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             "internal",
             uuid::Uuid::new_v4().to_string(),
         );
-        sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
+        sylvander_channel::ChannelHost::authorize_message(
+            runtime.channel_host.as_ref(),
             &privileged,
             &sylvander_protocol::UiClientMessage::GetSessionConfig {
                 session_id: created.session_id.0.clone(),

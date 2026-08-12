@@ -552,8 +552,8 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     };
 
     let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-    let created = sylvander_channel::UiService::create_session(
-        runtime.ui_service.as_ref(),
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),
@@ -564,8 +564,8 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     )
     .await
     .unwrap();
-    let updated = sylvander_channel::UiService::update_session_config(
-        runtime.ui_service.as_ref(),
+    let updated = sylvander_channel::ChannelHost::update_session_config(
+        runtime.channel_host.as_ref(),
         &boundary,
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
@@ -587,8 +587,8 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     runtime.shutdown().await.unwrap();
 
     let restarted = Runtime::boot_config(config).await.unwrap();
-    let restored = sylvander_channel::UiService::session_config(
-        restarted.ui_service.as_ref(),
+    let restored = sylvander_channel::ChannelHost::session_config(
+        restarted.channel_host.as_ref(),
         &boundary,
         &created.session_id,
     )
@@ -664,8 +664,8 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         "the restarted provider call must preserve persisted prompt precedence"
     );
 
-    let alpha_session = sylvander_channel::UiService::create_session(
-        restarted.ui_service.as_ref(),
+    let alpha_session = sylvander_channel::ChannelHost::create_session(
+        restarted.channel_host.as_ref(),
         &boundary,
         SessionCreateRequest {
             agent_id: AgentId::new("assistant"),

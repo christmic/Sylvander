@@ -41,7 +41,7 @@ async fn handle_client_msg(
 }
 
 #[derive(Default)]
-struct EmptyUiService {
+struct EmptyChannelHost {
     registry_authorizations: AtomicUsize,
     registry_dispatches: AtomicUsize,
     allow_registry: bool,
@@ -65,7 +65,7 @@ async fn oversized_frame_is_rejected_before_deserialization() {
 }
 
 #[async_trait]
-impl sylvander_channel::UiService for EmptyUiService {
+impl sylvander_channel::ChannelHost for EmptyChannelHost {
     async fn authorize_message(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -722,11 +722,11 @@ async fn runtime_info_reads_fresh_platform_truth_for_each_request() {
 }
 
 #[tokio::test]
-async fn agent_discovery_is_served_through_the_ui_service_boundary() {
+async fn agent_discovery_is_served_through_the_channel_host_boundary() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Some("unix".into()),
-        Some(Arc::new(EmptyUiService::default())),
+        Some(Arc::new(EmptyChannelHost::default())),
         None,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -776,7 +776,7 @@ async fn identity_binding_round_trip_uses_authenticated_unix_ingress() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Some("unix".into()),
-        Some(Arc::new(EmptyUiService::default())),
+        Some(Arc::new(EmptyChannelHost::default())),
         None,
     );
     let boundary = sylvander_protocol::BoundaryContext::authenticated(
@@ -827,7 +827,7 @@ async fn identity_binding_round_trip_uses_authenticated_unix_ingress() {
 }
 
 #[tokio::test]
-async fn agent_admin_without_ui_service_returns_content_free_error() {
+async fn agent_admin_without_channel_host_returns_content_free_error() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Some("unix".into()),
@@ -870,7 +870,7 @@ async fn agent_admin_without_ui_service_returns_content_free_error() {
 }
 
 #[tokio::test]
-async fn registry_admin_without_ui_service_returns_content_free_error() {
+async fn registry_admin_without_channel_host_returns_content_free_error() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Some("unix".into()),
@@ -930,7 +930,7 @@ async fn dispatch_client_message_as(
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Some("unix".into()),
-        Some(Arc::new(EmptyUiService::default())),
+        Some(Arc::new(EmptyChannelHost::default())),
         None,
     );
     let boundary = sylvander_protocol::BoundaryContext::authenticated(
@@ -1033,9 +1033,9 @@ fn server_advertises_administration_capabilities() {
 #[tokio::test]
 async fn current_protocol_is_required_before_registry_mutation_dispatch() {
     let path = socket_path();
-    let service = Arc::new(EmptyUiService {
+    let service = Arc::new(EmptyChannelHost {
         allow_registry: true,
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     });
     let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
@@ -1134,7 +1134,7 @@ async fn memory_confirmation_round_trips_over_a_real_unix_socket() {
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Some("unix".into()),
-        Some(Arc::new(EmptyUiService::default())),
+        Some(Arc::new(EmptyChannelHost::default())),
         None,
     )));
     let stream = connect(&path).await;
@@ -1193,9 +1193,9 @@ async fn session_prompt_is_redacted_on_the_unix_wire() {
     const SENTINEL: &str = "UNIX_PRIVATE_SESSION_PROMPT_SENTINEL";
     const DIGEST: &str = "unix-public-prompt-digest";
     let path = socket_path();
-    let service = Arc::new(EmptyUiService {
+    let service = Arc::new(EmptyChannelHost {
         session_config: Some(private_session_config("session-secret", SENTINEL, DIGEST)),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     });
     let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
@@ -1285,7 +1285,7 @@ async fn model_selection_without_session_fails_closed() {
     let context = ChannelContext::with_services(
         bus,
         Some("unix".into()),
-        Some(Arc::new(EmptyUiService::default())),
+        Some(Arc::new(EmptyChannelHost::default())),
         None,
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1363,7 +1363,7 @@ async fn model_selection_without_session_fails_closed() {
 async fn workspace_rollback_preview_and_confirmation_round_trip() {
     let bus = Arc::new(InProcessMessageBus::new());
     let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-    let ui = EmptyUiService {
+    let ui = EmptyChannelHost {
         rollback_preview: Some(sylvander_protocol::WorkspaceRollbackPreview {
             turn_id: "turn-1".into(),
             files: vec!["file.txt".into()],
@@ -1372,7 +1372,7 @@ async fn workspace_rollback_preview_and_confirmation_round_trip() {
             turn_id: "turn-1".into(),
             restored: vec!["file.txt".into()],
         }),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     };
     let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1446,10 +1446,10 @@ async fn persisted_session_load_rename_fork_and_archive_round_trip() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Some("unix".into()),
-        Some(Arc::new(EmptyUiService {
+        Some(Arc::new(EmptyChannelHost {
             allow_delete: true,
             session_history: Mutex::new(Some(history)),
-            ..EmptyUiService::default()
+            ..EmptyChannelHost::default()
         })),
         None,
     );
@@ -1605,7 +1605,7 @@ async fn reconnect_replays_the_complete_in_flight_turn() {
     let agent_id = AgentId::new("agent-1");
     let bus = Arc::new(InProcessMessageBus::new());
     let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
-    let ui = EmptyUiService {
+    let ui = EmptyChannelHost {
         chat_bus: Some(bus.clone()),
         session_history: Mutex::new(Some(sylvander_protocol::UiSessionHistory {
             session: sylvander_protocol::UiSessionInfo {
@@ -1620,7 +1620,7 @@ async fn reconnect_replays_the_complete_in_flight_turn() {
             output_tokens: 0,
             cost_nano_usd: Some(0),
         })),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     };
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         bus.clone(),
@@ -1706,10 +1706,10 @@ async fn terminal_error_reaches_the_client_and_releases_the_session_relay() {
     let bus = Arc::new(InProcessMessageBus::new());
     let feedback_target = sylvander_protocol::FeedbackTarget(format!("sha256:{}", "a".repeat(64)));
     let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
-    let ui = EmptyUiService {
+    let ui = EmptyChannelHost {
         chat_bus: Some(bus.clone()),
         feedback_target: Some(feedback_target.clone()),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     };
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         bus.clone(),
@@ -1782,9 +1782,9 @@ async fn socket_permissions_and_live_events_are_isolated_between_clients() {
     let agent_id = AgentId::new("agent-1");
     let bus = Arc::new(InProcessMessageBus::new());
     let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
-    let ui = EmptyUiService {
+    let ui = EmptyChannelHost {
         chat_bus: Some(bus.clone()),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     };
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         bus.clone(),
@@ -1888,9 +1888,9 @@ async fn typed_plan_resolution_is_forwarded_to_the_agent_bus() {
         .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
         .await
         .expect("subscribe");
-    let ui = EmptyUiService {
+    let ui = EmptyChannelHost {
         chat_bus: Some(bus.clone()),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     };
     let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -1929,9 +1929,9 @@ async fn approval_decision_is_forwarded_without_transport_interpretation() {
         .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
         .await
         .expect("subscribe");
-    let ui = EmptyUiService {
+    let ui = EmptyChannelHost {
         chat_bus: Some(bus.clone()),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     };
     let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -1971,9 +1971,9 @@ async fn task_cancel_preserves_session_scope_on_the_agent_bus() {
         .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
         .await
         .expect("subscribe");
-    let ui = EmptyUiService {
+    let ui = EmptyChannelHost {
         chat_bus: Some(bus.clone()),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     };
     let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -2005,9 +2005,9 @@ async fn chat_forwards_typed_attachments_without_flattening() {
         .await
         .expect("subscribe");
     let agent_id = AgentId::new("agent-1");
-    let ui = EmptyUiService {
+    let ui = EmptyChannelHost {
         chat_bus: Some(bus.clone()),
-        ..EmptyUiService::default()
+        ..EmptyChannelHost::default()
     };
     let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, _rx) = mpsc::unbounded_channel();

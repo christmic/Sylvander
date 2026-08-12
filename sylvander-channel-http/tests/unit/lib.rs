@@ -1,7 +1,6 @@
 use super::*;
 use sylvander_agent::bus::InProcessMessageBus;
-use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
-use sylvander_channel::UiService;
+use sylvander_channel::ChannelHost;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
@@ -55,7 +54,7 @@ fn request_limit_is_configurable() {
 }
 
 #[async_trait]
-impl UiService for DenyAgentAccess {
+impl ChannelHost for DenyAgentAccess {
     async fn reject_authentication(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -154,7 +153,7 @@ async fn live_bearer_lease_rotates_and_fails_closed_without_restart() {
     let state = AppState {
         ctx: Arc::new(ChannelContext::with_services(
             Arc::new(InProcessMessageBus::new()),
-            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some("test".into()),
             None,
             None,
         )),
@@ -203,12 +202,10 @@ async fn live_bearer_lease_rotates_and_fails_closed_without_restart() {
 
 #[tokio::test]
 async fn first_chat_cannot_create_a_session_without_agent_access() {
-    let sessions: Arc<dyn SessionStore> =
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     let state = Arc::new(AppState {
         ctx: Arc::new(ChannelContext::with_services(
             Arc::new(InProcessMessageBus::new()),
-            sessions.clone(),
+            Some("test".into()),
             Some(Arc::new(DenyAgentAccess)),
             None,
         )),
@@ -241,7 +238,6 @@ async fn first_chat_cannot_create_a_session_without_agent_access() {
 
     assert!(matches!(result, Err(StatusCode::FORBIDDEN)));
     assert!(state.sessions.lock().await.is_empty());
-    assert!(sessions.list_persistent().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -249,7 +245,7 @@ async fn authentication_rejection_uses_runtime_status() {
     let state = AppState {
         ctx: Arc::new(ChannelContext::with_services(
             Arc::new(InProcessMessageBus::new()),
-            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some("test".into()),
             Some(Arc::new(DenyAgentAccess)),
             None,
         )),
@@ -271,7 +267,7 @@ async fn operational_health_controls_readiness_and_metrics() {
     let state = AppState {
         ctx: Arc::new(ChannelContext::with_services(
             Arc::new(InProcessMessageBus::new()),
-            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some("test".into()),
             None,
             None,
         )),

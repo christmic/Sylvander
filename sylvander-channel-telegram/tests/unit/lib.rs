@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use sylvander_agent::bus::InProcessMessageBus;
-use sylvander_channel::UiService;
+use sylvander_channel::ChannelHost;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
@@ -73,7 +73,7 @@ fn test_channel(credentials: Arc<TestCredentials>) -> TelegramChannel {
 }
 
 #[async_trait]
-impl UiService for AuthenticationRecorder {
+impl ChannelHost for AuthenticationRecorder {
     async fn reject_authentication(
         &self,
         boundary: &BoundaryContext,

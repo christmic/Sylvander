@@ -8,14 +8,14 @@ use sylvander_protocol::{
     UserProfileOperation,
 };
 
-struct DefaultUiService;
+struct DefaultChannelHost;
 
-struct EnabledIdentityUiService {
+struct EnabledIdentityChannelHost {
     observed_parts: Mutex<Option<(String, String, String)>>,
 }
 
 #[async_trait]
-impl UiService for DefaultUiService {
+impl ChannelHost for DefaultChannelHost {
     async fn authorize_message(
         &self,
         boundary: &BoundaryContext,
@@ -65,20 +65,22 @@ impl UiService for DefaultUiService {
 }
 
 #[async_trait]
-impl UiService for EnabledIdentityUiService {
+impl ChannelHost for EnabledIdentityChannelHost {
     async fn authorize_message(
         &self,
         boundary: &BoundaryContext,
         message: &UiClientMessage,
     ) -> Result<(), BoundaryError> {
-        DefaultUiService.authorize_message(boundary, message).await
+        DefaultChannelHost
+            .authorize_message(boundary, message)
+            .await
     }
 
     async fn discover_agents(
         &self,
         boundary: &BoundaryContext,
     ) -> Result<Vec<AgentDescriptor>, BoundaryError> {
-        DefaultUiService.discover_agents(boundary).await
+        DefaultChannelHost.discover_agents(boundary).await
     }
 
     async fn create_session(
@@ -86,7 +88,7 @@ impl UiService for EnabledIdentityUiService {
         boundary: &BoundaryContext,
         request: SessionCreateRequest,
     ) -> Result<SessionConfigState, BoundaryError> {
-        DefaultUiService.create_session(boundary, request).await
+        DefaultChannelHost.create_session(boundary, request).await
     }
 
     async fn session_config(
@@ -94,7 +96,9 @@ impl UiService for EnabledIdentityUiService {
         boundary: &BoundaryContext,
         session_id: &SessionId,
     ) -> Result<SessionConfigState, BoundaryError> {
-        DefaultUiService.session_config(boundary, session_id).await
+        DefaultChannelHost
+            .session_config(boundary, session_id)
+            .await
     }
 
     async fn update_session_config(
@@ -102,7 +106,7 @@ impl UiService for EnabledIdentityUiService {
         boundary: &BoundaryContext,
         request: SessionConfigUpdateRequest,
     ) -> Result<SessionConfigState, BoundaryError> {
-        DefaultUiService
+        DefaultChannelHost
             .update_session_config(boundary, request)
             .await
     }
@@ -112,7 +116,7 @@ impl UiService for EnabledIdentityUiService {
         boundary: &BoundaryContext,
         feedback: RunFeedback,
     ) -> Result<String, BoundaryError> {
-        DefaultUiService.submit_feedback(boundary, feedback).await
+        DefaultChannelHost.submit_feedback(boundary, feedback).await
     }
 
     fn identity_binding_capabilities(&self) -> IdentityBindingCapabilities {
@@ -143,7 +147,7 @@ fn resolve_identity_request() -> IdentityBindingRequest {
 #[tokio::test]
 async fn agent_admin_default_fails_closed_without_reflecting_request() {
     let boundary = BoundaryContext::unauthenticated("unix", "unix", "request-1");
-    let response = DefaultUiService
+    let response = DefaultChannelHost
         .agent_admin(
             &boundary,
             AgentAdminRequest::InspectRevision {
@@ -172,7 +176,7 @@ async fn agent_admin_default_fails_closed_without_reflecting_request() {
 #[tokio::test]
 async fn registry_admin_default_fails_closed_without_reflecting_request() {
     let boundary = BoundaryContext::unauthenticated("unix", "unix", "request-1");
-    let response = DefaultUiService
+    let response = DefaultChannelHost
         .registry_admin(
             &boundary,
             RegistryAdminRequest::InspectProviderRevision {
@@ -294,7 +298,7 @@ async fn identity_binding_defaults_to_no_capability_and_denial() {
     let context = ChannelContext::with_runtime_services(
         Arc::new(InProcessMessageBus::new()),
         "bot-a",
-        Arc::new(DefaultUiService),
+        Arc::new(DefaultChannelHost),
         None,
     );
     let boundary = BoundaryContext::authenticated(
@@ -344,12 +348,12 @@ async fn user_profile_defaults_to_no_capability_and_content_safe_denial() {
     };
 
     assert!(
-        DefaultUiService
+        DefaultChannelHost
             .user_profile_capabilities()
             .versions
             .is_empty()
     );
-    let response = DefaultUiService.user_profile(&boundary, request).await;
+    let response = DefaultChannelHost.user_profile(&boundary, request).await;
     assert!(matches!(
         response,
         UserProfileResponse::Error {
@@ -369,7 +373,7 @@ async fn user_profile_defaults_to_no_capability_and_content_safe_denial() {
 
 #[tokio::test]
 async fn authenticated_channel_context_derives_the_only_transport_identity() {
-    let service = Arc::new(EnabledIdentityUiService {
+    let service = Arc::new(EnabledIdentityChannelHost {
         observed_parts: Mutex::new(None),
     });
     let context = ChannelContext::with_runtime_services(
@@ -397,7 +401,7 @@ async fn authenticated_channel_context_derives_the_only_transport_identity() {
 
 #[tokio::test]
 async fn unauthenticated_or_non_user_ingress_never_reaches_identity_service() {
-    let service = Arc::new(EnabledIdentityUiService {
+    let service = Arc::new(EnabledIdentityChannelHost {
         observed_parts: Mutex::new(None),
     });
     let context = ChannelContext::with_runtime_services(
