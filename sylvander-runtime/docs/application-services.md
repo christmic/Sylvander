@@ -38,8 +38,11 @@ rejects invalid target registries, and shares the same service with initial
 and lazily recomposed Agent revisions. Unknown target identifiers receive an
 explicit unavailable executor; they never fall back to `local`. Worktree
 lifecycle is still a neighboring Runtime service rather than part of this
-registry, and execution health has not yet been added to the operational
-snapshot.
+registry. The operational snapshot exposes a deterministic content-free target
+list with adapter kind, `ready` or `unverified` status, each enforced isolation
+property, and the derived full-sandbox result. Active SSH/container probes and
+sticky execution failures remain incomplete; `unverified` is never presented
+as successful reachability.
 
 ## Unified storage
 

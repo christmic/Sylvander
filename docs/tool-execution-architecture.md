@@ -74,6 +74,13 @@ environment, cancellation, bounded streams, artifact collection, violation
 reporting, and cleanup. Agent uses that service; Agent and Runtime control
 planes do not run inside each per-tool sandbox.
 
+Runtime diagnostics report each target without paths, hosts, images, commands,
+or credentials. The report includes adapter kind, static filesystem/network/
+resource isolation truth, and a derived `sandbox_enforced` flag. Local is
+immediately ready because it has no remote reachability dependency. SSH and
+OCI are currently reported `unverified` until a bounded background probe
+exists; construction alone is not described as runtime health.
+
 This release does not claim native Seatbelt, bubblewrap, Windows token/WFP, or
 approved-network proxy support. `ToolNetworkPolicy::FullAfterApproval` remains
 non-executable until a backend can enforce that policy without falling back to
