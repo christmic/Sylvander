@@ -519,6 +519,7 @@ struct RuntimeRevisionProvider {
     config: ServerConfig,
     registry: AgentRegistry,
     bus: Arc<dyn MessageBus>,
+    observability: RuntimeObservability,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Arc<dyn sylvander_agent::user_profile_provider::UserProfileProvider>,
@@ -546,6 +547,7 @@ impl RuntimeRevisionProvider {
             snapshot,
             self.registry.clone(),
             self.bus.clone(),
+            self.observability.clone(),
             self.sessions.clone(),
             self.memory.clone(),
             Some(self.user_profiles.clone()),
@@ -3804,6 +3806,7 @@ impl Runtime {
     ) -> Result<Self, RuntimeError> {
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
+        let observability = RuntimeObservability::new();
         let session_store: Arc<dyn SessionStore> = Arc::new(
             SqliteSessionStore::open_in_memory()
                 .await
@@ -3829,6 +3832,7 @@ impl Runtime {
                 exact,
             )
             .bus(bus.clone())
+            .observability(observability.clone())
             .session_store(session_store.clone())
             .memory(memory_store.clone())
             .override_tools(default_tools(memory_store.clone()))
@@ -3881,7 +3885,6 @@ impl Runtime {
         info!(name = %config.name, agents = config.agents.len(), "runtime booted");
 
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
-        let observability = RuntimeObservability::new();
         let configured_agents = HashMap::new();
         let channel_host = Arc::new(RuntimeChannelHost {
             engine: engine.clone(),
@@ -4168,6 +4171,7 @@ impl Runtime {
         let memory_store: Arc<dyn MemoryStore> = Arc::new(sqlite_memory);
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
+        let observability = RuntimeObservability::new();
         let evidence_path = config
             .server
             .evidence
@@ -4249,6 +4253,7 @@ impl Runtime {
                     snapshot,
                     agent_registry.clone(),
                     bus.clone(),
+                    observability.clone(),
                     session_store.clone(),
                     memory_store.clone(),
                     Some(Arc::new(user_profiles.clone())),
@@ -4270,6 +4275,7 @@ impl Runtime {
             config: config.clone(),
             registry: agent_registry.clone(),
             bus: bus.clone(),
+            observability: observability.clone(),
             sessions: session_store.clone(),
             memory: memory_store.clone(),
             user_profiles: Arc::new(user_profiles.clone()),
@@ -4410,7 +4416,6 @@ impl Runtime {
             session_db = %session_db.display(),
             "configured runtime booted"
         );
-        let observability = RuntimeObservability::new();
         let channel_host = Arc::new(RuntimeChannelHost {
             engine: engine.clone(),
             bus: bus.clone(),

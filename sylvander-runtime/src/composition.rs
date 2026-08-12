@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::agent_definition::{AgentSpec, ToolRef};
 use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
+use crate::observability::RuntimeObservability;
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use sylvander_agent::curated_memory::MemoryCandidateSink;
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
@@ -251,6 +252,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     snapshot: VersionedRegistryCompositionSnapshot,
     registry: crate::agent_registry::AgentRegistry,
     bus: Arc<dyn MessageBus>,
+    observability: RuntimeObservability,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Option<Arc<dyn UserProfileProvider>>,
@@ -359,6 +361,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         .collect::<HashMap<_, _>>();
     let mut builder = AgentRun::qualified_router_builder(spec.clone(), Arc::new(router), primary)
         .bus(bus)
+        .observability(observability)
         .session_store(sessions)
         .memory(memory.clone())
         .override_tools(tools)

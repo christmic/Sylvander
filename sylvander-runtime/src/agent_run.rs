@@ -50,6 +50,9 @@ use crate::approval_store::{
     ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory, approval_policy_revision,
 };
 use crate::execution::LocalExecutor;
+use crate::observability::{
+    RuntimeEvent, RuntimeFailureKind, RuntimeObservability, RuntimePersistenceOperation,
+};
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::storage::session::{
@@ -205,6 +208,8 @@ pub(crate) struct AgentRunInner {
     skill_features: std::sync::RwLock<Vec<sylvander_api::PlatformFeature>>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
+    /// Runtime-owned mandatory lifecycle recorder shared across every Agent.
+    observability: RuntimeObservability,
     /// Per-session conversation state.
     sessions: RwLock<HashMap<SessionId, SessionContext>>,
     /// Sessions whose identity was admitted through this run's private issuer.
@@ -2247,19 +2252,49 @@ impl AgentRunInner {
             request_id = %correlation.request,
             trace_id = %correlation.trace,
         );
+        self.observability.record(RuntimeEvent::TurnStarted {
+            request_id: correlation.request.clone(),
+            trace_id: correlation.trace.clone(),
+            turn_id: correlation.turn.clone(),
+            session_id: session_id.clone(),
+            agent_id: self.id.clone(),
+        });
         async {
             info!("turn started");
             let result = self
                 .handle_message_with_interrupt(msg, interrupted, &correlation.turn)
                 .await;
-            if let Err(error @ AgentRunError::SessionPersistence { .. }) = &result {
-                self.publish_stream(
-                    &session_id,
-                    sylvander_api::StreamEvent::Error {
-                        message: error.to_string(),
-                    },
-                )
-                .await;
+            if let Err(error) = &result {
+                if let AgentRunError::SessionPersistence { operation, .. } = error {
+                    self.observability
+                        .record(RuntimeEvent::PersistenceFinished {
+                            turn_id: correlation.turn.clone(),
+                            session_id: session_id.clone(),
+                            operation: runtime_persistence_operation(*operation),
+                            succeeded: false,
+                        });
+                }
+                self.observability.record(RuntimeEvent::TurnFailed {
+                    turn_id: correlation.turn.clone(),
+                    session_id: session_id.clone(),
+                    kind: runtime_failure_kind(error),
+                });
+                match error {
+                    AgentRunError::Loop(error) => self.publish_error(&session_id, error).await,
+                    AgentRunError::SessionPersistence { .. } => {
+                        self.publish_stream(
+                            &session_id,
+                            sylvander_api::StreamEvent::Error {
+                                message: error.to_string(),
+                            },
+                        )
+                        .await;
+                    }
+                    AgentRunError::UnknownSession(_)
+                    | AgentRunError::Authentication(_)
+                    | AgentRunError::Build(_)
+                    | AgentRunError::Configuration(_) => {}
+                }
             }
             info!(succeeded = result.is_ok(), "turn finished");
             result
@@ -2585,6 +2620,13 @@ impl AgentRunInner {
                         source,
                     )
                 })?;
+            self.observability
+                .record(RuntimeEvent::PersistenceFinished {
+                    turn_id: turn_id.to_owned(),
+                    session_id: session_id.clone(),
+                    operation: RuntimePersistenceOperation::BeginTurn,
+                    succeeded: true,
+                });
         }
         self.turn_context_manifests
             .write()
@@ -2746,6 +2788,10 @@ impl AgentRunInner {
                 biased;
                 _ = &mut interrupted => {
                     self.cancel_pending_decisions(&session_id).await;
+                    self.observability.record(RuntimeEvent::TurnInterrupted {
+                        turn_id: turn_id.to_owned(),
+                        session_id: session_id.clone(),
+                    });
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::TurnInterrupted {
@@ -2781,6 +2827,11 @@ impl AgentRunInner {
                     reason,
                     cause,
                 } => {
+                    self.observability.record(RuntimeEvent::ModelRetried {
+                        turn_id: turn_id.to_owned(),
+                        session_id: session_id.clone(),
+                        attempt,
+                    });
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::ModelRetry {
@@ -2794,6 +2845,12 @@ impl AgentRunInner {
                     .await;
                 }
                 sylvander_agent::event::AgentEvent::ToolCallStart { id, name, input } => {
+                    self.observability.record(RuntimeEvent::ToolStarted {
+                        turn_id: turn_id.to_owned(),
+                        session_id: session_id.clone(),
+                        tool_call_id: id.clone(),
+                        tool_name: name.clone(),
+                    });
                     if matches!(
                         name.as_str(),
                         "present_plan" | "update_plan" | "start_background_task"
@@ -2823,9 +2880,16 @@ impl AgentRunInner {
                 }
                 sylvander_agent::event::AgentEvent::ToolTimedOut {
                     id,
-                    name: _,
+                    name,
                     timeout_secs,
                 } => {
+                    self.observability.record(RuntimeEvent::ToolFinished {
+                        turn_id: turn_id.to_owned(),
+                        session_id: session_id.clone(),
+                        tool_call_id: id.clone(),
+                        tool_name: name,
+                        succeeded: false,
+                    });
                     publish_interaction_timeout(
                         &self.bus,
                         &session_id,
@@ -2843,6 +2907,13 @@ impl AgentRunInner {
                     output,
                     is_error,
                 } => {
+                    self.observability.record(RuntimeEvent::ToolFinished {
+                        turn_id: turn_id.to_owned(),
+                        session_id: session_id.clone(),
+                        tool_call_id: id.clone(),
+                        tool_name: name.clone(),
+                        succeeded: !is_error,
+                    });
                     if matches!(
                         name.as_str(),
                         "present_plan" | "update_plan" | "start_background_task"
@@ -2861,6 +2932,13 @@ impl AgentRunInner {
                     .await;
                 }
                 sylvander_agent::event::AgentEvent::ToolRejected { id, name, reason } => {
+                    self.observability.record(RuntimeEvent::ToolFinished {
+                        turn_id: turn_id.to_owned(),
+                        session_id: session_id.clone(),
+                        tool_call_id: id.clone(),
+                        tool_name: name.clone(),
+                        succeeded: false,
+                    });
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::ToolResult {
@@ -2922,6 +3000,13 @@ impl AgentRunInner {
                         input_tokens = total.input_tokens;
                         output_tokens = total.output_tokens;
                         cost_nano_usd = total.cost_nano_usd;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::RecordUsage,
+                                succeeded: true,
+                            });
                     }
                     self.publish_stream(
                         &session_id,
@@ -3003,58 +3088,68 @@ impl AgentRunInner {
                     final_message = Some(outcome.final_response);
                 }
                 sylvander_agent::event::AgentEvent::Error(e) => {
-                    self.publish_error(&session_id, &e).await;
                     return Err(AgentRunError::Loop(e));
                 }
             }
         }
 
-        // 4. Write final message to session + publish Done
-        if let Some(msg) = final_message {
-            let text = msg.text();
-            if let Some(store) = &self.session_store {
-                let user_id = self.sessions.read().await.get(&session_id).map_or_else(
-                    || "unix-client".into(),
-                    |context| context.metadata.user_id.clone(),
-                );
-                let caller = sylvander_api::SessionContext::new(
-                    user_id,
-                    self.id.clone(),
-                    session_id.clone(),
-                );
-                let message = ChatMessage::assistant(msg.content.clone());
-                let content = serde_json::to_value(message).map_err(|_| {
+        // 4. Write final message, record the terminal fact, then publish Done.
+        let msg = final_message.ok_or_else(|| {
+            AgentRunError::Loop(AgentLoopError::Validation(
+                "Agent event stream ended without a terminal outcome".into(),
+            ))
+        })?;
+        let text = msg.text();
+        if let Some(store) = &self.session_store {
+            let user_id = self.sessions.read().await.get(&session_id).map_or_else(
+                || "unix-client".into(),
+                |context| context.metadata.user_id.clone(),
+            );
+            let caller =
+                sylvander_api::SessionContext::new(user_id, self.id.clone(), session_id.clone());
+            let message = ChatMessage::assistant(msg.content.clone());
+            let content = serde_json::to_value(message).map_err(|_| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::AppendAssistant,
+                    SessionStoreError::Invalid("assistant message serialization failed".into()),
+                )
+            })?;
+            store
+                .append_message(
+                    &caller,
+                    &session_id,
+                    StoredMessageRole::Assistant,
+                    content,
+                    Some(&msg.model.model),
+                    None,
+                    None,
+                )
+                .await
+                .map_err(|source| {
                     AgentRunError::session_persistence(
                         SessionPersistenceOperation::AppendAssistant,
-                        SessionStoreError::Invalid("assistant message serialization failed".into()),
+                        source,
                     )
                 })?;
-                store
-                    .append_message(
-                        &caller,
-                        &session_id,
-                        StoredMessageRole::Assistant,
-                        content,
-                        Some(&msg.model.model),
-                        None,
-                        None,
-                    )
-                    .await
-                    .map_err(|source| {
-                        AgentRunError::session_persistence(
-                            SessionPersistenceOperation::AppendAssistant,
-                            source,
-                        )
-                    })?;
-            }
-            let mut sessions = self.sessions.write().await;
-            if let Some(ctx) = sessions.get_mut(&session_id) {
-                ctx.append_assistant_message(msg);
-            }
-            drop(sessions);
-            self.publish_stream(&session_id, sylvander_api::StreamEvent::Done { text })
-                .await;
+            self.observability
+                .record(RuntimeEvent::PersistenceFinished {
+                    turn_id: turn_id.to_owned(),
+                    session_id: session_id.clone(),
+                    operation: RuntimePersistenceOperation::AppendAssistant,
+                    succeeded: true,
+                });
         }
+        let mut sessions = self.sessions.write().await;
+        if let Some(ctx) = sessions.get_mut(&session_id) {
+            ctx.append_assistant_message(msg);
+        }
+        drop(sessions);
+        self.observability.record(RuntimeEvent::TurnCompleted {
+            turn_id: turn_id.to_owned(),
+            session_id: session_id.clone(),
+        });
+        self.publish_stream(&session_id, sylvander_api::StreamEvent::Done { text })
+            .await;
 
         Ok(())
     }
@@ -3306,6 +3401,34 @@ struct TurnCorrelation {
     trace: String,
 }
 
+fn runtime_failure_kind(error: &AgentRunError) -> RuntimeFailureKind {
+    match error {
+        AgentRunError::UnknownSession(_) => RuntimeFailureKind::UnknownSession,
+        AgentRunError::Authentication(_) => RuntimeFailureKind::Authentication,
+        AgentRunError::Loop(_) => RuntimeFailureKind::AgentLoop,
+        AgentRunError::Build(_) | AgentRunError::Configuration(_) => {
+            RuntimeFailureKind::Configuration
+        }
+        AgentRunError::SessionPersistence { .. } => RuntimeFailureKind::Persistence,
+    }
+}
+
+fn runtime_persistence_operation(
+    operation: SessionPersistenceOperation,
+) -> RuntimePersistenceOperation {
+    match operation {
+        SessionPersistenceOperation::InspectSession => RuntimePersistenceOperation::InspectSession,
+        SessionPersistenceOperation::CreateSession => RuntimePersistenceOperation::CreateSession,
+        SessionPersistenceOperation::RestoreHistory => RuntimePersistenceOperation::RestoreHistory,
+        SessionPersistenceOperation::BeginTurn => RuntimePersistenceOperation::BeginTurn,
+        SessionPersistenceOperation::RecordUsage => RuntimePersistenceOperation::RecordUsage,
+        SessionPersistenceOperation::AppendAssistant => {
+            RuntimePersistenceOperation::AppendAssistant
+        }
+        SessionPersistenceOperation::ReplaceHistory => RuntimePersistenceOperation::ReplaceHistory,
+    }
+}
+
 impl TurnCorrelation {
     fn new(message: &BusMessage, turn_id: uuid::Uuid) -> Self {
         let turn_id = turn_id.to_string();
@@ -3483,6 +3606,7 @@ pub struct AgentRunBuilder {
     router: Arc<dyn ModelProvider>,
     model: ModelInfo,
     bus: Option<Arc<dyn MessageBus>>,
+    observability: RuntimeObservability,
     tool_overrides: Option<ToolRegistry>,
     compression_overrides: Option<sylvander_agent::compress::pipeline::CompressionPipeline>,
     memory: Option<Arc<dyn MemoryStore>>,
@@ -3518,6 +3642,7 @@ impl AgentRunBuilder {
             router,
             model,
             bus: None,
+            observability: RuntimeObservability::new(),
             tool_overrides: None,
             compression_overrides: None,
             memory: None,
@@ -3541,6 +3666,13 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn bus(mut self, bus: Arc<dyn MessageBus>) -> Self {
         self.bus = Some(bus);
+        self
+    }
+
+    /// Inject the one Runtime-owned built-in lifecycle recorder.
+    #[must_use]
+    pub(crate) fn observability(mut self, observability: RuntimeObservability) -> Self {
+        self.observability = observability;
         self
     }
 
@@ -3816,6 +3948,7 @@ impl AgentRunBuilder {
                 workspace_executors: self.workspace_executors,
                 skill_features: std::sync::RwLock::new(Vec::new()),
                 bus,
+                observability: self.observability,
                 sessions: RwLock::new(HashMap::new()),
                 authenticated_sessions: RwLock::new(HashSet::new()),
                 authenticated_session_authority_active: AtomicBool::new(false),
