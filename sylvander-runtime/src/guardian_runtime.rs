@@ -930,8 +930,8 @@ impl MemoryCandidateSink for GuardianCandidateGateway {
                 "{}\0{}\0{}\0{}\0{}",
                 user_id.0,
                 agent_id.0,
-                context.session_id().0,
-                context.session.request.created_at,
+                context.session_id(),
+                context.execution.started_at_unix_secs,
                 payload_digest
             ),
         );
@@ -942,7 +942,7 @@ impl MemoryCandidateSink for GuardianCandidateGateway {
             digest: payload_digest.clone(),
         }];
         let staged = StagedCandidatePayload {
-            origin_session_id: context.session_id().0.clone(),
+            origin_session_id: context.session_id().to_owned(),
             source_key,
             content: candidate_body,
             evidence: evidence.clone(),
@@ -962,7 +962,7 @@ impl MemoryCandidateSink for GuardianCandidateGateway {
             workspace_id.into_iter().collect(),
         );
         let available_at = now_seconds();
-        let occurred_at = context.session.request.created_at;
+        let occurred_at = context.execution.started_at_unix_secs;
         self.canonical
             .stage_payload(&intake_id, &owner, &staged, &payload_digest, available_at)
             .await
@@ -1010,7 +1010,7 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
     ) -> Result<Box<dyn AuthorizedToolInvocation>, ToolInvocationError> {
         let class = request.class().ok_or(ToolInvocationError::Unavailable)?;
         if self.routes.get(request.route()) != Some(&class)
-            || request.context().agent_id() != &self.agent_id
+            || request.context().agent_id() != self.agent_id.0
             || request.call_id().is_empty()
             || !self
                 .snapshot
@@ -1022,7 +1022,8 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
         {
             return Err(ToolInvocationError::AccessDenied);
         }
-        let identity = &request.context().session.identity;
+        let session = runtime_session_from_tool_context(request.context());
+        let identity = &session.identity;
         if identity.user_id.0.is_empty() || identity.session_id.0.is_empty() {
             return Err(ToolInvocationError::AccessDenied);
         }
@@ -1038,9 +1039,7 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
         }
 
         let workspace_ids = BTreeSet::from([request.context().execution_target.id.clone()]);
-        let snapshot = self
-            .capabilities
-            .begin_worker_run(request.context().session.as_ref(), workspace_ids);
+        let snapshot = self.capabilities.begin_worker_run(&session, workspace_ids);
         let lease = snapshot
             .authorize_external(
                 &tool_capability_name(request.route()),
@@ -1051,6 +1050,21 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
             .map_err(map_invocation_error)?;
         Ok(Box::new(RuntimeWorkerToolGrant { lease: Some(lease) }))
     }
+}
+
+/// Map Agent-owned execution authority into Runtime's persisted session shape.
+///
+/// The conversion lives here because protocol identifiers are a Runtime and
+/// service concern. Keeping it out of Agent prevents wire-deserializable types
+/// from becoming constructors for tool authority.
+fn runtime_session_from_tool_context(context: &ToolContext) -> SessionContext {
+    let mut session =
+        SessionContext::new(context.user_id(), context.agent_id(), context.session_id());
+    session.request.created_at = context.execution.started_at_unix_secs;
+    if let Some(trace_id) = context.trace_id() {
+        session = session.with_trace_id(trace_id);
+    }
+    session
 }
 
 fn runtime_tool_class(class: ToolInvocationClass) -> CapabilityClass {

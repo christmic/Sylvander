@@ -6,6 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rusqlite::Connection;
 use serde_json::json;
+use sylvander_agent::execution_context::AgentExecutionContext;
 use sylvander_agent::session_store::SessionLifetime;
 use sylvander_agent::tool_context::ToolContext;
 use sylvander_protocol::{
@@ -1245,7 +1246,11 @@ async fn production_gateway_allows_exact_tool_and_denies_unknown_or_forged_owner
             vec![tool_descriptor("command", ToolInvocationClass::Terminal)],
         )
         .unwrap();
-    let context = ToolContext::new(SessionContext::new("alice", "agent-a", "session-a"));
+    let context = ToolContext::new(AgentExecutionContext::restricted_for(
+        "alice",
+        "agent-a",
+        "session-a",
+    ));
     let request = tool_request(
         &gateway,
         "call-allow",
@@ -1285,7 +1290,11 @@ async fn production_gateway_allows_exact_tool_and_denies_unknown_or_forged_owner
         Err(ToolInvocationError::AccessDenied)
     ));
 
-    let wrong_actor = ToolContext::new(SessionContext::new("alice", "agent-b", "session-a"));
+    let wrong_actor = ToolContext::new(AgentExecutionContext::restricted_for(
+        "alice",
+        "agent-b",
+        "session-a",
+    ));
     let forged_actor = tool_request(
         &gateway,
         "call-forged-actor",
@@ -1342,7 +1351,11 @@ async fn do_not_learn_profile_blocks_memory_candidates_but_not_other_tools() {
             ],
         )
         .unwrap();
-    let context = ToolContext::new(SessionContext::new("alice", "agent-a", "session-a"));
+    let context = ToolContext::new(AgentExecutionContext::restricted_for(
+        "alice",
+        "agent-a",
+        "session-a",
+    ));
 
     let candidate = tool_request(
         &gateway,
@@ -1428,7 +1441,7 @@ async fn unavailable_profile_store_denies_memory_candidate_without_sensitive_err
         Err(()),
         audit.clone(),
     );
-    let context = ToolContext::new(SessionContext::new(
+    let context = ToolContext::new(AgentExecutionContext::restricted_for(
         "sensitive-owner",
         "agent-a",
         "session-a",
@@ -1454,7 +1467,11 @@ async fn unavailable_profile_store_denies_memory_candidate_without_sensitive_err
 
 #[tokio::test]
 async fn production_gateway_maps_pre_and_terminal_audit_failures_without_replay() {
-    let context = ToolContext::new(SessionContext::new("alice", "agent-a", "session-a"));
+    let context = ToolContext::new(AgentExecutionContext::restricted_for(
+        "alice",
+        "agent-a",
+        "session-a",
+    ));
 
     let pre_audit = Arc::new(SequencedAudit::default());
     pre_audit.failures.lock().unwrap().push_back(true);
