@@ -88,6 +88,8 @@ pub mod ask_user_gate;
 pub mod bus;
 /// Context-window compaction contracts and pipeline implementations.
 pub mod compress;
+/// Model-visible conversation snapshot owned only for one execution.
+pub mod conversation;
 /// Runtime-owned Guardian candidate and curated-context contracts.
 pub mod curated_memory;
 /// Per-session Agent run scheduling and lifecycle ownership.
@@ -96,14 +98,20 @@ pub mod engine;
 pub mod error;
 /// Fine-grained loop events for observers and tests.
 pub mod event;
+/// Trusted, non-wire authority for one Agent execution.
+pub mod execution_context;
 /// Provider-compatible iterative model/tool execution loop.
 pub mod loop_;
 /// Managed MCP stdio client, discovery, and tool adapter.
 pub mod mcp_stdio;
+/// Provider-neutral result returned to the Runtime owner.
+pub mod outcome;
 /// Plan proposal and acknowledgement gate.
 pub mod plan_gate;
 /// Deterministic system-prompt composition.
 pub mod prompt;
+/// Immutable input for one Agent execution.
+pub mod request;
 /// Internal translation between Anthropic wire types and provider-neutral
 /// model contracts. This is a current adapter, not a fallback backend.
 /// Authenticated single-turn execution and durable transcript handling.
@@ -154,6 +162,7 @@ pub mod prelude {
         },
         pipeline::CompressionPipeline,
     };
+    pub use crate::conversation::ConversationSnapshot;
     pub use crate::curated_memory::{
         CuratedContextEntry, CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope,
         MemoryCandidateError, MemoryCandidateReceipt, MemoryCandidateSink,
@@ -162,10 +171,15 @@ pub mod prelude {
     pub use crate::engine::{AgentHandle, AgentRunEngine, EngineError, SessionMeta};
     pub use crate::error::AgentLoopError;
     pub use crate::event::AgentEvent;
+    pub use crate::execution_context::{
+        AgentExecutionContext, ExecutionActor, ExecutionCapability, ExecutionWorkspace,
+    };
     pub use crate::loop_::{
         AgentLoop, AgentLoopBuilder, AgentLoopResult, run, run_stream, run_with_events,
     };
     pub use crate::mcp_stdio::{McpError, McpStdioClient, McpTool};
+    pub use crate::outcome::AgentOutcome;
+    pub use crate::request::AgentTurnRequest;
     pub use crate::run::{
         AgentRun, AgentRunBuilder, AgentRunError, AgentSessionIssuer, AuthenticatedSession,
         AuthenticatedSessionLease,
