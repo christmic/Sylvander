@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 sylvander-llm-core = { path = "../sylvander-llm-core" }
 sylvander-protocol = { path = "../sylvander-protocol" }
-tokio = { workspace = true, features = ["fs", "io-util", "process"] }
+tokio = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 async-stream = { workspace = true }
@@ -25,7 +25,7 @@ sha2 = "0.10"
 [dev-dependencies]
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 wiremock = "0.6"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "test-util", "time"] }
 tempfile = "3"
 
 [lints]

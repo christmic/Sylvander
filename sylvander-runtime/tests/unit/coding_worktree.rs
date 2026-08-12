@@ -3,6 +3,8 @@ use std::process::Command;
 
 use super::*;
 
+use crate::execution::LocalExecutor;
+
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .current_dir(cwd)
@@ -104,7 +106,7 @@ async fn writable_remote_non_git_workspace_is_rejected_without_fallback() {
                     state.path().join("remote"),
                     remote_root.path(),
                     "ssh:dev",
-                    Arc::new(sylvander_agent::workspace_executor::LocalExecutor),
+                    Arc::new(LocalExecutor),
                 )
                 .expect("remote manager"),
             ),

@@ -145,6 +145,9 @@ pub mod workspace_journal;
 #[cfg(test)]
 #[path = "../tests/unit/support.rs"]
 pub(crate) mod test_support;
+#[cfg(test)]
+#[path = "../tests/unit/support_workspace.rs"]
+pub(crate) mod test_workspace;
 
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
@@ -200,7 +203,7 @@ pub mod prelude {
         TurnContextBudget, TurnContextBudgets, TurnContextLayerKind, TurnContextManifest,
     };
     pub use crate::workspace_executor::{
-        LocalExecutor, ProcessIsolation, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
+        ProcessIsolation, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
         WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
         WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
         WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,

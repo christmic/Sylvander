@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use sylvander_agent::tools::memory::MemoryFilter;
 use sylvander_agent::tools::{MemoryActorKind, MemoryAppend, MemoryProvenanceSource};
-use sylvander_agent::workspace_executor::{LocalExecutor, WorkspaceExecutor, WorkspaceTarget};
+use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
+
+use crate::execution::LocalExecutor;
 use sylvander_protocol::{
     SessionWorkspaceBinding, SessionWorkspaceMount, WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };

@@ -1672,7 +1672,10 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
         AgentExecutionContext::restricted_for("user-1", "test-agent", session_id.0.clone())
             .with_trace_id("turn-1"),
     )
-    .with_fs_root(workspace.path())
+    .with_executor(
+        Arc::new(LocalExecutor),
+        WorkspaceTarget::local(workspace.path(), false),
+    )
     .with_capability(Cap::Write)
     .with_workspace_journal(run.inner.workspace_journal.clone().unwrap());
     let tool = sylvander_agent::tools::WriteTool::new();
@@ -2011,7 +2014,7 @@ async fn effective_workspace_mounts_route_file_operations_by_logical_reference()
     ];
     let executors = [(
         "local".into(),
-        Arc::new(sylvander_agent::workspace_executor::LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+        Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
     )]
     .into_iter()
     .collect();

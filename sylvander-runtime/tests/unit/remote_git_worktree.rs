@@ -3,7 +3,7 @@ use std::fs;
 use std::process::Command;
 use std::sync::Arc;
 
-use sylvander_agent::workspace_executor::LocalExecutor;
+use crate::execution::LocalExecutor;
 
 use super::*;
 

@@ -34,9 +34,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::execution_context::AgentExecutionContext;
-use crate::workspace_executor::{
-    LocalExecutor, UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget,
-};
+use crate::workspace_executor::{UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget};
+
+#[cfg(test)]
+fn default_workspace_executor() -> Arc<dyn WorkspaceExecutor> {
+    Arc::new(crate::test_workspace::TestWorkspaceExecutor)
+}
+
+#[cfg(not(test))]
+fn default_workspace_executor() -> Arc<dyn WorkspaceExecutor> {
+    Arc::new(UnavailableExecutor::new("local"))
+}
 
 /// Per-invocation context handed to every registered tool executor.
 ///
@@ -72,7 +80,8 @@ impl ToolContext {
     ///
     /// This context has no relationship-memory authority even when the caller
     /// later adds surface capabilities. Runtime uses [`Self::for_runtime`]
-    /// after resolving an authenticated execution.
+    /// after resolving an authenticated execution. Outside unit tests it also
+    /// has no executable workspace adapter until Runtime injects one.
     #[must_use]
     pub fn new(execution: AgentExecutionContext) -> Self {
         let memory_context = crate::tools::memory::MemoryExecutionContext::untrusted(&execution);
@@ -80,7 +89,7 @@ impl ToolContext {
             execution: Arc::new(execution),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
-            executor: Arc::new(LocalExecutor),
+            executor: default_workspace_executor(),
             execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
@@ -90,6 +99,7 @@ impl ToolContext {
     /// Construct a context for a Runtime-authenticated execution.
     ///
     /// This is an application boundary API, never a model/tool input field.
+    /// Runtime must still bind the selected workspace executor explicitly.
     #[must_use]
     pub fn for_runtime(execution: AgentExecutionContext) -> Self {
         let memory_context =
@@ -98,7 +108,7 @@ impl ToolContext {
             execution: Arc::new(execution),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
-            executor: Arc::new(LocalExecutor),
+            executor: default_workspace_executor(),
             execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,

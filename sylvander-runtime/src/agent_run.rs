@@ -48,6 +48,7 @@ use sylvander_protocol::{
 use crate::approval_store::{
     ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory, approval_policy_revision,
 };
+use crate::execution::LocalExecutor;
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::storage::session::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
@@ -90,15 +91,14 @@ use sylvander_agent::turn_context::{
     TurnContextManifest, TurnContextProvenance, TurnContextSource, compose_turn_context,
     retrieve_relationship_context, retrieve_workspace_context,
 };
+use sylvander_agent::user_profile_prompt::{UserProfilePromptLayer, compose_user_profile_prompt};
+use sylvander_agent::user_profile_provider::{UserProfileProvider, UserProfileSubject};
 use sylvander_agent::workspace_executor::{
-    LocalExecutor, MountedWorkspace, UnavailableExecutor, WorkspaceExecutor, WorkspaceRouter,
-    WorkspaceTarget,
+    MountedWorkspace, UnavailableExecutor, WorkspaceExecutor, WorkspaceRouter, WorkspaceTarget,
 };
 
 #[path = "workspace_context.rs"]
 mod workspace_context;
-use sylvander_agent::user_profile_prompt::{UserProfilePromptLayer, compose_user_profile_prompt};
-use sylvander_agent::user_profile_provider::{UserProfileProvider, UserProfileSubject};
 
 /// Translate an authenticated API decision into the Agent kernel decision.
 ///

@@ -1,8 +1,69 @@
+use std::time::Duration;
+
+use async_trait::async_trait;
+
 use super::*;
 use crate::execution_context::AgentExecutionContext;
 
 use crate::tools::memory::{InMemoryMemoryStore, MemoryAppend, MemoryKind};
-use crate::workspace_executor::LocalExecutor;
+use crate::workspace_executor::{
+    WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceSearchMatch,
+    WorkspaceSearchRequest, WorkspaceSearchResult,
+};
+
+#[derive(Debug)]
+struct WorkspaceKnowledgeExecutor;
+
+#[async_trait]
+impl WorkspaceExecutor for WorkspaceKnowledgeExecutor {
+    async fn read_file(
+        &self,
+        _target: &WorkspaceTarget,
+        _relative_path: &str,
+    ) -> Result<Vec<u8>, WorkspaceExecutorError> {
+        unreachable!("workspace retrieval uses the search port")
+    }
+
+    async fn write_file(
+        &self,
+        _target: &WorkspaceTarget,
+        _relative_path: &str,
+        _content: &[u8],
+    ) -> Result<(), WorkspaceExecutorError> {
+        unreachable!("workspace retrieval is read-only")
+    }
+
+    async fn run_command(
+        &self,
+        _target: &WorkspaceTarget,
+        _command: &str,
+        _timeout: Duration,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        unreachable!("workspace retrieval uses no process")
+    }
+
+    async fn search(
+        &self,
+        _target: &WorkspaceTarget,
+        _request: WorkspaceSearchRequest,
+    ) -> Result<WorkspaceSearchResult, WorkspaceExecutorError> {
+        Ok(WorkspaceSearchResult {
+            matches: vec![
+                WorkspaceSearchMatch {
+                    relative_path: "ARCHITECTURE.md".into(),
+                    line_number: 1,
+                    line: "Session routing is server authoritative.".into(),
+                },
+                WorkspaceSearchMatch {
+                    relative_path: "notes.md".into(),
+                    line_number: 1,
+                    line: "server authoritative model selection".into(),
+                },
+            ],
+            truncated: false,
+        })
+    }
+}
 
 fn provenance(source: TurnContextSource, reference: &str) -> TurnContextProvenance {
     TurnContextProvenance::new(source, reference)
@@ -259,23 +320,12 @@ async fn relationship_retrieval_uses_query_and_never_returns_superseded_heads() 
 
 #[tokio::test]
 async fn workspace_retrieval_returns_only_matching_bounded_lines() {
-    let workspace = tempfile::TempDir::new().unwrap();
-    std::fs::write(
-        workspace.path().join("ARCHITECTURE.md"),
-        "Session routing is server authoritative.\nUnrelated line.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        workspace.path().join("notes.md"),
-        "server authoritative model selection\n",
-    )
-    .unwrap();
-    let target = WorkspaceTarget::local(workspace.path(), true);
+    let target = WorkspaceTarget::local("/logical/workspace", true);
     let mut budget = TurnContextBudgets::default().workspace_knowledge;
     budget.max_items = 2;
 
     let results = retrieve_workspace_context(
-        &LocalExecutor,
+        &WorkspaceKnowledgeExecutor,
         &target,
         "explain authoritative session routing",
         budget,
