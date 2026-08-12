@@ -17,7 +17,6 @@ Sylvander is one server product with several clients and optional adapters:
 | DingTalk/Telegram/WeChat channels | reaching an Agent from chat | independently configured bot instances |
 
 Start the server first. Choose either the TUI or the macOS app as the client.
-Do not start token9 unless you actually need local Provider routing.
 
 ## 2. Local self-use in ten minutes
 
