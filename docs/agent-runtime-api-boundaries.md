@@ -189,6 +189,25 @@ are frozen for one execution, but they remain distinct so request construction
 does not become dependency lookup and ports cannot be serialized as client
 authority.
 
+## Local implementation evidence for Session and Runtime
+
+The Session migration is based on pinned local source, not inferred product
+behavior:
+
+| Project | Commit | Reviewed implementation | Relevant result |
+|---|---|---|---|
+| Codex | `16fbfe557446a1af94da81e1144029ccc1311ad0` | `codex-rs/app-server/src/thread_state.rs`, `codex-rs/state/src/lib.rs`, `codex-rs/thread-store/src/queue_store.rs` | Live connection/subscriber state belongs to the application server; durable thread state has a dedicated Runtime facade; storage-neutral queue ports sit above SQLite. |
+| pi coding agent | `11b5403fade1502a9a58a9cd4e9f983a3d1d734e` | `packages/coding-agent/src/core/agent-session-runtime.ts`, `agent-session.ts`, `session-manager.ts` | A session Runtime owns replace/teardown/rebind of cwd-bound services; Agent events are consumed by the session layer, which later persists finalized messages. |
+| Goose | `9d166ecee97628eced28051e7566d024f9654466` | `crates/goose/src/session/session_manager.rs`, `execution/manager.rs` | Session metadata, conversation persistence, archive/list/search, and storage are grouped under a Session manager rather than the model loop. |
+
+These implementations agree on the ownership direction but are not copied as
+an API. Sylvander adopts Codex's stronger separation between live application
+state and durable state, pi's explicit teardown/rebind lifecycle, and Goose's
+cohesive Session operations. Sylvander does not adopt process-global Session
+singletons, provider-shaped persisted messages, or a Session object that owns
+the Agent kernel. Runtime owns the Session and invokes a replaceable Agent
+execution with frozen inputs.
+
 ## Migration order
 
 Migration is performed without compatibility aliases:
