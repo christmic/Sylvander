@@ -205,7 +205,7 @@ use crate::evidence::{
     AdministrationAudit, AuthorizationDenial, EvidenceArtifactSink, EvidenceEncryption,
     EvidenceGovernance, EvidenceRecorder, EvidenceStore,
 };
-use crate::execution::{ExecutionTargetHealth, RuntimeExecutionService};
+use crate::execution::{ExecutionHealthTask, ExecutionTargetHealth, RuntimeExecutionService};
 use crate::guardian_runtime::{
     GuardianRuntime, GuardianRuntimeError, GuardianRuntimeSettings, WorkerToolGatewayFactory,
 };
@@ -380,6 +380,8 @@ pub struct Runtime {
     observability: RuntimeObservability,
     /// Immutable concrete execution environments shared by Agent revisions.
     execution_service: RuntimeExecutionService,
+    /// Owned background probes for configured SSH and OCI targets.
+    execution_health: Option<ExecutionHealthTask>,
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
@@ -499,6 +501,7 @@ pub struct RuntimeOperationalSnapshot {
 pub enum RuntimeHealthIssue {
     EvidenceRecorder,
     GuardianSupervisor,
+    ExecutionTarget,
 }
 
 struct RuntimeChannelHost {
@@ -3918,6 +3921,7 @@ impl Runtime {
             storage: RuntimeStorage::new(session_store, memory_store),
             observability,
             execution_service,
+            execution_health: None,
             bus,
             configured_agents,
             revision_provider: None,
@@ -4462,11 +4466,13 @@ impl Runtime {
                 .clone()
                 .expect("resolved runtime data directory"),
         ));
+        let execution_health = Some(ExecutionHealthTask::start(execution_service.clone()));
         Ok(Self {
             engine,
             storage: RuntimeStorage::new(session_store, memory_store),
             observability,
             execution_service,
+            execution_health,
             bus,
             configured_agents,
             revision_provider: Some(revision_provider),
@@ -4796,6 +4802,14 @@ impl Runtime {
         {
             health_issues.push(RuntimeHealthIssue::GuardianSupervisor);
         }
+        if self
+            .execution_service
+            .health()
+            .iter()
+            .any(|target| target.status == crate::execution::ExecutionTargetStatus::Degraded)
+        {
+            health_issues.push(RuntimeHealthIssue::ExecutionTarget);
+        }
         let ready = agent_count == self.configured_agents.len()
             && channels
                 .iter()
@@ -4851,6 +4865,9 @@ impl Runtime {
             && let Some(error) = guardian.last_error().await
         {
             warn!(%error, "Guardian supervisor stopped after a recorded error");
+        }
+        if let Some(execution_health) = &self.execution_health {
+            execution_health.shutdown().await;
         }
         if let Some(evidence) = &self.evidence
             && let Err(error) = evidence.shutdown().await

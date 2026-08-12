@@ -236,6 +236,16 @@ impl fmt::Debug for SshExecutor {
 }
 
 impl SshExecutor {
+    /// Probe the configured OpenSSH route using the same strict argv and
+    /// credential/known-host policy as workspace operations.
+    pub(crate) async fn probe(&self, timeout: Duration) -> Result<(), ()> {
+        let output = self
+            .invoke(OsString::from("true"), &[], Some(timeout))
+            .await
+            .map_err(|_| ())?;
+        output.status.success().then_some(()).ok_or(())
+    }
+
     /// Create an executor that invokes the system `ssh` executable.
     pub fn new(
         host: impl Into<String>,

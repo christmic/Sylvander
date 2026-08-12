@@ -59,6 +59,20 @@ fn target(read_only: bool) -> WorkspaceTarget {
 }
 
 #[tokio::test]
+async fn probe_reuses_strict_ssh_configuration_and_fixed_true_command() {
+    let fake = FakeSsh::new("exit 0");
+    fake.executor()
+        .probe(Duration::from_secs(5))
+        .await
+        .expect("probe succeeds");
+
+    let argv = fs::read_to_string(&fake.argv_log).expect("argv log");
+    assert!(argv.contains("-o\nBatchMode=yes"));
+    assert!(argv.contains("-o\nStrictHostKeyChecking=yes"));
+    assert!(argv.ends_with("agent-user@dev.example\ntrue\n"));
+}
+
+#[tokio::test]
 async fn read_uses_fixed_batch_argv_and_preserves_unicode() {
     let fake = FakeSsh::new("printf '你好，Sylvander'");
     let bytes = fake

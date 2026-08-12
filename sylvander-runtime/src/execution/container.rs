@@ -178,6 +178,26 @@ impl fmt::Debug for ContainerExecutor {
 }
 
 impl ContainerExecutor {
+    /// Probe both the configured OCI runtime and exact image without starting
+    /// a workspace container or exposing command output.
+    pub(crate) async fn probe(&self, timeout: Duration) -> Result<(), ()> {
+        let mut command = Command::new(&self.executable);
+        command
+            .arg("image")
+            .arg("inspect")
+            .arg(&self.image)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().map_err(|_| ())?;
+        let status = tokio::time::timeout(timeout, child.wait())
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+        status.success().then_some(()).ok_or(())
+    }
+
     pub fn new(
         executable: impl Into<PathBuf>,
         image: impl Into<String>,
