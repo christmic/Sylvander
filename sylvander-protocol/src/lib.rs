@@ -22,6 +22,8 @@
 pub mod agent_admin;
 /// Authenticated ingress context and content-safe boundary failures.
 pub mod boundary;
+/// Redacted execution policy, progress, and recovery DTOs.
+pub mod execution;
 /// Evidence-bound user feedback DTOs.
 pub mod feedback;
 /// Stable public Agent, Session, and User identifiers.
@@ -32,6 +34,12 @@ pub mod identity_binding;
 pub mod memory_confirmation;
 /// Versioned message envelopes and transient Runtime event DTOs.
 pub mod message;
+/// Provider-qualified model catalog and public reasoning DTOs.
+pub mod model;
+/// UI protocol version and capability negotiation DTOs.
+pub mod negotiation;
+/// Redacted optional-platform capability and presentation DTOs.
+pub mod platform;
 /// Versioned administrative messages for provider and credential registries.
 pub mod registry_admin;
 /// JSON Schema generation for UI and boundary protocol types.
@@ -40,8 +48,6 @@ pub mod schema;
 pub mod session;
 /// Session-scoped context, metadata, and immutable snapshots.
 pub mod session_context;
-/// Language-neutral identities, events, and cross-boundary data types.
-pub mod types;
 /// Client-to-server UI messages and server-facing session configuration types.
 pub mod ui;
 /// Versioned global user-profile protocol and privacy classifications.
@@ -49,14 +55,17 @@ pub mod user_profile;
 
 pub use agent_admin::*;
 pub use boundary::*;
+pub use execution::*;
 pub use feedback::*;
 pub use identity::*;
 pub use identity_binding::*;
 pub use memory_confirmation::*;
 pub use message::*;
+pub use model::*;
+pub use negotiation::*;
+pub use platform::*;
 pub use registry_admin::*;
 pub use session::*;
 pub use session_context::*;
-pub use types::*;
 pub use ui::*;
 pub use user_profile::*;
