@@ -17,9 +17,9 @@
 //! ```no_run
 //! use sylvander_llm_anthropic::prelude::*;
 //!
-//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn run(api_key: &str) -> Result<(), Box<dyn std::error::Error>> {
 //! let client = AnthropicClient::builder()
-//!     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
+//!     .api_key(api_key)
 //!     .build()?;
 //!
 //! let request = CreateMessageRequest::builder()
@@ -43,9 +43,9 @@
 //! use futures_util::StreamExt;
 //! use sylvander_llm_anthropic::prelude::*;
 //!
-//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn run(api_key: &str) -> Result<(), Box<dyn std::error::Error>> {
 //! # let client = AnthropicClient::builder()
-//! #     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
+//! #     .api_key(api_key)
 //! #     .build()?;
 //! let request = CreateMessageRequest::builder()
 //!     .model("claude-sonnet-5-20260601")
