@@ -15,7 +15,6 @@ name = "sylvander-improve"
 path = "src/bin/sylvander-improve.rs"
 
 [dependencies]
-sylvander-agent = { path = "../sylvander-agent" }
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-channel-dingtalk = { path = "../sylvander-channel-dingtalk" }
 sylvander-channel-http = { path = "../sylvander-channel-http" }

@@ -3,6 +3,8 @@ set -eu
 
 cd "$(git rev-parse --show-toplevel)"
 
+sh scripts/verify-architecture.sh
+
 secret_pattern='(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{20,})'
 secret_hits="$(
   git grep -n -I -E "$secret_pattern" -- ':!Cargo.lock' |
