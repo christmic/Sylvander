@@ -15,8 +15,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures_util::StreamExt as _;
-use sylvander_llm_anthropic::api::model::ModelInfo;
 use sylvander_llm_anthropic::api::types::MessageParam;
+use sylvander_llm_core::ModelInfo;
 
 use crate::error::AgentLoopError;
 

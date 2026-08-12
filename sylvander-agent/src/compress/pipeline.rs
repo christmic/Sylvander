@@ -34,6 +34,8 @@
 
 use std::fmt;
 
+use sylvander_llm_core::ModelInfo;
+
 use crate::compress::CompressContext;
 use crate::compress::layer::{CompressionLayer, LayerReport};
 
@@ -80,7 +82,7 @@ impl CompressionPipeline {
     /// `layer`s so it sees the messages after they've been cleaned;
     /// L4 runs last (the expensive semantic step).
     #[must_use]
-    pub fn default_for_model(_model: &sylvander_llm_anthropic::api::model::ModelInfo) -> Self {
+    pub fn default_for_model(_model: &ModelInfo) -> Self {
         Self::builder()
             .layer(crate::compress::layers::orphan_snip::OrphanSnipLayer::new())
             .layer(crate::compress::layers::micro_compact::MicroCompactLayer::new())

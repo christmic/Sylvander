@@ -25,8 +25,8 @@ pub mod pipeline;
 
 pub use auto_compact_llm::{AutoCompactLlm, DEFAULT_SUMMARY_PROMPT};
 
-use sylvander_llm_anthropic::api::model::ModelInfo;
 use sylvander_llm_anthropic::api::types::Usage;
+use sylvander_llm_core::ModelInfo;
 
 use crate::compress::pipeline::CompressionPipeline;
 

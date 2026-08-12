@@ -6,7 +6,9 @@
 //! Agent loop's Anthropic-shaped transcript and tool internals without exposing
 //! a second production backend or fallback route.
 
-use sylvander_llm_anthropic::api::{model as anthropic_model, types as anthropic_wire};
+#[cfg(test)]
+use sylvander_llm_anthropic::api::model as anthropic_model;
+use sylvander_llm_anthropic::api::types as anthropic_wire;
 use sylvander_llm_core as core;
 use thiserror::Error;
 
@@ -57,6 +59,7 @@ pub(crate) fn model_from_core(
 /// internals. The exact qualified identity remains authoritative in the
 /// provider backend.
 #[must_use]
+#[cfg(test)]
 pub(crate) fn model_metadata_from_core(model: &core::ModelInfo) -> anthropic_model::ModelInfo {
     anthropic_model::ModelInfo {
         id: model.reference.model.clone(),
@@ -129,6 +132,7 @@ fn capabilities_to_core(value: anthropic_model::ModelCapabilities) -> core::Mode
     )
 }
 
+#[cfg(test)]
 fn capabilities_from_core(value: core::ModelCapabilities) -> anthropic_model::ModelCapabilities {
     capability_pairs().into_iter().fold(
         anthropic_model::ModelCapabilities::empty(),
@@ -142,6 +146,7 @@ fn capabilities_from_core(value: core::ModelCapabilities) -> anthropic_model::Mo
     )
 }
 
+#[cfg(test)]
 fn capability_pairs() -> [(anthropic_model::ModelCapabilities, core::ModelCapabilities); 6] {
     [
         (

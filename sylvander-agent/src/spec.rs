@@ -14,8 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-
-use sylvander_llm_anthropic::api::model::ModelInfo;
+use sylvander_llm_core::{ModelCapabilities, ModelInfo, ModelRef};
 
 // ---------------------------------------------------------------------------
 // ID types
@@ -226,25 +225,20 @@ impl AgentSpec {
 
     /// Convert the model config to a [`ModelInfo`].
     ///
-    /// Uses a default 200k context window. Capabilities are left empty
-    /// — callers should add them via `ModelInfo::builder().capability()`.
+    /// Uses a default 200k context window. Capabilities are left empty;
+    /// Runtime replaces this declaration with registry-owned model metadata.
     pub fn to_model_info(&self) -> Result<ModelInfo, AgentSpecError> {
         if self.model.model_name.trim().is_empty()
             || self.model.max_tokens.is_some_and(|tokens| tokens == 0)
         {
             return Err(AgentSpecError::InvalidModel);
         }
-        let mut builder = ModelInfo::builder()
-            .id(&self.model.model_name)
-            .context_window(200_000);
-
-        if let Some(max_tokens) = self.model.max_tokens {
-            builder = builder.max_output_tokens(max_tokens);
-        } else {
-            builder = builder.max_output_tokens(32_000);
-        }
-
-        builder.build().ok_or(AgentSpecError::InvalidModel)
+        Ok(ModelInfo {
+            reference: ModelRef::new(&self.model.provider, &self.model.model_name),
+            context_window: 200_000,
+            max_output_tokens: self.model.max_tokens.unwrap_or(32_000),
+            capabilities: ModelCapabilities::empty(),
+        })
     }
 }
 

@@ -36,9 +36,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{Instrument as _, info, warn};
 
-use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use sylvander_llm_anthropic::api::types::{ImageBlock, UserContentBlock};
-use sylvander_llm_core::{ModelInfo as ProviderModelInfo, ModelProvider};
+use sylvander_llm_core::{ModelCapabilities, ModelInfo, ModelProvider};
 use sylvander_protocol::{
     PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
 };
@@ -197,7 +196,7 @@ struct ActiveTurn {
 struct RuntimeModel {
     selection: sylvander_protocol::ModelSelection,
     shadow: ModelInfo,
-    exact: Option<ProviderModelInfo>,
+    exact: Option<ModelInfo>,
     lifecycle: sylvander_protocol::ModelLifecycle,
     pricing: Option<sylvander_protocol::ModelPricing>,
 }
@@ -224,7 +223,7 @@ impl RuntimeModels {
                 let reasoning_efforts = if model
                     .shadow
                     .capabilities
-                    .contains(ModelCapabilities::EXTENDED_THINKING)
+                    .contains(ModelCapabilities::REASONING)
                 {
                     vec![
                         sylvander_protocol::ReasoningEffort::Off,
@@ -238,7 +237,7 @@ impl RuntimeModels {
                 sylvander_protocol::ModelDescriptor {
                     id: model.selection.model_id.clone(),
                     provider: model.selection.provider_id.clone(),
-                    capabilities: model.shadow.capabilities.bits(),
+                    capabilities: u8::try_from(model.shadow.capabilities.bits()).unwrap_or(u8::MAX),
                     capability_names: public_capability_names(model.shadow.capabilities),
                     reasoning_efforts,
                     lifecycle: model.lifecycle.clone(),
@@ -260,7 +259,7 @@ fn public_capability_names(
 ) -> Vec<sylvander_protocol::ModelCapability> {
     [
         (
-            ModelCapabilities::EXTENDED_THINKING,
+            ModelCapabilities::REASONING,
             sylvander_protocol::ModelCapability::ExtendedThinking,
         ),
         (
@@ -388,7 +387,7 @@ impl AgentRun {
     pub fn qualified_router_builder(
         spec: AgentSpec,
         router: Arc<dyn ModelProvider>,
-        model: ProviderModelInfo,
+        model: ModelInfo,
     ) -> AgentRunBuilder {
         AgentRunBuilder::new_qualified_router(spec, router, model)
     }
@@ -424,7 +423,7 @@ impl AgentRun {
             && !model
                 .shadow
                 .capabilities
-                .contains(ModelCapabilities::EXTENDED_THINKING)
+                .contains(ModelCapabilities::REASONING)
         {
             return Err(format!(
                 "model `{}` does not support reasoning effort",
@@ -643,7 +642,7 @@ impl AgentRun {
             });
         }
         sylvander_protocol::ContextReport {
-            model: model.shadow.id.clone(),
+            model: model.shadow.reference.model.clone(),
             context_window: model.shadow.context_window,
             used_tokens: usage.used,
             remaining_tokens: model.shadow.context_window.saturating_sub(usage.used),
@@ -1837,7 +1836,7 @@ impl AgentRunInner {
             && !model
                 .shadow
                 .capabilities
-                .contains(ModelCapabilities::EXTENDED_THINKING)
+                .contains(ModelCapabilities::REASONING)
         {
             return Err(AgentRunError::Configuration(format!(
                 "model `{}` does not support reasoning effort",
@@ -2481,7 +2480,7 @@ impl AgentRunInner {
                         config_revision: stored.config_revision,
                         effective_config: effective.clone(),
                         user_content,
-                        model_id: selected_model.shadow.id.clone(),
+                        model_id: selected_model.shadow.reference.model.clone(),
                     },
                 )
                 .await
@@ -3319,13 +3318,13 @@ fn select_workspace_binding<'a>(
 pub struct AgentRunBuilder {
     spec: AgentSpec,
     router: Arc<dyn ModelProvider>,
-    model: ProviderModelInfo,
+    model: ModelInfo,
     bus: Option<Arc<dyn MessageBus>>,
     tool_overrides: Option<ToolRegistry>,
     compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
     memory: Option<Arc<dyn MemoryStore>>,
     session_store: Option<Arc<dyn SessionStore>>,
-    available_provider_models: Vec<ProviderModelInfo>,
+    available_provider_models: Vec<ModelInfo>,
     qualified_model_lifecycles:
         HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
     qualified_model_pricing:
@@ -3346,7 +3345,7 @@ impl AgentRunBuilder {
     fn new_qualified_router(
         spec: AgentSpec,
         router: Arc<dyn ModelProvider>,
-        model: ProviderModelInfo,
+        model: ModelInfo,
     ) -> Self {
         let workspace_executors = HashMap::from([(
             "local".to_owned(),
@@ -3415,7 +3414,7 @@ impl AgentRunBuilder {
     /// Register exact provider-qualified models. The configured provider
     /// adapter can route only entries belonging to its own provider.
     #[must_use]
-    pub fn available_provider_models(mut self, models: Vec<ProviderModelInfo>) -> Self {
+    pub fn available_provider_models(mut self, models: Vec<ModelInfo>) -> Self {
         self.available_provider_models = models;
         self
     }
@@ -3555,7 +3554,7 @@ impl AgentRunBuilder {
                 "provider model does not match the Agent specification".into(),
             ));
         }
-        let model_info = crate::provider_adapter::model_metadata_from_core(&self.model);
+        let model_info = self.model.clone();
         let primary_selection = sylvander_protocol::ModelSelection {
             provider_id: self.model.reference.provider.clone(),
             model_id: self.model.reference.model.clone(),
@@ -3569,7 +3568,7 @@ impl AgentRunBuilder {
                         provider_id: exact.reference.provider.clone(),
                         model_id: exact.reference.model.clone(),
                     },
-                    crate::provider_adapter::model_metadata_from_core(exact),
+                    exact.clone(),
                     Some(exact.clone()),
                 )
             })

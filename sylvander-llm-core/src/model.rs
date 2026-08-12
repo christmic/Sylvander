@@ -58,6 +58,18 @@ impl ModelCapabilities {
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+
+    #[must_use]
+    /// Return whether at least one bit in `other` is enabled.
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    #[must_use]
+    /// Return the stable serialized capability bitmask.
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
 }
 
 impl std::ops::BitOr for ModelCapabilities {
@@ -65,6 +77,12 @@ impl std::ops::BitOr for ModelCapabilities {
 
     fn bitor(self, rhs: Self) -> Self::Output {
         self.union(rhs)
+    }
+}
+
+impl std::ops::BitOrAssign for ModelCapabilities {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
     }
 }
 

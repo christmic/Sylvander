@@ -26,14 +26,12 @@ use std::sync::Arc;
 use futures_util::{Stream, StreamExt};
 use tracing::{Instrument as _, warn};
 
-use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use sylvander_llm_anthropic::api::types::{
     ContentBlock, Message, MessageParam, MessageRole, StopReason, ToolResultBlock, ToolUseBlock,
     Usage, UserContentBlock,
 };
 use sylvander_llm_core::{
-    ModelEventStream, ModelInfo as ProviderModelInfo, ModelProvider, ModelRequest,
-    ProviderErrorKind,
+    ModelCapabilities, ModelEventStream, ModelInfo, ModelProvider, ModelRequest, ProviderErrorKind,
 };
 use sylvander_protocol::{AgentHookPhase, ModelSelection};
 
@@ -48,7 +46,7 @@ use super::tool_context::ToolContext;
 #[derive(Clone)]
 pub struct AgentLoop {
     router: Arc<dyn ModelProvider>,
-    provider_model: ProviderModelInfo,
+    provider_model: ModelInfo,
     pub(crate) model: ModelInfo,
     pub(crate) reasoning_effort: sylvander_protocol::ReasoningEffort,
     pub(crate) tools: ToolRegistry,
@@ -110,7 +108,7 @@ pub struct AgentLoopResult {
 /// Builder for [`AgentLoop`].
 pub struct AgentLoopBuilder {
     router: Option<Arc<dyn ModelProvider>>,
-    provider_model: Option<ProviderModelInfo>,
+    provider_model: Option<ModelInfo>,
     reasoning_effort: sylvander_protocol::ReasoningEffort,
     tools: ToolRegistry,
     compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
@@ -177,7 +175,7 @@ impl AgentLoopBuilder {
 
     /// Set provider-qualified model metadata.
     #[must_use]
-    pub fn provider_model(mut self, model: ProviderModelInfo) -> Self {
+    pub fn provider_model(mut self, model: ModelInfo) -> Self {
         self.provider_model = Some(model);
         self
     }
@@ -280,7 +278,7 @@ impl AgentLoopBuilder {
         let provider_model = self
             .provider_model
             .ok_or_else(|| AgentLoopError::Builder("provider model is required".into()))?;
-        let model = crate::provider_adapter::model_metadata_from_core(&provider_model);
+        let model = provider_model.clone();
         // Default pipeline = L1 + L2 + L3 (cheap, no LLM cost).
         // Opt-in to L0 (disk offload) or L4 (LLM summary) by
         // building a custom pipeline.
@@ -1079,7 +1077,7 @@ pub fn run_stream(
                 kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
                 role: MessageRole::Assistant,
                 content: final_message_content,
-                model: config.model.id.clone(),
+                model: config.model.reference.model.clone(),
                 stop_reason: response_stop_reason,
                 stop_sequence: None,
                 usage: cumulative_usage.clone(),
@@ -1417,7 +1415,7 @@ impl AgentLoop {
         &mut self,
         selection: &ModelSelection,
         shadow: &ModelInfo,
-        exact: Option<&ProviderModelInfo>,
+        exact: Option<&ModelInfo>,
     ) -> Result<(), AgentLoopError> {
         let exact = exact.ok_or_else(|| {
             AgentLoopError::IncompatibleModel(
@@ -1426,7 +1424,7 @@ impl AgentLoop {
         })?;
         let exact_matches = exact.reference.provider == selection.provider_id
             && exact.reference.model == selection.model_id
-            && shadow.id == selection.model_id;
+            && shadow.reference == exact.reference;
         if !exact_matches {
             return Err(AgentLoopError::IncompatibleModel(format!(
                 "model `{}/{}` is not routed by this Agent",
