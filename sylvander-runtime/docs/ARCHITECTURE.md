@@ -14,7 +14,7 @@ ServerConfig + SecretResolver + optional external Provider lease source
   -> durable stores (sessions, memory, evidence, identity, Guardian curation)
   -> Agent registry + provider registry
   -> typed turn-context providers + immutable actor capability snapshots
-  -> authenticated UiService
+  -> authenticated ChannelHost
   -> channel supervisor
   -> AgentRunEngine
 ```
@@ -108,7 +108,7 @@ crate without retaining a second production path.
    normalized at this boundary: relative values resolve beneath `data_dir`,
    while empty values, `:memory:`, SQLite `file:` URIs, and existing
    directories are rejected before any store opens.
-2. A channel submits every operation through the authenticated `UiService`.
+2. A channel submits every operation through the authenticated `ChannelHost`.
    Runtime derives `user_id`, `agent_id`, session authority, workspace, and
    policy from trusted state; request payloads may request but not establish
    them.

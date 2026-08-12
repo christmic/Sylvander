@@ -11,7 +11,7 @@
 //! A channel is responsible for:
 //! 1. Receiving messages in its native protocol
 //! 2. Mapping native input into authenticated protocol DTOs
-//! 3. Submitting operations to the runtime-owned [`UiService`]
+//! 3. Submitting operations to the runtime-owned [`ChannelHost`]
 //! 5. Rendering bus events (streaming text, tool calls, approvals)
 //!    in channel-native format
 //!
@@ -156,7 +156,7 @@ fn validate_ingress_part(value: &str) -> Result<(), IdentityIngressError> {
 
 /// Transport-neutral UI service boundary owned by the runtime.
 #[async_trait]
-pub trait UiService: Send + Sync {
+pub trait ChannelHost: Send + Sync {
     /// Reject an ingress request that failed authentication before a public
     /// message existed. Production runtimes override this to rate-limit and
     /// persist a content-free audit fact.
@@ -562,15 +562,15 @@ pub fn unavailable_registry_admin_response() -> RegistryAdminResponse {
 /// 1. The runtime creates the channel (e.g. `TelegramChannel::new(token)`)
 /// 2. Calls [`Channel::run`] with a [`ChannelContext`]
 /// 3. The channel starts its event loop, submitting mutations exclusively
-///    through the runtime-owned [`UiService`]
+///    through the runtime-owned [`ChannelHost`]
 /// 4. On shutdown, the runtime requests a cooperative drain and waits for the
 ///    channel to stop
 ///
 /// # Contract
 ///
 /// - The channel MUST NOT call engine or agent methods directly
-/// - Mutations and controls flow through [`UiService`]
-/// - Session lookup and mutation go through [`UiService`]; channels never
+/// - Mutations and controls flow through [`ChannelHost`]
+/// - Session lookup and mutation go through [`ChannelHost`]; channels never
 ///   receive the Runtime's persistence backend
 #[async_trait]
 pub trait Channel: Send + Sync {
@@ -582,7 +582,7 @@ pub trait Channel: Send + Sync {
     /// The channel should:
     /// - Listen for external messages (stdin, webhook, polling, ...)
     /// - Subscribe to the bus for agent events
-    /// - Ask [`UiService`] to resolve or create Runtime sessions
+    /// - Ask [`ChannelHost`] to resolve or create Runtime sessions
     /// - Submit normalized messages through [`ChannelContext::submit_control`]
     ///   or [`submit_external_chat`]
     ///
@@ -605,7 +605,7 @@ pub struct ChannelContext {
     /// Channels never receive a public bus publisher.
     bus: Arc<dyn MessageBus>,
     /// Runtime-owned UI application service. Channels adapt transports only.
-    pub ui: Option<Arc<dyn UiService>>,
+    pub host: Option<Arc<dyn ChannelHost>>,
     /// Runtime-owned startup handshake. Channel implementations call
     /// [`ChannelContext::mark_ready`] only after external input can arrive.
     #[doc(hidden)]
@@ -620,7 +620,7 @@ impl ChannelContext {
     pub fn new(bus: Arc<dyn MessageBus>) -> Self {
         Self {
             bus,
-            ui: None,
+            host: None,
             readiness: None,
             channel_instance_id: None,
             session_defaults: SessionConfigOverrides::default(),
@@ -632,10 +632,10 @@ impl ChannelContext {
     pub fn with_runtime_services(
         bus: Arc<dyn MessageBus>,
         channel_instance_id: impl Into<String>,
-        ui: Arc<dyn UiService>,
+        host: Arc<dyn ChannelHost>,
         readiness: Option<ChannelReadiness>,
     ) -> Self {
-        Self::with_services(bus, Some(channel_instance_id.into()), Some(ui), readiness)
+        Self::with_services(bus, Some(channel_instance_id.into()), Some(host), readiness)
     }
 
     #[doc(hidden)]
@@ -643,13 +643,13 @@ impl ChannelContext {
     pub fn with_runtime_services_and_defaults(
         bus: Arc<dyn MessageBus>,
         channel_instance_id: impl Into<String>,
-        ui: Arc<dyn UiService>,
+        host: Arc<dyn ChannelHost>,
         readiness: Option<ChannelReadiness>,
         session_defaults: SessionConfigOverrides,
     ) -> Self {
         Self {
             bus,
-            ui: Some(ui),
+            host: Some(host),
             readiness,
             channel_instance_id: Some(channel_instance_id.into()),
             session_defaults,
@@ -661,12 +661,12 @@ impl ChannelContext {
     pub fn with_services(
         bus: Arc<dyn MessageBus>,
         channel_instance_id: Option<String>,
-        ui: Option<Arc<dyn UiService>>,
+        host: Option<Arc<dyn ChannelHost>>,
         readiness: Option<ChannelReadiness>,
     ) -> Self {
         Self {
             bus,
-            ui,
+            host,
             readiness,
             channel_instance_id,
             session_defaults: SessionConfigOverrides::default(),
@@ -679,7 +679,7 @@ impl ChannelContext {
         boundary: &BoundaryContext,
         selectors: &BTreeMap<String, String>,
     ) -> Result<Option<SessionId>, BoundaryError> {
-        let ui = self.ui.as_ref().ok_or_else(|| BoundaryError {
+        let host = self.host.as_ref().ok_or_else(|| BoundaryError {
             code: BoundaryErrorCode::InvalidScope,
             operation: "resolve_external_session".into(),
             request_id: boundary.request_id.clone(),
@@ -696,7 +696,7 @@ impl ChannelContext {
                 "resolve_external_session",
             ));
         }
-        ui.resolve_external_session(boundary, instance_id, selectors)
+        host.resolve_external_session(boundary, instance_id, selectors)
             .await
     }
 
@@ -706,7 +706,7 @@ impl ChannelContext {
         session_id: &SessionId,
         key: &str,
     ) -> Result<Option<String>, BoundaryError> {
-        let ui = self.ui.as_ref().ok_or_else(|| BoundaryError {
+        let host = self.host.as_ref().ok_or_else(|| BoundaryError {
             code: BoundaryErrorCode::InvalidScope,
             operation: "session_external_value".into(),
             request_id: String::new(),
@@ -723,7 +723,7 @@ impl ChannelContext {
                 message: "channel instance scope is unavailable".into(),
                 retry_after_ms: None,
             })?;
-        ui.session_external_value(instance_id, session_id, key)
+        host.session_external_value(instance_id, session_id, key)
             .await
     }
 
@@ -741,14 +741,14 @@ impl ChannelContext {
         boundary: &BoundaryContext,
         message: UiClientMessage,
     ) -> Result<(), BoundaryError> {
-        let ui = self.ui.as_ref().ok_or_else(|| BoundaryError {
+        let host = self.host.as_ref().ok_or_else(|| BoundaryError {
             code: BoundaryErrorCode::InvalidScope,
             operation: "submit_control".into(),
             request_id: boundary.request_id.clone(),
             message: "runtime authorization service is unavailable".into(),
             retry_after_ms: None,
         })?;
-        ui.submit_control(boundary, message).await
+        host.submit_control(boundary, message).await
     }
 
     /// Return identity versions installed by the Runtime.
@@ -756,10 +756,10 @@ impl ChannelContext {
     /// An absent service and the trait default both advertise no capability.
     #[must_use]
     pub fn identity_binding_capabilities(&self) -> IdentityBindingCapabilities {
-        self.ui
+        self.host
             .as_ref()
-            .map_or_else(IdentityBindingCapabilities::default, |ui| {
-                ui.identity_binding_capabilities()
+            .map_or_else(IdentityBindingCapabilities::default, |host| {
+                host.identity_binding_capabilities()
             })
     }
 
@@ -809,14 +809,17 @@ impl ChannelContext {
             return identity_error_response(operation, code, message);
         }
 
-        let Some(ui) = self.ui.as_ref() else {
+        let Some(host) = self.host.as_ref() else {
             return identity_error_response(
                 operation,
                 IdentityBindingErrorCode::ServiceUnavailable,
                 "identity binding service is unavailable",
             );
         };
-        if !ui.identity_binding_capabilities().supports(request.version) {
+        if !host
+            .identity_binding_capabilities()
+            .supports(request.version)
+        {
             return identity_error_response(
                 operation,
                 IdentityBindingErrorCode::ServiceUnavailable,
@@ -824,7 +827,7 @@ impl ChannelContext {
             );
         }
 
-        ui.identity_binding(boundary, identity, request).await
+        host.identity_binding(boundary, identity, request).await
     }
 
     /// Notify Runtime that the adapter can accept external input.
@@ -854,7 +857,7 @@ pub async fn submit_external_chat(
     boundary: &BoundaryContext,
     mut request: ExternalChatRequest,
 ) -> Result<SubmittedChat, BoundaryError> {
-    let ui = context.ui.as_ref().ok_or_else(|| BoundaryError {
+    let host = context.host.as_ref().ok_or_else(|| BoundaryError {
         code: BoundaryErrorCode::InvalidScope,
         operation: "external_chat".into(),
         request_id: boundary.request_id.clone(),
@@ -865,13 +868,13 @@ pub async fn submit_external_chat(
     if request.existing_session.is_none() {
         inherit_session_defaults(&mut request.overrides, &context.session_defaults);
     }
-    ui.submit_chat(boundary, request).await
+    host.submit_chat(boundary, request).await
 }
 
 /// Parse a small transport-neutral command surface for chat-only adapters.
 ///
 /// Unknown slash commands remain ordinary chat. Recognized controls require
-/// an existing owned session and are still authorized by `UiService`.
+/// an existing owned session and are still authorized by `ChannelHost`.
 pub fn parse_external_control(
     text: &str,
     session_id: Option<&SessionId>,

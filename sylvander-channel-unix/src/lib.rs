@@ -218,13 +218,13 @@ impl Channel for UnixChannel {
                 Ok(peer) => peer,
                 Err(error) => {
                     warn!(%error, "unix: could not authenticate peer credentials");
-                    if let Some(ui) = &ctx.ui {
+                    if let Some(host) = &ctx.host {
                         let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
                             &self.instance_id,
                             "unix",
                             uuid::Uuid::new_v4().to_string(),
                         );
-                        let _ = ui
+                        let _ = host
                             .reject_authentication(
                                 &boundary,
                                 sylvander_protocol::AuthenticationFailure::new(
@@ -500,8 +500,8 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         return;
     }
     if !matches!(&msg, ClientMsg::Chat { .. })
-        && let Some(ui) = &ctx.ui
-        && let Err(error) = ui.authorize_message(boundary, &msg).await
+        && let Some(host) = &ctx.host
+        && let Err(error) = host.authorize_message(boundary, &msg).await
     {
         boundary_denied(tx, error);
         return;
@@ -926,8 +926,8 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::DiscoverAgents => {
-            if let Some(ui) = &ctx.ui {
-                match ui.discover_agents(boundary).await {
+            if let Some(host) = &ctx.host {
+                match host.discover_agents(boundary).await {
                     Ok(agents) => {
                         let _ = tx.send(ServerMsg::AgentsDiscovered { agents });
                     }
@@ -938,8 +938,8 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::CreateSession { request } => {
-            if let Some(ui) = &ctx.ui {
-                match ui.create_session(boundary, request).await {
+            if let Some(host) = &ctx.host {
+                match host.create_session(boundary, request).await {
                     Ok(config) => {
                         let _ = tx.send(ServerMsg::SessionCreated {
                             session_id: config.session_id.0.clone(),
@@ -953,8 +953,8 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::GetSessionConfig { session_id } => {
-            if let Some(ui) = &ctx.ui {
-                match ui
+            if let Some(host) = &ctx.host {
+                match host
                     .session_config(boundary, &SessionId::new(session_id))
                     .await
                 {
@@ -968,8 +968,8 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::UpdateSessionConfig { request } => {
-            if let Some(ui) = &ctx.ui {
-                match ui.update_session_config(boundary, request).await {
+            if let Some(host) = &ctx.host {
+                match host.update_session_config(boundary, request).await {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
@@ -980,8 +980,8 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::SubmitFeedback { feedback } => {
-            if let Some(ui) = &ctx.ui {
-                match ui.submit_feedback(boundary, feedback).await {
+            if let Some(host) = &ctx.host {
+                match host.submit_feedback(boundary, feedback).await {
                     Ok(feedback_id) => {
                         let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
                     }
@@ -992,8 +992,8 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::MemoryConfirmation { request } => {
-            let response = if let Some(ui) = &ctx.ui {
-                ui.memory_confirmation(boundary, request).await
+            let response = if let Some(host) = &ctx.host {
+                host.memory_confirmation(boundary, request).await
             } else {
                 sylvander_protocol::MemoryConfirmationResponse::service_unavailable(
                     request.operation(),
@@ -1002,24 +1002,24 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             let _ = tx.send(ServerMsg::MemoryConfirmation { response });
         }
         ClientMsg::AgentAdmin { request } => {
-            let response = if let Some(ui) = &ctx.ui {
-                ui.agent_admin(boundary, request).await
+            let response = if let Some(host) = &ctx.host {
+                host.agent_admin(boundary, request).await
             } else {
                 unavailable_agent_admin_response()
             };
             let _ = tx.send(ServerMsg::AgentAdmin { response });
         }
         ClientMsg::RegistryAdmin { request } => {
-            let response = if let Some(ui) = &ctx.ui {
-                ui.registry_admin(boundary, request).await
+            let response = if let Some(host) = &ctx.host {
+                host.registry_admin(boundary, request).await
             } else {
                 unavailable_registry_admin_response()
             };
             let _ = tx.send(ServerMsg::RegistryAdmin { response });
         }
         ClientMsg::UserProfile { request } => {
-            let response = if let Some(ui) = &ctx.ui {
-                ui.user_profile(boundary, request).await
+            let response = if let Some(host) = &ctx.host {
+                host.user_profile(boundary, request).await
             } else {
                 sylvander_protocol::UserProfileResponse::Error {
                     version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
@@ -1044,11 +1044,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             });
         }
         ClientMsg::ListSessions => {
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "list_sessions", "Runtime channel host is unavailable");
                 return;
             };
-            match ui.list_sessions(boundary).await {
+            match host.list_sessions(boundary).await {
                 Ok(sessions) => {
                     let _ = tx.send(ServerMsg::SessionsList { sessions });
                 }
@@ -1066,11 +1066,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 unreachable!()
             };
             let session_id = SessionId::new(session_id);
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "load_session", "Runtime channel host is unavailable");
                 return;
             };
-            match ui.load_session(boundary, &session_id).await {
+            match host.load_session(boundary, &session_id).await {
                 Ok(snapshot) => {
                     let mut history = ServerMsg::SessionHistory {
                         session: snapshot.session,
@@ -1118,11 +1118,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         }
         ClientMsg::RenameSession { session_id, label } => {
             let session_id = SessionId::new(session_id);
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "rename_session", "Runtime channel host is unavailable");
                 return;
             };
-            match ui
+            match host
                 .rename_session(boundary, &session_id, label.clone())
                 .await
             {
@@ -1138,11 +1138,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         }
         ClientMsg::ArchiveSession { session_id } => {
             let session_id = SessionId::new(session_id);
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "archive_session", "Runtime channel host is unavailable");
                 return;
             };
-            match ui.archive_session(boundary, &session_id).await {
+            match host.archive_session(boundary, &session_id).await {
                 Ok(()) => {
                     let _ = tx.send(ServerMsg::SessionUpdated {
                         session_id: session_id.0,
@@ -1155,11 +1155,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         }
         ClientMsg::RestoreSession { session_id } => {
             let session_id = SessionId::new(session_id);
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "restore_session", "Runtime channel host is unavailable");
                 return;
             };
-            match ui.restore_session(boundary, &session_id).await {
+            match host.restore_session(boundary, &session_id).await {
                 Ok(()) => {
                     let _ = tx.send(ServerMsg::SessionUpdated {
                         session_id: session_id.0,
@@ -1172,11 +1172,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         }
         ClientMsg::DeleteSession { session_id } => {
             let session_id = SessionId::new(session_id);
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "delete_session", "Runtime channel host is unavailable");
                 return;
             };
-            match ui.delete_session(boundary, &session_id).await {
+            match host.delete_session(boundary, &session_id).await {
                 Ok(()) => {
                     let _ = tx.send(ServerMsg::SessionDeleted {
                         session_id: session_id.0,
@@ -1202,11 +1202,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 return;
             }
             let source_id = SessionId::new(session_id);
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "fork_session", "Runtime channel host is unavailable");
                 return;
             };
-            match ui
+            match host
                 .fork_session(boundary, &source_id, completed_turns, checkpoint)
                 .await
             {
@@ -1254,14 +1254,14 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             });
         }
         ClientMsg::GetContext { session_id } => {
-            let (Some(ui), Some(session_id)) = (&ctx.ui, session_id.as_deref()) else {
+            let (Some(host), Some(session_id)) = (&ctx.host, session_id.as_deref()) else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "context".into(),
                     message: "context requires an authenticated session".into(),
                 });
                 return;
             };
-            match ui
+            match host
                 .context_report(boundary, &SessionId::new(session_id))
                 .await
             {
@@ -1272,7 +1272,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::Compact { session_id } => {
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "compact".into(),
                     message: "UI service is unavailable".into(),
@@ -1283,7 +1283,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 session_id: session_id.clone(),
                 automatic: false,
             });
-            match ui
+            match host
                 .compact_session(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
@@ -1300,14 +1300,14 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::PreviewWorkspaceRollback { session_id } => {
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
                     session_id,
                     reason: "UI service is unavailable".into(),
                 });
                 return;
             };
-            match ui
+            match host
                 .preview_workspace_rollback(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
@@ -1329,14 +1329,14 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             session_id,
             expected_turn_id,
         } => {
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
                     session_id,
                     reason: "UI service is unavailable".into(),
                 });
                 return;
             };
-            match ui
+            match host
                 .rollback_workspace(
                     boundary,
                     &SessionId::new(session_id.clone()),
@@ -1356,7 +1356,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::InspectCodingSession { session_id } => {
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
                     session_id,
                     operation: "inspect".into(),
@@ -1364,7 +1364,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 });
                 return;
             };
-            match ui
+            match host
                 .inspect_coding_session(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
@@ -1381,7 +1381,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::AcceptCodingSession { session_id } => {
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
                     session_id,
                     operation: "accept".into(),
@@ -1389,7 +1389,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 });
                 return;
             };
-            match ui
+            match host
                 .accept_coding_session(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
@@ -1406,7 +1406,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::DiscardCodingSession { session_id } => {
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
                     session_id,
                     operation: "discard".into(),
@@ -1414,7 +1414,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 });
                 return;
             };
-            match ui
+            match host
                 .discard_coding_session(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
@@ -1442,12 +1442,12 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 });
                 return;
             };
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "select_model", "UI service is unavailable");
                 return;
             };
             let session_id = SessionId::new(session_id);
-            let state = match ui.session_config(boundary, &session_id).await {
+            let state = match host.session_config(boundary, &session_id).await {
                 Ok(state) => state,
                 Err(error) => {
                     boundary_denied(tx, error);
@@ -1455,7 +1455,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
             };
             let mut overrides = state.overrides;
-            let agents = match ui.discover_agents(boundary).await {
+            let agents = match host.discover_agents(boundary).await {
                 Ok(agents) => agents,
                 Err(error) => {
                     boundary_denied(tx, error);
@@ -1476,7 +1476,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
             overrides.model = Some(model);
             overrides.reasoning_effort = Some(reasoning_effort);
-            match ui
+            match host
                 .update_session_config(
                     boundary,
                     sylvander_protocol::SessionConfigUpdateRequest {
@@ -1502,12 +1502,12 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 });
                 return;
             };
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "select_permissions", "UI service is unavailable");
                 return;
             };
             let session_id = SessionId::new(session_id);
-            let state = match ui.session_config(boundary, &session_id).await {
+            let state = match host.session_config(boundary, &session_id).await {
                 Ok(state) => state,
                 Err(error) => {
                     boundary_denied(tx, error);
@@ -1516,7 +1516,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             };
             let mut overrides = state.overrides;
             overrides.permissions = Some(profile);
-            match ui
+            match host
                 .update_session_config(
                     boundary,
                     sylvander_protocol::SessionConfigUpdateRequest {

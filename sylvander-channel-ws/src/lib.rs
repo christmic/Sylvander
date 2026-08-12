@@ -207,8 +207,8 @@ async fn reject_ws_authentication(state: &AppState) -> StatusCode {
         "websocket",
         uuid::Uuid::new_v4().to_string(),
     );
-    if let Some(ui) = &state.ctx.ui {
-        let error = ui
+    if let Some(host) = &state.ctx.host {
+        let error = host
             .reject_authentication(
                 &boundary,
                 sylvander_protocol::AuthenticationFailure::new(
@@ -448,8 +448,8 @@ async fn handle_client_msg(
         uuid::Uuid::new_v4().to_string(),
     );
     if !matches!(msg, ClientMsg::Hello { .. } | ClientMsg::Chat { .. })
-        && let Some(ui) = &ctx.ui
-        && let Err(error) = ui.authorize_message(&boundary, &msg).await
+        && let Some(host) = &ctx.host
+        && let Err(error) = host.authorize_message(&boundary, &msg).await
     {
         boundary_denied(tx, error);
         return;
@@ -659,8 +659,8 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::DiscoverAgents => {
-            if let Some(ui) = &ctx.ui {
-                match ui.discover_agents(&boundary).await {
+            if let Some(host) = &ctx.host {
+                match host.discover_agents(&boundary).await {
                     Ok(agents) => {
                         let _ = tx.send(ServerMsg::AgentsDiscovered { agents });
                     }
@@ -671,8 +671,8 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::CreateSession { request } => {
-            if let Some(ui) = &ctx.ui {
-                match ui.create_session(&boundary, request).await {
+            if let Some(host) = &ctx.host {
+                match host.create_session(&boundary, request).await {
                     Ok(config) => {
                         let _ = tx.send(ServerMsg::SessionCreated {
                             session_id: config.session_id.0.clone(),
@@ -686,8 +686,8 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::GetSessionConfig { session_id } => {
-            if let Some(ui) = &ctx.ui {
-                match ui
+            if let Some(host) = &ctx.host {
+                match host
                     .session_config(&boundary, &SessionId::new(session_id))
                     .await
                 {
@@ -701,8 +701,8 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::UpdateSessionConfig { request } => {
-            if let Some(ui) = &ctx.ui {
-                match ui.update_session_config(&boundary, request).await {
+            if let Some(host) = &ctx.host {
+                match host.update_session_config(&boundary, request).await {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
@@ -713,8 +713,8 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::SubmitFeedback { feedback } => {
-            if let Some(ui) = &ctx.ui {
-                match ui.submit_feedback(&boundary, feedback).await {
+            if let Some(host) = &ctx.host {
+                match host.submit_feedback(&boundary, feedback).await {
                     Ok(feedback_id) => {
                         let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
                     }
@@ -725,8 +725,8 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::MemoryConfirmation { request } => {
-            let response = if let Some(ui) = &ctx.ui {
-                ui.memory_confirmation(&boundary, request).await
+            let response = if let Some(host) = &ctx.host {
+                host.memory_confirmation(&boundary, request).await
             } else {
                 sylvander_protocol::MemoryConfirmationResponse::service_unavailable(
                     request.operation(),
@@ -735,24 +735,24 @@ async fn handle_client_msg(
             let _ = tx.send(ServerMsg::MemoryConfirmation { response });
         }
         ClientMsg::AgentAdmin { request } => {
-            let response = if let Some(ui) = &ctx.ui {
-                ui.agent_admin(&boundary, request).await
+            let response = if let Some(host) = &ctx.host {
+                host.agent_admin(&boundary, request).await
             } else {
                 unavailable_agent_admin_response()
             };
             let _ = tx.send(ServerMsg::AgentAdmin { response });
         }
         ClientMsg::RegistryAdmin { request } => {
-            let response = if let Some(ui) = &ctx.ui {
-                ui.registry_admin(&boundary, request).await
+            let response = if let Some(host) = &ctx.host {
+                host.registry_admin(&boundary, request).await
             } else {
                 unavailable_registry_admin_response()
             };
             let _ = tx.send(ServerMsg::RegistryAdmin { response });
         }
         ClientMsg::UserProfile { request } => {
-            let response = if let Some(ui) = &ctx.ui {
-                ui.user_profile(&boundary, request).await
+            let response = if let Some(host) = &ctx.host {
+                host.user_profile(&boundary, request).await
             } else {
                 sylvander_protocol::UserProfileResponse::Error {
                     version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
@@ -785,12 +785,12 @@ async fn handle_client_msg(
                 operation_error(tx, "select_model", "select_model requires a session_id");
                 return;
             };
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "select_model", "UI service is unavailable");
                 return;
             };
             let session_id = SessionId::new(session_id);
-            let state = match ui.session_config(&boundary, &session_id).await {
+            let state = match host.session_config(&boundary, &session_id).await {
                 Ok(state) => state,
                 Err(error) => {
                     boundary_denied(tx, error);
@@ -798,7 +798,7 @@ async fn handle_client_msg(
                 }
             };
             let mut overrides = state.overrides;
-            let agents = match ui.discover_agents(&boundary).await {
+            let agents = match host.discover_agents(&boundary).await {
                 Ok(agents) => agents,
                 Err(error) => {
                     boundary_denied(tx, error);
@@ -819,7 +819,7 @@ async fn handle_client_msg(
             }
             overrides.model = Some(model);
             overrides.reasoning_effort = Some(reasoning_effort);
-            match ui
+            match host
                 .update_session_config(
                     &boundary,
                     sylvander_protocol::SessionConfigUpdateRequest {
@@ -848,12 +848,12 @@ async fn handle_client_msg(
                 );
                 return;
             };
-            let Some(ui) = &ctx.ui else {
+            let Some(host) = &ctx.host else {
                 operation_error(tx, "select_permissions", "UI service is unavailable");
                 return;
             };
             let session_id = SessionId::new(session_id);
-            let state = match ui.session_config(&boundary, &session_id).await {
+            let state = match host.session_config(&boundary, &session_id).await {
                 Ok(state) => state,
                 Err(error) => {
                     boundary_denied(tx, error);
@@ -862,7 +862,7 @@ async fn handle_client_msg(
             };
             let mut overrides = state.overrides;
             overrides.permissions = Some(profile);
-            match ui
+            match host
                 .update_session_config(
                     &boundary,
                     sylvander_protocol::SessionConfigUpdateRequest {
@@ -880,8 +880,8 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::ListSessions => {
-            if let Some(ui) = &ctx.ui {
-                match ui.list_sessions(&boundary).await {
+            if let Some(host) = &ctx.host {
+                match host.list_sessions(&boundary).await {
                     Ok(sessions) => {
                         let _ = tx.send(ServerMsg::SessionsList { sessions });
                     }

@@ -3,14 +3,14 @@
 `sylvander-channel` is the transport-neutral ingress boundary for Sylvander.
 It does not run an Agent, persist configuration, or decide authorization. Its
 job is to normalize an external interaction, preserve the authenticated
-transport identity, and submit the operation to the Runtime-owned `UiService`.
+transport identity, and submit the operation to the Runtime-owned `ChannelHost`.
 
 ## Ownership
 
 ```text
 adapter (Unix / HTTP / WebSocket / chat bot)
   -> ExternalChatRequest + BoundaryContext
-  -> ChannelContext / UiService
+  -> ChannelContext / ChannelHost
   -> Runtime
   -> Agent engine + durable session store
 ```
@@ -27,7 +27,7 @@ pick a user identity from model input, or write a session store directly.
   channel receives `ChannelContext`, marks readiness only after its ingress is
   usable, and exits with an error for the supervisor to classify and restart.
 - `ExternalChatRequest` is the normalized, authenticated input to
-  `UiService::submit_chat`. The caller supplies text, selected Agent, optional
+  `ChannelHost::submit_chat`. The caller supplies text, selected Agent, optional
   session, and requested overrides; the Runtime validates their authority.
 - `AuthenticatedTransportIdentity` is the transport-scoped source identity.
   It is deliberately distinct from the durable `UserId`; principal binding is

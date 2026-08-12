@@ -385,10 +385,10 @@ async fn reject_webhook_authentication(state: &AppState) -> StatusCode {
         "telegram",
         uuid::Uuid::new_v4().to_string(),
     );
-    let Some(ui) = &state.ctx.ui else {
+    let Some(host) = &state.ctx.host else {
         return StatusCode::UNAUTHORIZED;
     };
-    let error = ui
+    let error = host
         .reject_authentication(
             &boundary,
             AuthenticationFailure::new(AuthenticationMethod::WebhookSignature),

@@ -405,8 +405,8 @@ async fn reject_webhook_authentication(state: &AppState) {
         "wechat",
         uuid::Uuid::new_v4().to_string(),
     );
-    if let Some(ui) = &state.ctx.ui {
-        let _ = ui
+    if let Some(host) = &state.ctx.host {
+        let _ = host
             .reject_authentication(
                 &boundary,
                 AuthenticationFailure::new(AuthenticationMethod::WebhookSignature),

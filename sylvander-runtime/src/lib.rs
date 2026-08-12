@@ -365,7 +365,7 @@ pub struct Runtime {
     /// Fully configured runs retained for protocol control operations.
     configured_agents: HashMap<AgentId, ConfiguredAgent>,
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
-    ui_service: Arc<RuntimeUiService>,
+    channel_host: Arc<RuntimeChannelHost>,
     evidence: Option<EvidenceRecorder>,
     credential_audit: Option<Arc<CredentialOperationAuditLedger>>,
     guardian: Option<Arc<GuardianRuntime>>,
@@ -479,7 +479,7 @@ pub enum RuntimeHealthIssue {
     GuardianSupervisor,
 }
 
-struct RuntimeUiService {
+struct RuntimeChannelHost {
     engine: Arc<AgentRunEngine>,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
@@ -761,7 +761,7 @@ impl RevisionedAgentRunProvider for RuntimeRevisionProvider {
 }
 
 #[async_trait::async_trait]
-impl sylvander_channel::UiService for RuntimeUiService {
+impl sylvander_channel::ChannelHost for RuntimeChannelHost {
     async fn reject_authentication(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -2303,7 +2303,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
     }
 }
 
-impl RuntimeUiService {
+impl RuntimeChannelHost {
     async fn session_history(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -3873,7 +3873,7 @@ impl Runtime {
 
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         let configured_agents = HashMap::new();
-        let ui_service = Arc::new(RuntimeUiService {
+        let channel_host = Arc::new(RuntimeChannelHost {
             engine: engine.clone(),
             bus: bus.clone(),
             sessions: session_store.clone(),
@@ -3897,7 +3897,7 @@ impl Runtime {
             bus,
             configured_agents,
             revision_provider: None,
-            ui_service,
+            channel_host,
             evidence: None,
             credential_audit: None,
             guardian: None,
@@ -4399,7 +4399,7 @@ impl Runtime {
             session_db = %session_db.display(),
             "configured runtime booted"
         );
-        let ui_service = Arc::new(RuntimeUiService {
+        let channel_host = Arc::new(RuntimeChannelHost {
             engine: engine.clone(),
             bus: bus.clone(),
             sessions: session_store.clone(),
@@ -4435,7 +4435,7 @@ impl Runtime {
             bus,
             configured_agents,
             revision_provider: Some(revision_provider),
-            ui_service,
+            channel_host,
             evidence,
             credential_audit: Some(credential_audit),
             guardian: Some(guardian),
@@ -4474,7 +4474,7 @@ impl Runtime {
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .ok_or_else(|| RuntimeError::Store(format!("unknown session {session_id}")))?;
         let manager = self
-            .ui_service
+            .channel_host
             .worktrees
             .clone()
             .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
@@ -4494,7 +4494,7 @@ impl Runtime {
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .ok_or_else(|| RuntimeError::Store(format!("unknown session {session_id}")))?;
         let manager = self
-            .ui_service
+            .channel_host
             .worktrees
             .clone()
             .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
@@ -4514,7 +4514,7 @@ impl Runtime {
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .ok_or_else(|| RuntimeError::Store(format!("unknown session {session_id}")))?;
         let manager = self
-            .ui_service
+            .channel_host
             .worktrees
             .clone()
             .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
@@ -4608,7 +4608,7 @@ impl Runtime {
     /// Return the durable evidence store when collection is enabled.
     #[must_use]
     pub fn evidence_store(&self) -> Option<EvidenceStore> {
-        self.ui_service.evidence.clone()
+        self.channel_host.evidence.clone()
     }
 
     // -- channels --
@@ -4654,7 +4654,7 @@ impl Runtime {
             let task_lifecycle = lifecycle.clone();
             let task_health = health.clone();
             let bus = self.bus.clone();
-            let ui = self.ui_service.clone();
+            let host = self.channel_host.clone();
             let mut task = tokio::spawn(async move {
                 let _exit_signal = ChannelExitSignal {
                     name: task_instance_id,
@@ -4665,7 +4665,7 @@ impl Runtime {
                     registration.restart,
                     registration.session_defaults,
                     host_instance_id,
-                    (bus, ui),
+                    (bus, host),
                     task_lifecycle,
                     task_health,
                 )
@@ -4863,11 +4863,11 @@ async fn supervise_channel(
     policy: ChannelRestartPolicy,
     session_defaults: SessionConfigOverrides,
     channel_instance_id: String,
-    services: (Arc<dyn MessageBus>, Arc<RuntimeUiService>),
+    services: (Arc<dyn MessageBus>, Arc<RuntimeChannelHost>),
     lifecycle: ChannelReadiness,
     health: Arc<std::sync::RwLock<ChannelHealth>>,
 ) {
-    let (bus, ui) = services;
+    let (bus, host) = services;
     let mut ready_once = false;
     let mut failures = 0_u32;
     loop {
@@ -4884,7 +4884,7 @@ async fn supervise_channel(
         let ctx = ChannelContext::with_runtime_services_and_defaults(
             bus.clone(),
             channel_instance_id.clone(),
-            ui.clone(),
+            host.clone(),
             Some(attempt.clone()),
             session_defaults.clone(),
         );

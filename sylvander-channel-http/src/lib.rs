@@ -195,8 +195,8 @@ async fn reject_http_authentication(state: &AppState) -> StatusCode {
         "http",
         uuid::Uuid::new_v4().to_string(),
     );
-    if let Some(ui) = &state.ctx.ui {
-        let error = ui
+    if let Some(host) = &state.ctx.host {
+        let error = host
             .reject_authentication(
                 &boundary,
                 sylvander_protocol::AuthenticationFailure::new(
