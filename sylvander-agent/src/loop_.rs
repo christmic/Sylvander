@@ -26,12 +26,9 @@ use std::sync::Arc;
 use futures_util::{Stream, StreamExt};
 use tracing::{Instrument as _, warn};
 
-use sylvander_llm_anthropic::api::types::{
-    ContentBlock, Message, MessageParam, MessageRole, StopReason, ToolResultBlock, ToolUseBlock,
-    Usage, UserContentBlock,
-};
 use sylvander_llm_core::{
-    ModelCapabilities, ModelEventStream, ModelInfo, ModelProvider, ModelRequest, ProviderErrorKind,
+    ChatMessage, ContentBlock, ModelCapabilities, ModelEventStream, ModelInfo, ModelProvider,
+    ModelRequest, ModelResponse, ProviderErrorKind, StopReason, TokenUsage,
 };
 use sylvander_protocol::{AgentHookPhase, ModelSelection};
 
@@ -94,11 +91,11 @@ impl std::fmt::Debug for AgentLoop {
 pub struct AgentLoopResult {
     /// Final assembled message (the last assistant turn before the loop
     /// terminated).
-    pub final_message: Message,
+    pub final_message: ModelResponse,
     /// Total iterations executed.
     pub iterations: u32,
     /// Cumulative token usage across all LLM calls.
-    pub total_usage: Usage,
+    pub total_usage: TokenUsage,
 }
 
 // =====================================================================
@@ -398,7 +395,7 @@ impl AgentLoop {
 /// terminates the stream.
 pub fn run_stream(
     config: &AgentLoop,
-    initial_messages: Vec<MessageParam>,
+    initial_messages: Vec<ChatMessage>,
 ) -> impl Stream<Item = AgentEvent> + Send + '_ {
     async_stream::stream! {
         // `AgentRun` stores a construction-only template before a session
@@ -411,15 +408,9 @@ pub fn run_stream(
             return;
         }
         let mut messages = initial_messages;
-        let mut cumulative_usage = Usage {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            ..Usage::default()
-        };
-        let mut last_provider_usage = cumulative_usage.clone();
-        let mut final_message: Option<Message> = None;
+        let mut cumulative_usage = TokenUsage::default();
+        let mut last_provider_usage = cumulative_usage;
+        let mut final_message: Option<ModelResponse> = None;
 
         if let Err(blocked) = config
             .tools
@@ -437,7 +428,7 @@ pub fn run_stream(
             {
                 let auto_threshold = (config.model.context_window as f32
                     * super::compress::layers::auto_compact::DEFAULT_TRIGGER_RATIO)
-                    as u32;
+                    as u64;
                 if last_provider_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
                     yield AgentEvent::CompressionStarted;
                 }
@@ -510,7 +501,7 @@ pub fn run_stream(
             //    through an mpsc channel into the outer event stream.
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
             let (done_tx, done_rx) =
-                tokio::sync::oneshot::channel::<Result<Message, AgentLoopError>>();
+                tokio::sync::oneshot::channel::<Result<ModelResponse, AgentLoopError>>();
 
             let consumer_task = tokio::spawn(async move {
                 let result =
@@ -552,7 +543,7 @@ pub fn run_stream(
             };
 
             let final_message_content = response.content.clone();
-            let response_stop_reason = response.stop_reason;
+            let response_stop_reason = response.stop_reason.clone();
             let response_id = response.id.clone();
 
             // 6. Re-feed assistant message
@@ -567,11 +558,19 @@ pub fn run_stream(
             //    order), then all End events (in the same order).
             //    This way consumers see a deterministic stream
             //    regardless of which tool finished first.
-            let tool_blocks: Vec<&ToolUseBlock> = response
+            let tool_blocks: Vec<PendingToolCall> = response
                 .content
                 .iter()
                 .filter_map(|b| match b {
-                    ContentBlock::ToolUse(t) => Some(t),
+                    ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } => Some(PendingToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: arguments.clone(),
+                    }),
                     _ => None,
                 })
                 .collect();
@@ -690,11 +689,10 @@ pub fn run_stream(
                                     output: answer.join(", "),
                                     is_error: false,
                                 };
-                                tool_result_blocks.push(UserContentBlock::ToolResult(
-                                    ToolResultBlock::new(
-                                        tool_use.id.clone(),
-                                        answer.join(", "),
-                                    ),
+                                tool_result_blocks.push(ContentBlock::tool_result_text(
+                                    tool_use.id.clone(),
+                                    answer.join(", "),
+                                    false,
                                 ));
                                 continue;
                             }
@@ -748,8 +746,8 @@ pub fn run_stream(
                                     output: output.clone(),
                                     is_error,
                                 };
-                                tool_result_blocks.push(UserContentBlock::ToolResult(
-                                    ToolResultBlock::new(plan_id, output).with_error(is_error),
+                                tool_result_blocks.push(ContentBlock::tool_result_text(
+                                    plan_id, output, is_error,
                                 ));
                                 continue;
                             }
@@ -781,9 +779,8 @@ pub fn run_stream(
                                     output: output.clone(),
                                     is_error,
                                 };
-                                tool_result_blocks.push(UserContentBlock::ToolResult(
-                                    ToolResultBlock::new(tool_use.id.clone(), output)
-                                        .with_error(is_error),
+                                tool_result_blocks.push(ContentBlock::tool_result_text(
+                                    tool_use.id.clone(), output, is_error,
                                 ));
                                 continue;
                             }
@@ -819,9 +816,8 @@ pub fn run_stream(
                                     output: output.clone(),
                                     is_error,
                                 };
-                                tool_result_blocks.push(UserContentBlock::ToolResult(
-                                    ToolResultBlock::new(tool_use.id.clone(), output)
-                                        .with_error(is_error),
+                                tool_result_blocks.push(ContentBlock::tool_result_text(
+                                    tool_use.id.clone(), output, is_error,
                                 ));
                                 continue;
                             }
@@ -899,9 +895,8 @@ pub fn run_stream(
                                 output: output.clone(),
                                 is_error,
                             };
-                            tool_result_blocks.push(UserContentBlock::ToolResult(
-                                ToolResultBlock::new(tool_use.id.clone(), output)
-                                    .with_error(is_error),
+                            tool_result_blocks.push(ContentBlock::tool_result_text(
+                                tool_use.id.clone(), output, is_error,
                             ));
                         }
                         crate::approval::ApprovalDecision::Rejected { reason } => {
@@ -912,14 +907,13 @@ pub fn run_stream(
                             };
                             // Re-feed a tool_result with is_error so the model
                             // knows the tool was rejected.
-                            tool_result_blocks.push(UserContentBlock::ToolResult(
-                                ToolResultBlock::new(tool_use.id.clone(), reason.clone())
-                                    .with_error(true),
+                            tool_result_blocks.push(ContentBlock::tool_result_text(
+                                tool_use.id.clone(), reason.clone(), true,
                             ));
                         }
                     }
                 }
-                messages.push(MessageParam::user_blocks(tool_result_blocks));
+                messages.push(ChatMessage::user_blocks(tool_result_blocks));
                 } else {
                     // Ordinary tools are independent within one model batch. Emit every
                     // start first, execute concurrently, then publish results in model order.
@@ -1026,8 +1020,8 @@ pub fn run_stream(
                                     output: output.clone(),
                                     is_error,
                                 };
-                                tool_result_blocks.push(UserContentBlock::ToolResult(
-                                    ToolResultBlock::new(id, output).with_error(is_error),
+                                tool_result_blocks.push(ContentBlock::tool_result_text(
+                                    id, output, is_error,
                                 ));
                             }
                             ParallelToolOutcome::Rejected(reason) => {
@@ -1036,28 +1030,28 @@ pub fn run_stream(
                                     name,
                                     reason: reason.clone(),
                                 };
-                                tool_result_blocks.push(UserContentBlock::ToolResult(
-                                    ToolResultBlock::new(id, reason).with_error(true),
+                                tool_result_blocks.push(ContentBlock::tool_result_text(
+                                    id, reason, true,
                                 ));
                             }
                         }
                     }
-                    messages.push(MessageParam::user_blocks(tool_result_blocks));
+                    messages.push(ChatMessage::user_blocks(tool_result_blocks));
                 }
             }
 
             // 8. Keep the provider's latest context-window report separate
             //    from turn-wide accounting. Compression must not compare a
             //    sum of repeated prompts against one model context window.
-            last_provider_usage = response.usage.clone();
-            cumulative_usage = saturating_add_usage(&cumulative_usage, &last_provider_usage);
+            last_provider_usage = response.usage;
+            cumulative_usage.saturating_add_assign(last_provider_usage);
 
             // 9. Emit IterationEnd — only AFTER all iter-internal
             //    events (chunks + tool calls) have fired.
             yield AgentEvent::IterationEnd {
                 iteration,
-                usage: cumulative_usage.clone(),
-                provider_usage: last_provider_usage.clone(),
+                usage: cumulative_usage,
+                provider_usage: last_provider_usage,
             };
 
             // 10. Check stop_reason.
@@ -1072,26 +1066,21 @@ pub fn run_stream(
             //    the loop exits without seeing EndTurn (e.g. max_iterations
             //    reached during a MaxTokens chain), the caller sees the
             //    last partial result rather than nothing.
-            final_message = Some(Message {
+            final_message = Some(ModelResponse {
                 id: response_id,
-                kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
-                role: MessageRole::Assistant,
                 content: final_message_content,
-                model: config.model.reference.model.clone(),
-                stop_reason: response_stop_reason,
-                stop_sequence: None,
-                usage: cumulative_usage.clone(),
+                model: config.model.reference.clone(),
+                stop_reason: response_stop_reason.clone(),
+                usage: cumulative_usage,
             });
 
             let terminal = matches!(
                 response_stop_reason,
-                Some(
-                    StopReason::EndTurn
-                        | StopReason::StopSequence
-                        | StopReason::Refusal
-                        | StopReason::PauseTurn
-                        | StopReason::Other
-                )
+                StopReason::EndTurn
+                    | StopReason::StopSequence(_)
+                    | StopReason::Refusal
+                    | StopReason::Paused
+                    | StopReason::Other(_)
             );
 
             if terminal {
@@ -1134,7 +1123,7 @@ pub fn run_stream(
 ///   capability the model doesn't have
 pub async fn run(
     config: &AgentLoop,
-    initial_messages: Vec<MessageParam>,
+    initial_messages: Vec<ChatMessage>,
 ) -> Result<AgentLoopResult, AgentLoopError> {
     let max_iterations = config.max_iterations;
     consume_stream_to_run(max_iterations, run_stream(config, initial_messages)).await
@@ -1146,7 +1135,7 @@ pub async fn run(
 /// value rather than fired to the callback.
 pub async fn run_with_events<F>(
     config: &AgentLoop,
-    initial_messages: Vec<MessageParam>,
+    initial_messages: Vec<ChatMessage>,
     mut on_event: F,
 ) -> Result<AgentLoopResult, AgentLoopError>
 where
@@ -1154,14 +1143,8 @@ where
 {
     let max_iterations = config.max_iterations;
     let mut stream = Box::pin(run_stream(config, initial_messages));
-    let mut final_message: Option<Message> = None;
-    let mut total_usage = Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
-        ..Usage::default()
-    };
+    let mut final_message: Option<ModelResponse> = None;
+    let mut total_usage = TokenUsage::default();
     let mut iterations: u32 = 0;
 
     while let Some(event) = stream.next().await {
@@ -1190,6 +1173,13 @@ where
 enum ParallelToolOutcome {
     Executed(ToolExecutionOutcome),
     Rejected(String),
+}
+
+#[derive(Clone)]
+struct PendingToolCall {
+    id: String,
+    name: String,
+    input: serde_json::Value,
 }
 
 struct ToolExecutionOutcome {
@@ -1361,7 +1351,7 @@ async fn consume_provider_stream(
     mut stream: ModelEventStream,
     expected_model: sylvander_llm_core::ModelRef,
     events: &tokio::sync::mpsc::UnboundedSender<AgentEvent>,
-) -> Result<Message, AgentLoopError> {
+) -> Result<ModelResponse, AgentLoopError> {
     let mut completed = None;
     while let Some(event) = stream.next().await {
         let event = event.map_err(|source| AgentLoopError::Provider {
@@ -1392,8 +1382,7 @@ async fn consume_provider_stream(
     }
     let response =
         completed.ok_or_else(|| provider_protocol("provider stream ended without completion"))?;
-    crate::provider_adapter::response_from_core(response)
-        .map_err(|error| AgentLoopError::Validation(error.to_string()))
+    Ok(response)
 }
 
 impl AgentLoop {
@@ -1496,16 +1485,9 @@ impl AgentLoop {
 
     fn build_provider_request(
         &self,
-        messages: &[MessageParam],
+        messages: &[ChatMessage],
     ) -> Result<ModelRequest, AgentLoopError> {
-        let messages = messages
-            .iter()
-            .map(crate::provider_adapter::message_to_core)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| AgentLoopError::Validation(error.to_string()))?;
-        let definitions = tool_definitions_for_model(&self.tools, &self.model);
-        let tools = crate::provider_adapter::tools_to_core(&definitions)
-            .map_err(|error| AgentLoopError::Validation(error.to_string()))?;
+        let tools = tool_definitions_for_model(&self.tools, &self.model);
         Ok(ModelRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
             model: self.provider_model.reference.clone(),
@@ -1521,7 +1503,7 @@ impl AgentLoop {
                         .then_some(sylvander_llm_core::CacheHint::Ephemeral),
                 })
                 .collect(),
-            messages,
+            messages: messages.to_vec(),
             tools,
             max_output_tokens: self.provider_model.max_output_tokens,
             reasoning: self.reasoning_effort.budget_tokens().map(|budget_tokens| {
@@ -1538,14 +1520,14 @@ impl AgentLoop {
 pub(crate) fn tool_definitions_for_model(
     tools: &ToolRegistry,
     model: &ModelInfo,
-) -> Vec<sylvander_llm_anthropic::api::types::Tool> {
+) -> Vec<sylvander_llm_core::ToolDefinition> {
     let mut definitions = tools.definitions();
     if !model
         .capabilities
         .contains(ModelCapabilities::PROMPT_CACHING)
     {
         for definition in &mut definitions {
-            definition.cache_control = None;
+            definition.cache_hint = None;
         }
     }
     definitions
@@ -1562,14 +1544,8 @@ async fn consume_stream_to_run(
     stream: impl Stream<Item = AgentEvent> + Send,
 ) -> Result<AgentLoopResult, AgentLoopError> {
     let mut stream = Box::pin(stream);
-    let mut final_message: Option<Message> = None;
-    let mut total_usage = Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
-        ..Usage::default()
-    };
+    let mut final_message: Option<ModelResponse> = None;
+    let mut total_usage = TokenUsage::default();
     let mut iterations: u32 = 0;
 
     while let Some(event) = stream.next().await {
@@ -1599,49 +1575,13 @@ async fn consume_stream_to_run(
     })
 }
 
-fn saturating_add_usage(total: &Usage, next: &Usage) -> Usage {
-    Usage {
-        input_tokens: total.input_tokens.saturating_add(next.input_tokens),
-        output_tokens: total.output_tokens.saturating_add(next.output_tokens),
-        cache_creation_input_tokens: saturating_add_optional_tokens(
-            total.cache_creation_input_tokens,
-            next.cache_creation_input_tokens,
-        ),
-        cache_read_input_tokens: saturating_add_optional_tokens(
-            total.cache_read_input_tokens,
-            next.cache_read_input_tokens,
-        ),
-        ..Usage::default()
-    }
-}
-
-fn saturating_add_optional_tokens(total: Option<u32>, next: Option<u32>) -> Option<u32> {
-    match (total, next) {
-        (None, None) => None,
-        (total, next) => Some(total.unwrap_or(0).saturating_add(next.unwrap_or(0))),
-    }
-}
-
 // =====================================================================
 // Conversion helpers
 // =====================================================================
 
-/// Convert a `Message` response into a `MessageParam` for re-feed.
-fn assistant_message_from_response(msg: &Message) -> MessageParam {
-    MessageParam::assistant_blocks(msg.content.clone())
-}
-
-// Helper trait for ToolResultBlock.with_error() — extend it via
-// extension trait since we can't modify upstream.
-trait ToolResultExt {
-    fn with_error(self, is_error: bool) -> Self;
-}
-
-impl ToolResultExt for ToolResultBlock {
-    fn with_error(mut self, is_error: bool) -> Self {
-        self.is_error = is_error;
-        self
-    }
+/// Convert a provider-neutral response into a re-feedable assistant message.
+fn assistant_message_from_response(msg: &ModelResponse) -> ChatMessage {
+    ChatMessage::assistant(msg.content.clone())
 }
 
 // =====================================================================

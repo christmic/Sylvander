@@ -11,7 +11,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sylvander_llm_anthropic::api::types::{Message, MessageParam};
+use sylvander_llm_core::{ChatMessage, ModelResponse};
 
 use crate::spec::SessionId;
 
@@ -49,7 +49,7 @@ pub struct SessionContext {
     /// Which session this context belongs to.
     pub session_id: SessionId,
     /// The full message history for this agent in this session.
-    pub history: Vec<MessageParam>,
+    pub history: Vec<ChatMessage>,
     /// Shared session metadata.
     pub metadata: SessionMetadata,
     /// When this context was first created.
@@ -73,18 +73,17 @@ impl SessionContext {
     }
 
     /// Append a user message to the history.
-    pub fn append_user_message(&mut self, msg: MessageParam) {
+    pub fn append_user_message(&mut self, msg: ChatMessage) {
         self.history.push(msg);
         self.updated_at = now_secs();
     }
 
-    /// Append an assistant [`Message`] to the history.
+    /// Append an assistant [`ModelResponse`] to the history.
     ///
-    /// Converts the response `Message` into a re-feedable `MessageParam`
+    /// Converts the response into a re-feedable [`ChatMessage`]
     /// so it can be passed back to the LLM on subsequent turns.
-    pub fn append_assistant_message(&mut self, msg: Message) {
-        self.history
-            .push(MessageParam::assistant_blocks(msg.content));
+    pub fn append_assistant_message(&mut self, msg: ModelResponse) {
+        self.history.push(ChatMessage::assistant(msg.content));
         self.updated_at = now_secs();
     }
 
@@ -93,7 +92,7 @@ impl SessionContext {
     /// The snapshot is independent — subsequent mutations to
     /// [`Self::history`] do not affect it.
     #[must_use]
-    pub fn history_snapshot(&self) -> Vec<MessageParam> {
+    pub fn history_snapshot(&self) -> Vec<ChatMessage> {
         self.history.clone()
     }
 

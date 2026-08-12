@@ -33,6 +33,24 @@ impl ChatMessage {
             content: vec![ContentBlock::Text { text: text.into() }],
         }
     }
+
+    #[must_use]
+    /// Construct one user message from typed content blocks.
+    pub fn user_blocks(content: Vec<ContentBlock>) -> Self {
+        Self {
+            role: ChatRole::User,
+            content,
+        }
+    }
+
+    #[must_use]
+    /// Construct one assistant message from typed content blocks.
+    pub fn assistant(content: Vec<ContentBlock>) -> Self {
+        Self {
+            role: ChatRole::Assistant,
+            content,
+        }
+    }
 }
 
 /// Provider-owned state that must survive response re-feeding.
@@ -149,6 +167,22 @@ pub enum ContentBlock {
     },
 }
 
+impl ContentBlock {
+    #[must_use]
+    /// Construct a textual result for one tool call.
+    pub fn tool_result_text(
+        call_id: impl Into<String>,
+        text: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        Self::ToolResult {
+            call_id: call_id.into(),
+            content: vec![ToolResultContent::Text { text: text.into() }],
+            is_error,
+        }
+    }
+}
+
 /// Provider-neutral prompt cache directive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -263,6 +297,20 @@ pub struct ModelResponse {
     pub stop_reason: StopReason,
     /// Provider-reported token usage.
     pub usage: TokenUsage,
+}
+
+impl ModelResponse {
+    #[must_use]
+    /// Concatenate user-visible text blocks in response order.
+    pub fn text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// Incremental provider-neutral stream item.

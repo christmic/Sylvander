@@ -15,8 +15,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures_util::StreamExt as _;
-use sylvander_llm_anthropic::api::types::MessageParam;
-use sylvander_llm_core::ModelInfo;
+use sylvander_llm_core::{ChatMessage, ModelInfo};
 
 use crate::error::AgentLoopError;
 
@@ -39,7 +38,7 @@ pub trait AutoCompactLlm: Send + Sync {
     /// turns preserved by the layer).
     fn summarize<'a>(
         &'a self,
-        messages: &'a [MessageParam],
+        messages: &'a [ChatMessage],
         model: &'a ModelInfo,
     ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>>;
 }
@@ -61,15 +60,10 @@ impl ProviderAutoCompactLlm {
 impl AutoCompactLlm for ProviderAutoCompactLlm {
     fn summarize<'a>(
         &'a self,
-        messages: &'a [MessageParam],
+        messages: &'a [ChatMessage],
         _model: &'a ModelInfo,
     ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>> {
         Box::pin(async move {
-            let messages = messages
-                .iter()
-                .map(crate::provider_adapter::message_to_core)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| AgentLoopError::Compression(error.to_string()))?;
             let request = sylvander_llm_core::ModelRequest {
                 request_id: uuid::Uuid::new_v4().to_string(),
                 model: self.model.reference.clone(),
@@ -77,7 +71,7 @@ impl AutoCompactLlm for ProviderAutoCompactLlm {
                     text: DEFAULT_SUMMARY_PROMPT.into(),
                     cache_hint: None,
                 }],
-                messages,
+                messages: messages.to_vec(),
                 tools: Vec::new(),
                 max_output_tokens: self.model.max_output_tokens.min(4096),
                 reasoning: None,

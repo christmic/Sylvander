@@ -25,8 +25,7 @@ pub mod pipeline;
 
 pub use auto_compact_llm::{AutoCompactLlm, DEFAULT_SUMMARY_PROMPT};
 
-use sylvander_llm_anthropic::api::types::Usage;
-use sylvander_llm_core::ModelInfo;
+use sylvander_llm_core::{ChatMessage, ModelInfo, TokenUsage};
 
 use crate::compress::pipeline::CompressionPipeline;
 
@@ -37,9 +36,9 @@ use crate::compress::pipeline::CompressionPipeline;
 pub struct CompressContext<'a> {
     /// Mutable message history. Layers may drop from the front or
     /// rewrite inner blocks in place.
-    pub messages: &'a mut Vec<sylvander_llm_anthropic::api::types::MessageParam>,
+    pub messages: &'a mut Vec<ChatMessage>,
     /// Token usage reported by the last LLM response.
-    pub last_usage: &'a Usage,
+    pub last_usage: &'a TokenUsage,
     /// Resolved model metadata (for `context_window` + capabilities).
     pub model_info: &'a ModelInfo,
     /// Optional LLM for L4 (auto-compact). Populated by
@@ -53,8 +52,8 @@ impl<'a> CompressContext<'a> {
     /// set it.
     #[must_use]
     pub fn new(
-        messages: &'a mut Vec<sylvander_llm_anthropic::api::types::MessageParam>,
-        last_usage: &'a Usage,
+        messages: &'a mut Vec<ChatMessage>,
+        last_usage: &'a TokenUsage,
         model_info: &'a ModelInfo,
     ) -> Self {
         Self {

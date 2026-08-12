@@ -20,9 +20,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use sylvander_llm_anthropic::api::types::{
-    MessageParam, ToolResultContent, UserContent, UserContentBlock,
-};
+use sylvander_llm_core::{ChatMessage, ContentBlock, ToolResultContent};
 
 use crate::compress::CompressContext;
 use crate::compress::disk::ToolResultDisk;
@@ -128,7 +126,7 @@ impl CompressionLayer for ToolResultBudgetLayer {
 /// Mutate `msg` in place: rewrite oversized `tool_result` blocks.
 /// Returns counts via the out-params.
 fn rewrite_message(
-    msg: &mut MessageParam,
+    msg: &mut ChatMessage,
     max_inline_chars: usize,
     preview_chars: usize,
     disk: &dyn ToolResultDisk,
@@ -136,18 +134,16 @@ fn rewrite_message(
     freed_tokens: &mut u32,
     written_paths: &mut Vec<String>,
 ) {
-    // Only user messages hold tool_result blocks.
-    let UserContent::Blocks(blocks) = &mut msg.content else {
-        return;
-    };
-
-    for block in blocks.iter_mut() {
-        let UserContentBlock::ToolResult(trb) = block else {
+    for block in &mut msg.content {
+        let ContentBlock::ToolResult {
+            call_id, content, ..
+        } = block
+        else {
             continue;
         };
 
-        // Only handle plain string content. Rich blocks stay as-is.
-        let Some(ToolResultContent::String(body)) = trb.content.as_ref() else {
+        // Only handle exactly one plain text item. Rich results stay as-is.
+        let [ToolResultContent::Text { text: body }] = content.as_slice() else {
             continue;
         };
 
@@ -156,13 +152,13 @@ fn rewrite_message(
         }
 
         // Persist full body to disk.
-        let handle = match disk.persist(&trb.tool_use_id, body) {
+        let handle = match disk.persist(call_id, body) {
             Ok(h) => h,
             Err(e) => {
                 // Don't corrupt the block on failure — leave it as-is.
                 // Caller will see the failure via the report.
                 tracing::warn!(
-                    tool_use_id = %trb.tool_use_id,
+                    tool_use_id = %call_id,
                     error = %e,
                     "L0 tool_result_budget: disk persist failed, leaving block unchanged"
                 );
@@ -193,7 +189,7 @@ fn rewrite_message(
 
         // Mutate the block in place. Preserve tool_use_id, is_error,
         // cache_control. Replace content with the preview.
-        trb.content = Some(ToolResultContent::String(replacement));
+        *content = vec![ToolResultContent::Text { text: replacement }];
         written_paths.push(handle.path.display().to_string());
         *condensed += 1;
     }

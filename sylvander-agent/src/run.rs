@@ -36,8 +36,10 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{Instrument as _, info, warn};
 
-use sylvander_llm_anthropic::api::types::{ImageBlock, UserContentBlock};
-use sylvander_llm_core::{ModelCapabilities, ModelInfo, ModelProvider};
+use sylvander_llm_core::{
+    ChatMessage, ChatRole, ContentBlock, ImageContent, MediaSource, ModelCapabilities, ModelInfo,
+    ModelProvider, ModelResponse, TokenUsage,
+};
 use sylvander_protocol::{
     PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
 };
@@ -290,15 +292,15 @@ fn public_capability_names(
 
 fn usage_cost_nano_usd(
     pricing: sylvander_protocol::ModelPricing,
-    usage: &sylvander_llm_anthropic::api::types::Usage,
+    usage: &TokenUsage,
 ) -> Option<u64> {
-    fn component(tokens: u32, rate: u64) -> u128 {
+    fn component(tokens: u64, rate: u64) -> u128 {
         // rate is micro-USD / 1M tokens; nano-USD therefore divides by 1,000.
         (u128::from(tokens) * u128::from(rate) + 500) / 1_000
     }
 
-    let cache_write = usage.cache_creation_input_tokens.unwrap_or(0);
-    let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
+    let cache_write = usage.cache_write_tokens.unwrap_or(0);
+    let cache_read = usage.cache_read_tokens.unwrap_or(0);
     let mut total = component(usage.input_tokens, pricing.input_usd_micros_per_million)
         + component(usage.output_tokens, pricing.output_usd_micros_per_million);
     if cache_write > 0 {
@@ -708,12 +710,9 @@ impl AgentRun {
             .cloned()
             .ok_or_else(|| CompactionError::new(CompactionFailureCode::Other))?;
         drop(runtime);
-        let usage = sylvander_llm_anthropic::api::types::Usage {
-            input_tokens: model.shadow.context_window,
-            output_tokens: 0,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            ..sylvander_llm_anthropic::api::types::Usage::default()
+        let usage = TokenUsage {
+            input_tokens: u64::from(model.shadow.context_window),
+            ..TokenUsage::default()
         };
         let summarizer = self.inner.loop_config.auto_compact_llm();
         let mut context = crate::compress::CompressContext {
@@ -1693,9 +1692,7 @@ impl TaskGate for BusTaskGate {
         let tasks = self.tasks.clone();
         let running_id = task_id.clone();
         tokio::spawn(async move {
-            let history = vec![sylvander_llm_anthropic::api::types::MessageParam::user(
-                prompt,
-            )];
+            let history = vec![ChatMessage::user(prompt)];
             let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
             let deadline = tokio::time::sleep(std::time::Duration::from_mins(10));
             tokio::pin!(deadline);
@@ -1854,7 +1851,7 @@ impl AgentRunInner {
     async fn apply_compacted_history(
         &self,
         session_id: &SessionId,
-        history: &[sylvander_llm_anthropic::api::types::MessageParam],
+        history: &[ChatMessage],
         layers: &[crate::compress::layer::LayerReport],
     ) -> Result<(), AgentRunError> {
         let metadata = {
@@ -1881,12 +1878,8 @@ impl AgentRunInner {
                     )
                 })?;
                 let role = match message.role {
-                    sylvander_llm_anthropic::api::types::MessageRole::User => {
-                        StoredMessageRole::User
-                    }
-                    sylvander_llm_anthropic::api::types::MessageRole::Assistant => {
-                        StoredMessageRole::Assistant
-                    }
+                    ChatRole::User => StoredMessageRole::User,
+                    ChatRole::Assistant => StoredMessageRole::Assistant,
                 };
                 replacement.push(ReplacementMessage {
                     role,
@@ -2600,7 +2593,7 @@ impl AgentRunInner {
         // 3. Run loop with streaming
         let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
         tokio::pin!(interrupted);
-        let mut final_message: Option<sylvander_llm_anthropic::api::types::Message> = None;
+        let mut final_message: Option<ModelResponse> = None;
 
         loop {
             let event = tokio::select! {
@@ -2748,13 +2741,20 @@ impl AgentRunInner {
                     self.context_usage.write().await.insert(
                         session_id.clone(),
                         ContextUsage {
-                            used: provider_usage.total_input_tokens(),
-                            cache_read: provider_usage.cache_read_input_tokens.unwrap_or(0),
-                            cache_write: provider_usage.cache_creation_input_tokens.unwrap_or(0),
+                            used: u32::try_from(provider_usage.total_input_tokens())
+                                .unwrap_or(u32::MAX),
+                            cache_read: u32::try_from(
+                                provider_usage.cache_read_tokens.unwrap_or(0),
+                            )
+                            .unwrap_or(u32::MAX),
+                            cache_write: u32::try_from(
+                                provider_usage.cache_write_tokens.unwrap_or(0),
+                            )
+                            .unwrap_or(u32::MAX),
                         },
                     );
-                    let mut input_tokens = u64::from(usage.input_tokens);
-                    let mut output_tokens = u64::from(usage.output_tokens);
+                    let mut input_tokens = usage.input_tokens;
+                    let mut output_tokens = usage.output_tokens;
                     let iteration_cost = selected_pricing
                         .and_then(|pricing| usage_cost_nano_usd(pricing, &provider_usage));
                     let mut cost_nano_usd = iteration_cost;
@@ -2762,8 +2762,8 @@ impl AgentRunInner {
                         let total = store
                             .record_usage(
                                 &session_id,
-                                provider_usage.input_tokens,
-                                provider_usage.output_tokens,
+                                u32::try_from(provider_usage.input_tokens).unwrap_or(u32::MAX),
+                                u32::try_from(provider_usage.output_tokens).unwrap_or(u32::MAX),
                                 iteration_cost,
                             )
                             .await
@@ -2874,9 +2874,7 @@ impl AgentRunInner {
                     self.id.clone(),
                     session_id.clone(),
                 );
-                let message = sylvander_llm_anthropic::api::types::MessageParam::assistant_blocks(
-                    msg.content.clone(),
-                );
+                let message = ChatMessage::assistant(msg.content.clone());
                 let content = serde_json::to_value(message).map_err(|_| {
                     AgentRunError::session_persistence(
                         SessionPersistenceOperation::AppendAssistant,
@@ -2889,7 +2887,7 @@ impl AgentRunInner {
                         &session_id,
                         StoredMessageRole::Assistant,
                         content,
-                        Some(&msg.model),
+                        Some(&msg.model.model),
                         None,
                         None,
                     )
@@ -2930,39 +2928,45 @@ impl AgentRunInner {
         .await;
     }
 
-    fn message_to_param(msg: &BusMessage) -> sylvander_llm_anthropic::api::types::MessageParam {
+    fn message_to_param(msg: &BusMessage) -> ChatMessage {
         if msg.attachments.is_empty() {
-            return sylvander_llm_anthropic::api::types::MessageParam::user(&msg.payload);
+            return ChatMessage::user(&msg.payload);
         }
         let mut blocks = Vec::new();
         if !msg.payload.is_empty() {
-            blocks.push(UserContentBlock::text(&msg.payload));
+            blocks.push(ContentBlock::Text {
+                text: msg.payload.clone(),
+            });
         }
         for attachment in &msg.attachments {
             match &attachment.content {
                 crate::bus::AttachmentContent::Text { text } => {
-                    blocks.push(UserContentBlock::text(format!(
-                        "Attached {:?} `{}` ({}):\n{}",
-                        attachment.kind, attachment.name, attachment.mime_type, text
-                    )));
+                    blocks.push(ContentBlock::Text {
+                        text: format!(
+                            "Attached {:?} `{}` ({}):\n{}",
+                            attachment.kind, attachment.name, attachment.mime_type, text
+                        ),
+                    });
                 }
                 crate::bus::AttachmentContent::Base64 { data } => {
-                    let image = match attachment.mime_type.as_str() {
-                        "image/png" => Some(ImageBlock::png(data.clone())),
-                        "image/jpeg" => Some(ImageBlock::jpeg(data.clone())),
-                        _ => None,
-                    };
-                    if let Some(image) = image {
-                        blocks.push(UserContentBlock::text(format!(
-                            "Attached image `{}`:",
-                            attachment.name
-                        )));
-                        blocks.push(UserContentBlock::Image(image));
+                    if matches!(attachment.mime_type.as_str(), "image/png" | "image/jpeg") {
+                        blocks.push(ContentBlock::Text {
+                            text: format!("Attached image `{}`:", attachment.name),
+                        });
+                        blocks.push(ContentBlock::Image {
+                            image: ImageContent {
+                                source: MediaSource::Base64 {
+                                    media_type: attachment.mime_type.clone(),
+                                    data: data.clone(),
+                                },
+                                alt_text: Some(attachment.name.clone()),
+                            },
+                        });
                     }
                 }
             }
         }
-        sylvander_llm_anthropic::api::types::MessageParam::user_blocks(blocks)
+        ChatMessage::user_blocks(blocks)
     }
 }
 

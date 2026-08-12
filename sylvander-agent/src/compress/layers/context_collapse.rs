@@ -29,8 +29,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use serde_json::{Value as JsonValue, json};
-use sylvander_llm_anthropic::api::types::{MessageRole, UserContent, UserContentBlock};
+use serde_json::json;
+use sylvander_llm_core::{ChatRole, ContentBlock};
 
 use crate::compress::CompressContext;
 use crate::compress::layer::{CompressionLayer, LayerReport};
@@ -107,7 +107,7 @@ impl CompressionLayer for ContextCollapseLayer {
         let total_assistant: usize = ctx
             .messages
             .iter()
-            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .filter(|m| matches!(m.role, ChatRole::Assistant))
             .count();
         let active_threshold = total_assistant.saturating_sub(self.keep_last_n_assistant_messages);
 
@@ -116,7 +116,7 @@ impl CompressionLayer for ContextCollapseLayer {
         let mut assistant_seen = 0usize;
 
         for msg in ctx.messages.iter_mut() {
-            if !matches!(msg.role, MessageRole::Assistant) {
+            if !matches!(msg.role, ChatRole::Assistant) {
                 continue;
             }
             assistant_seen += 1;
@@ -124,22 +124,11 @@ impl CompressionLayer for ContextCollapseLayer {
                 continue;
             }
 
-            let UserContent::Blocks(blocks) = &mut msg.content else {
-                continue;
-            };
-
-            for block in blocks.iter_mut() {
-                let UserContentBlock::Other(json_value) = block else {
+            for block in &mut msg.content {
+                let ContentBlock::Reasoning { text, .. } = block else {
                     continue;
                 };
-                if json_value.get("type").and_then(JsonValue::as_str) != Some("thinking") {
-                    continue;
-                }
-                let Some(thinking_text) = json_value.get("thinking").and_then(JsonValue::as_str)
-                else {
-                    continue;
-                };
-                let original_len = thinking_text.len();
+                let original_len = text.len();
                 if original_len <= self.max_thinking_chars {
                     continue;
                 }
@@ -148,11 +137,8 @@ impl CompressionLayer for ContextCollapseLayer {
                 let saved = original_len.saturating_sub(placeholder.len());
                 freed_tokens = freed_tokens.saturating_add((saved / 4) as u32);
 
-                // Replace just the `thinking` field. Keep `type` and
-                // `signature` so the API still validates the block.
-                if let Some(obj) = json_value.as_object_mut() {
-                    obj.insert("thinking".to_string(), json!(placeholder));
-                }
+                // Provider-owned replay state remains untouched.
+                *text = placeholder;
                 condensed += 1;
             }
         }

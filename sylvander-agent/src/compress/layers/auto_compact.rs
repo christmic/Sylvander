@@ -7,7 +7,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use serde_json::json;
-use sylvander_llm_anthropic::api::types::{MessageParam, MessageRole, UserContent};
+use sylvander_llm_core::ChatMessage;
 
 use crate::compress::CompressContext;
 use crate::compress::error::{CompactionError, CompactionFailureCode};
@@ -53,11 +53,8 @@ impl AutoCompactLayer {
         self
     }
 
-    fn summary_message(summary: &str) -> MessageParam {
-        MessageParam {
-            role: MessageRole::User,
-            content: UserContent::String(format!("[Earlier conversation summary]\n{summary}")),
-        }
+    fn summary_message(summary: &str) -> ChatMessage {
+        ChatMessage::user(format!("[Earlier conversation summary]\n{summary}"))
     }
 }
 
@@ -72,7 +69,7 @@ impl CompressionLayer for AutoCompactLayer {
     ) -> Pin<Box<dyn Future<Output = LayerReport> + Send + 'a>> {
         Box::pin(async move {
             let used = ctx.last_usage.total_input_tokens();
-            let threshold = (ctx.model_info.context_window as f32 * self.trigger_ratio) as u32;
+            let threshold = (ctx.model_info.context_window as f32 * self.trigger_ratio) as u64;
             if used < threshold {
                 return LayerReport::noop(self.name());
             }
@@ -90,8 +87,8 @@ impl CompressionLayer for AutoCompactLayer {
             }
             let split_at = ctx.messages.len() - keep_count;
 
-            let to_summarize: Vec<MessageParam> = ctx.messages[..split_at].to_vec();
-            let kept: Vec<MessageParam> = ctx.messages[split_at..].to_vec();
+            let to_summarize: Vec<ChatMessage> = ctx.messages[..split_at].to_vec();
+            let kept: Vec<ChatMessage> = ctx.messages[split_at..].to_vec();
 
             let summary = match llm.summarize(&to_summarize, ctx.model_info).await {
                 Ok(s) => s,

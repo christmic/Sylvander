@@ -33,9 +33,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use sylvander_llm_anthropic::api::types::{
-    MessageRole, ToolResultContent, UserContent, UserContentBlock,
-};
+use sylvander_llm_core::{ChatRole, ContentBlock, ToolResultContent};
 
 use crate::compress::CompressContext;
 use crate::compress::layer::{CompressionLayer, LayerReport};
@@ -98,7 +96,7 @@ impl CompressionLayer for MicroCompactLayer {
         let total_user: usize = ctx
             .messages
             .iter()
-            .filter(|m| matches!(m.role, MessageRole::User))
+            .filter(|m| matches!(m.role, ChatRole::User))
             .count();
         let active_threshold = total_user.saturating_sub(self.keep_last_n_user_messages);
 
@@ -107,7 +105,7 @@ impl CompressionLayer for MicroCompactLayer {
         let mut user_seen = 0usize;
 
         for msg in ctx.messages.iter_mut() {
-            if !matches!(msg.role, MessageRole::User) {
+            if !matches!(msg.role, ChatRole::User) {
                 continue;
             }
             user_seen += 1;
@@ -116,18 +114,18 @@ impl CompressionLayer for MicroCompactLayer {
                 continue;
             }
 
-            let UserContent::Blocks(blocks) = &mut msg.content else {
-                continue;
-            };
-            for block in blocks.iter_mut() {
-                let UserContentBlock::ToolResult(trb) = block else {
+            for block in &mut msg.content {
+                let ContentBlock::ToolResult {
+                    call_id, content, ..
+                } = block
+                else {
                     continue;
                 };
-                let Some(ToolResultContent::String(body)) = trb.content.as_ref() else {
+                let [ToolResultContent::Text { text: body }] = content.as_slice() else {
                     continue;
                 };
 
-                let placeholder = Self::placeholder(&trb.tool_use_id);
+                let placeholder = Self::placeholder(call_id);
                 let original_len = body.len();
                 let new_len = placeholder.len();
                 if original_len <= new_len {
@@ -137,7 +135,7 @@ impl CompressionLayer for MicroCompactLayer {
                 }
                 let saved = original_len.saturating_sub(new_len);
                 freed_tokens = freed_tokens.saturating_add((saved / 4) as u32);
-                trb.content = Some(ToolResultContent::String(placeholder));
+                *content = vec![ToolResultContent::Text { text: placeholder }];
                 condensed += 1;
             }
         }

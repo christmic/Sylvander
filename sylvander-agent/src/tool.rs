@@ -17,6 +17,7 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use sylvander_llm_anthropic::api::types::InputSchema;
+use sylvander_llm_core::{CacheHint, ToolDefinition};
 use sylvander_protocol::AgentHookPhase;
 
 use crate::tool_context::ToolContext;
@@ -605,22 +606,20 @@ impl Tool for HookedTool {
 /// caching enabled. The LAST tool in the array gets an
 /// `ephemeral` `cache_control` breakpoint so the entire tools
 /// block is cached across iterations.
-pub fn build_definitions(tools: &ToolRegistry) -> Vec<sylvander_llm_anthropic::api::types::Tool> {
+pub fn build_definitions(tools: &ToolRegistry) -> Vec<ToolDefinition> {
     let mut tools = tools.snapshot().into_values().collect::<Vec<_>>();
     tools.sort_by(|left, right| left.name().cmp(right.name()));
     let mut defs: Vec<_> = tools
         .into_iter()
-        .map(|t| {
-            sylvander_llm_anthropic::api::types::Tool::new(
-                t.name(),
-                t.description(),
-                t.input_schema(),
-            )
+        .map(|tool| ToolDefinition {
+            name: tool.name().to_owned(),
+            description: tool.description().to_owned(),
+            input_schema: tool.input_schema().schema,
+            cache_hint: None,
         })
         .collect();
     if let Some(last) = defs.last_mut() {
-        use sylvander_llm_anthropic::api::types::CacheControl;
-        last.cache_control = Some(CacheControl::ephemeral());
+        last.cache_hint = Some(CacheHint::Ephemeral);
     }
     defs
 }
@@ -629,7 +628,7 @@ impl ToolRegistry {
     /// Wire-format `Tool` definitions for the LLM request (with
     /// prompt caching on the last tool).
     #[must_use]
-    pub fn definitions(&self) -> Vec<sylvander_llm_anthropic::api::types::Tool> {
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
         build_definitions(self)
     }
 }

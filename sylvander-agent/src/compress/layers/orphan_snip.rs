@@ -25,8 +25,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
-use serde_json::Value as JsonValue;
-use sylvander_llm_anthropic::api::types::{MessageRole, UserContent, UserContentBlock};
+use sylvander_llm_core::{ChatRole, ContentBlock};
 
 use crate::compress::CompressContext;
 use crate::compress::layer::{CompressionLayer, LayerReport};
@@ -54,15 +53,12 @@ impl CompressionLayer for OrphanSnipLayer {
         // Pass 1: collect every tool_use_id the model has ever emitted.
         let mut tool_use_ids: HashSet<String> = HashSet::new();
         for msg in ctx.messages.iter() {
-            if !matches!(msg.role, MessageRole::Assistant) {
+            if !matches!(msg.role, ChatRole::Assistant) {
                 continue;
             }
-            let UserContent::Blocks(blocks) = &msg.content else {
-                continue;
-            };
-            for block in blocks {
-                if let Some(id) = extract_tool_use_id(block) {
-                    tool_use_ids.insert(id);
+            for block in &msg.content {
+                if let ContentBlock::ToolCall { id, .. } = block {
+                    tool_use_ids.insert(id.clone());
                 }
             }
         }
@@ -70,15 +66,12 @@ impl CompressionLayer for OrphanSnipLayer {
         // Pass 2: drop tool_result blocks whose tool_use_id is not in the set.
         let mut removed = 0usize;
         for msg in ctx.messages.iter_mut() {
-            let UserContent::Blocks(blocks) = &mut msg.content else {
-                continue;
-            };
-            let before = blocks.len();
-            blocks.retain(|block| match block {
-                UserContentBlock::ToolResult(trb) => tool_use_ids.contains(&trb.tool_use_id),
+            let before = msg.content.len();
+            msg.content.retain(|block| match block {
+                ContentBlock::ToolResult { call_id, .. } => tool_use_ids.contains(call_id),
                 _ => true,
             });
-            removed += before - blocks.len();
+            removed += before - msg.content.len();
         }
 
         let report = if removed == 0 {
@@ -96,21 +89,6 @@ impl CompressionLayer for OrphanSnipLayer {
         };
         Box::pin(async move { report })
     }
-}
-
-/// Extract `tool_use_id` from a `UserContentBlock` if it represents
-/// an assistant `tool_use` (stored as `Other(json)` with
-/// `type: "tool_use"` after `assistant_message_from_response`).
-fn extract_tool_use_id(block: &UserContentBlock) -> Option<String> {
-    let UserContentBlock::Other(json) = block else {
-        return None;
-    };
-    if json.get("type").and_then(JsonValue::as_str) != Some("tool_use") {
-        return None;
-    }
-    json.get("id")
-        .and_then(JsonValue::as_str)
-        .map(str::to_string)
 }
 
 #[cfg(test)]

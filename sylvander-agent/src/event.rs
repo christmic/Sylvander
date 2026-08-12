@@ -13,7 +13,7 @@
 
 use serde_json::Value as JsonValue;
 
-use sylvander_llm_anthropic::api::types::{Message, MessageParam, Usage};
+use sylvander_llm_core::{ChatMessage, ModelResponse, TokenUsage};
 
 use crate::compress::layer::LayerReport;
 use crate::error::AgentLoopError;
@@ -112,7 +112,7 @@ pub enum AgentEvent {
     HistoryCompacted {
         /// Exact history that the next provider request will receive.
         /// `AgentRun` uses this to keep subsequent turns in sync.
-        history: Vec<MessageParam>,
+        history: Vec<ChatMessage>,
         layers: Vec<LayerReport>,
     },
 
@@ -122,15 +122,15 @@ pub enum AgentEvent {
         /// Iteration number that just completed.
         iteration: u32,
         /// Cumulative usage so far.
-        usage: Usage,
+        usage: TokenUsage,
         /// Usage reported by this provider request only. Consumers use this
         /// for context-window tracking and incremental durable accounting.
-        provider_usage: Usage,
+        provider_usage: TokenUsage,
     },
 
     /// The loop has terminated successfully (model emitted `end_turn`
     /// or hit `max_iterations` without `end_turn`).
-    Done(Message),
+    Done(ModelResponse),
 
     /// The loop terminated with an error.
     Error(AgentLoopError),
