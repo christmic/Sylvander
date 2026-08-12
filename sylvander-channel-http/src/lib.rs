@@ -24,12 +24,12 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use sylvander_agent::bus::{MessageKind, StreamEvent};
 use sylvander_agent::spec::SessionId;
 use sylvander_channel::credential::{
     CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
+use sylvander_protocol::{MessageKind, StreamEvent};
 
 #[derive(Deserialize)]
 struct ChatRequest {

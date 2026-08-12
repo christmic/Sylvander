@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use sylvander_agent::bus::{
+use sylvander_protocol::{
     BusMessage, InProcessMessageBus, MessageBus, SubscriptionFilter, SystemMessage,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -114,13 +114,13 @@ impl sylvander_channel::ChannelHost for EmptyChannelHost {
             .map_err(|_| sylvander_protocol::BoundaryError::forbidden(boundary, "submit_chat"))?;
         bus.publish(BusMessage {
             session_id: session_id.clone(),
-            sender: sylvander_agent::bus::Sender::User(principal.id.0.clone()),
-            recipient: sylvander_agent::bus::Recipient::Agent(request.agent_id),
+            sender: sylvander_protocol::Sender::User(principal.id.0.clone()),
+            recipient: sylvander_protocol::Recipient::Agent(request.agent_id),
             kind: MessageKind::Chat,
             payload: request.text,
             attachments: request.attachments,
             timestamp: 0,
-            id: sylvander_agent::bus::MessageId::new(),
+            id: sylvander_protocol::MessageId::new(),
         })
         .await
         .map_err(|_| sylvander_protocol::BoundaryError::forbidden(boundary, "submit_chat"))?;
@@ -185,13 +185,13 @@ impl sylvander_channel::ChannelHost for EmptyChannelHost {
         };
         bus.publish(BusMessage {
             session_id,
-            sender: sylvander_agent::bus::Sender::System,
-            recipient: sylvander_agent::bus::Recipient::Agent(AgentId::new("agent-1")),
+            sender: sylvander_protocol::Sender::System,
+            recipient: sylvander_protocol::Recipient::Agent(AgentId::new("agent-1")),
             kind: MessageKind::System(system),
             payload: String::new(),
             attachments: Vec::new(),
             timestamp: 0,
-            id: sylvander_agent::bus::MessageId::new(),
+            id: sylvander_protocol::MessageId::new(),
         })
         .await
         .map_err(|_| sylvander_protocol::BoundaryError::forbidden(boundary, "submit_control"))

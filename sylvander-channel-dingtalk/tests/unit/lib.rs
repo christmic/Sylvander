@@ -36,7 +36,7 @@ fn request_limit_is_configurable() {
 async fn readiness_is_reported_only_by_the_connected_callback() {
     let readiness = sylvander_channel::ChannelReadiness::new();
     let context = Arc::new(ChannelContext::with_services(
-        Arc::new(sylvander_agent::bus::InProcessMessageBus::new()),
+        Arc::new(sylvander_protocol::InProcessMessageBus::new()),
         Some("bot-a".into()),
         None,
         Some(readiness.clone()),

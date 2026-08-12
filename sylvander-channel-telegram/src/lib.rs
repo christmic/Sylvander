@@ -26,7 +26,6 @@ use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::spec::AgentId;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
@@ -38,6 +37,7 @@ use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
     BoundaryErrorCode,
 };
+use sylvander_protocol::{MessageKind, StreamEvent, SubscriptionFilter};
 
 // ===========================================================================
 // Telegram types

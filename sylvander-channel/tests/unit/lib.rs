@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::Mutex;
-use sylvander_agent::bus::InProcessMessageBus;
+use sylvander_protocol::InProcessMessageBus;
 
 use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationMethod, ClassifiedPreference, IdentityBindingAction,
