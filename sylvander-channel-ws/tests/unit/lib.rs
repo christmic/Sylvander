@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 use sylvander_agent::bus::InProcessMessageBus;
 use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
@@ -381,6 +383,7 @@ impl UiService for SessionConfigUi {
                             provider_id,
                             revision,
                             kind: "mock".into(),
+                            features: BTreeSet::new(),
                             base_url_sha256: "base-digest".into(),
                             credential_binding_id_sha256: "binding-digest".into(),
                         },

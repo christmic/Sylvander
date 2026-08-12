@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -218,7 +218,7 @@ fn stored_provider(revision: u64, kind: &str, base_url: String) -> ProviderDefin
         id: "anthropic".into(),
         revision,
         kind: kind.into(),
-        features: Default::default(),
+        features: BTreeSet::new(),
         base_url,
         credential_binding_id: "provider:anthropic:api_key".into(),
     }

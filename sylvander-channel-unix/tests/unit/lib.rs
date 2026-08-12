@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use sylvander_agent::bus::{
@@ -377,6 +378,7 @@ impl sylvander_channel::UiService for EmptyUiService {
                         provider_id,
                         revision,
                         kind: "mock".into(),
+                        features: BTreeSet::new(),
                         base_url_sha256: "base-digest".into(),
                         credential_binding_id_sha256: "binding-digest".into(),
                     },

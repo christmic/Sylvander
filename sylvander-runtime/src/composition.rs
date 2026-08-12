@@ -1062,7 +1062,7 @@ fn canonical_model_capability_bits(
             ),
         };
         shadow |= shadow_capability;
-        exact = exact | exact_capability;
+        exact |= exact_capability;
     }
     (shadow, exact)
 }

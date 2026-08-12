@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use sylvander_agent::tool::Tool;
@@ -3417,7 +3418,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             provider_id: "secondary".into(),
             definition: sylvander_protocol::ProviderDefinitionDraft {
                 kind: "anthropic_compatible".into(),
-                features: Default::default(),
+                features: BTreeSet::new(),
                 base_url: model_server.uri(),
                 credential_binding_id: primary_binding,
             },

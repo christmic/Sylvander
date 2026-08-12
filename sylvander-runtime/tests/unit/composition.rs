@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 use sylvander_agent::bus::InProcessMessageBus;
 use sylvander_agent::session_store::SqliteSessionStore;
@@ -138,7 +140,7 @@ fn versioned_snapshot(config: &ServerConfig) -> VersionedRegistryCompositionSnap
                     id: "alpha".into(),
                     revision: 2,
                     kind: "anthropic_compatible".into(),
-                    features: Default::default(),
+                    features: BTreeSet::new(),
                     base_url: "https://alpha.invalid".into(),
                     credential_binding_id: "alpha-key".into(),
                 },
@@ -149,7 +151,7 @@ fn versioned_snapshot(config: &ServerConfig) -> VersionedRegistryCompositionSnap
                     id: "beta".into(),
                     revision: 4,
                     kind: "anthropic_compatible".into(),
-                    features: Default::default(),
+                    features: BTreeSet::new(),
                     base_url: "https://beta.invalid".into(),
                     credential_binding_id: "beta-key".into(),
                 },

@@ -16,7 +16,7 @@ fn provider(revision: u64, base_url: &str) -> ProviderDefinition {
         id: "provider/main".into(),
         revision,
         kind: "anthropic_compatible".into(),
-        features: Default::default(),
+        features: BTreeSet::new(),
         base_url: base_url.into(),
         credential_binding_id: "credential/main".into(),
     }

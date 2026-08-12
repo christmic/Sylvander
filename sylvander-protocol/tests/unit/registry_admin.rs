@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde_json::json;
 
 use super::*;
@@ -8,6 +10,7 @@ fn view() -> ProviderRevisionView {
             provider_id: "alpha".into(),
             revision: 2,
             kind: "anthropic_compatible".into(),
+            features: BTreeSet::default(),
             base_url_sha256: "base-digest".into(),
             credential_binding_id_sha256: "binding-digest".into(),
         },
@@ -502,6 +505,7 @@ fn credential_lifecycle_results_and_conflicts_are_typed_and_redacted() {
 fn provider_draft() -> ProviderDefinitionDraft {
     ProviderDefinitionDraft {
         kind: "anthropic_compatible".into(),
+        features: BTreeSet::default(),
         base_url: "https://private.example.test".into(),
         credential_binding_id: "credential/private".into(),
     }
@@ -570,6 +574,7 @@ fn provider_lifecycle_validation_and_draft_debug_are_content_free() {
             provider_id: "alpha".into(),
             definition: ProviderDefinitionDraft {
                 kind: " ".into(),
+                features: BTreeSet::default(),
                 base_url: "https://example.test".into(),
                 credential_binding_id: "credential/alpha".into(),
             },

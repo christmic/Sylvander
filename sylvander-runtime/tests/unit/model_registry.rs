@@ -34,7 +34,7 @@ async fn install_providers(registry: &AgentRegistry) {
             id: id.into(),
             revision: 1,
             kind: "anthropic_compatible".into(),
-            features: Default::default(),
+            features: BTreeSet::new(),
             base_url: format!("https://{id}.invalid"),
             credential_binding_id: "credential/main".into(),
         };
@@ -138,7 +138,7 @@ async fn create_and_stage_preflight_the_active_provider_before_mutation() {
         id: "legacy".into(),
         revision: 1,
         kind: "unsupported".into(),
-        features: Default::default(),
+        features: BTreeSet::new(),
         base_url: "https://legacy.invalid".into(),
         credential_binding_id: "credential/main".into(),
     };
@@ -196,7 +196,7 @@ async fn model_head_changes_recheck_the_current_provider_before_mutation() {
         id: "alpha".into(),
         revision: 2,
         kind: "unsupported".into(),
-        features: Default::default(),
+        features: BTreeSet::new(),
         base_url: "https://alpha-v2.invalid".into(),
         credential_binding_id: "credential/main".into(),
     };

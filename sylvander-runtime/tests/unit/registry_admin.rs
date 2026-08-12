@@ -21,7 +21,7 @@ fn provider(revision: u64, base_url: &str) -> ProviderDefinition {
         id: "alpha".into(),
         revision,
         kind: "anthropic_compatible".into(),
-        features: Default::default(),
+        features: BTreeSet::new(),
         base_url: base_url.into(),
         credential_binding_id: RAW_BINDING.into(),
     }
@@ -30,7 +30,7 @@ fn provider(revision: u64, base_url: &str) -> ProviderDefinition {
 fn provider_draft(base_url: &str) -> ProviderDefinitionDraft {
     ProviderDefinitionDraft {
         kind: "anthropic_compatible".into(),
-        features: Default::default(),
+        features: BTreeSet::new(),
         base_url: base_url.into(),
         credential_binding_id: RAW_BINDING.into(),
     }
