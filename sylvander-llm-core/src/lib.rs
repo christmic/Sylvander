@@ -25,5 +25,5 @@ pub use types::{
     ModelRequest, ModelResponse, ModelStreamEvent, OpaqueProviderState, ReasoningConfig,
     StopReason, SystemInstruction, ToolDefinition, ToolResultContent,
 };
-pub use usage::TokenUsage;
+pub use usage::{TokenUsage, TokenUsageDetails};
 pub use validation::*;

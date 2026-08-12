@@ -8,8 +8,9 @@ use sylvander_llm_core::{
     ModelCapabilities, ModelEventStream, ModelProvider, ModelRef, ModelRequest,
     ModelRequestCapabilityError, ModelRequestFeature, ModelResponse, ModelStreamEvent,
     OpaqueProviderState, ProviderErrorKind, ProviderFuture, ReasoningConfig,
-    RequiredModelCapability, StopReason, SystemInstruction, TokenUsage, ToolDefinition,
-    ToolResultContent, required_model_capabilities, validate_model_request_capabilities,
+    RequiredModelCapability, StopReason, SystemInstruction, TokenUsage, TokenUsageDetails,
+    ToolDefinition, ToolResultContent, required_model_capabilities,
+    validate_model_request_capabilities,
 };
 
 #[test]
@@ -159,6 +160,13 @@ fn rich_request_and_response_round_trip_without_provider_wire_types() {
             output_tokens: 2,
             cache_write_tokens: Some(3),
             cache_read_tokens: Some(4),
+            details: TokenUsageDetails {
+                reported_total_tokens: Some(19),
+                cache_write_5m_tokens: Some(1),
+                cache_write_1h_tokens: Some(2),
+                reasoning_tokens: Some(1),
+                ..TokenUsageDetails::default()
+            },
         },
     });
     let event_json = serde_json::to_string(&event).unwrap();
@@ -175,17 +183,31 @@ fn usage_accumulates_without_overflowing() {
         output_tokens: 2,
         cache_write_tokens: None,
         cache_read_tokens: Some(u64::MAX),
+        details: TokenUsageDetails {
+            reported_total_tokens: Some(u64::MAX),
+            reasoning_tokens: Some(u64::MAX),
+            ..TokenUsageDetails::default()
+        },
     };
     total.saturating_add_assign(TokenUsage {
         input_tokens: 1,
         output_tokens: 5,
         cache_write_tokens: Some(7),
         cache_read_tokens: None,
+        details: TokenUsageDetails {
+            reported_total_tokens: Some(1),
+            reasoning_tokens: Some(1),
+            audio_input_tokens: Some(3),
+            ..TokenUsageDetails::default()
+        },
     });
     assert_eq!(total.input_tokens, u64::MAX);
     assert_eq!(total.output_tokens, 7);
     assert_eq!(total.cache_write_tokens, Some(7));
     assert_eq!(total.cache_read_tokens, Some(u64::MAX));
+    assert_eq!(total.details.reasoning_tokens, Some(u64::MAX));
+    assert_eq!(total.details.reported_total_tokens, Some(u64::MAX));
+    assert_eq!(total.details.audio_input_tokens, Some(3));
     assert_eq!(total.total_input_tokens(), u64::MAX);
 
     let mut unknown = TokenUsage::default();

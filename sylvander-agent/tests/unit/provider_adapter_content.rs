@@ -23,6 +23,7 @@ fn response(provider: &str, content: Vec<core::ContentBlock>) -> core::ModelResp
             output_tokens: 2,
             cache_write_tokens: Some(0),
             cache_read_tokens: None,
+            details: core::TokenUsageDetails::default(),
         },
     }
 }
