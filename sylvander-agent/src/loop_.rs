@@ -28,7 +28,8 @@ use tracing::{Instrument as _, warn};
 
 use sylvander_llm_core::{
     ChatMessage, ContentBlock, ModelCapabilities, ModelEventStream, ModelInfo, ModelProvider,
-    ModelRequest, ModelResponse, ProviderErrorKind, StopReason, TokenUsage,
+    ModelRequest, ModelResponse, ProviderErrorKind, ReasoningConfig,
+    ReasoningEffort as ProviderReasoningEffort, StopReason, TokenUsage,
 };
 use sylvander_protocol::{AgentHookPhase, ModelSelection};
 
@@ -1497,12 +1498,22 @@ impl AgentLoop {
             messages: messages.to_vec(),
             tools,
             max_output_tokens: self.provider_model.max_output_tokens,
-            reasoning: self.reasoning_effort.budget_tokens().map(|budget_tokens| {
-                sylvander_llm_core::ReasoningConfig {
+            reasoning: self
+                .reasoning_effort
+                .budget_tokens()
+                .map(|budget_tokens| ReasoningConfig {
                     budget_tokens: Some(budget_tokens.min(self.provider_model.max_output_tokens)),
-                    effort: None,
-                }
-            }),
+                    effort: Some(match self.reasoning_effort {
+                        sylvander_protocol::ReasoningEffort::Low => ProviderReasoningEffort::Low,
+                        sylvander_protocol::ReasoningEffort::Medium => {
+                            ProviderReasoningEffort::Medium
+                        }
+                        sylvander_protocol::ReasoningEffort::High => ProviderReasoningEffort::High,
+                        sylvander_protocol::ReasoningEffort::Off => unreachable!(
+                            "disabled reasoning has no budget and cannot enter this mapping"
+                        ),
+                    }),
+                }),
             output_schema: None,
         }
     }

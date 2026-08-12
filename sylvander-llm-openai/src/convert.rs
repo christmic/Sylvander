@@ -231,6 +231,7 @@ fn chat_messages(
         ChatRole::Assistant => "assistant",
     };
     let mut text = String::new();
+    let mut images = Vec::new();
     let mut tool_calls = Vec::new();
     let mut reasoning = String::new();
     for block in &message.content {
@@ -258,19 +259,28 @@ fn chat_messages(
                 "content": result_text(content)?,
             })),
             ContentBlock::Image { image } if message.role == ChatRole::User => {
-                output.push(json!({
-                    "role": "user",
-                    "content": [{"type": "image_url", "image_url": {"url": media_url(&image.source)}}],
+                images.push(json!({
+                    "type": "image_url",
+                    "image_url": {"url": media_url(&image.source)},
                 }));
             }
             ContentBlock::Reasoning { .. } => {}
             _ => return Err(invalid("unsupported Chat Completions content")),
         }
     }
-    if !text.is_empty() || !tool_calls.is_empty() || !reasoning.is_empty() {
+    if !text.is_empty() || !images.is_empty() || !tool_calls.is_empty() || !reasoning.is_empty() {
         let mut value = Map::new();
         value.insert("role".into(), json!(role));
-        value.insert("content".into(), json!(text));
+        if message.role == ChatRole::User && !images.is_empty() {
+            let mut content = Vec::new();
+            if !text.is_empty() {
+                content.push(json!({"type": "text", "text": text}));
+            }
+            content.append(&mut images);
+            value.insert("content".into(), Value::Array(content));
+        } else {
+            value.insert("content".into(), json!(text));
+        }
         if !tool_calls.is_empty() {
             value.insert("tool_calls".into(), Value::Array(tool_calls));
         }

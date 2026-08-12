@@ -2,8 +2,8 @@ use futures_util::StreamExt as _;
 use reqwest::Url;
 use serde_json::json;
 use sylvander_llm_core::{
-    ChatMessage, ContentBlock, ModelProvider, ModelRef, ModelRequest, ModelStreamEvent,
-    ReasoningConfig, ReasoningEffort, StopReason,
+    ChatMessage, ContentBlock, ImageContent, MediaSource, ModelProvider, ModelRef, ModelRequest,
+    ModelStreamEvent, ReasoningConfig, ReasoningEffort, StopReason,
 };
 use sylvander_llm_openai::{
     OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
@@ -211,6 +211,60 @@ async fn qwen_chat_uses_configured_max_completion_tokens_feature() {
         .complete_stream(request("qwen", "qwen-plus"))
         .await
         .expect("open stream");
+    assert!(matches!(
+        stream.next().await.expect("delta").expect("event"),
+        ModelStreamEvent::TextDelta(_)
+    ));
+    assert!(matches!(
+        stream.next().await.expect("done").expect("completion"),
+        ModelStreamEvent::Completed(_)
+    ));
+}
+
+#[tokio::test]
+async fn gpt_chat_keeps_text_and_image_in_one_official_user_message() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "model": "gpt-4.1",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+                ]
+            }]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: {\"id\":\"chat_image\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            "text/event-stream",
+        ))
+        .mount(&server)
+        .await;
+    let mut value = request("openai", "gpt-4.1");
+    value.messages = vec![ChatMessage::user_blocks(vec![
+        ContentBlock::Text {
+            text: "describe".into(),
+        },
+        ContentBlock::Image {
+            image: ImageContent {
+                source: MediaSource::Url {
+                    url: "https://example.test/image.png".into(),
+                },
+                alt_text: None,
+            },
+        },
+    ])];
+    let mut stream = provider(
+        &server,
+        "openai",
+        OpenAiProtocol::ChatCompletions,
+        ProviderFeatures::default(),
+    )
+    .complete_stream(value)
+    .await
+    .expect("open stream");
     assert!(matches!(
         stream.next().await.expect("delta").expect("event"),
         ModelStreamEvent::TextDelta(_)

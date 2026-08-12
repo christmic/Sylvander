@@ -51,7 +51,9 @@ async fn qwen_plus_matches_official_generation_request_and_response_shape() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(
             concat!(
                 "data: {\"request_id\":\"req_qwen\",\"output\":{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"hello\"},\"finish_reason\":\"stop\"}]},",
-                "\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}\n\n"
+                "\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3,",
+                "\"prompt_tokens_details\":{\"cached_tokens\":1},",
+                "\"output_tokens_details\":{\"reasoning_tokens\":0}}}\n\n"
             ),
             "text/event-stream",
         ))
@@ -73,6 +75,8 @@ async fn qwen_plus_matches_official_generation_request_and_response_shape() {
     };
     assert_eq!(response.stop_reason, StopReason::EndTurn);
     assert_eq!(response.usage.details.reported_total_tokens, Some(3));
+    assert_eq!(response.usage.cache_read_tokens, Some(1));
+    assert_eq!(response.usage.details.reasoning_tokens, Some(0));
 }
 
 #[tokio::test]

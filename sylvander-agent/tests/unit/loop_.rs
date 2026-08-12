@@ -5,7 +5,8 @@ use sylvander_llm_core::{
     CacheHint, ChatMessage, ChatRole, ContentBlock as ProviderBlock, DocumentContent, ImageContent,
     InputSchema, MediaSource, ModelCapabilities as ProviderCapabilities, ModelEventStream,
     ModelInfo as ProviderModelInfo, ModelRef, ModelResponse, ModelStreamEvent, ProviderError,
-    ProviderErrorKind, ProviderErrorPhase, ProviderFuture, StopReason as ProviderStopReason,
+    ProviderErrorKind, ProviderErrorPhase, ProviderFuture,
+    ReasoningEffort as ProviderReasoningEffort, StopReason as ProviderStopReason,
     SystemInstruction, TokenUsage, ToolResultContent,
 };
 
@@ -664,7 +665,9 @@ fn reasoning_effort_builds_a_capability_checked_budget() {
         .build()
         .expect("loop");
     let request = loop_.build_provider_request(&[MessageParam::user("think")]);
-    assert_eq!(request.reasoning.unwrap().budget_tokens, Some(8_192));
+    let reasoning = request.reasoning.expect("reasoning config");
+    assert_eq!(reasoning.budget_tokens, Some(8_192));
+    assert_eq!(reasoning.effort, Some(ProviderReasoningEffort::High));
     assert_eq!(
         loop_.reasoning_effort(),
         sylvander_protocol::ReasoningEffort::High

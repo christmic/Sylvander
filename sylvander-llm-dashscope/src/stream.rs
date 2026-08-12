@@ -86,11 +86,15 @@ impl State {
             self.request_id = id.into();
         }
         if let Some(usage) = value.get("usage") {
+            let prompt = usage.get("prompt_tokens_details").unwrap_or(&Value::Null);
+            let output = usage.get("output_tokens_details").unwrap_or(&Value::Null);
             self.usage = TokenUsage {
                 input_tokens: number(usage, "input_tokens"),
                 output_tokens: number(usage, "output_tokens"),
+                cache_read_tokens: prompt.get("cached_tokens").and_then(Value::as_u64),
                 details: TokenUsageDetails {
                     reported_total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+                    reasoning_tokens: output.get("reasoning_tokens").and_then(Value::as_u64),
                     ..TokenUsageDetails::default()
                 },
                 ..TokenUsage::default()
