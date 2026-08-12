@@ -3022,8 +3022,10 @@ dependencies = [
  "async-stream",
  "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "sylvander-llm-core",
+ "thiserror 2.0.18",
  "tokio",
  "wiremock",
 ]
@@ -3035,6 +3037,7 @@ dependencies = [
  "async-stream",
  "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "sylvander-llm-core",
  "thiserror 2.0.18",
