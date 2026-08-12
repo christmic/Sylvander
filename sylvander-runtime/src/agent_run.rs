@@ -59,10 +59,6 @@ use sylvander_agent::approval::{
     ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest,
 };
 use sylvander_agent::ask_user_gate::AskUserGate;
-use sylvander_agent::bus::{
-    AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Sender, StreamEvent,
-    SubscriptionFilter, SystemMessage, ToolCallInfo,
-};
 use sylvander_agent::compress::error::{CompactionError, CompactionFailureCode};
 use sylvander_agent::compress::layer::CompressionLayer;
 use sylvander_agent::conversation::ConversationSnapshot;
@@ -98,6 +94,10 @@ use sylvander_agent::workspace_executor::{
     MountedWorkspace, UnavailableExecutor, WorkspaceExecutor, WorkspaceRouter, WorkspaceTarget,
 };
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
+use sylvander_protocol::{
+    AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Sender, StreamEvent,
+    SubscriptionFilter, SystemMessage, ToolCallInfo,
+};
 
 #[path = "workspace_context.rs"]
 mod workspace_context;
@@ -2257,7 +2257,7 @@ impl AgentRunInner {
             if let Err(error @ AgentRunError::SessionPersistence { .. }) = &result {
                 self.publish_stream(
                     &session_id,
-                    sylvander_agent::bus::StreamEvent::Error {
+                    sylvander_protocol::StreamEvent::Error {
                         message: error.to_string(),
                     },
                 )
@@ -2752,7 +2752,7 @@ impl AgentRunInner {
                     self.cancel_pending_decisions(&session_id).await;
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::TurnInterrupted {
+                        sylvander_protocol::StreamEvent::TurnInterrupted {
                             reason: "interrupted by user".into(),
                         },
                     ).await;
@@ -2767,14 +2767,14 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::TextChunk(text) => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::TextDelta { delta: text },
+                        sylvander_protocol::StreamEvent::TextDelta { delta: text },
                     )
                     .await;
                 }
                 sylvander_agent::event::AgentEvent::ThinkingChunk(text) => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::ThinkingDelta { delta: text },
+                        sylvander_protocol::StreamEvent::ThinkingDelta { delta: text },
                     )
                     .await;
                 }
@@ -2787,7 +2787,7 @@ impl AgentRunInner {
                 } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::ModelRetry {
+                        sylvander_protocol::StreamEvent::ModelRetry {
                             attempt,
                             max_attempts,
                             delay_ms,
@@ -2806,7 +2806,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::ToolCall {
+                        sylvander_protocol::StreamEvent::ToolCall {
                             call_id: id,
                             tool_name: name,
                             input,
@@ -2817,7 +2817,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::ToolCallOutputDelta { id, name, delta } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::ToolOutputDelta {
+                        sylvander_protocol::StreamEvent::ToolOutputDelta {
                             call_id: id,
                             tool_name: name,
                             delta,
@@ -2855,7 +2855,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::ToolResult {
+                        sylvander_protocol::StreamEvent::ToolResult {
                             call_id: id,
                             tool_name: name,
                             output,
@@ -2867,7 +2867,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::ToolRejected { id, name, reason } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::ToolResult {
+                        sylvander_protocol::StreamEvent::ToolResult {
                             call_id: id,
                             tool_name: name,
                             output: reason,
@@ -2879,7 +2879,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::IterationStart { iteration } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::IterationStart { iteration },
+                        sylvander_protocol::StreamEvent::IterationStart { iteration },
                     )
                     .await;
                 }
@@ -2929,7 +2929,7 @@ impl AgentRunInner {
                     }
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::IterationEnd {
+                        sylvander_protocol::StreamEvent::IterationEnd {
                             iteration,
                             input_tokens: u32::try_from(input_tokens).unwrap_or(u32::MAX),
                             output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
@@ -2941,7 +2941,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::CompressionStarted => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::CompactionStarted { automatic: true },
+                        sylvander_protocol::StreamEvent::CompactionStarted { automatic: true },
                     )
                     .await;
                 }
@@ -2958,7 +2958,7 @@ impl AgentRunInner {
                     {
                         self.publish_stream(
                             &session_id,
-                            sylvander_agent::bus::StreamEvent::CompactionFailed {
+                            sylvander_protocol::StreamEvent::CompactionFailed {
                                 automatic: true,
                                 reason: error.compatibility_reason().into(),
                             },
@@ -2972,7 +2972,7 @@ impl AgentRunInner {
                             Ok(()) => {
                                 self.publish_stream(
                                     &session_id,
-                                    sylvander_agent::bus::StreamEvent::CompactionCompleted {
+                                    sylvander_protocol::StreamEvent::CompactionCompleted {
                                         report: public_compaction_report(true, &layers),
                                     },
                                 )
@@ -2981,7 +2981,7 @@ impl AgentRunInner {
                             Err(error) => {
                                 self.publish_stream(
                                     &session_id,
-                                    sylvander_agent::bus::StreamEvent::CompactionFailed {
+                                    sylvander_protocol::StreamEvent::CompactionFailed {
                                         automatic: true,
                                         reason: sylvander_agent::compress::error::CompactionError::new(
                                             sylvander_agent::compress::error::CompactionFailureCode::Persistence,
@@ -2999,7 +2999,7 @@ impl AgentRunInner {
                 sylvander_agent::event::AgentEvent::UserAnswer { call_id, answer } => {
                     self.publish_stream(
                         &session_id,
-                        sylvander_agent::bus::StreamEvent::UserAnswer { call_id, answer },
+                        sylvander_protocol::StreamEvent::UserAnswer { call_id, answer },
                     )
                     .await;
                 }
@@ -3056,11 +3056,8 @@ impl AgentRunInner {
                 ctx.append_assistant_message(msg);
             }
             drop(sessions);
-            self.publish_stream(
-                &session_id,
-                sylvander_agent::bus::StreamEvent::Done { text },
-            )
-            .await;
+            self.publish_stream(&session_id, sylvander_protocol::StreamEvent::Done { text })
+                .await;
         }
 
         Ok(())
@@ -3068,11 +3065,7 @@ impl AgentRunInner {
 
     // -- helpers --
 
-    async fn publish_stream(
-        &self,
-        session_id: &SessionId,
-        event: sylvander_agent::bus::StreamEvent,
-    ) {
+    async fn publish_stream(&self, session_id: &SessionId, event: sylvander_protocol::StreamEvent) {
         let msg = BusMessage::stream_event(session_id.clone(), self.id.clone(), event);
         let _ = self.bus.publish(msg).await;
     }
@@ -3080,7 +3073,7 @@ impl AgentRunInner {
     async fn publish_error(&self, session_id: &SessionId, err: &AgentLoopError) {
         self.publish_stream(
             session_id,
-            sylvander_agent::bus::StreamEvent::Error {
+            sylvander_protocol::StreamEvent::Error {
                 message: err.to_string(),
             },
         )
@@ -3099,7 +3092,7 @@ impl AgentRunInner {
         }
         for attachment in &msg.attachments {
             match &attachment.content {
-                sylvander_agent::bus::AttachmentContent::Text { text } => {
+                sylvander_protocol::AttachmentContent::Text { text } => {
                     blocks.push(ContentBlock::Text {
                         text: format!(
                             "Attached {:?} `{}` ({}):\n{}",
@@ -3107,7 +3100,7 @@ impl AgentRunInner {
                         ),
                     });
                 }
-                sylvander_agent::bus::AttachmentContent::Base64 { data } => {
+                sylvander_protocol::AttachmentContent::Base64 { data } => {
                     if matches!(attachment.mime_type.as_str(), "image/png" | "image/jpeg") {
                         blocks.push(ContentBlock::Text {
                             text: format!("Attached image `{}`:", attachment.name),

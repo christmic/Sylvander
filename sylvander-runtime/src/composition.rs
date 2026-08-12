@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
-use sylvander_agent::bus::MessageBus;
 use sylvander_agent::curated_memory::MemoryCandidateSink;
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::spec::{AgentSpec, ToolRef};
@@ -24,6 +23,7 @@ use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelProvider,
     ModelRef,
 };
+use sylvander_protocol::MessageBus;
 use sylvander_protocol::{
     AgentSecretReference, ApprovalPolicy, FileAccess, ModelSelection,
     ModelSelectionResolutionError, NetworkAccess, PermissionProfile, ReasoningEffort,

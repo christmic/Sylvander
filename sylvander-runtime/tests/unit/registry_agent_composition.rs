@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use crate::storage::session::{SessionLifetime, SessionStore, SqliteSessionStore, StoredSession};
 use serde_json::json;
-use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_protocol::{
     AgentId, AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, BusMessage,
     SessionConfigOverrides, SessionConfigUpdateRequest, SessionCreateRequest, SessionMetadata,
 };
+use sylvander_protocol::{InProcessMessageBus, MessageBus};
 use tempfile::tempdir;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

@@ -145,16 +145,14 @@ impl InstrumentedBus {
 
 #[async_trait::async_trait]
 impl MessageBus for InstrumentedBus {
-    async fn publish(&self, message: BusMessage) -> Result<(), sylvander_agent::bus::BusError> {
-        let chat = matches!(message.kind, sylvander_agent::bus::MessageKind::Chat);
+    async fn publish(&self, message: BusMessage) -> Result<(), sylvander_protocol::BusError> {
+        let chat = matches!(message.kind, sylvander_protocol::MessageKind::Chat);
         self.operations
             .lock()
             .unwrap()
             .push(if chat { "publish_chat" } else { "publish" });
         if self.fail_all_publish || (chat && self.fail_chat_publish) {
-            return Err(sylvander_agent::bus::BusError::SendFailed(
-                "injected".into(),
-            ));
+            return Err(sylvander_protocol::BusError::SendFailed("injected".into()));
         }
         self.inner.publish(message).await
     }
@@ -162,10 +160,10 @@ impl MessageBus for InstrumentedBus {
     async fn subscribe(
         &self,
         filter: SubscriptionFilter,
-    ) -> Result<tokio::sync::mpsc::Receiver<BusMessage>, sylvander_agent::bus::BusError> {
+    ) -> Result<tokio::sync::mpsc::Receiver<BusMessage>, sylvander_protocol::BusError> {
         self.operations.lock().unwrap().push("subscribe");
         if self.fail_subscribe {
-            return Err(sylvander_agent::bus::BusError::SubscribeFailed(
+            return Err(sylvander_protocol::BusError::SubscribeFailed(
                 "injected".into(),
             ));
         }
@@ -1221,7 +1219,7 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
             .unwrap();
     assert_eq!(success_bus.operations(), ["subscribe", "publish_chat"]);
     let chat = submitted.events.recv().await.unwrap();
-    assert!(matches!(chat.kind, sylvander_agent::bus::MessageKind::Chat));
+    assert!(matches!(chat.kind, sylvander_protocol::MessageKind::Chat));
     assert_eq!(chat.session_id, submitted.session_id);
     assert!(matches!(
         submitted.events.try_recv(),
@@ -3002,7 +3000,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     assert_eq!(routed.session_id, platform_session);
     assert_eq!(
         routed.recipient,
-        sylvander_agent::bus::Recipient::Agent(AgentId::new("assistant"))
+        sylvander_protocol::Recipient::Agent(AgentId::new("assistant"))
     );
     let platform_stored = runtime
         .session_store
@@ -3012,7 +3010,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .unwrap();
     assert_eq!(
         routed.sender,
-        sylvander_agent::bus::Sender::User(platform_stored.metadata.user_id.clone())
+        sylvander_protocol::Sender::User(platform_stored.metadata.user_id.clone())
     );
     assert!(platform_stored.metadata.user_id.starts_with("unlinked:v1:"));
     assert_eq!(

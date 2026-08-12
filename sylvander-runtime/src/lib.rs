@@ -138,9 +138,6 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::mcp_stdio::McpResultArtifactSink;
-use sylvander_agent::bus::{
-    BusDiagnostics, BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
-};
 #[cfg(test)]
 use sylvander_agent::spec::AgentSpec;
 use sylvander_agent::spec::{AgentId, SessionId};
@@ -168,6 +165,9 @@ use sylvander_protocol::{
     UiHistoryMessage, UiSessionHistory, UiSessionInfo, UserId, UserProfileAction,
     UserProfileCapabilities, UserProfileError, UserProfileErrorCode, UserProfileOperation,
     UserProfileRequest, UserProfileResponse,
+};
+use sylvander_protocol::{
+    BusDiagnostics, BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
 };
 
 use crate::agent_admin::{
@@ -1750,15 +1750,15 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 })?;
             let message = BusMessage {
                 session_id: session_id.clone(),
-                sender: sylvander_agent::bus::Sender::User(
+                sender: sylvander_protocol::Sender::User(
                     self.effective_user_id(boundary, "submit_chat").await?.0,
                 ),
                 recipient: Recipient::Agent(agent_id),
-                kind: sylvander_agent::bus::MessageKind::Chat,
+                kind: sylvander_protocol::MessageKind::Chat,
                 payload: text,
                 attachments,
                 timestamp: crate::session::now_secs(),
-                id: sylvander_agent::bus::MessageId::new(),
+                id: sylvander_protocol::MessageId::new(),
             };
             let feedback_target = self.evidence_run_id.as_ref().map(|run_id| {
                 crate::evidence::feedback_target(run_id, &format!("turn:{}", message.id.0))
@@ -1804,7 +1804,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 scope,
                 reason,
                 ..
-            } => sylvander_agent::bus::SystemMessage::ApproveTool {
+            } => sylvander_protocol::SystemMessage::ApproveTool {
                 call_id,
                 approved,
                 scope,
@@ -1812,15 +1812,15 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             },
             ClientMessage::Answer {
                 call_id, answer, ..
-            } => sylvander_agent::bus::SystemMessage::AnswerQuestion { call_id, answer },
-            ClientMessage::Interrupt { .. } => sylvander_agent::bus::SystemMessage::InterruptTurn {
+            } => sylvander_protocol::SystemMessage::AnswerQuestion { call_id, answer },
+            ClientMessage::Interrupt { .. } => sylvander_protocol::SystemMessage::InterruptTurn {
                 session_id: session_id.clone(),
             },
             ClientMessage::ResolvePlan {
                 plan_id, decision, ..
-            } => sylvander_agent::bus::SystemMessage::ResolvePlan { plan_id, decision },
+            } => sylvander_protocol::SystemMessage::ResolvePlan { plan_id, decision },
             ClientMessage::CancelTask { task_id, .. } => {
-                sylvander_agent::bus::SystemMessage::CancelTask {
+                sylvander_protocol::SystemMessage::CancelTask {
                     session_id: session_id.clone(),
                     task_id,
                 }
@@ -1836,13 +1836,13 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         self.bus
             .publish(BusMessage {
                 session_id,
-                sender: sylvander_agent::bus::Sender::System,
+                sender: sylvander_protocol::Sender::System,
                 recipient: Recipient::Agent(agent_id),
-                kind: sylvander_agent::bus::MessageKind::System(system),
+                kind: sylvander_protocol::MessageKind::System(system),
                 payload: String::new(),
                 attachments: Vec::new(),
                 timestamp: crate::session::now_secs(),
-                id: sylvander_agent::bus::MessageId::new(),
+                id: sylvander_protocol::MessageId::new(),
             })
             .await
             .map_err(|_| boundary_failure(boundary, "submit_control", "control dispatch failed"))

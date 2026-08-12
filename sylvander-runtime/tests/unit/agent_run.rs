@@ -1,12 +1,12 @@
 use super::*;
 use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
-use sylvander_agent::bus::{InProcessMessageBus, Recipient};
 use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::tool::ToolExecutor as _;
 use sylvander_agent::tools::memory::InMemoryMemoryStore;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_core::ModelInfo as ProviderModelInfo;
+use sylvander_protocol::{InProcessMessageBus, Recipient};
 
 #[allow(clippy::too_many_arguments)]
 async fn with_workspace_context(
@@ -2224,13 +2224,13 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
     ] {
         bus.publish(BusMessage {
             session_id: session_a.clone(),
-            sender: sylvander_agent::bus::Sender::System,
-            recipient: sylvander_agent::bus::Recipient::Agent(AgentId::new("test-agent")),
+            sender: sylvander_protocol::Sender::System,
+            recipient: sylvander_protocol::Recipient::Agent(AgentId::new("test-agent")),
             kind: MessageKind::System(kind),
             payload: String::new(),
             attachments: Vec::new(),
             timestamp: crate::session::now_secs(),
-            id: sylvander_agent::bus::MessageId::new(),
+            id: sylvander_protocol::MessageId::new(),
         })
         .await
         .unwrap();
@@ -2917,12 +2917,12 @@ fn typed_attachments_become_provider_content_blocks() {
         SessionId::new("s1"),
         "u1",
         "review this",
-        vec![sylvander_agent::bus::MessageAttachment {
+        vec![sylvander_protocol::MessageAttachment {
             id: "a1".into(),
-            kind: sylvander_agent::bus::AttachmentKind::File,
+            kind: sylvander_protocol::AttachmentKind::File,
             name: "src/main.rs".into(),
             mime_type: "text/x-rust".into(),
-            content: sylvander_agent::bus::AttachmentContent::Text {
+            content: sylvander_protocol::AttachmentContent::Text {
                 text: "fn main() {}".into(),
             },
             byte_count: 12,

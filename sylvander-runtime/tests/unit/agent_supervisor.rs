@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::qualified_anthropic_run_builder;
-use sylvander_agent::bus::{InProcessMessageBus, Recipient};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
+use sylvander_protocol::{InProcessMessageBus, Recipient};
 
 struct TestRevisionProvider {
     bindings: RwLock<HashMap<SessionId, u64>>,
@@ -257,7 +257,7 @@ async fn create_session_notifies_agents() {
     // Now subscribe to the agent's inbox to observe JoinSession
     let mut observer = engine
         .bus()
-        .subscribe(sylvander_agent::bus::SubscriptionFilter::for_agent(
+        .subscribe(sylvander_protocol::SubscriptionFilter::for_agent(
             AgentId::new("agent-1"),
         ))
         .await

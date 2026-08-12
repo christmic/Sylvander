@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use sha2::{Digest, Sha256};
-use sylvander_agent::bus::{
+use sylvander_protocol::{
     BusMessage, MessageBus, MessageKind, Recipient, Sender, StreamEvent, SubscriptionFilter,
 };
 use tokio::sync::{Mutex, RwLock, oneshot};

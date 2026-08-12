@@ -9,7 +9,6 @@ mod support;
 use std::sync::Arc;
 
 use serde_json::json;
-use sylvander_agent::bus::{PlanDecision, StreamEvent};
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
@@ -19,6 +18,7 @@ use sylvander_protocol::{
     PermissionProfile, ReasoningEffort, SessionConfigProvenance, SessionConfigSource,
     SessionConfigSourceKind, SessionEffectiveConfig,
 };
+use sylvander_protocol::{PlanDecision, StreamEvent};
 use sylvander_runtime::agent_run::{AgentRun, AgentRunBuilder};
 use sylvander_runtime::agent_supervisor::AgentRunEngine;
 use sylvander_runtime::session::SessionMetadata;

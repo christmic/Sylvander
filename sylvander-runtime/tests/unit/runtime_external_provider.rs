@@ -177,14 +177,14 @@ async fn runtime_boot_uses_external_acquire_renew_rotation_and_failure() {
     .await
     .expect("Agent did not observe the Runtime join event");
 
-    run.handle_message(sylvander_agent::bus::BusMessage::user_chat(
+    run.handle_message(sylvander_protocol::BusMessage::user_chat(
         session.clone(),
         "user-1",
         "first",
     ))
     .await
     .unwrap();
-    run.handle_message(sylvander_agent::bus::BusMessage::user_chat(
+    run.handle_message(sylvander_protocol::BusMessage::user_chat(
         session.clone(),
         "user-1",
         "second",
@@ -210,7 +210,7 @@ async fn runtime_boot_uses_external_acquire_renew_rotation_and_failure() {
 
     provider.fail_renew.store(true, Ordering::SeqCst);
     assert!(
-        run.handle_message(sylvander_agent::bus::BusMessage::user_chat(
+        run.handle_message(sylvander_protocol::BusMessage::user_chat(
             session,
             "user-1",
             "must fail closed",

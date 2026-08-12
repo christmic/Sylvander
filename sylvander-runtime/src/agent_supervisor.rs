@@ -29,10 +29,10 @@ use tracing::{info, warn};
 
 use crate::agent_run::AgentRun;
 use crate::session::SessionMetadata;
-use sylvander_agent::bus::{
+use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
+use sylvander_protocol::{
     AgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender, SystemMessage,
 };
-use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 
 /// Supplies immutable Agent runs to the engine's revision router.
 ///
@@ -207,7 +207,7 @@ impl AgentRunEngine {
         // Subscribe to all broadcast messages — we filter for StatusUpdate
         // in the receiver. (We can't filter by SystemMessage variant alone
         // because PartialEq compares the inner fields too.)
-        let status_filter = sylvander_agent::bus::SubscriptionFilter {
+        let status_filter = sylvander_protocol::SubscriptionFilter {
             session_ids: None,
             recipients: Some(vec![Recipient::Broadcast]),
             kinds: None,
@@ -291,7 +291,7 @@ impl AgentRunEngine {
             .subscribe(initial_run.subscription_filter())
             .await
             .map_err(|error| EngineError::Bus(format!("agent subscribe failed: {error}")))?;
-        let status_filter = sylvander_agent::bus::SubscriptionFilter {
+        let status_filter = sylvander_protocol::SubscriptionFilter {
             session_ids: None,
             recipients: Some(vec![Recipient::Broadcast]),
             kinds: None,
@@ -529,7 +529,7 @@ impl AgentRunEngine {
     pub async fn send_message(
         &self,
         session_id: SessionId,
-        target: sylvander_agent::bus::Recipient,
+        target: sylvander_protocol::Recipient,
         text: impl Into<String>,
     ) -> Result<(), EngineError> {
         // Verify the session exists
@@ -548,7 +548,7 @@ impl AgentRunEngine {
             payload: text.into(),
             attachments: Vec::new(),
             timestamp: crate::session::now_secs(),
-            id: sylvander_agent::bus::MessageId::new(),
+            id: sylvander_protocol::MessageId::new(),
         };
 
         self.bus
