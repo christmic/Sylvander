@@ -137,6 +137,8 @@ crate without retaining a second production path.
 
 ## Related documentation
 
+- [`application-services.md`](application-services.md) — Session supervision,
+  execution/sandbox ownership, unified storage, and built-in observability.
 - [`channel-supervision.md`](channel-supervision.md) — concrete channel
   lifecycle and restart parameters.
 - [`../../docs/server-configuration.md`](../../docs/server-configuration.md)

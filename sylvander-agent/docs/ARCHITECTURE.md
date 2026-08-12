@@ -110,6 +110,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-agent --no-deps --locked
 
 ## Related documentation
 
+- [`execution-kernel.md`](execution-kernel.md) — Agent-owned turn vocabulary,
+  construction, authority invariants, and code documentation rules.
 - [`workspace-execution.md`](workspace-execution.md) — executor and coding tool
   rules.
 - [`mcp.md`](mcp.md) — MCP lifecycle and bounded result handling.
