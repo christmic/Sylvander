@@ -12,8 +12,8 @@ use super::{
     MemoryIntegrityConfig, MonotonicMemoryAnchor, RelationshipMemoryRetentionPolicy,
     SqliteMemoryStore,
 };
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryStore};
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryStore};
 
 const TOKEN: &[u8] = b"remote-anchor-test-token";
 const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
@@ -109,7 +109,7 @@ fn worker() -> MemoryExecutionContext {
 fn open_store(
     database: &std::path::Path,
     endpoint: &str,
-) -> Result<SqliteMemoryStore, crate::tools::memory::MemoryStoreError> {
+) -> Result<SqliteMemoryStore, sylvander_agent::tools::memory::MemoryStoreError> {
     let anchor = test_anchor(endpoint, Duration::from_secs(2), 1);
     SqliteMemoryStore::open_with_integrity(
         database,

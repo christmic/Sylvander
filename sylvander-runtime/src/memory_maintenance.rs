@@ -1,15 +1,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use sylvander_agent::tools::{
-    MemoryEvidenceCheckpoint, RelationshipMemoryRetentionPolicy, SqliteMemoryMaintenance,
-};
+use sylvander_agent::tools::RelationshipMemoryRetentionPolicy;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::RuntimeError;
 use crate::config::MemoryMaintenanceSettings;
+use crate::storage::memory::{MemoryEvidenceCheckpoint, SqliteMemoryMaintenance};
 
 pub(crate) struct RuntimeMemoryMaintenancePolicy {
     pub(crate) retention: RelationshipMemoryRetentionPolicy,

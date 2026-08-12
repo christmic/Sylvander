@@ -97,6 +97,11 @@ crate without retaining a second production path.
 - `execution`, `git_worktree`, and `remote_git_worktree` own location-neutral
   workspace selection plus isolated local/host-backed and SSH coding
   worktrees.
+- `storage::memory` owns the closed SQLite relationship-memory backend,
+  authenticated file/HTTP integrity anchors, finite retention, evidence
+  checkpoints, backup rotation, and offline restore. Agent owns only the
+  provider-neutral memory values, validation rules, and `MemoryStore` port;
+  Runtime selects, opens, maintains, and injects the concrete store.
 - `mcp_stdio` owns the MCP child process, JSON-RPC protocol, health probing,
   cancellation, reconnect, discovery, and governed result-artifact handoff.
   Agent receives only implementations of its generic dynamic-tool contract.

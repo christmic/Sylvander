@@ -22,13 +22,15 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 toml = "1.1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["backup", "bundled", "functions"] }
+reqwest = { workspace = true, features = ["blocking"] }
 ring = "0.17"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 
 [dev-dependencies]
+futures = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 tempfile = "3"
 wiremock = "0.6"

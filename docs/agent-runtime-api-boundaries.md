@@ -221,7 +221,9 @@ Migration is performed without compatibility aliases:
    public event mapping into Runtime.
 4. **In progress:** remove Agent's Protocol dependency and move concrete
    infrastructure below Runtime-owned ports. MCP stdio is Runtime-owned;
-   concrete local filesystem/process and durable memory implementations remain.
+   durable SQLite relationship memory, integrity anchors, backup, and
+   maintenance are Runtime-owned. The legacy concrete local filesystem/process
+   implementation remains in Agent.
 5. Move `MessageBus` and `InProcessMessageBus` out of Protocol; split the large
    wire `types` module by API domain.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with

@@ -11,7 +11,6 @@ pub mod git;
 pub mod list;
 pub mod memory;
 pub mod memory_read;
-pub mod memory_sqlite;
 pub mod memory_write;
 pub mod plan;
 pub mod read;
@@ -31,12 +30,6 @@ pub use memory::{
     MemoryScope, MemoryStore, MemoryStoreError, RelationshipMemoryRetentionPolicy,
 };
 pub use memory_read::MemoryReadTool;
-pub use memory_sqlite::{
-    FileMemoryIntegrityAnchor, HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig,
-    MemoryBackupArtifact, MemoryBackupManifest, MemoryClock, MemoryEvidenceCheckpoint,
-    MemoryEvidenceCompactionReport, MemoryIntegrityConfig, MemoryPurgeReport, MemoryRestoreError,
-    SqliteMemoryAdmin, SqliteMemoryMaintenance, SqliteMemoryStore, SystemMemoryClock,
-};
 pub use memory_write::MemoryWriteTool;
 pub use plan::PresentPlanTool;
 pub use read::ReadTool;

@@ -1,4 +1,15 @@
-//! SQLite-backed relationship memory with versioned, fail-closed migrations.
+//! Runtime-owned durable relationship memory.
+//!
+//! Agent defines the provider-neutral memory values and [`MemoryStore`] port;
+//! this module owns the concrete SQLite schema, retention worker interface,
+//! authenticated integrity anchors, checkpoints, backup, and offline restore.
+//! Keeping those mechanisms here prevents the execution kernel from selecting
+//! databases, network clients, filesystem paths, or maintenance policy.
+//!
+//! The implementation is deliberately closed inside Runtime. Configuration
+//! selects the built-in backend; this module is not a plugin or driver API.
+//! Every existing database is exact-schema validated and failures remain
+//! content-safe rather than falling back to an in-memory store.
 
 use std::cell::Cell;
 use std::path::Path;
@@ -9,7 +20,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
 use sylvander_protocol::types::{AgentId, UserId};
 
-use super::memory::{
+use sylvander_agent::tools::memory::{
     Importance, MAX_MEMORY_QUERY_BYTES, MAX_MEMORY_RESULTS, MemoryAppend, MemoryEntry,
     MemoryExecutionContext, MemoryFilter, MemoryOwner, MemoryPatch, MemoryProvenance,
     MemoryProvenanceSource, MemoryStore, MemoryStoreError, RelationshipMemoryRetentionPolicy,
@@ -24,15 +35,23 @@ mod integrity_anchor;
 #[cfg(test)]
 #[path = "../../tests/unit/memory_sqlite_integrity_anchor.rs"]
 mod integrity_anchor_tests;
-pub use backup::{
-    MemoryBackupArtifact, MemoryBackupManifest, MemoryRestoreError, SqliteMemoryAdmin,
+use backup::MemoryBackupArtifact;
+#[cfg(test)]
+#[allow(unused_imports)]
+// child tests exercise different portions of the closed backend surface
+pub(crate) use backup::{MemoryBackupManifest, MemoryRestoreError, SqliteMemoryAdmin};
+pub(crate) use checkpoint::MemoryEvidenceCheckpoint;
+#[cfg(test)]
+#[allow(unused_imports)] // retained for white-box checkpoint contract tests
+pub(crate) use checkpoint::MemoryEvidenceCompactionReport;
+pub(crate) use integrity::MemoryIntegrityConfig;
+#[cfg(test)]
+#[allow(unused_imports)] // child tests exercise file and HTTP anchor variants independently
+pub(crate) use integrity_anchor::{
+    FileMemoryIntegrityAnchor, MemoryAnchorError, MemoryAnchorObservation, MemoryAnchorRevision,
+    MonotonicMemoryAnchor,
 };
-pub use checkpoint::{MemoryEvidenceCheckpoint, MemoryEvidenceCompactionReport};
-pub use integrity::MemoryIntegrityConfig;
-pub use integrity_anchor::{
-    FileMemoryIntegrityAnchor, HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig,
-    MemoryAnchorError, MemoryAnchorObservation, MemoryAnchorRevision, MonotonicMemoryAnchor,
-};
+pub(crate) use integrity_anchor::{HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig};
 
 const COMPONENT: &str = "relationship_memory";
 const SCHEMA_VERSION: i64 = 7;
@@ -190,7 +209,7 @@ const ENTRY_SELECT: &str = "SELECT m.id, m.kind_json, m.content, m.references_js
 
 /// Durable implementation of the relationship-only [`MemoryStore`] contract.
 #[derive(Clone)]
-pub struct SqliteMemoryStore {
+pub(crate) struct SqliteMemoryStore {
     connection: Arc<Mutex<Connection>>,
     active_retention_policy: Arc<RwLock<Option<RelationshipMemoryRetentionPolicy>>>,
     desired_retention_policy: RelationshipMemoryRetentionPolicy,
@@ -201,30 +220,30 @@ pub struct SqliteMemoryStore {
 
 /// Store-controlled wall clock. Runtime uses [`SystemMemoryClock`]; tests can
 /// inject a deterministic clock to exercise rollback and forward-jump safety.
-pub trait MemoryClock: Send + Sync {
+pub(crate) trait MemoryClock: Send + Sync {
     fn now_secs(&self) -> i64;
 }
 
 #[derive(Debug, Default)]
-pub struct SystemMemoryClock;
+pub(crate) struct SystemMemoryClock;
 
 impl MemoryClock for SystemMemoryClock {
     fn now_secs(&self) -> i64 {
-        crate::time::now_secs()
+        crate::session::now_secs()
     }
 }
 
 /// Store-internal maintenance capability. It is intentionally absent from
 /// [`MemoryStore`] and therefore cannot be registered as a model tool.
 #[derive(Clone, Debug)]
-pub struct SqliteMemoryMaintenance {
+pub(crate) struct SqliteMemoryMaintenance {
     store: SqliteMemoryStore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemoryPurgeReport {
-    pub expired_count: u32,
-    pub superseded_count: u32,
+pub(crate) struct MemoryPurgeReport {
+    pub(crate) expired_count: u32,
+    pub(crate) superseded_count: u32,
 }
 
 /// Result of one maintenance-authorized supersession-chain erasure.
@@ -232,13 +251,13 @@ pub struct MemoryPurgeReport {
 /// This report contains counts only. Record content never crosses the
 /// maintenance boundary or enters the audit log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemoryChainForgetReport {
-    pub deleted_count: u32,
+pub(crate) struct MemoryChainForgetReport {
+    pub(crate) deleted_count: u32,
 }
 
 impl MemoryPurgeReport {
     #[must_use]
-    pub const fn total_count(self) -> u32 {
+    pub(crate) const fn total_count(self) -> u32 {
         self.expired_count + self.superseded_count
     }
 }
@@ -250,18 +269,18 @@ impl std::fmt::Debug for SqliteMemoryStore {
 }
 
 impl SqliteMemoryStore {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, MemoryStoreError> {
+    pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self, MemoryStoreError> {
         Self::open_with_retention_policy(path, RelationshipMemoryRetentionPolicy::default())
     }
 
-    pub fn open_with_retention_policy(
+    pub(crate) fn open_with_retention_policy(
         path: impl AsRef<Path>,
         policy: RelationshipMemoryRetentionPolicy,
     ) -> Result<Self, MemoryStoreError> {
         Self::open_with_retention_policy_and_clock(path, policy, Arc::new(SystemMemoryClock))
     }
 
-    pub fn open_with_retention_policy_and_clock(
+    pub(crate) fn open_with_retention_policy_and_clock(
         path: impl AsRef<Path>,
         policy: RelationshipMemoryRetentionPolicy,
         clock: Arc<dyn MemoryClock>,
@@ -272,7 +291,7 @@ impl SqliteMemoryStore {
     /// Opens a production store protected by an independent, authenticated
     /// integrity anchor. An existing database without a valid anchor is
     /// rejected; only a newly-created database may establish a new anchor.
-    pub fn open_with_integrity(
+    pub(crate) fn open_with_integrity(
         path: impl AsRef<Path>,
         policy: RelationshipMemoryRetentionPolicy,
         config: MemoryIntegrityConfig,
@@ -313,17 +332,17 @@ impl SqliteMemoryStore {
         Ok(store)
     }
 
-    pub fn open_in_memory() -> Result<Self, MemoryStoreError> {
+    pub(crate) fn open_in_memory() -> Result<Self, MemoryStoreError> {
         Self::open_in_memory_with_retention_policy(RelationshipMemoryRetentionPolicy::default())
     }
 
-    pub fn open_in_memory_with_retention_policy(
+    pub(crate) fn open_in_memory_with_retention_policy(
         policy: RelationshipMemoryRetentionPolicy,
     ) -> Result<Self, MemoryStoreError> {
         Self::open_in_memory_with_retention_policy_and_clock(policy, Arc::new(SystemMemoryClock))
     }
 
-    pub fn open_in_memory_with_retention_policy_and_clock(
+    pub(crate) fn open_in_memory_with_retention_policy_and_clock(
         policy: RelationshipMemoryRetentionPolicy,
         clock: Arc<dyn MemoryClock>,
     ) -> Result<Self, MemoryStoreError> {
@@ -424,7 +443,7 @@ impl SqliteMemoryStore {
     }
 
     #[must_use]
-    pub fn maintenance(&self) -> SqliteMemoryMaintenance {
+    pub(crate) fn maintenance(&self) -> SqliteMemoryMaintenance {
         SqliteMemoryMaintenance {
             store: self.clone(),
         }
@@ -443,7 +462,7 @@ impl SqliteMemoryMaintenance {
     /// Returns whether this database already has an active retention policy.
     /// A brand-new protected store remains unavailable until Runtime commits
     /// its staged policy after every other startup readiness check succeeds.
-    pub fn has_active_retention_policy(&self) -> Result<bool, MemoryStoreError> {
+    pub(crate) fn has_active_retention_policy(&self) -> Result<bool, MemoryStoreError> {
         Ok(self
             .store
             .active_retention_policy
@@ -458,7 +477,7 @@ impl SqliteMemoryMaintenance {
     /// may safely replace a stale proposal without letting this process commit
     /// it. Repeating activation after the same policy won the race is
     /// idempotent.
-    pub fn activate_staged_retention_policy(&self) -> Result<(), MemoryStoreError> {
+    pub(crate) fn activate_staged_retention_policy(&self) -> Result<(), MemoryStoreError> {
         let stage_id = self
             .store
             .staged_activation_id
@@ -478,14 +497,14 @@ impl SqliteMemoryMaintenance {
         Ok(())
     }
 
-    pub fn purge(&self) -> Result<MemoryPurgeReport, MemoryStoreError> {
+    pub(crate) fn purge(&self) -> Result<MemoryPurgeReport, MemoryStoreError> {
         self.purge_at(self.store.clock.now_secs())
     }
 
     /// Confirms the quarantined wall-clock value after an operator has
     /// verified that the forward jump is real. Model-facing tools cannot
     /// obtain this maintenance capability.
-    pub fn confirm_quarantined_clock(&self) -> Result<i64, MemoryStoreError> {
+    pub(crate) fn confirm_quarantined_clock(&self) -> Result<i64, MemoryStoreError> {
         self.store.with_connection(|transaction| {
             let candidate: i64 = transaction
                 .query_row(
@@ -504,7 +523,7 @@ impl SqliteMemoryMaintenance {
         })
     }
 
-    pub fn backup_to_data_dir(
+    pub(crate) fn backup_to_data_dir(
         &self,
         data_dir: impl AsRef<Path>,
     ) -> Result<MemoryBackupArtifact, MemoryStoreError> {
@@ -514,7 +533,7 @@ impl SqliteMemoryMaintenance {
     /// Publish one verified backup and then retain only the newest verified
     /// database/manifest pairs. Incomplete, temporary, or invalid artifacts
     /// never count toward the retention limit.
-    pub fn backup_and_rotate(
+    pub(crate) fn backup_and_rotate(
         &self,
         data_dir: impl AsRef<Path>,
         retained_copies: u32,
@@ -529,7 +548,7 @@ impl SqliteMemoryMaintenance {
     /// capability rather than [`MemoryStore`], so a model-facing tool cannot
     /// mint management authority. Ordinary single-record deletion remains
     /// restricted while an inbound supersession link exists.
-    pub fn forget_supersession_chain(
+    pub(crate) fn forget_supersession_chain(
         &self,
         owner: &MemoryOwner,
         id: &str,
@@ -1594,19 +1613,22 @@ fn read_revision(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64>
         .ok_or(rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
 
-const fn actor_value(actor: super::memory::MemoryActorKind) -> &'static str {
+const fn actor_value(actor: sylvander_agent::tools::memory::MemoryActorKind) -> &'static str {
     match actor {
-        super::memory::MemoryActorKind::Worker => "worker",
-        super::memory::MemoryActorKind::Guardian => "guardian",
-        super::memory::MemoryActorKind::SystemService => "system_service",
+        sylvander_agent::tools::memory::MemoryActorKind::Worker => "worker",
+        sylvander_agent::tools::memory::MemoryActorKind::Guardian => "guardian",
+        sylvander_agent::tools::memory::MemoryActorKind::SystemService => "system_service",
     }
 }
 
-fn parse_actor(value: &str, index: usize) -> rusqlite::Result<super::memory::MemoryActorKind> {
+fn parse_actor(
+    value: &str,
+    index: usize,
+) -> rusqlite::Result<sylvander_agent::tools::memory::MemoryActorKind> {
     match value {
-        "worker" => Ok(super::memory::MemoryActorKind::Worker),
-        "guardian" => Ok(super::memory::MemoryActorKind::Guardian),
-        "system_service" => Ok(super::memory::MemoryActorKind::SystemService),
+        "worker" => Ok(sylvander_agent::tools::memory::MemoryActorKind::Worker),
+        "guardian" => Ok(sylvander_agent::tools::memory::MemoryActorKind::Guardian),
+        "system_service" => Ok(sylvander_agent::tools::memory::MemoryActorKind::SystemService),
         _ => Err(invalid_text(index, "invalid memory actor")),
     }
 }

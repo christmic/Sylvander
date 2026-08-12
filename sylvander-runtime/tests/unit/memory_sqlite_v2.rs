@@ -1,6 +1,6 @@
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{
     Importance, MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryExpiryPatch,
     MemoryFilter, MemoryPatch, MemoryReference,
 };
@@ -162,7 +162,7 @@ async fn expired_rows_are_hidden_from_get_and_search() {
             connection
                 .execute(
                     "UPDATE relationship_memories SET expires_at = ?1 WHERE id = ?2",
-                    params![crate::time::now_secs(), entry.id],
+                    params![crate::session::now_secs(), entry.id],
                 )
                 .map_err(store_error)?;
             Ok(())
@@ -351,7 +351,7 @@ async fn inactive_mutations_are_indistinguishable_from_missing() {
             connection
                 .execute(
                     "UPDATE relationship_memories SET expires_at = ?1 WHERE id = ?2",
-                    params![crate::time::now_secs(), expired.id],
+                    params![crate::session::now_secs(), expired.id],
                 )
                 .map_err(store_error)?;
             Ok(())

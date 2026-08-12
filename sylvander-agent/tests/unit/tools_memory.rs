@@ -1,19 +1,5 @@
 use super::*;
 
-impl MemoryExecutionContext {
-    pub(crate) fn privileged_for_test(actor: MemoryActorKind) -> Self {
-        Self {
-            authority: MemoryAuthority::ApplicationIssued,
-            actor,
-            user_id: Some(UserId::new("alice")),
-            agent_id: Some(AgentId::new("agent-a")),
-            session_id: Some(SessionId::new("session")),
-            authorized_workspace_ids: Vec::new(),
-            trace_id: None,
-        }
-    }
-}
-
 fn execution(user: &str, agent: &str, session: &str) -> AgentExecutionContext {
     AgentExecutionContext::restricted_for(user, agent, session)
 }

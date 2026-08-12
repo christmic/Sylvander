@@ -157,6 +157,25 @@ impl MemoryExecutionContext {
         }
     }
 
+    /// Create an application-issued non-Worker service context.
+    ///
+    /// Runtime uses this constructor for Guardian and maintenance operations
+    /// that must carry an auditable actor kind but must not acquire a user's
+    /// relationship-memory authority.
+    #[must_use]
+    pub fn for_runtime_service(actor: MemoryActorKind) -> Self {
+        debug_assert_ne!(actor, MemoryActorKind::Worker);
+        Self {
+            authority: MemoryAuthority::ApplicationIssued,
+            actor,
+            user_id: None,
+            agent_id: None,
+            session_id: None,
+            authorized_workspace_ids: Vec::new(),
+            trace_id: None,
+        }
+    }
+
     #[must_use]
     pub(crate) fn untrusted(execution: &AgentExecutionContext) -> Self {
         Self {
@@ -223,7 +242,11 @@ impl MemoryExecutionContext {
         self.trace_id.as_deref()
     }
 
-    pub(super) fn provenance(&self) -> MemoryProvenance {
+    /// Materialize immutable provenance from Runtime-issued authority.
+    ///
+    /// Concrete stores call this after access checks so persisted origin data
+    /// cannot be supplied by model-visible input.
+    pub fn provenance(&self) -> MemoryProvenance {
         debug_assert_eq!(self.authority, MemoryAuthority::ApplicationIssued);
         MemoryProvenance {
             actor: self.actor,
@@ -386,10 +409,8 @@ impl RelationshipMemoryRetentionPolicy {
         self.batch_limit
     }
 
-    pub(super) fn apply_append(
-        &self,
-        mut append: MemoryAppend,
-    ) -> Result<MemoryAppend, MemoryStoreError> {
+    /// Apply the active retention bounds to a caller-supplied append request.
+    pub fn apply_append(&self, mut append: MemoryAppend) -> Result<MemoryAppend, MemoryStoreError> {
         let requested = append
             .expires_after_secs
             .unwrap_or(u64::from(self.default_ttl_days) * SECONDS_PER_DAY);
@@ -400,7 +421,8 @@ impl RelationshipMemoryRetentionPolicy {
         Ok(append)
     }
 
-    pub(super) fn validate_patch(&self, patch: &MemoryPatch) -> Result<(), MemoryStoreError> {
+    /// Reject a patch whose expiry exceeds this policy.
+    pub fn validate_patch(&self, patch: &MemoryPatch) -> Result<(), MemoryStoreError> {
         match patch.expiry {
             Some(MemoryExpiryPatch::Never) => Err(MemoryStoreError::InvalidInput),
             Some(MemoryExpiryPatch::AfterSeconds(seconds))
@@ -512,7 +534,11 @@ pub struct MemoryEntry {
 }
 
 impl MemoryEntry {
-    pub(super) fn materialize(
+    /// Build a store-owned entry from validated domain input.
+    ///
+    /// Runtime persistence backends use this constructor to keep timestamps,
+    /// revision, ownership, and provenance out of model-controlled fields.
+    pub fn materialize(
         id: String,
         owner: MemoryOwner,
         append: MemoryAppend,
@@ -921,7 +947,8 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 }
 
-pub(super) fn validate_append(append: &MemoryAppend) -> Result<(), MemoryStoreError> {
+/// Validate provider-neutral append bounds before a memory backend persists it.
+pub fn validate_append(append: &MemoryAppend) -> Result<(), MemoryStoreError> {
     if append.content.is_empty()
         || append.content.len() > MAX_MEMORY_CONTENT_BYTES
         || append.tags.len() > MAX_MEMORY_TAGS
@@ -948,7 +975,8 @@ pub(super) fn validate_append(append: &MemoryAppend) -> Result<(), MemoryStoreEr
     Ok(())
 }
 
-pub(super) fn validate_patch(patch: &MemoryPatch) -> Result<(), MemoryStoreError> {
+/// Validate that a patch is non-empty and satisfies append-field bounds.
+pub fn validate_patch(patch: &MemoryPatch) -> Result<(), MemoryStoreError> {
     if patch == &MemoryPatch::default() {
         return Err(MemoryStoreError::InvalidInput);
     }
@@ -967,18 +995,21 @@ pub(super) fn validate_patch(patch: &MemoryPatch) -> Result<(), MemoryStoreError
     validate_append(&candidate)
 }
 
-pub(super) fn validate_revision(revision: u64) -> Result<(), MemoryStoreError> {
+/// Validate that a revision can be represented by the durable backend contract.
+pub fn validate_revision(revision: u64) -> Result<(), MemoryStoreError> {
     if revision == 0 || i64::try_from(revision).is_err() {
         return Err(MemoryStoreError::InvalidInput);
     }
     Ok(())
 }
 
-pub(super) fn next_revision(revision: u64) -> Result<u64, MemoryStoreError> {
+/// Advance a revision without wrapping.
+pub fn next_revision(revision: u64) -> Result<u64, MemoryStoreError> {
     revision.checked_add(1).ok_or(MemoryStoreError::Conflict)
 }
 
-pub(super) fn apply_patch(
+/// Apply an already validated patch and advance store-owned revision metadata.
+pub fn apply_patch(
     entry: &mut MemoryEntry,
     patch: MemoryPatch,
     now: i64,
@@ -1017,14 +1048,16 @@ pub(super) fn apply_patch(
     Ok(())
 }
 
-pub(super) fn validate_memory_id(id: &str) -> Result<(), MemoryStoreError> {
+/// Validate the bounded opaque identifier accepted by memory backends.
+pub fn validate_memory_id(id: &str) -> Result<(), MemoryStoreError> {
     if id.is_empty() || id.len() > 128 {
         return Err(MemoryStoreError::InvalidInput);
     }
     Ok(())
 }
 
-pub(super) fn memory_not_visible() -> MemoryStoreError {
+/// Return the uniform error used to hide missing and unauthorized records.
+pub fn memory_not_visible() -> MemoryStoreError {
     MemoryStoreError::NotFound
 }
 

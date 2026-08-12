@@ -9,9 +9,10 @@ public stream events, and concrete infrastructure.
 The normative target and migration rules are documented in
 [`../../docs/agent-runtime-api-boundaries.md`](../../docs/agent-runtime-api-boundaries.md).
 Runtime now owns `AgentRun`, supervision, Session persistence, public event
-mapping, and MCP process transport. The remaining bus, concrete workspace,
-memory persistence, and product-Protocol dependencies in this crate are
-migration debt, not the intended boundary.
+mapping, MCP process transport, and durable relationship-memory persistence.
+The remaining bus, concrete local workspace/process implementation, and
+product-Protocol dependencies in this crate are migration debt, not the
+intended boundary.
 
 ## Internal layers
 
@@ -42,6 +43,9 @@ Runtime Agent service
   SSH, and OCI implementations belong to Runtime.
 - `tools` contains Agent-owned definitions and prepared-call handlers. Concrete
   storage and process services are injected through the execution context.
+  Relationship-memory domain values, validation, and the `MemoryStore` port
+  remain here because tools consume that contract; SQLite, integrity anchors,
+  backup, restore, and maintenance live in Runtime.
 - MCP is not part of the Agent source tree. Runtime owns the stdio process,
   JSON-RPC lifecycle, discovery, health, cancellation, and artifact sink, then
   registers MCP tools through the ordinary Agent tool contract.
@@ -95,8 +99,9 @@ Runtime Agent service
 White-box tests live under `tests/unit/` and are linked through test-only path
 bridges; public journeys live directly under `tests/`. The suite covers
 authenticated run issuance, typed turn-context budgeting, provider conversion,
-tool capability denial, approval/AskUser gates, workspace executors, memory,
-MCP, Skills, compression, cancellation, and durable session restore. Real
+tool capability denial, approval/AskUser gates, workspace ports, in-memory
+memory-contract behavior, Skills, compression, and cancellation. Runtime tests
+cover durable memory, MCP, concrete executors, and Session restoration. Real
 provider tests are explicitly ignored unless credentials are supplied.
 
 ```bash

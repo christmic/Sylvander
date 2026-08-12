@@ -146,10 +146,7 @@ use sylvander_agent::spec::AgentSpec;
 use sylvander_agent::spec::{AgentId, SessionId};
 #[cfg(test)]
 use sylvander_agent::tools::InMemoryMemoryStore;
-use sylvander_agent::tools::{
-    HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, MemoryIntegrityConfig, MemoryStore,
-    SqliteMemoryStore,
-};
+use sylvander_agent::tools::MemoryStore;
 use sylvander_channel::{
     AuthenticatedTransportIdentity, Channel, ChannelContext, ChannelReadiness,
 };
@@ -207,6 +204,10 @@ use crate::memory_maintenance::{
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use crate::session::SessionMetadata;
+use crate::storage::memory::{
+    HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, MemoryIntegrityConfig,
+    SqliteMemoryStore,
+};
 use crate::storage::session::{
     MessageRole, SESSION_SCHEMA_OBJECT_NAMES, SessionLifetime, SessionMetadataPatch, SessionStore,
     SqliteSessionStore, StoredMessage, StoredSession,

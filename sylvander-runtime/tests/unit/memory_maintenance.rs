@@ -1,10 +1,9 @@
 use super::*;
 use std::collections::BTreeSet;
 
-use sylvander_agent::tools::{
-    MemoryBackupManifest, MemoryIntegrityConfig, RelationshipMemoryRetentionPolicy,
-    SqliteMemoryStore,
-};
+use sylvander_agent::tools::RelationshipMemoryRetentionPolicy;
+
+use crate::storage::memory::{MemoryBackupManifest, MemoryIntegrityConfig, SqliteMemoryStore};
 
 fn protected_store(directory: &std::path::Path) -> SqliteMemoryStore {
     let store = SqliteMemoryStore::open_with_integrity(

@@ -23,7 +23,7 @@ const MAX_HTTP_SECRET_BYTES: usize = 64 * 1024;
 
 /// Opaque compare-and-swap revision issued by an integrity-anchor backend.
 #[derive(Clone, PartialEq, Eq)]
-pub struct MemoryAnchorRevision(String);
+pub(crate) struct MemoryAnchorRevision(String);
 
 impl fmt::Debug for MemoryAnchorRevision {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -45,9 +45,9 @@ impl MemoryAnchorRevision {
 }
 
 /// One authenticated anchor value and the opaque revision needed to replace it.
-pub struct MemoryAnchorObservation {
-    pub revision: MemoryAnchorRevision,
-    pub value: Vec<u8>,
+pub(crate) struct MemoryAnchorObservation {
+    pub(crate) revision: MemoryAnchorRevision,
+    pub(crate) value: Vec<u8>,
 }
 
 impl fmt::Debug for MemoryAnchorObservation {
@@ -63,7 +63,7 @@ impl fmt::Debug for MemoryAnchorObservation {
 /// Content-safe anchor failure. Implementations must never include credentials,
 /// endpoints, response bodies, or stored anchor values in this error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum MemoryAnchorError {
+pub(crate) enum MemoryAnchorError {
     #[error("memory anchor is unavailable")]
     Unavailable,
     #[error("memory anchor compare-and-swap conflict")]
@@ -77,7 +77,7 @@ pub enum MemoryAnchorError {
 /// `create` must be create-if-absent. `compare_and_swap` must replace a value
 /// only when `expected` still names the current backend revision. Backends must
 /// never silently downgrade to another implementation when an operation fails.
-pub trait MonotonicMemoryAnchor: Send + Sync {
+pub(crate) trait MonotonicMemoryAnchor: Send + Sync {
     fn load(&self) -> Result<Option<MemoryAnchorObservation>, MemoryAnchorError>;
 
     fn create(&self, value: &[u8]) -> Result<MemoryAnchorRevision, MemoryAnchorError>;
@@ -92,12 +92,12 @@ pub trait MonotonicMemoryAnchor: Send + Sync {
 /// Host-file anchor. This backend relies on deployment permissions and does
 /// not protect against an administrator replaying the file with the database.
 #[derive(Debug, Clone)]
-pub struct FileMemoryIntegrityAnchor {
+pub(crate) struct FileMemoryIntegrityAnchor {
     path: PathBuf,
 }
 
 impl FileMemoryIntegrityAnchor {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 
@@ -184,7 +184,7 @@ impl MonotonicMemoryAnchor for FileMemoryIntegrityAnchor {
 /// The service must expose one resource: `GET` returns the current value and a
 /// strong `ETag`; `PUT` with `If-None-Match: *` creates it; and `PUT` with
 /// `If-Match: <etag>` atomically replaces it. `409` and `412` are CAS conflicts.
-pub struct HttpMemoryIntegrityAnchorConfig {
+pub(crate) struct HttpMemoryIntegrityAnchorConfig {
     endpoint: Url,
     bearer_token: Vec<u8>,
     timeout: Duration,
@@ -221,7 +221,7 @@ impl Drop for HttpMemoryIntegrityAnchorConfig {
 }
 
 impl HttpMemoryIntegrityAnchorConfig {
-    pub fn new(
+    pub(crate) fn new(
         endpoint: &str,
         bearer_token: &[u8],
         timeout: Duration,
@@ -269,13 +269,13 @@ impl HttpMemoryIntegrityAnchorConfig {
         })
     }
 
-    pub fn with_ca_certificate(mut self, pem: &[u8]) -> Result<Self, MemoryAnchorError> {
+    pub(crate) fn with_ca_certificate(mut self, pem: &[u8]) -> Result<Self, MemoryAnchorError> {
         validate_pem_size(pem)?;
         self.ca_certificate_pem = Some(pem.to_vec());
         Ok(self)
     }
 
-    pub fn with_client_identity(mut self, pem: &[u8]) -> Result<Self, MemoryAnchorError> {
+    pub(crate) fn with_client_identity(mut self, pem: &[u8]) -> Result<Self, MemoryAnchorError> {
         validate_pem_size(pem)?;
         self.client_identity_pem = Some(pem.to_vec());
         Ok(self)
@@ -284,7 +284,7 @@ impl HttpMemoryIntegrityAnchorConfig {
 
 /// Remote CAS anchor. Unlike the file backend, its monotonic revision and
 /// value live outside the database host's replay boundary.
-pub struct HttpMemoryIntegrityAnchor {
+pub(crate) struct HttpMemoryIntegrityAnchor {
     client: Client,
     endpoint: Url,
     bearer_token: Mutex<Vec<u8>>,
@@ -311,7 +311,9 @@ impl Drop for HttpMemoryIntegrityAnchor {
 }
 
 impl HttpMemoryIntegrityAnchor {
-    pub fn new(mut config: HttpMemoryIntegrityAnchorConfig) -> Result<Self, MemoryAnchorError> {
+    pub(crate) fn new(
+        mut config: HttpMemoryIntegrityAnchorConfig,
+    ) -> Result<Self, MemoryAnchorError> {
         let mut builder = Client::builder().timeout(config.timeout);
         if !config.allow_http {
             builder = builder.https_only(true);

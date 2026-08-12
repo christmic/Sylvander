@@ -21,11 +21,6 @@ toml = "1.1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sha2 = "0.10"
-reqwest = { workspace = true, features = ["blocking"] }
-
-# SQLite session store backend (M-D).
-# `bundled` ships libsqlite3 — no system SQLite required.
-rusqlite = { version = "0.40", features = ["backup", "bundled", "functions"] }
 
 [dev-dependencies]
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }

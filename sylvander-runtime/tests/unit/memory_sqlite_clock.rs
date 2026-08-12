@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryPatch};
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryPatch};
 
 #[derive(Debug)]
 struct TestClock(AtomicI64);

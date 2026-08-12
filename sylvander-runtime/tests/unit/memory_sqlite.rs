@@ -1,6 +1,6 @@
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{
     Importance, MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryKind,
     MemoryReference,
 };
@@ -138,7 +138,7 @@ async fn search_is_bounded_and_unknown_schema_fails_closed() {
 async fn guardian_and_system_relationship_access_fails_closed() {
     let store = SqliteMemoryStore::open_in_memory().unwrap();
     for actor in [MemoryActorKind::Guardian, MemoryActorKind::SystemService] {
-        let ctx = MemoryExecutionContext::privileged_for_test(actor);
+        let ctx = MemoryExecutionContext::for_runtime_service(actor);
         assert!(matches!(
             store
                 .append_relationship(&ctx, MemoryAppend::new("forbidden"))

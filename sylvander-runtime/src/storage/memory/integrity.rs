@@ -23,13 +23,16 @@ const TABLE_QUERIES: &[&str] = &[
     "SELECT singleton,generation,checkpoint_epoch,checkpoint_root,checkpoint_sha256,audit_compacted_count,audit_summary_root,retention_compacted_count,retention_summary_root,updated_at FROM relationship_memory_checkpoint_state ORDER BY singleton",
 ];
 
-pub struct MemoryIntegrityConfig {
+pub(crate) struct MemoryIntegrityConfig {
     anchor: Arc<dyn MonotonicMemoryAnchor>,
     key: Vec<u8>,
 }
 
 impl MemoryIntegrityConfig {
-    pub fn new(anchor_path: impl Into<PathBuf>, key: &[u8]) -> Result<Self, MemoryStoreError> {
+    pub(crate) fn new(
+        anchor_path: impl Into<PathBuf>,
+        key: &[u8],
+    ) -> Result<Self, MemoryStoreError> {
         if key.len() < 32 || key.len() > 4096 {
             return Err(integrity_error());
         }
@@ -39,7 +42,7 @@ impl MemoryIntegrityConfig {
         })
     }
 
-    pub fn with_anchor(
+    pub(crate) fn with_anchor(
         anchor: Arc<dyn MonotonicMemoryAnchor>,
         key: &[u8],
     ) -> Result<Self, MemoryStoreError> {

@@ -19,29 +19,29 @@ const RETENTION_CHUNK_DOMAIN: &[u8] = b"sylvander-memory-retention-checkpoint-ch
 /// compaction. The artifact is re-read and re-verified inside the write
 /// transaction; this wrapper does not grant authority by itself.
 #[derive(Debug, Clone)]
-pub struct MemoryEvidenceCheckpoint {
+pub(crate) struct MemoryEvidenceCheckpoint {
     artifact: MemoryBackupArtifact,
 }
 
 impl MemoryEvidenceCheckpoint {
     #[must_use]
-    pub fn from_verified_backup(artifact: MemoryBackupArtifact) -> Self {
+    pub(crate) fn from_verified_backup(artifact: MemoryBackupArtifact) -> Self {
         Self { artifact }
     }
 }
 
 /// Content-free result of one checkpoint-authorized bounded transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryEvidenceCompactionReport {
-    pub checkpoint_epoch: u64,
-    pub generation: u64,
-    pub audit_deleted_count: u32,
-    pub retention_run_deleted_count: u32,
+pub(crate) struct MemoryEvidenceCompactionReport {
+    pub(crate) checkpoint_epoch: u64,
+    pub(crate) generation: u64,
+    pub(crate) audit_deleted_count: u32,
+    pub(crate) retention_run_deleted_count: u32,
 }
 
 impl MemoryEvidenceCompactionReport {
     #[must_use]
-    pub const fn total_deleted_count(&self) -> u32 {
+    pub(crate) const fn total_deleted_count(&self) -> u32 {
         self.audit_deleted_count + self.retention_run_deleted_count
     }
 }
@@ -73,7 +73,7 @@ impl SqliteMemoryMaintenance {
     /// published. The newest audit row and retention run remain as live
     /// continuity boundaries. Removed rows are folded into authenticated,
     /// domain-separated summary roots before the transaction commits.
-    pub fn compact_evidence_after_checkpoint(
+    pub(crate) fn compact_evidence_after_checkpoint(
         &self,
         checkpoint: &MemoryEvidenceCheckpoint,
     ) -> Result<MemoryEvidenceCompactionReport, MemoryStoreError> {

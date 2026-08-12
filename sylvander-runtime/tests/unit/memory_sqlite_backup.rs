@@ -1,6 +1,6 @@
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{
     MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryStore,
     RelationshipMemoryRetentionPolicy,
 };

@@ -1,6 +1,6 @@
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{
     MemoryAppend, MemoryExecutionContext, MemoryExpiryPatch, MemoryPatch, MemoryStoreError,
 };
 
@@ -28,7 +28,7 @@ async fn purge_is_bounded_audited_and_restart_safe() {
                 .unwrap(),
         );
     }
-    let now = crate::time::now_secs();
+    let now = crate::session::now_secs();
     store
         .with_connection(|connection| {
             connection
@@ -109,7 +109,7 @@ async fn superseded_rows_purge_without_dangling_the_replacement() {
         .unwrap();
     let report = store
         .maintenance()
-        .purge_at(crate::time::now_secs())
+        .purge_at(crate::session::now_secs())
         .unwrap();
     assert_eq!(report.superseded_count, 1);
     assert!(
@@ -143,7 +143,7 @@ async fn purge_orders_a_chain_and_delete_restricts_the_current_replacement() {
     ));
 
     let maintenance = store.maintenance();
-    let now = crate::time::now_secs();
+    let now = crate::session::now_secs();
     assert_eq!(maintenance.purge_at(now).unwrap().superseded_count, 1);
     store
         .with_connection(|connection| {
@@ -243,7 +243,7 @@ async fn maintenance_fault_rolls_back_rows_audit_ledgers_and_watermark() {
         .append_relationship(&ctx, MemoryAppend::new("keep on failure"))
         .await
         .unwrap();
-    let now = crate::time::now_secs();
+    let now = crate::session::now_secs();
     let before = store
         .with_connection(|connection| {
             connection
@@ -288,7 +288,7 @@ async fn maintenance_fault_rolls_back_rows_audit_ledgers_and_watermark() {
 
 #[test]
 fn worker_facing_memory_contract_has_no_maintenance_operation() {
-    let source = include_str!("../../src/tools/memory.rs");
+    let source = include_str!("../../../sylvander-agent/src/tools/memory.rs");
     let trait_body = source
         .split("pub trait MemoryStore")
         .nth(1)

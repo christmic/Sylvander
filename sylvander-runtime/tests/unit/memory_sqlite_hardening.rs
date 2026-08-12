@@ -1,6 +1,6 @@
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{
     MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryPatch,
 };
 
@@ -228,7 +228,7 @@ fn install_abort_trigger(store: &SqliteMemoryStore, timing: &str, condition: Opt
 #[tokio::test]
 async fn authorization_precedes_invalid_input_for_every_relationship_api() {
     let store = SqliteMemoryStore::open_in_memory().unwrap();
-    let ctx = MemoryExecutionContext::privileged_for_test(MemoryActorKind::Guardian);
+    let ctx = MemoryExecutionContext::for_runtime_service(MemoryActorKind::Guardian);
     assert!(matches!(
         store.append_relationship(&ctx, MemoryAppend::new("")).await,
         Err(MemoryStoreError::AccessDenied)

@@ -1,8 +1,10 @@
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryStore};
-use crate::tools::memory_sqlite::{RelationshipMemoryRetentionPolicy, SqliteMemoryStore};
+use crate::storage::memory::{RelationshipMemoryRetentionPolicy, SqliteMemoryStore};
 use std::path::Path;
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{
+    MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryStore,
+};
 
 const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
 

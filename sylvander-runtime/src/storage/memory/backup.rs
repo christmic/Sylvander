@@ -25,32 +25,32 @@ const MANIFEST_SUFFIX: &str = ".manifest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MemoryBackupManifest {
-    pub manifest_version: u32,
-    pub schema_version: i64,
-    pub created_at: i64,
-    pub size_bytes: u64,
-    pub sha256: String,
-    pub integrity_epoch: u64,
-    pub database_root: String,
-    pub integrity_mac: String,
+pub(crate) struct MemoryBackupManifest {
+    pub(crate) manifest_version: u32,
+    pub(crate) schema_version: i64,
+    pub(crate) created_at: i64,
+    pub(crate) size_bytes: u64,
+    pub(crate) sha256: String,
+    pub(crate) integrity_epoch: u64,
+    pub(crate) database_root: String,
+    pub(crate) integrity_mac: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryBackupArtifact {
-    pub database_path: PathBuf,
-    pub manifest_path: PathBuf,
-    pub manifest: MemoryBackupManifest,
+pub(crate) struct MemoryBackupArtifact {
+    pub(crate) database_path: PathBuf,
+    pub(crate) manifest_path: PathBuf,
+    pub(crate) manifest: MemoryBackupManifest,
 }
 
 pub(super) struct VerifiedMemoryCheckpoint {
-    pub epoch: u64,
-    pub database_root: String,
-    pub sha256: String,
+    pub(crate) epoch: u64,
+    pub(crate) database_root: String,
+    pub(crate) sha256: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum MemoryRestoreError {
+pub(crate) enum MemoryRestoreError {
     #[error("memory restore rejected")]
     Rejected,
     #[error("memory restore outcome requires operator inspection")]
@@ -60,10 +60,10 @@ pub enum MemoryRestoreError {
 /// Explicit offline administration surface. Restore must run before the live
 /// database is opened by a Runtime or [`SqliteMemoryStore`].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SqliteMemoryAdmin;
+pub(crate) struct SqliteMemoryAdmin;
 
 impl SqliteMemoryAdmin {
-    pub fn restore_offline(
+    pub(crate) fn restore_offline(
         live_database: impl AsRef<Path>,
         backup_database: impl AsRef<Path>,
         manifest: impl AsRef<Path>,
@@ -85,7 +85,7 @@ pub(super) fn create_backup(
 ) -> Result<MemoryBackupArtifact, MemoryStoreError> {
     let directory = data_dir.join("memory-backups");
     std::fs::create_dir_all(&directory).map_err(|_| backup_error())?;
-    let created_at = crate::time::now_secs();
+    let created_at = crate::session::now_secs();
     let id = format!("{BACKUP_PREFIX}{created_at}-{}", uuid::Uuid::new_v4());
     let database_path = directory.join(format!("{id}{DATABASE_SUFFIX}"));
     let manifest_path = directory.join(format!("{id}{MANIFEST_SUFFIX}"));

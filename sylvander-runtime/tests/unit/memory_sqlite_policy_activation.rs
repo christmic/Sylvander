@@ -1,6 +1,6 @@
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryStore};
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryStore};
 
 const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
 

@@ -2840,8 +2840,6 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-util",
- "reqwest",
- "rusqlite",
  "serde",
  "serde_json",
  "sha2",
@@ -3062,7 +3060,9 @@ name = "sylvander-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "futures-util",
+ "reqwest",
  "ring",
  "rusqlite",
  "serde",

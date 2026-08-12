@@ -4,11 +4,11 @@ use std::sync::{Arc, Barrier};
 use rusqlite::Connection;
 
 use super::*;
-use crate::execution_context::AgentExecutionContext;
-use crate::tools::memory::{
+use crate::storage::memory::{MemoryIntegrityConfig, SqliteMemoryAdmin, SqliteMemoryStore};
+use sylvander_agent::execution_context::AgentExecutionContext;
+use sylvander_agent::tools::memory::{
     MemoryAppend, MemoryExecutionContext, MemoryStore, RelationshipMemoryRetentionPolicy,
 };
-use crate::tools::memory_sqlite::{MemoryIntegrityConfig, SqliteMemoryAdmin, SqliteMemoryStore};
 
 const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
 

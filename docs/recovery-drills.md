@@ -88,7 +88,7 @@ Restore is offline and accepts only a signed backup matching the currently
 anchored epoch. Temporary/orphan artifacts do not count as a backup.
 
 ```sh
-cargo test -p sylvander-agent memory_sqlite::backup
+cargo test -p sylvander-runtime storage::memory::backup
 cargo test -p sylvander-runtime memory_maintenance
 cargo test -p sylvander-runtime production_memory_catch_up_is_bounded_restart_safe_and_idempotent
 ```
