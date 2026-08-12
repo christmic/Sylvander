@@ -91,6 +91,28 @@ fn message_delta_round_trip() {
 }
 
 #[test]
+fn official_sdk_message_delta_usage_preserves_new_details() {
+    // Derived from anthropic-sdk-python@009b035:
+    // src/anthropic/types/message_delta_usage.py.
+    let json = json!({
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn"},
+        "usage": {
+            "output_tokens": 50,
+            "output_tokens_details": {"thinking_tokens": 12},
+            "server_tool_use": {"web_fetch_requests": 1, "web_search_requests": 2}
+        }
+    });
+    let event: RawStreamEvent = serde_json::from_value(json).unwrap();
+    let RawStreamEvent::MessageDelta { usage, .. } = event else {
+        panic!("expected message delta");
+    };
+
+    assert_eq!(usage.output_tokens_details.unwrap().thinking_tokens, 12);
+    assert_eq!(usage.server_tool_use.unwrap().web_search_requests, 2);
+}
+
+#[test]
 fn message_stop_round_trip() {
     let json = json!({"type": "message_stop"});
     let event: RawStreamEvent = serde_json::from_value(json).unwrap();

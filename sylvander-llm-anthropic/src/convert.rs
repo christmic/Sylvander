@@ -270,12 +270,24 @@ fn response_block(input: wire::ContentBlock) -> core::ContentBlock {
 }
 
 pub(crate) fn usage(input: &wire::Usage) -> core::TokenUsage {
+    let cache_creation = input.cache_creation.unwrap_or_default();
     core::TokenUsage {
         input_tokens: u64::from(input.input_tokens),
         output_tokens: u64::from(input.output_tokens),
         cache_write_tokens: input.cache_creation_input_tokens.map(u64::from),
         cache_read_tokens: input.cache_read_input_tokens.map(u64::from),
-        details: core::TokenUsageDetails::default(),
+        details: core::TokenUsageDetails {
+            cache_write_5m_tokens: input
+                .cache_creation
+                .map(|_| u64::from(cache_creation.ephemeral_5m_input_tokens)),
+            cache_write_1h_tokens: input
+                .cache_creation
+                .map(|_| u64::from(cache_creation.ephemeral_1h_input_tokens)),
+            reasoning_tokens: input
+                .output_tokens_details
+                .map(|details| u64::from(details.thinking_tokens)),
+            ..core::TokenUsageDetails::default()
+        },
     }
 }
 

@@ -119,6 +119,12 @@ fn response_preserves_content_stop_reason_and_usage() {
                 output_tokens: 2,
                 cache_creation_input_tokens: Some(3),
                 cache_read_input_tokens: Some(4),
+                cache_creation: Some(wire::CacheCreation {
+                    ephemeral_1h_input_tokens: 1,
+                    ephemeral_5m_input_tokens: 2,
+                }),
+                output_tokens_details: Some(wire::OutputTokensDetails { thinking_tokens: 1 }),
+                ..wire::Usage::default()
             },
         },
     );
@@ -133,6 +139,9 @@ fn response_preserves_content_stop_reason_and_usage() {
     assert_eq!(mapped.usage.total_input_tokens(), 17);
     assert_eq!(mapped.usage.cache_write_tokens, Some(3));
     assert_eq!(mapped.usage.cache_read_tokens, Some(4));
+    assert_eq!(mapped.usage.details.cache_write_1h_tokens, Some(1));
+    assert_eq!(mapped.usage.details.cache_write_5m_tokens, Some(2));
+    assert_eq!(mapped.usage.details.reasoning_tokens, Some(1));
     assert!(matches!(
         &mapped.content[1],
         core::ContentBlock::Reasoning { opaque_state: Some(state), .. }

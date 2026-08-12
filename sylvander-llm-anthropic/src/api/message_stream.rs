@@ -228,6 +228,8 @@ impl MessageStream {
             output_tokens: u.output_tokens,
             cache_creation_input_tokens: u.cache_creation_input_tokens,
             cache_read_input_tokens: u.cache_read_input_tokens,
+            output_tokens_details: u.output_tokens_details,
+            server_tool_use: u.server_tool_use,
         })
     }
 }
@@ -291,6 +293,8 @@ fn apply_event(state: &Arc<Mutex<MessageStreamState>>, event: &RawStreamEvent) {
     match event {
         RawStreamEvent::MessageStart { message } => {
             s.message = Some(message.clone());
+            s.stop_reason = message.stop_reason;
+            s.usage = Some(message.usage.clone());
         }
         RawStreamEvent::ContentBlockStart {
             index,
@@ -329,12 +333,23 @@ fn apply_event(state: &Arc<Mutex<MessageStreamState>>, event: &RawStreamEvent) {
         },
         RawStreamEvent::MessageDelta { delta, usage } => {
             s.stop_reason = delta.stop_reason;
-            s.usage = Some(Usage {
-                input_tokens: usage.input_tokens.unwrap_or(0),
-                output_tokens: usage.output_tokens,
-                cache_creation_input_tokens: usage.cache_creation_input_tokens,
-                cache_read_input_tokens: usage.cache_read_input_tokens,
-            });
+            let accumulated = s.usage.get_or_insert_with(Usage::default);
+            if let Some(input_tokens) = usage.input_tokens {
+                accumulated.input_tokens = input_tokens;
+            }
+            accumulated.output_tokens = usage.output_tokens;
+            if usage.cache_creation_input_tokens.is_some() {
+                accumulated.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+            }
+            if usage.cache_read_input_tokens.is_some() {
+                accumulated.cache_read_input_tokens = usage.cache_read_input_tokens;
+            }
+            if usage.output_tokens_details.is_some() {
+                accumulated.output_tokens_details = usage.output_tokens_details;
+            }
+            if usage.server_tool_use.is_some() {
+                accumulated.server_tool_use = usage.server_tool_use;
+            }
         }
         RawStreamEvent::MessageStop => {
             s.finished = true;

@@ -54,4 +54,4 @@ pub use system_prompt::{SystemBlock, SystemPrompt, SystemTextBlock};
 pub use thinking::ThinkingConfig;
 pub use tool::{InputSchema, Tool, ToolChoice};
 pub use tool_result::{RichToolResultBlock, ToolResultBlock, ToolResultContent};
-pub use usage::Usage;
+pub use usage::{CacheCreation, OutputTokensDetails, ServerToolUsage, ServiceTier, Usage};

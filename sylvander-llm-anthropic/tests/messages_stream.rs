@@ -31,7 +31,7 @@ fn minimal_request() -> CreateMessageRequest {
 
 const SAMPLE_STREAM: &str = "\
 event: message_start
-data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_stream1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-5-20260601\",\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_stream1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-opus-4-6\",\"stop_reason\":null,\"usage\":{\"cache_creation\":{\"ephemeral_1h_input_tokens\":2,\"ephemeral_5m_input_tokens\":3},\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"inference_geo\":\"us\",\"input_tokens\":10,\"output_tokens\":1,\"service_tier\":\"priority\"}}}
 
 event: content_block_start
 data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}
@@ -49,7 +49,7 @@ event: content_block_stop
 data: {\"type\":\"content_block_stop\",\"index\":0}
 
 event: message_delta
-data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"thinking_tokens\":4},\"server_tool_use\":{\"web_fetch_requests\":1,\"web_search_requests\":2}}}
 
 event: message_stop
 data: {\"type\":\"message_stop\"}
@@ -58,6 +58,8 @@ data: {\"type\":\"message_stop\"}
 
 #[tokio::test]
 async fn stream_full_assembly() {
+    // Event usage fields are derived from anthropic-sdk-python@009b035
+    // src/anthropic/types/message_delta_usage.py and usage.py.
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -98,6 +100,22 @@ async fn stream_full_assembly() {
         other => panic!("expected Text block, got {other:?}"),
     }
     assert_eq!(final_msg.usage.output_tokens, 10);
+    assert_eq!(final_msg.usage.input_tokens, 10);
+    assert_eq!(final_msg.usage.cache_creation_input_tokens, Some(5));
+    assert_eq!(final_msg.usage.cache_read_input_tokens, Some(7));
+    assert_eq!(final_msg.usage.inference_geo.as_deref(), Some("us"));
+    assert_eq!(
+        final_msg
+            .usage
+            .output_tokens_details
+            .unwrap()
+            .thinking_tokens,
+        4
+    );
+    assert_eq!(
+        final_msg.usage.server_tool_use.unwrap().web_search_requests,
+        2
+    );
 }
 
 #[tokio::test]

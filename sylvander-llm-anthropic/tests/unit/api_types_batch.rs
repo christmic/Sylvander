@@ -43,6 +43,7 @@ fn batch_result_succeeded_round_trip() {
                 output_tokens: 5,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                ..Usage::default()
             },
         },
     };

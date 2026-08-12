@@ -7,6 +7,7 @@ use super::block::ContentBlock;
 use super::citation::TextCitation;
 use super::message::Message;
 use super::stop_reason::StopReason;
+use super::usage::{OutputTokensDetails, ServerToolUsage};
 
 /// All seven SSE event types emitted by the Messages API.
 ///
@@ -126,6 +127,12 @@ pub struct MessageDeltaUsage {
     /// Cumulative cache read input tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u32>,
+    /// Breakdown of cumulative output tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens_details: Option<OutputTokensDetails>,
+    /// Anthropic-hosted tool request counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUsage>,
 }
 
 #[cfg(test)]

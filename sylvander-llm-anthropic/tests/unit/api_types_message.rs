@@ -36,6 +36,7 @@ fn message_response_round_trip() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            ..Usage::default()
         },
     };
     let json = serde_json::to_string(&m).unwrap();
@@ -61,6 +62,7 @@ fn message_text_concat() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            ..Usage::default()
         },
     };
     assert_eq!(m.text(), "Hello, world!");
