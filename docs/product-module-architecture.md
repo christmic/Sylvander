@@ -218,9 +218,12 @@ configured privacy, encryption, retention, and user opt-out policy. Sink
 failure becomes visible Runtime health state and cannot be silently treated as
 a successfully observed operation.
 
-Implementation status: correlation-bearing tracing, evidence recording, and
-operational snapshots exist independently. The typed `RuntimeEvent` pipeline,
-metrics aggregation, and terminal observability commit rule remain incomplete.
+Implementation status: the closed typed `RuntimeEvent` recorder now covers
+authorized chat admission and message-bus dispatch, feeding content-safe
+counters, structured tracing, and the operational snapshot. Existing turn
+tracing and evidence recording remain separate. Complete turn/tool/storage
+facts, durable aggregation, sink-failure health, and the terminal observability
+commit rule remain incomplete.
 
 ## Service and presentation layers
 

@@ -109,6 +109,10 @@ crate without retaining a second production path.
   relationship-memory handles. Other Runtime-owned stores and cross-domain
   transactions remain to be folded into this facade; see
   [`application-services.md`](application-services.md) for exact status.
+- `observability` is the closed typed lifecycle recorder. Its first slice
+  covers authorized chat admission and message-bus dispatch with content-free
+  counters and structured facts in the Runtime operational snapshot. It does
+  not yet claim complete turn, tool, persistence, or durable terminal facts.
 - `mcp_stdio` owns the MCP child process, JSON-RPC protocol, health probing,
   cancellation, reconnect, discovery, and governed result-artifact handoff.
   Agent receives only implementations of its generic dynamic-tool contract.

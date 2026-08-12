@@ -76,6 +76,10 @@ mod model_registry;
 #[cfg(test)]
 #[path = "../tests/unit/model_registry.rs"]
 mod model_registry_tests;
+mod observability;
+#[cfg(test)]
+#[path = "../tests/unit/observability.rs"]
+mod observability_tests;
 /// Stable user mapping for authenticated transport principals.
 pub mod principal_binding;
 #[cfg(test)]
@@ -148,6 +152,8 @@ use tracing::{info, warn};
 use crate::agent_definition::AgentSpec;
 use crate::agent_definition::{AgentId, SessionId};
 use crate::mcp_stdio::McpResultArtifactSink;
+pub use crate::observability::RuntimeObservabilitySnapshot;
+use crate::observability::{RuntimeEvent, RuntimeObservability};
 #[cfg(test)]
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_agent::tools::MemoryStore;
@@ -368,6 +374,8 @@ pub struct Runtime {
     engine: Arc<AgentRunEngine>,
     /// Closed facade over Runtime-owned durable repositories.
     storage: RuntimeStorage,
+    /// Mandatory built-in lifecycle facts and counters.
+    observability: RuntimeObservability,
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
@@ -477,6 +485,7 @@ pub struct RuntimeOperationalSnapshot {
     pub channels: Vec<ChannelHealth>,
     pub bus: BusDiagnostics,
     pub evidence: Option<evidence::EvidenceCounts>,
+    pub observability: RuntimeObservabilitySnapshot,
     pub health_issues: Vec<RuntimeHealthIssue>,
 }
 
@@ -491,6 +500,7 @@ struct RuntimeChannelHost {
     engine: Arc<AgentRunEngine>,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
+    observability: RuntimeObservability,
     agents: HashMap<AgentId, ConfiguredAgent>,
     agent_registry: Option<AgentRegistry>,
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
@@ -1756,19 +1766,29 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 sender: sylvander_api::Sender::User(
                     self.effective_user_id(boundary, "submit_chat").await?.0,
                 ),
-                recipient: Recipient::Agent(agent_id),
+                recipient: Recipient::Agent(agent_id.clone()),
                 kind: sylvander_api::MessageKind::Chat,
                 payload: text,
                 attachments,
                 timestamp: crate::session::now_secs(),
                 id: sylvander_api::MessageId::new(),
             };
+            self.observability.record(RuntimeEvent::chat_admitted(
+                boundary.request_id.clone(),
+                session_id.clone(),
+                message.id.clone(),
+                agent_id.clone(),
+            ));
             let feedback_target = self.evidence_run_id.as_ref().map(|run_id| {
                 crate::evidence::feedback_target(run_id, &format!("turn:{}", message.id.0))
             });
             self.bus.publish(message).await.map_err(|_| {
                 boundary_failure(boundary, "submit_chat", "message dispatch failed")
             })?;
+            self.observability.record(RuntimeEvent::chat_dispatched(
+                boundary.request_id.clone(),
+                session_id.clone(),
+            ));
             Ok(sylvander_channel::SubmittedChat {
                 session_id: session_id.clone(),
                 feedback_target,
@@ -3861,11 +3881,13 @@ impl Runtime {
         info!(name = %config.name, agents = config.agents.len(), "runtime booted");
 
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
+        let observability = RuntimeObservability::new();
         let configured_agents = HashMap::new();
         let channel_host = Arc::new(RuntimeChannelHost {
             engine: engine.clone(),
             bus: bus.clone(),
             sessions: session_store.clone(),
+            observability: observability.clone(),
             agents: configured_agents.clone(),
             agent_registry: None,
             revision_provider: None,
@@ -3882,6 +3904,7 @@ impl Runtime {
         Ok(Self {
             engine,
             storage: RuntimeStorage::new(session_store, memory_store),
+            observability,
             bus,
             configured_agents,
             revision_provider: None,
@@ -4387,10 +4410,12 @@ impl Runtime {
             session_db = %session_db.display(),
             "configured runtime booted"
         );
+        let observability = RuntimeObservability::new();
         let channel_host = Arc::new(RuntimeChannelHost {
             engine: engine.clone(),
             bus: bus.clone(),
             sessions: session_store.clone(),
+            observability: observability.clone(),
             agents: configured_agents.clone(),
             agent_registry: Some(agent_registry.clone()),
             revision_provider: Some(revision_provider.clone()),
@@ -4419,6 +4444,7 @@ impl Runtime {
         Ok(Self {
             engine,
             storage: RuntimeStorage::new(session_store, memory_store),
+            observability,
             bus,
             configured_agents,
             revision_provider: Some(revision_provider),
@@ -4760,6 +4786,7 @@ impl Runtime {
             channels,
             bus: self.bus.diagnostics().await,
             evidence,
+            observability: self.observability.snapshot(),
             health_issues,
         })
     }

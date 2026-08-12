@@ -1059,6 +1059,7 @@ fn channel_host_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> Runtime
         engine: runtime.channel_host.engine.clone(),
         bus,
         sessions: runtime.channel_host.sessions.clone(),
+        observability: runtime.channel_host.observability.clone(),
         agents: runtime.channel_host.agents.clone(),
         agent_registry: runtime.channel_host.agent_registry.clone(),
         revision_provider: runtime.channel_host.revision_provider.clone(),
@@ -1246,6 +1247,10 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
         submitted.events.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     ));
+    let observations = runtime.operational_snapshot().await.unwrap().observability;
+    assert_eq!(observations.event_count, 6);
+    assert_eq!(observations.chat_admitted, 4);
+    assert_eq!(observations.chat_dispatched, 2);
     runtime.shutdown().await.unwrap();
 }
 

@@ -59,10 +59,12 @@ persisted, published, interrupted, and failed states. Built-in tracing,
 metrics, durable evidence, and health views consume those facts.
 Observability sinks are not runtime extensions at this stage.
 
-Current implementation status: correlated tracing spans, durable evidence, and
-an operational health snapshot exist, but they are separate paths. The typed
-internal `RuntimeEvent` recorder and its mandatory terminal-fact rule have not
-yet been implemented.
+Current implementation status: the closed `RuntimeObservability` recorder
+consumes typed, content-free chat-admitted and chat-dispatched facts, updates
+built-in counters, emits structured tracing, and exposes the counters through
+the operational snapshot. Existing turn tracing and durable evidence remain
+separate paths. Turn/tool/persistence facts, durable observation, failure
+health, and the mandatory terminal-fact rule remain incomplete.
 
 A public success event requires both a committed storage outcome and a terminal
 observability fact. Content is excluded by default and governed separately
