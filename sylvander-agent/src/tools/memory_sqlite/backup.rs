@@ -85,7 +85,7 @@ pub(super) fn create_backup(
 ) -> Result<MemoryBackupArtifact, MemoryStoreError> {
     let directory = data_dir.join("memory-backups");
     std::fs::create_dir_all(&directory).map_err(|_| backup_error())?;
-    let created_at = crate::session::now_secs();
+    let created_at = crate::time::now_secs();
     let id = format!("{BACKUP_PREFIX}{created_at}-{}", uuid::Uuid::new_v4());
     let database_path = directory.join(format!("{id}{DATABASE_SUFFIX}"));
     let manifest_path = directory.join(format!("{id}{MANIFEST_SUFFIX}"));

@@ -554,7 +554,7 @@ impl McpStdioClient {
                 operation: operation.to_owned(),
                 media_type: "application/json".into(),
                 payload,
-                created_at: crate::session::now_secs(),
+                created_at: crate::time::now_secs(),
             })
             .await
         {

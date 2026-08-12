@@ -132,6 +132,8 @@ pub mod session_store;
 pub mod spec;
 /// Restricted background-task lifecycle and result gate.
 pub mod task_gate;
+/// Bounded wall-clock conversion for Agent-owned records.
+pub mod time;
 /// Tool registration, schemas, invocation, and normalized output.
 pub mod tool;
 /// Runtime-derived capability, identity, workspace, and execution budget context.

@@ -210,7 +210,7 @@ pub struct SystemMemoryClock;
 
 impl MemoryClock for SystemMemoryClock {
     fn now_secs(&self) -> i64 {
-        crate::session::now_secs()
+        crate::time::now_secs()
     }
 }
 
