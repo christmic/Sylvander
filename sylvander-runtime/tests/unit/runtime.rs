@@ -3417,6 +3417,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             provider_id: "secondary".into(),
             definition: sylvander_protocol::ProviderDefinitionDraft {
                 kind: "anthropic_compatible".into(),
+                features: Default::default(),
                 base_url: model_server.uri(),
                 credential_binding_id: primary_binding,
             },

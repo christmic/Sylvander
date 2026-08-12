@@ -294,6 +294,7 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
             provider_id: "beta".into(),
             definition: sylvander_protocol::ProviderDefinitionDraft {
                 kind: "anthropic_compatible".into(),
+                features: Default::default(),
                 base_url: "https://beta.invalid".into(),
                 credential_binding_id: binding_id,
             },

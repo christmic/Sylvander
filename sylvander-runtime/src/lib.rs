@@ -3317,7 +3317,7 @@ impl Runtime {
                 .to_model_info()
                 .map_err(|error| RuntimeError::Engine(error.to_string()))?;
             let exact = ProviderModelInfo {
-                reference: ModelRef::new(&provider_id, model.id),
+                reference: ModelRef::new(&provider_id, model.reference.model),
                 context_window: model.context_window,
                 max_output_tokens: model.max_output_tokens,
                 capabilities: ProviderModelCapabilities::TOOL_USE,

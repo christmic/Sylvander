@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use futures_util::StreamExt as _;
 use sylvander_llm_core::{
     ChatMessage, ModelCapabilities, ModelProvider, ModelRef, ModelRequest, ProviderError,
     ProviderErrorKind, ProviderErrorPhase, ToolDefinition,
@@ -124,7 +125,7 @@ fn tool_request(provider: &str) -> ModelRequest {
 async fn expect_key(server: &MockServer, key: &str, count: u64) {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(header("authorization", format!("Bearer {key}")))
+        .and(header("x-api-key", key))
         .respond_with(ResponseTemplate::new(200).set_body_raw(TEXT_STREAM, "text/event-stream"))
         .expect(count)
         .mount(server)
@@ -217,6 +218,7 @@ fn stored_provider(revision: u64, kind: &str, base_url: String) -> ProviderDefin
         id: "anthropic".into(),
         revision,
         kind: kind.into(),
+        features: Default::default(),
         base_url,
         credential_binding_id: "provider:anthropic:api_key".into(),
     }
@@ -236,6 +238,76 @@ fn stored_model(provider_id: &str, capabilities: &[&str]) -> ModelDefinition {
         lifecycle: sylvander_protocol::ModelLifecycle::Active,
         pricing: None,
     }
+}
+
+async fn assert_protocol_route(kind: &str, route: &str, model: &str, response: &str) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(response, "text/event-stream"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let drops = Arc::new(AtomicUsize::new(0));
+    let source = Arc::new(MockSource::new([lease(1, "route-key", &drops)]));
+    let adapter = AnthropicProviderFactory
+        .create(stored_provider(1, kind, server.uri()), source)
+        .expect("configured adapter");
+    let mut stream = adapter
+        .complete_stream(qualified_request("anthropic", model))
+        .await
+        .expect("open selected protocol");
+    while stream.next().await.is_some() {}
+    server.verify().await;
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn factory_routes_each_provider_kind_to_its_protocol_endpoint() {
+    assert_protocol_route(
+        "anthropic_messages",
+        "/v1/messages",
+        "claude-test",
+        TEXT_STREAM,
+    )
+    .await;
+    assert_protocol_route(
+        "openai_responses",
+        "/v1/responses",
+        "gpt-5.6",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.6\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}}}\n\n",
+    )
+    .await;
+    assert_protocol_route(
+        "openai_chat_completions",
+        "/v1/chat/completions",
+        "deepseek-chat",
+        "data: {\"id\":\"chat_1\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    )
+    .await;
+    assert_protocol_route(
+        "dashscope_generation",
+        "/api/v1/services/aigc/text-generation/generation",
+        "qwen-plus",
+        "data: {\"request_id\":\"req_1\",\"output\":{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n",
+    )
+    .await;
+}
+
+#[test]
+fn provider_features_are_validated_per_selected_protocol() {
+    let mut provider = stored_provider(
+        1,
+        "openai_chat_completions",
+        "https://example.invalid".into(),
+    );
+    provider.features.insert("reasoning_content".into());
+    AnthropicProviderFactory::validate_definition(&provider).expect("supported feature");
+    provider.features.insert("thinking_budget".into());
+    assert_eq!(
+        AnthropicProviderFactory::validate_definition(&provider),
+        Err(ProviderFactoryError::UnsupportedFeature)
+    );
 }
 
 #[tokio::test]
