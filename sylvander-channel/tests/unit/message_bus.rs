@@ -1,6 +1,6 @@
 use super::*;
-use crate::bus_trait::SubscriptionFilter;
-use crate::types::{AgentId, BusMessage, Recipient, SessionId};
+use sylvander_protocol::{AgentId, BusMessage, Recipient, SessionId};
+
 fn tm(s: &str) -> BusMessage {
     BusMessage::user_chat(SessionId::new(s), "u1", "hi")
 }
@@ -12,6 +12,7 @@ async fn pubsub() {
     b.publish(tm("s1")).await.unwrap();
     assert!(r.try_recv().is_ok());
 }
+
 #[tokio::test]
 async fn filter_session() {
     let b = InProcessMessageBus::new();
@@ -88,6 +89,17 @@ async fn saturated_subscriber_rejects_before_partial_delivery() {
             backpressure_rejections: 1,
         }
     );
+}
+
+#[tokio::test]
+async fn diagnostics_prunes_closed_subscriptions() {
+    let bus = InProcessMessageBus::new();
+    let receiver = bus.subscribe(SubscriptionFilter::all()).await.unwrap();
+    assert_eq!(bus.diagnostics().await.subscriber_count, 1);
+
+    drop(receiver);
+
+    assert_eq!(bus.diagnostics().await.subscriber_count, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

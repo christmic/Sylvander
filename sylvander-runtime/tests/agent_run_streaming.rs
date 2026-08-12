@@ -14,15 +14,15 @@ use sylvander_agent::prompt::{
     PromptLayerKind as AgentPromptLayerKind, PromptManifest as AgentPromptManifest,
     PromptModelSelection,
 };
+use sylvander_channel::{InProcessMessageBus, MessageBus, SubscriptionFilter};
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
 };
 use sylvander_protocol::{
-    BusMessage, InProcessMessageBus, MessageBus, MessageId, MessageKind, PermissionProfile,
-    PlanDecision, ReasoningEffort, Recipient, Sender, SessionConfigProvenance, SessionConfigSource,
-    SessionConfigSourceKind, SessionEffectiveConfig, SessionId, StreamEvent, SubscriptionFilter,
-    SystemMessage,
+    BusMessage, MessageId, MessageKind, PermissionProfile, PlanDecision, ReasoningEffort,
+    Recipient, Sender, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
+    SessionEffectiveConfig, SessionId, StreamEvent, SystemMessage,
 };
 use sylvander_runtime::agent_definition::AgentSpec;
 use sylvander_runtime::agent_run::{AgentRun, AgentRunBuilder};

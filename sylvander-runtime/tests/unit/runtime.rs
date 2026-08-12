@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use sylvander_agent::tools::memory::MemoryFilter;
 use sylvander_agent::tools::{MemoryActorKind, MemoryAppend, MemoryProvenanceSource};
 use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
+use sylvander_channel::BusError;
 
 use crate::execution::LocalExecutor;
 use sylvander_protocol::{
@@ -145,14 +146,14 @@ impl InstrumentedBus {
 
 #[async_trait::async_trait]
 impl MessageBus for InstrumentedBus {
-    async fn publish(&self, message: BusMessage) -> Result<(), sylvander_protocol::BusError> {
+    async fn publish(&self, message: BusMessage) -> Result<(), BusError> {
         let chat = matches!(message.kind, sylvander_protocol::MessageKind::Chat);
         self.operations
             .lock()
             .unwrap()
             .push(if chat { "publish_chat" } else { "publish" });
         if self.fail_all_publish || (chat && self.fail_chat_publish) {
-            return Err(sylvander_protocol::BusError::SendFailed("injected".into()));
+            return Err(BusError::SendFailed("injected".into()));
         }
         self.inner.publish(message).await
     }
@@ -160,12 +161,10 @@ impl MessageBus for InstrumentedBus {
     async fn subscribe(
         &self,
         filter: SubscriptionFilter,
-    ) -> Result<tokio::sync::mpsc::Receiver<BusMessage>, sylvander_protocol::BusError> {
+    ) -> Result<tokio::sync::mpsc::Receiver<BusMessage>, BusError> {
         self.operations.lock().unwrap().push("subscribe");
         if self.fail_subscribe {
-            return Err(sylvander_protocol::BusError::SubscribeFailed(
-                "injected".into(),
-            ));
+            return Err(BusError::SubscribeFailed("injected".into()));
         }
         self.inner.subscribe(filter).await
     }

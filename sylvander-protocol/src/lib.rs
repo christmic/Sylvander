@@ -1,15 +1,17 @@
 //! # sylvander-protocol
 //!
-//! Wire-format protocol types for Sylvander's message bus.
+//! Wire-format protocol types for Sylvander's service boundaries.
 //!
 //! These types are language-neutral — they define the contract between
-//! agents, channels, and the bus. All data types have `serde` and
+//! agents, channels, runtimes, and clients. All data types have `serde` and
 //! `schemars::JsonSchema` derives.
 //!
 //! ## Multi-language
 //!
-//! The `types` module contains all cross-language data definitions.
-//! `bus_trait` and `in_process` are Rust-only runtime types.
+//! This crate intentionally contains no asynchronous runtime, transport trait,
+//! or concrete delivery implementation. Rust application ports live in their
+//! owning layer; only values that cross a process or service boundary belong
+//! here.
 //!
 //! ```bash
 //! # Generate JSON Schema for TypeScript/Python/etc codegen
@@ -20,12 +22,8 @@
 pub mod agent_admin;
 /// Authenticated ingress context and content-safe boundary failures.
 pub mod boundary;
-/// Transport-neutral message-bus contract and diagnostics.
-pub mod bus_trait;
 /// Link-code protocol for mapping trusted transport identities to users.
 pub mod identity_binding;
-/// In-process implementation of the message-bus contract.
-pub mod in_process;
 /// Versioned, owner-bound Guardian memory confirmation protocol.
 pub mod memory_confirmation;
 /// Versioned administrative messages for provider and credential registries.
@@ -43,9 +41,7 @@ pub mod user_profile;
 
 pub use agent_admin::*;
 pub use boundary::*;
-pub use bus_trait::{BusDiagnostics, BusError, MessageBus, SubscriptionFilter};
 pub use identity_binding::*;
-pub use in_process::InProcessMessageBus;
 pub use memory_confirmation::*;
 pub use registry_admin::*;
 pub use session_context::*;

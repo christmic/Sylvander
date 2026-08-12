@@ -1,11 +1,10 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use sylvander_channel::ChannelHost;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
-use sylvander_protocol::InProcessMessageBus;
+use sylvander_channel::{ChannelHost, InProcessMessageBus};
 
 struct DenyAgentAccess;
 

@@ -99,9 +99,10 @@ use sylvander_agent::workspace_executor::{
     WorkspaceRouter, WorkspaceTarget,
 };
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
+use sylvander_channel::{MessageBus, SubscriptionFilter};
 use sylvander_protocol::{
-    AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Sender, StreamEvent,
-    SubscriptionFilter, SystemMessage, ToolCallInfo,
+    AgentStatus as BusAgentStatus, BusMessage, MessageKind, Sender, StreamEvent, SystemMessage,
+    ToolCallInfo,
 };
 
 #[path = "workspace_context.rs"]

@@ -30,14 +30,15 @@ use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_channel::{
-    Channel, ChannelContext, ExternalChatRequest, parse_external_control, submit_external_chat,
+    Channel, ChannelContext, ExternalChatRequest, SubscriptionFilter, parse_external_control,
+    submit_external_chat,
 };
 use sylvander_protocol::AgentId;
 use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
     BoundaryErrorCode,
 };
-use sylvander_protocol::{MessageKind, StreamEvent, SubscriptionFilter};
+use sylvander_protocol::{MessageKind, StreamEvent};
 
 // ===========================================================================
 // Telegram types

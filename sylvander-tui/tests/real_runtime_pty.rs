@@ -12,7 +12,9 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::json;
 use sylvander_agent::prelude::ToolRegistry;
 use sylvander_agent::tools::{AskUserTool, WriteTool};
-use sylvander_channel::{Channel, ChannelContext, ChannelHost};
+use sylvander_channel::{
+    Channel, ChannelContext, ChannelHost, InProcessMessageBus, MessageBus, SubscriptionFilter,
+};
 use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
@@ -20,11 +22,10 @@ use sylvander_llm_core::{
 };
 use sylvander_protocol::{
     AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, BusMessage,
-    FileAccess, InProcessMessageBus, MessageBus, MessageKind, NetworkAccess, PermissionProfile,
-    ReasoningEffort, RunFeedback, SessionConfigProvenance, SessionConfigSource,
-    SessionConfigSourceKind, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionEffectiveConfig, SessionId, SessionMetadata, StreamEvent, SubscriptionFilter,
-    UiClientMessage, UiSessionInfo,
+    FileAccess, MessageKind, NetworkAccess, PermissionProfile, ReasoningEffort, RunFeedback,
+    SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind, SessionConfigState,
+    SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig, SessionId,
+    SessionMetadata, StreamEvent, UiClientMessage, UiSessionInfo,
 };
 use sylvander_runtime::agent_definition::AgentSpec;
 use sylvander_runtime::agent_run::{AgentRun, AgentSessionIssuer};
@@ -682,7 +683,11 @@ async fn start_runtime(
         .expect("test prompt resolver"),
     );
     let prompt = prompt_resolver
-        .resolve(&selection, None, None)
+        .resolve(
+            &sylvander_runtime::prompt_contract::agent_model_selection(&selection),
+            None,
+            None,
+        )
         .expect("test prompt snapshot");
     let model = spec.to_model_info().expect("valid test model");
     let exact = ProviderModelInfo {
@@ -748,7 +753,9 @@ async fn start_runtime(
         agent_id: agent_id.clone(),
         provider_id,
         prompt_sha256: prompt.system_prompt_sha256,
-        prompt_manifest: prompt.manifest,
+        prompt_manifest: sylvander_runtime::prompt_contract::public_prompt_manifest(
+            prompt.manifest,
+        ),
         approval_enabled,
         next_session: AtomicUsize::new(1),
     });

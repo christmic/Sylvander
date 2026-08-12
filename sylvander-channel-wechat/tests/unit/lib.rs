@@ -7,11 +7,10 @@ use axum::{
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex as StdMutex, RwLock};
-use sylvander_channel::ChannelHost;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
-use sylvander_protocol::InProcessMessageBus;
+use sylvander_channel::{ChannelHost, InProcessMessageBus};
 use sylvander_protocol::SessionId;
 
 impl WechatChannel {

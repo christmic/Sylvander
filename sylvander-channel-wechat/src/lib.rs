@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use sylvander_channel::{
-    Channel, ChannelContext, ExternalChatRequest,
+    Channel, ChannelContext, ExternalChatRequest, SubscriptionFilter,
     credential::{CredentialLeaseRequest, CredentialLeaseSource},
     parse_external_control, submit_external_chat,
 };
@@ -24,7 +24,7 @@ use sylvander_protocol::AgentId;
 use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
 };
-use sylvander_protocol::{MessageKind, StreamEvent, SubscriptionFilter};
+use sylvander_protocol::{MessageKind, StreamEvent};
 
 use protocol::{WechatCrypto, parse_message_xml};
 

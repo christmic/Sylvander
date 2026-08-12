@@ -28,6 +28,11 @@
 //! ```
 
 pub mod credential;
+pub mod message_bus;
+
+pub use message_bus::{
+    BusDiagnostics, BusError, InProcessMessageBus, MessageBus, SubscriptionFilter,
+};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -35,6 +40,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
+use sylvander_protocol::BusMessage;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
     AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
@@ -47,7 +53,6 @@ use sylvander_protocol::{
     USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo, UserProfileCapabilities,
     UserProfileError, UserProfileRequest, UserProfileResponse,
 };
-use sylvander_protocol::{BusError, BusMessage, MessageBus, SubscriptionFilter};
 
 /// Complete normalized input for one authenticated external chat turn.
 pub struct ExternalChatRequest {

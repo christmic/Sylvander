@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::tool::ToolExecutor as _;
 use sylvander_agent::tools::memory::InMemoryMemoryStore;
+use sylvander_channel::InProcessMessageBus;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_core::ModelInfo as ProviderModelInfo;
-use sylvander_protocol::{InProcessMessageBus, Recipient};
+use sylvander_protocol::Recipient;
 
 #[allow(clippy::too_many_arguments)]
 async fn with_workspace_context(

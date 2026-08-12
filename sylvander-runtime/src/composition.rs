@@ -17,6 +17,7 @@ use sylvander_agent::tools::{
 };
 use sylvander_agent::user_profile_provider::UserProfileProvider;
 use sylvander_agent::workspace_executor::WorkspaceExecutor;
+use sylvander_channel::MessageBus;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 #[cfg(test)]
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
@@ -24,7 +25,6 @@ use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelProvider,
     ModelRef,
 };
-use sylvander_protocol::MessageBus;
 use sylvander_protocol::{
     AgentSecretReference, ApprovalPolicy, FileAccess, ModelSelection,
     ModelSelectionResolutionError, NetworkAccess, PermissionProfile, ReasoningEffort,

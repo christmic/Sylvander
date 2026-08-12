@@ -5,9 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use sha2::{Digest, Sha256};
-use sylvander_protocol::{
-    BusMessage, MessageBus, MessageKind, Recipient, Sender, StreamEvent, SubscriptionFilter,
-};
+use sylvander_channel::{MessageBus, SubscriptionFilter};
+use sylvander_protocol::{BusMessage, MessageKind, Recipient, Sender, StreamEvent};
 use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::task::JoinHandle;
 use tracing::error;

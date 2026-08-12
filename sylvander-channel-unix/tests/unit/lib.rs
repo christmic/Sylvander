@@ -1,9 +1,8 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use sylvander_protocol::{
-    BusMessage, InProcessMessageBus, MessageBus, SubscriptionFilter, SystemMessage,
-};
+use sylvander_channel::{InProcessMessageBus, MessageBus, SubscriptionFilter};
+use sylvander_protocol::{BusMessage, SystemMessage};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 async fn handle_client_msg(

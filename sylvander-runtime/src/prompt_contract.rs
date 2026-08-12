@@ -10,7 +10,9 @@ use sylvander_agent::prompt::{
 };
 use sylvander_protocol::{ModelSelection, PromptLayerDigest, PromptLayerKind, PromptManifest};
 
-pub(crate) fn agent_model_selection(selection: &ModelSelection) -> PromptModelSelection {
+/// Project a public model selection into the minimal Agent prompt input.
+#[must_use]
+pub fn agent_model_selection(selection: &ModelSelection) -> PromptModelSelection {
     PromptModelSelection {
         provider_id: selection.provider_id.clone(),
         model_id: selection.model_id.clone(),
@@ -27,7 +29,9 @@ pub(crate) fn validate_public_prompt_selectors(
     validate_profile_selectors(&selections)
 }
 
-pub(crate) fn public_prompt_manifest(manifest: AgentPromptManifest) -> PromptManifest {
+/// Project Agent-owned prompt evidence into the durable public representation.
+#[must_use]
+pub fn public_prompt_manifest(manifest: AgentPromptManifest) -> PromptManifest {
     PromptManifest {
         layers: manifest
             .layers

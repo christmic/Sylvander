@@ -81,7 +81,8 @@ pub mod principal_binding;
 #[cfg(test)]
 #[path = "../tests/unit/principal_binding.rs"]
 mod principal_binding_tests;
-mod prompt_contract;
+/// Explicit translations between Agent prompt evidence and public DTOs.
+pub mod prompt_contract;
 /// Controlled synchronization of provider model catalogs into the registry.
 pub mod provider_catalog_sync;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches
@@ -150,6 +151,7 @@ use sylvander_agent::tools::MemoryStore;
 use sylvander_channel::{
     AuthenticatedTransportIdentity, Channel, ChannelContext, ChannelReadiness,
 };
+use sylvander_channel::{BusDiagnostics, InProcessMessageBus, MessageBus, SubscriptionFilter};
 #[cfg(test)]
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 #[cfg(test)]
@@ -169,9 +171,7 @@ use sylvander_protocol::{
     UserProfileCapabilities, UserProfileError, UserProfileErrorCode, UserProfileOperation,
     UserProfileRequest, UserProfileResponse,
 };
-use sylvander_protocol::{
-    BusDiagnostics, BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
-};
+use sylvander_protocol::{BusMessage, Recipient};
 
 use crate::agent_admin::{
     AgentAdminDispatch, AgentAdminService, is_agent_administrator, map_registry_error,
