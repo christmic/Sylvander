@@ -2,6 +2,7 @@ use super::*;
 use crate::test_support::MockTool;
 use serde_json::json;
 use sylvander_llm_anthropic::api::model::ModelCapabilities;
+use sylvander_llm_anthropic::api::types::{CacheControl, TextBlock, UserContentBlock};
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ChatRole, ContentBlock as ProviderBlock, DocumentContent, ImageContent,
     MediaSource, ModelCapabilities as ProviderCapabilities, ModelEventStream, ModelRef,
@@ -256,8 +257,6 @@ fn prompt_cache_hints_follow_the_selected_model_capability() {
 
 #[test]
 fn lossy_message_cache_metadata_fails_before_dispatch() {
-    use sylvander_llm_anthropic::api::types::{CacheControl, TextBlock, UserContentBlock};
-
     let provider = Arc::new(ScriptedProvider::new(Vec::<ProviderOpen>::new()));
     let loop_ = loop_builder()
         .qualified_router(provider.clone())
@@ -493,7 +492,10 @@ async fn provider_capability_preflight_dispatches_once_when_fully_supported() {
         text: "system".into(),
         cache_hint: Some(CacheHint::Ephemeral),
     });
-    request.reasoning = Some(sylvander_llm_core::ReasoningConfig { budget_tokens: 10 });
+    request.reasoning = Some(sylvander_llm_core::ReasoningConfig {
+        budget_tokens: Some(10),
+        effort: None,
+    });
     request.messages.push(ChatMessage {
         role: ChatRole::Assistant,
         content: vec![

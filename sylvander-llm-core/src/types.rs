@@ -179,11 +179,34 @@ pub struct ToolDefinition {
     pub cache_hint: Option<CacheHint>,
 }
 
-/// Explicit reasoning-token budget.
+/// Provider-neutral reasoning configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReasoningConfig {
-    /// Maximum tokens reserved for reasoning.
-    pub budget_tokens: u32,
+    /// Maximum tokens reserved for reasoning, when the protocol supports it.
+    pub budget_tokens: Option<u32>,
+    /// Qualitative reasoning effort, when the protocol supports it.
+    pub effort: Option<ReasoningEffort>,
+}
+
+/// Qualitative reasoning effort shared by current model protocols.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    /// Explicitly disable reasoning effort.
+    #[serde(rename = "none")]
+    Disabled,
+    /// Use the smallest non-zero reasoning effort.
+    Minimal,
+    /// Use low reasoning effort.
+    Low,
+    /// Use medium reasoning effort.
+    Medium,
+    /// Use high reasoning effort.
+    High,
+    /// Use extra-high reasoning effort.
+    Xhigh,
+    /// Use the maximum supported reasoning effort.
+    Max,
 }
 
 /// Complete provider-neutral model invocation.

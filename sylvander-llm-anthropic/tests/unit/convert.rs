@@ -52,7 +52,8 @@ fn rich_neutral_request_maps_to_anthropic_wire() {
         }],
         max_output_tokens: 2048,
         reasoning: Some(core::ReasoningConfig {
-            budget_tokens: 1024,
+            budget_tokens: Some(1024),
+            effort: None,
         }),
         output_schema: Some(json!({"type": "object"})),
     };

@@ -23,7 +23,7 @@ pub use provider::{ModelCatalogFuture, ModelEventStream, ModelProvider, Provider
 pub use types::{
     CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent, ImageContent, MediaSource,
     ModelRequest, ModelResponse, ModelStreamEvent, OpaqueProviderState, ReasoningConfig,
-    StopReason, SystemInstruction, ToolDefinition, ToolResultContent,
+    ReasoningEffort, StopReason, SystemInstruction, ToolDefinition, ToolResultContent,
 };
 pub use usage::{TokenUsage, TokenUsageDetails};
 pub use validation::*;

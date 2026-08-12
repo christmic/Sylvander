@@ -93,6 +93,7 @@ pub(crate) fn response_from_core(
                 "cache_read_tokens",
                 response.usage.cache_read_tokens,
             )?,
+            ..anthropic_wire::Usage::default()
         },
     })
 }

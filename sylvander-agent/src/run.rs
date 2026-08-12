@@ -31,12 +31,17 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{Instrument as _, info, warn};
 
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+use sylvander_llm_anthropic::api::types::{ImageBlock, UserContentBlock};
 use sylvander_llm_core::{ModelInfo as ProviderModelInfo, ModelProvider};
+use sylvander_protocol::{
+    PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
+};
 
 use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::approval_store::{
@@ -47,6 +52,7 @@ use crate::bus::{
     AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Sender, StreamEvent,
     SubscriptionFilter, SystemMessage, ToolCallInfo,
 };
+use crate::compress::error::{CompactionError, CompactionFailureCode};
 use crate::compress::layer::CompressionLayer;
 use crate::curated_memory::{CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope};
 use crate::error::AgentLoopError;
@@ -439,11 +445,6 @@ impl AgentRun {
     /// values or memory store paths.
     #[must_use]
     pub fn platform_snapshot(&self) -> sylvander_protocol::PlatformSnapshot {
-        use sylvander_protocol::{
-            PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus,
-            PlatformTrust,
-        };
-
         let mut features = self
             .inner
             .spec
@@ -668,7 +669,6 @@ impl AgentRun {
         &self,
         session_id: &SessionId,
     ) -> Result<sylvander_protocol::CompactionReport, crate::compress::error::CompactionError> {
-        use crate::compress::error::{CompactionError, CompactionFailureCode};
         if self
             .inner
             .active_turns
@@ -714,6 +714,7 @@ impl AgentRun {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            ..sylvander_llm_anthropic::api::types::Usage::default()
         };
         let summarizer = self.inner.loop_config.auto_compact_llm();
         let mut context = crate::compress::CompressContext {
@@ -1693,7 +1694,6 @@ impl TaskGate for BusTaskGate {
         let tasks = self.tasks.clone();
         let running_id = task_id.clone();
         tokio::spawn(async move {
-            use futures_util::StreamExt;
             let history = vec![sylvander_llm_anthropic::api::types::MessageParam::user(
                 prompt,
             )];
@@ -2599,7 +2599,6 @@ impl AgentRunInner {
         }));
 
         // 3. Run loop with streaming
-        use futures_util::StreamExt;
         let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
         tokio::pin!(interrupted);
         let mut final_message: Option<sylvander_llm_anthropic::api::types::Message> = None;
@@ -2933,7 +2932,6 @@ impl AgentRunInner {
     }
 
     fn message_to_param(msg: &BusMessage) -> sylvander_llm_anthropic::api::types::MessageParam {
-        use sylvander_llm_anthropic::api::types::{ImageBlock, UserContentBlock};
         if msg.attachments.is_empty() {
             return sylvander_llm_anthropic::api::types::MessageParam::user(&msg.payload);
         }

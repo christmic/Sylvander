@@ -33,6 +33,7 @@ use sylvander_llm_anthropic::api::types::{
 };
 use sylvander_llm_core::{
     ModelEventStream, ModelInfo as ProviderModelInfo, ModelProvider, ModelRequest,
+    ProviderErrorKind,
 };
 use sylvander_protocol::{AgentHookPhase, ModelSelection};
 
@@ -417,6 +418,7 @@ pub fn run_stream(
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            ..Usage::default()
         };
         let mut last_provider_usage = cumulative_usage.clone();
         let mut final_message: Option<Message> = None;
@@ -1160,6 +1162,7 @@ where
         output_tokens: 0,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        ..Usage::default()
     };
     let mut iterations: u32 = 0;
 
@@ -1334,7 +1337,6 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
 fn provider_retry_cause(
     error: &sylvander_llm_core::ProviderError,
 ) -> sylvander_protocol::RetryCause {
-    use sylvander_llm_core::ProviderErrorKind;
     match error.kind {
         ProviderErrorKind::RateLimited => sylvander_protocol::RetryCause::RateLimit,
         ProviderErrorKind::Unavailable => sylvander_protocol::RetryCause::Server,
@@ -1526,7 +1528,8 @@ impl AgentLoop {
             max_output_tokens: self.provider_model.max_output_tokens,
             reasoning: self.reasoning_effort.budget_tokens().map(|budget_tokens| {
                 sylvander_llm_core::ReasoningConfig {
-                    budget_tokens: budget_tokens.min(self.provider_model.max_output_tokens),
+                    budget_tokens: Some(budget_tokens.min(self.provider_model.max_output_tokens)),
+                    effort: None,
                 }
             }),
             output_schema: None,
@@ -1567,6 +1570,7 @@ async fn consume_stream_to_run(
         output_tokens: 0,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        ..Usage::default()
     };
     let mut iterations: u32 = 0;
 
@@ -1609,6 +1613,7 @@ fn saturating_add_usage(total: &Usage, next: &Usage) -> Usage {
             total.cache_read_input_tokens,
             next.cache_read_input_tokens,
         ),
+        ..Usage::default()
     }
 }
 

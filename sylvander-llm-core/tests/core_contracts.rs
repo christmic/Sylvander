@@ -131,7 +131,10 @@ fn rich_request_and_response_round_trip_without_provider_wire_types() {
             cache_hint: Some(CacheHint::Ephemeral),
         }],
         max_output_tokens: 4096,
-        reasoning: Some(ReasoningConfig { budget_tokens: 512 }),
+        reasoning: Some(ReasoningConfig {
+            budget_tokens: Some(512),
+            effort: Some(sylvander_llm_core::ReasoningEffort::High),
+        }),
         output_schema: Some(json!({"type": "object"})),
     };
     let request_json = serde_json::to_string(&request).unwrap();
@@ -220,7 +223,10 @@ fn usage_accumulates_without_overflowing() {
 fn request_features_require_all_six_capabilities_and_errors_are_redacted() {
     let mut input = base_request();
     input.tools.push(tool(None));
-    input.reasoning = Some(ReasoningConfig { budget_tokens: 10 });
+    input.reasoning = Some(ReasoningConfig {
+        budget_tokens: Some(10),
+        effort: None,
+    });
     input.output_schema = Some(json!({"secret-output-schema": true}));
     input.system.push(SystemInstruction {
         text: "secret-system".into(),

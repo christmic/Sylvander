@@ -60,7 +60,7 @@ pub(crate) fn request(
         tool_choice: None,
         thinking: input
             .reasoning
-            .map(|value| wire::ThinkingConfig::new(value.budget_tokens)),
+            .and_then(|value| value.budget_tokens.map(wire::ThinkingConfig::new)),
         output_config,
         temperature: None,
         top_p: None,
