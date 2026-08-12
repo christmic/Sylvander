@@ -148,37 +148,44 @@ while let Some(event) = stream.next().await {
 
 ### Custom tools
 
-Implement `Tool`, declare the operation's security class, and use the
-Runtime-derived `ToolContext` for identity, workspace, executor, budget, and
-capability checks. Model input never selects an owner or an unrestricted host
-path:
+Implement the separate `ToolDefinition` and `ToolExecutor` contracts. The
+definition publishes one stable, provider-neutral JSON Schema and prepares the
+immutable call before authorization. The executor receives only that prepared
+call plus the Runtime-derived `ToolContext`:
 
 ```rust,ignore
 struct ProjectSummary;
 
+impl ToolDefinition for ProjectSummary {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            "project_summary",
+            "Read the bounded project summary",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            ToolInvocationClass::Read,
+        )
+    }
+}
+
 #[async_trait]
-impl Tool for ProjectSummary {
-    fn name(&self) -> &'static str { "project_summary" }
-    fn description(&self) -> &'static str { "Read the bounded project summary" }
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(json!({}), &[])
-    }
-
-    fn invocation_class(&self) -> ToolInvocationClass {
-        ToolInvocationClass::Read
-    }
-
-    async fn execute(
+impl ToolExecutor for ProjectSummary {
+    async fn handle(
         &self,
         ctx: &ToolContext,
-        _input: JsonValue,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(Cap::Read) {
             return Ok(ToolOutput::err("read capability not granted"));
         }
-        let root = ctx.surface.fs_root.as_ref()
-            .ok_or_else(|| ToolError::Other("workspace unavailable".into()))?;
-        let content = std::fs::read_to_string(root.join("PROJECT.md"))
+        let bytes = ctx.executor
+            .read_file(&ctx.execution_target, "PROJECT.md")
+            .await
+            .map_err(|error| ToolError::Other(error.to_string()))?;
+        let content = String::from_utf8(bytes)
             .map_err(|error| ToolError::Other(error.to_string()))?;
         Ok(ToolOutput::ok(content))
     }
@@ -197,6 +204,13 @@ let mut loop_ = AgentLoop::builder()
     .tool(ProjectSummary)
     .build()?;
 ```
+
+Preparation precedes authorization and freezes the normalized input,
+coordination mode, and execution policy. Structured workspace reads and writes
+remain bounded by `WorkspaceExecutor`. Tools that launch processes must request
+a required sandbox policy; today only an explicitly configured OCI `container`
+executor reports the complete filesystem, denied-network, and resource-limit
+isolation required to run them. Local and SSH executors fail those calls closed.
 
 Standalone `AgentLoop` embeddings receive an exact-registry gateway. Production
 `Runtime` replaces it with the actor-aware policy and durable audit gateway.

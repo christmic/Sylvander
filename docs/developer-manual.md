@@ -272,43 +272,46 @@ that `build_channels` returns.
 
 ## 11. Adding a new tool
 
-Tools implement `Tool` in `sylvander-agent/src/tool.rs`. The trait is
-`async_trait`-bound for dyn-compatibility + Send safety. The per-call
-context is `ToolContext` (see
-`sylvander-agent/src/tool_context.rs`).
+Tools implement `ToolDefinition` and `ToolExecutor` in
+`sylvander-agent/src/tool.rs`. Definition and preparation are synchronous;
+execution is `async_trait`-bound for dyn-compatibility and Send safety. The
+per-call context is `ToolContext`.
 
 ### Skeleton
 
 ```rust
 use async_trait::async_trait;
-use serde_json::{Value as JsonValue, json};
-use sylvander_llm_anthropic::api::types::InputSchema;
-use sylvander_agent::tool::{Tool, ToolError, ToolOutput};
+use serde_json::json;
+use sylvander_agent::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput,
+    ToolSpec,
+};
 use sylvander_agent::tool_context::ToolContext;
 use sylvander_agent::tool_invocation::ToolInvocationClass;
 
 pub struct MyTool;
 
+impl ToolDefinition for MyTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            "my_tool",
+            "Return one bounded project summary",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            ToolInvocationClass::Read,
+        )
+    }
+}
+
 #[async_trait]
-impl Tool for MyTool {
-    fn name(&self) -> &str { "my_tool" }
-
-    fn description(&self) -> &str {
-        "Return one bounded project summary"
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(json!({}), &[])
-    }
-
-    fn invocation_class(&self) -> ToolInvocationClass {
-        ToolInvocationClass::Read
-    }
-
-    async fn execute(
+impl ToolExecutor for MyTool {
+    async fn handle(
         &self,
         ctx: &ToolContext,
-        _input: JsonValue,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(sylvander_agent::tool_context::Cap::Read) {
             return Ok(ToolOutput::err("read capability not granted"));
@@ -318,9 +321,18 @@ impl Tool for MyTool {
 }
 ```
 
-Tools that produce incremental output override `execute_streaming` and emit
-through its `ToolProgressSink`; the ordinary `execute` contract has no progress
-parameter.
+Tools that produce incremental output override `handle_streaming` and emit
+through its `ToolProgressSink`. Runtime never calls an executor with raw model
+input.
+
+Preparation validates the declared schema shape, freezes normalized input,
+coordination mode, and `ToolExecutionPolicy`, and only then enters the
+authorization gateway. A tool that launches a process must prepare either
+`ToolExecutionPolicy::process()` or
+`ToolExecutionPolicy::read_only_process()`. Such a call fails closed unless
+the selected executor reports OS-enforced filesystem isolation, denied
+network, and resource limits. The current enforcing backend is the explicit
+OCI `container` transport; `local` and `ssh` do not claim sandboxing.
 
 ### Context hygiene
 
@@ -344,8 +356,7 @@ statically couple a tool to a hard-coded model or provider.
 
 Executors implement `WorkspaceExecutor` in
 `sylvander-agent/src/workspace_executor.rs`. They dispatch workspace
-operations to local, SSH, container, or sandbox targets. The full
-contract lives in
+operations to local, SSH, or OCI container targets. The full contract lives in
 [`workspace-execution.md`](../sylvander-agent/docs/workspace-execution.md).
 
 A new executor must:
@@ -360,9 +371,11 @@ A new executor must:
 - Reject any operation whose capability isn't granted by
   `ctx.surface.capabilities` (file_access, network_access, command).
 
-The wiring sits next to `local`, `ssh`, `container`, and `sandbox`
-arms in the executor factory. The server configuration adds a new
-variant if a new transport requires a new TOML shape.
+The wiring sits next to the `local`, `ssh`, and `container` arms in the
+executor factory. The server configuration adds a new variant if a new
+transport requires a new TOML shape. A new executor must leave
+`process_isolation()` at its unconfined default until every reported property
+is enforced by its concrete operating-system or container boundary.
 
 ## 13. Adding MCP / Skill
 
