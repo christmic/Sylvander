@@ -99,7 +99,7 @@ async fn real_api_l1_drops_prepopulated_orphan() {
     // ToolResult block (DeepSeek rejects blocks outside a real
     // multi-turn flow). This smoke test verifies L1 doesn't
     // crash the pipeline on a real API call.
-    let initial = vec![MessageParam::user("hello")];
+    let initial = vec![ChatMessage::user("hello")];
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -163,7 +163,7 @@ async fn real_api_l4_smoke_test() {
         .expect("build");
 
     let result = loop_.run_with_events(
-        vec![MessageParam::user(
+        vec![ChatMessage::user(
             "List 10 distinct colors. For each, give its hex code and one sentence describing when to use it."
         )],
         move |event| events_clone.lock().unwrap().push(event),
@@ -218,7 +218,7 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
             &big_body,
             false,
         )]),
-        MessageParam::user("now summarize"),
+        ChatMessage::user("now summarize"),
     ];
 
     let disk = Arc::new(InMemoryToolResultDisk::new());
@@ -279,7 +279,7 @@ async fn real_api_l2_condenses_old_tool_results() {
 
     let long_body = "Q".repeat(500);
 
-    let mut initial: Vec<MessageParam> = Vec::new();
+    let mut initial: Vec<ChatMessage> = Vec::new();
     for i in 0..5 {
         initial.push(ChatMessage::assistant(vec![ContentBlock::ToolCall {
             id: format!("toolu_{i}"),
@@ -290,7 +290,7 @@ async fn real_api_l2_condenses_old_tool_results() {
             ContentBlock::tool_result_text(format!("toolu_{i}"), &long_body, false),
         ]));
     }
-    initial.push(MessageParam::user("summarize everything"));
+    initial.push(ChatMessage::user("summarize everything"));
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -349,7 +349,7 @@ async fn real_api_l3_trims_old_thinking_block() {
                 data: json!({"signature": "sig_prepopulated"}),
             }),
         }]),
-        MessageParam::user("now act on that reasoning"),
+        ChatMessage::user("now act on that reasoning"),
     ];
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));

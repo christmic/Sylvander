@@ -112,7 +112,7 @@ async fn tool_output_deltas_arrive_before_final_result() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = events.clone();
     loop_
-        .run_with_events(vec![MessageParam::user("progress")], move |event| {
+        .run_with_events(vec![ChatMessage::user("progress")], move |event| {
             captured.lock().unwrap().push(event);
         })
         .await
@@ -212,7 +212,7 @@ async fn run_burst_progress(include_control_tool: bool) -> Vec<AgentEvent> {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = events.clone();
     loop_
-        .run_with_events(vec![MessageParam::user("burst")], move |event| {
+        .run_with_events(vec![ChatMessage::user("burst")], move |event| {
             captured.lock().unwrap().push(event);
         })
         .await
@@ -350,7 +350,7 @@ async fn ordinary_tool_batch_starts_and_executes_concurrently() {
     let captured = events.clone();
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        loop_.run_with_events(vec![MessageParam::user("parallel")], move |event| {
+        loop_.run_with_events(vec![ChatMessage::user("parallel")], move |event| {
             captured.lock().unwrap().push(event);
         }),
     )
@@ -408,7 +408,7 @@ async fn exclusive_tool_calls_never_overlap_within_one_model_batch() {
         .expect("build");
 
     loop_
-        .run(vec![MessageParam::user("exclusive")])
+        .run(vec![ChatMessage::user("exclusive")])
         .await
         .expect("run");
     assert_eq!(maximum.load(Ordering::SeqCst), 1);
@@ -440,7 +440,7 @@ async fn single_iteration_end_turn_returns_final_message() {
         .expect("build");
 
     let run = loop_
-        .run_with_events(vec![MessageParam::user("Hi")], |event| {
+        .run_with_events(vec![ChatMessage::user("Hi")], |event| {
             events_clone.lock().unwrap().push(event);
         })
         .await
@@ -535,7 +535,7 @@ async fn tool_use_triggers_tool_execution_and_continues() {
         .expect("build");
 
     let run = loop_
-        .run_with_events(vec![MessageParam::user("Get weather")], |event| {
+        .run_with_events(vec![ChatMessage::user("Get weather")], |event| {
             events_clone.lock().unwrap().push(event);
         })
         .await
@@ -619,7 +619,7 @@ async fn max_iterations_returns_the_last_partial_message() {
         .build()
         .expect("build");
 
-    let result = loop_.run(vec![MessageParam::user("Loop forever")]).await;
+    let result = loop_.run(vec![ChatMessage::user("Loop forever")]).await;
 
     let result = result.expect("last partial message remains usable at the iteration cap");
     assert_eq!(result.iterations, 3);
@@ -682,7 +682,7 @@ async fn tool_error_continues_loop() {
         .expect("build");
 
     let run = loop_
-        .run(vec![MessageParam::user("Try tool")])
+        .run(vec![ChatMessage::user("Try tool")])
         .await
         .expect("run should succeed even when tool errors");
 
@@ -739,7 +739,7 @@ async fn tool_not_found_records_error_and_continues() {
         .expect("build");
 
     let run = loop_
-        .run(vec![MessageParam::user("Try missing")])
+        .run(vec![ChatMessage::user("Try missing")])
         .await
         .expect("run should succeed");
 
@@ -763,7 +763,7 @@ async fn llm_error_propagates_without_retry() {
         .build()
         .expect("build");
 
-    let result = loop_.run(vec![MessageParam::user("Hi")]).await;
+    let result = loop_.run(vec![ChatMessage::user("Hi")]).await;
 
     // 4xx is non-retryable — exactly one provider request is attempted.
     assert!(matches!(
@@ -800,7 +800,7 @@ async fn event_order_iteration_start_chunks_end() {
         .expect("build");
 
     loop_
-        .run_with_events(vec![MessageParam::user("Think")], move |event| {
+        .run_with_events(vec![ChatMessage::user("Think")], move |event| {
             events_clone.lock().unwrap().push(event);
         })
         .await

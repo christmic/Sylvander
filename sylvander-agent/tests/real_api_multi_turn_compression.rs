@@ -88,7 +88,7 @@ async fn real_api_natural_multi_turn_with_compression() {
     let prompt = "Read the file data.txt and tell me how many lines it contains.";
 
     let run_result = loop_
-        .run_with_events(vec![MessageParam::user(prompt)], move |event| {
+        .run_with_events(vec![ChatMessage::user(prompt)], move |event| {
             events_clone.lock().unwrap().push(event);
         })
         .await;

@@ -77,7 +77,7 @@ async fn real_api_does_multi_turn_work() {
     let prompt = format!("Read the file at {file_name} and tell me its contents.");
 
     let result = loop_
-        .run_with_events(vec![MessageParam::user(prompt)], move |event| {
+        .run_with_events(vec![ChatMessage::user(prompt)], move |event| {
             events_clone.lock().unwrap().push(event);
         })
         .await;

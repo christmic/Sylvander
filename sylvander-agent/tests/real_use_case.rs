@@ -180,7 +180,7 @@ async fn real_use_case_read_and_summarize() {
     // === Run the agent loop with reactive event delivery ===
     let run = loop_
         .run_with_events(
-            vec![MessageParam::user("Summarize /tmp/notes.md")],
+            vec![ChatMessage::user("Summarize /tmp/notes.md")],
             move |event| {
                 events_clone.lock().unwrap().push(event);
             },
@@ -336,12 +336,9 @@ async fn real_use_case_tool_error_recovery() {
         .expect("build");
 
     let run = loop_
-        .run_with_events(
-            vec![MessageParam::user("Read /nonexistent")],
-            move |event| {
-                events_clone.lock().unwrap().push(event);
-            },
-        )
+        .run_with_events(vec![ChatMessage::user("Read /nonexistent")], move |event| {
+            events_clone.lock().unwrap().push(event);
+        })
         .await
         .expect("run should succeed even with tool error");
 

@@ -130,7 +130,7 @@ async fn write_tool_e2e() {
 
     let _run = loop_
         .run_with_events(
-            vec![MessageParam::user(
+            vec![ChatMessage::user(
                 "Read notes.md then write notes2.md with the same content",
             )],
             move |event| events_clone.lock().unwrap().push(event),
@@ -226,7 +226,7 @@ async fn write_creates_nested_dirs() {
 
     let _run = loop_
         .run_with_events(
-            vec![MessageParam::user("write to deep/nested/file.txt")],
+            vec![ChatMessage::user("write to deep/nested/file.txt")],
             move |event| events_clone.lock().unwrap().push(event),
         )
         .await
