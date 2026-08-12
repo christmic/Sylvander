@@ -1,12 +1,8 @@
 use super::*;
 use std::collections::BTreeSet;
-use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use sylvander_agent::bus::{
     BusMessage, InProcessMessageBus, MessageBus, SubscriptionFilter, SystemMessage,
-};
-use sylvander_agent::session_store::{
-    MessageRole, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -56,6 +52,7 @@ struct EmptyUiService {
     rollback_preview: Option<sylvander_protocol::WorkspaceRollbackPreview>,
     rollback_report: Option<sylvander_protocol::WorkspaceRollbackReport>,
     allow_delete: bool,
+    session_history: Mutex<Option<sylvander_protocol::UiSessionHistory>>,
 }
 
 #[tokio::test]
@@ -122,7 +119,7 @@ impl sylvander_channel::UiService for EmptyUiService {
             kind: MessageKind::Chat,
             payload: request.text,
             attachments: request.attachments,
-            timestamp: sylvander_agent::session::now_secs(),
+            timestamp: 0,
             id: sylvander_agent::bus::MessageId::new(),
         })
         .await
@@ -193,7 +190,7 @@ impl sylvander_channel::UiService for EmptyUiService {
             kind: MessageKind::System(system),
             payload: String::new(),
             attachments: Vec::new(),
-            timestamp: sylvander_agent::session::now_secs(),
+            timestamp: 0,
             id: sylvander_agent::bus::MessageId::new(),
         })
         .await
@@ -213,6 +210,90 @@ impl sylvander_channel::UiService for EmptyUiService {
                 "delete_session",
             ))
         }
+    }
+
+    async fn load_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<sylvander_protocol::UiSessionHistory, sylvander_protocol::BoundaryError> {
+        self.session_history
+            .lock()
+            .await
+            .clone()
+            .filter(|history| history.session.id == session_id.0)
+            .ok_or_else(|| sylvander_protocol::BoundaryError::forbidden(boundary, "load_session"))
+    }
+
+    async fn rename_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+        label: String,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        let mut history = self.session_history.lock().await;
+        let history = history
+            .as_mut()
+            .filter(|history| history.session.id == session_id.0)
+            .ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "rename_session")
+            })?;
+        history.session.label = label;
+        Ok(())
+    }
+
+    async fn archive_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        self.load_session(boundary, session_id).await.map(|_| ())
+    }
+
+    async fn restore_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        self.load_session(boundary, session_id).await.map(|_| ())
+    }
+
+    async fn fork_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+        completed_turns: Option<usize>,
+        checkpoint: bool,
+    ) -> Result<sylvander_protocol::UiSessionHistory, sylvander_protocol::BoundaryError> {
+        let mut history = self.load_session(boundary, session_id).await?;
+        if let Some(turns) = completed_turns {
+            let end = history
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.role == "assistant")
+                .nth(turns.saturating_sub(1))
+                .map(|(index, _)| index + 1)
+                .ok_or_else(|| sylvander_protocol::BoundaryError {
+                    code: sylvander_protocol::BoundaryErrorCode::InvalidScope,
+                    operation: "fork_session".into(),
+                    request_id: boundary.request_id.clone(),
+                    message: format!("completed turn {turns} does not exist"),
+                    retry_after_ms: None,
+                })?;
+            history.messages.truncate(end);
+            history.session.label = format!("{} (rewind {turns})", history.session.label);
+        } else if checkpoint {
+            history.session.label.push_str(" (checkpoint)");
+        } else {
+            history.session.label.push_str(" (fork)");
+        }
+        history.session.id = uuid::Uuid::new_v4().to_string();
+        history.iterations = 0;
+        history.input_tokens = 0;
+        history.output_tokens = 0;
+        history.cost_nano_usd = Some(0);
+        Ok(history)
     }
 
     async fn discover_agents(
@@ -563,12 +644,7 @@ async fn negotiate(
 #[tokio::test]
 async fn runtime_info_reports_server_truth() {
     let bus = Arc::new(InProcessMessageBus::new());
-    let context = ChannelContext::with_services(
-        bus,
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        None,
-        None,
-    );
+    let context = ChannelContext::with_services(bus, Some("unix".into()), None, None);
     let (tx, mut rx) = mpsc::unbounded_channel();
     handle_client_msg(
         ClientMsg::GetRuntimeInfo,
@@ -604,12 +680,7 @@ async fn runtime_info_reports_server_truth() {
 #[tokio::test]
 async fn runtime_info_reads_fresh_platform_truth_for_each_request() {
     let bus = Arc::new(InProcessMessageBus::new());
-    let context = ChannelContext::with_services(
-        bus,
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        None,
-        None,
-    );
+    let context = ChannelContext::with_services(bus, Some("unix".into()), None, None);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = calls.clone();
     let mut runtime = runtime_info();
@@ -654,7 +725,7 @@ async fn runtime_info_reads_fresh_platform_truth_for_each_request() {
 async fn agent_discovery_is_served_through_the_ui_service_boundary() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         Some(Arc::new(EmptyUiService::default())),
         None,
     );
@@ -704,7 +775,7 @@ async fn agent_discovery_is_served_through_the_ui_service_boundary() {
 async fn identity_binding_round_trip_uses_authenticated_unix_ingress() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         Some(Arc::new(EmptyUiService::default())),
         None,
     );
@@ -759,7 +830,7 @@ async fn identity_binding_round_trip_uses_authenticated_unix_ingress() {
 async fn agent_admin_without_ui_service_returns_content_free_error() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         None,
         None,
     );
@@ -802,7 +873,7 @@ async fn agent_admin_without_ui_service_returns_content_free_error() {
 async fn registry_admin_without_ui_service_returns_content_free_error() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         None,
         None,
     );
@@ -858,7 +929,7 @@ async fn dispatch_client_message_as(
 ) -> ServerMsg {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         Some(Arc::new(EmptyUiService::default())),
         None,
     );
@@ -969,7 +1040,7 @@ async fn current_protocol_is_required_before_registry_mutation_dispatch() {
     let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         Some(service.clone()),
         None,
     )));
@@ -1062,7 +1133,7 @@ async fn memory_confirmation_round_trips_over_a_real_unix_socket() {
     let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         Some(Arc::new(EmptyUiService::default())),
         None,
     )));
@@ -1129,7 +1200,7 @@ async fn session_prompt_is_redacted_on_the_unix_wire() {
     let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         Some(service),
         None,
     )));
@@ -1213,7 +1284,7 @@ async fn model_selection_without_session_fails_closed() {
     let bus = Arc::new(InProcessMessageBus::new());
     let context = ChannelContext::with_services(
         bus,
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some("unix".into()),
         Some(Arc::new(EmptyUiService::default())),
         None,
     );
@@ -1303,12 +1374,7 @@ async fn workspace_rollback_preview_and_confirmation_round_trip() {
         }),
         ..EmptyUiService::default()
     };
-    let context = ChannelContext::with_services(
-        bus,
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-        Some(Arc::new(ui)),
-        None,
-    );
+    let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, mut rx) = mpsc::unbounded_channel();
     handle_client_msg(
         ClientMsg::PreviewWorkspaceRollback {
@@ -1345,75 +1411,44 @@ async fn workspace_rollback_preview_and_confirmation_round_trip() {
 async fn persisted_session_load_rename_fork_and_archive_round_trip() {
     let path = socket_path();
     let agent_id = AgentId::new("agent-1");
-    let store: Arc<dyn SessionStore> =
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
-    let session_id = SessionId::new("session-1");
-    let credential_probe = tempfile::NamedTempFile::new().expect("credential probe");
-    let principal_id = format!(
-        "unix:unix:uid:{}",
-        credential_probe
-            .as_file()
-            .metadata()
-            .expect("credential metadata")
-            .uid()
-    );
-    let metadata = sylvander_agent::session::SessionMetadata {
-        workspace: "/workspace/project".into(),
-        name: "Original".into(),
-        user_id: principal_id.clone(),
+    let history = sylvander_protocol::UiSessionHistory {
+        session: sylvander_protocol::UiSessionInfo {
+            id: "session-1".into(),
+            label: "Original".into(),
+            workspace: "/workspace/project".into(),
+            last_seen_secs: 0,
+        },
+        messages: vec![
+            sylvander_protocol::UiHistoryMessage {
+                role: "user".into(),
+                text: "hello".into(),
+            },
+            sylvander_protocol::UiHistoryMessage {
+                role: "assistant".into(),
+                text: "answer one".into(),
+            },
+            sylvander_protocol::UiHistoryMessage {
+                role: "user".into(),
+                text: "question two".into(),
+            },
+            sylvander_protocol::UiHistoryMessage {
+                role: "assistant".into(),
+                text: "answer two".into(),
+            },
+        ],
+        iterations: 1,
+        input_tokens: 120,
+        output_tokens: 30,
+        cost_nano_usd: Some(45_000),
     };
-    store
-        .save(&StoredSession::new(
-            session_id.clone(),
-            "Original",
-            SessionLifetime::Persistent,
-            metadata,
-            vec![agent_id.clone()],
-        ))
-        .await
-        .expect("save");
-    let caller = unix_session_context(&principal_id, &agent_id, session_id.clone());
-    store
-        .append_message(
-            &caller,
-            &session_id,
-            MessageRole::User,
-            serde_json::json!({"role":"user","content":"hello"}),
-            None,
-            None,
-            None,
-        )
-        .await
-        .expect("append");
-    for (role, content) in [
-        (MessageRole::Assistant, "answer one"),
-        (MessageRole::User, "question two"),
-        (MessageRole::Assistant, "answer two"),
-    ] {
-        store
-                .append_message(
-                    &caller,
-                    &session_id,
-                    role,
-                    serde_json::json!({"role": match role { MessageRole::User => "user", _ => "assistant" }, "content": content}),
-                    None,
-                    None,
-                    None,
-                )
-                .await
-                .expect("append turn");
-    }
-    store
-        .record_usage(&session_id, 120, 30, Some(45_000))
-        .await
-        .expect("usage");
 
     let channel = Arc::new(UnixChannel::new(&path, agent_id));
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
-        store.clone(),
+        Some("unix".into()),
         Some(Arc::new(EmptyUiService {
             allow_delete: true,
+            session_history: Mutex::new(Some(history)),
             ..EmptyUiService::default()
         })),
         None,
@@ -1517,7 +1552,7 @@ async fn persisted_session_load_rename_fork_and_archive_round_trip() {
     )
     .await;
     assert_eq!(invalid_rewind["type"], "operation_error");
-    assert_eq!(invalid_rewind["operation"], "rewind_session");
+    assert_eq!(invalid_rewind["operation"], "fork_session");
 
     let archived = send_and_read(
         &mut write,
@@ -1569,30 +1604,27 @@ async fn reconnect_replays_the_complete_in_flight_turn() {
     let path = socket_path();
     let agent_id = AgentId::new("agent-1");
     let bus = Arc::new(InProcessMessageBus::new());
-    let store: Arc<dyn SessionStore> =
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
-    store
-        .save(&StoredSession::new(
-            SessionId::new("session-1"),
-            "Recovery",
-            SessionLifetime::Persistent,
-            sylvander_agent::session::SessionMetadata {
-                workspace: "/workspace/project".into(),
-                name: "Recovery".into(),
-                user_id: "unix-client".into(),
-            },
-            vec![agent_id.clone()],
-        ))
-        .await
-        .expect("save");
     let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
     let ui = EmptyUiService {
         chat_bus: Some(bus.clone()),
+        session_history: Mutex::new(Some(sylvander_protocol::UiSessionHistory {
+            session: sylvander_protocol::UiSessionInfo {
+                id: "session-1".into(),
+                label: "Recovery".into(),
+                workspace: "/workspace/project".into(),
+                last_seen_secs: 0,
+            },
+            messages: Vec::new(),
+            iterations: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_nano_usd: Some(0),
+        })),
         ..EmptyUiService::default()
     };
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         bus.clone(),
-        store,
+        Some("unix".into()),
         Some(Arc::new(ui)),
         None,
     )));
@@ -1672,8 +1704,6 @@ async fn terminal_error_reaches_the_client_and_releases_the_session_relay() {
     let path = socket_path();
     let agent_id = AgentId::new("agent-1");
     let bus = Arc::new(InProcessMessageBus::new());
-    let store: Arc<dyn SessionStore> =
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
     let feedback_target = sylvander_protocol::FeedbackTarget(format!("sha256:{}", "a".repeat(64)));
     let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
     let ui = EmptyUiService {
@@ -1683,7 +1713,7 @@ async fn terminal_error_reaches_the_client_and_releases_the_session_relay() {
     };
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         bus.clone(),
-        store,
+        Some("unix".into()),
         Some(Arc::new(ui)),
         None,
     )));
@@ -1751,8 +1781,6 @@ async fn socket_permissions_and_live_events_are_isolated_between_clients() {
     let path = socket_path();
     let agent_id = AgentId::new("agent-1");
     let bus = Arc::new(InProcessMessageBus::new());
-    let store: Arc<dyn SessionStore> =
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
     let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
     let ui = EmptyUiService {
         chat_bus: Some(bus.clone()),
@@ -1760,7 +1788,7 @@ async fn socket_permissions_and_live_events_are_isolated_between_clients() {
     };
     let task = tokio::spawn(channel.run(ChannelContext::with_services(
         bus.clone(),
-        store,
+        Some("unix".into()),
         Some(Arc::new(ui)),
         None,
     )));
@@ -1864,12 +1892,7 @@ async fn typed_plan_resolution_is_forwarded_to_the_agent_bus() {
         chat_bus: Some(bus.clone()),
         ..EmptyUiService::default()
     };
-    let context = ChannelContext::with_services(
-        bus,
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        Some(Arc::new(ui)),
-        None,
-    );
+    let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, _rx) = mpsc::unbounded_channel();
 
     handle_client_msg(
@@ -1910,12 +1933,7 @@ async fn approval_decision_is_forwarded_without_transport_interpretation() {
         chat_bus: Some(bus.clone()),
         ..EmptyUiService::default()
     };
-    let context = ChannelContext::with_services(
-        bus,
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        Some(Arc::new(ui)),
-        None,
-    );
+    let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_client_msg(
         ClientMsg::Approve {
@@ -1957,12 +1975,7 @@ async fn task_cancel_preserves_session_scope_on_the_agent_bus() {
         chat_bus: Some(bus.clone()),
         ..EmptyUiService::default()
     };
-    let context = ChannelContext::with_services(
-        bus,
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        Some(Arc::new(ui)),
-        None,
-    );
+    let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_client_msg(
         ClientMsg::CancelTask {
@@ -1996,12 +2009,7 @@ async fn chat_forwards_typed_attachments_without_flattening() {
         chat_bus: Some(bus.clone()),
         ..EmptyUiService::default()
     };
-    let context = ChannelContext::with_services(
-        bus,
-        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-        Some(Arc::new(ui)),
-        None,
-    );
+    let context = ChannelContext::with_services(bus, Some("unix".into()), Some(Arc::new(ui)), None);
     let (tx, _rx) = mpsc::unbounded_channel();
     handle_client_msg(
         ClientMsg::Chat {

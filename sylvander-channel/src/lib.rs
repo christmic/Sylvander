@@ -191,6 +191,49 @@ pub trait UiService: Send + Sync {
             retry_after_ms: None,
         })
     }
+    /// Load one visible session and its durable transcript.
+    async fn load_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<sylvander_protocol::UiSessionHistory, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "load_session"))
+    }
+    /// Rename one visible session without exposing persistence metadata.
+    async fn rename_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+        _label: String,
+    ) -> Result<(), BoundaryError> {
+        Err(unavailable_ui_control(boundary, "rename_session"))
+    }
+    /// Archive one visible session through the Runtime lifecycle.
+    async fn archive_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<(), BoundaryError> {
+        Err(unavailable_ui_control(boundary, "archive_session"))
+    }
+    /// Restore one owned archived session through the Runtime lifecycle.
+    async fn restore_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<(), BoundaryError> {
+        Err(unavailable_ui_control(boundary, "restore_session"))
+    }
+    /// Branch durable conversation history into a new Runtime session.
+    async fn fork_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+        _completed_turns: Option<usize>,
+        _checkpoint: bool,
+    ) -> Result<sylvander_protocol::UiSessionHistory, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "fork_session"))
+    }
     /// Resolve one channel-native identity to a visible Runtime Session.
     ///
     /// Runtime binds `channel_instance_id` when constructing the context and

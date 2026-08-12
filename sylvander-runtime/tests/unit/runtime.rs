@@ -1319,6 +1319,65 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
         sylvander_protocol::BoundaryErrorCode::Forbidden
     );
 
+    let load_denial = sylvander_channel::UiService::load_session(
+        runtime.ui_service.as_ref(),
+        &attacker,
+        &session.session_id,
+    )
+    .await
+    .expect_err("a foreign principal must not read session history");
+    assert_eq!(
+        load_denial.code,
+        sylvander_protocol::BoundaryErrorCode::Forbidden
+    );
+    sylvander_channel::UiService::rename_session(
+        runtime.ui_service.as_ref(),
+        &owner,
+        &session.session_id,
+        "renamed by runtime".into(),
+    )
+    .await
+    .expect("the Runtime must own metadata mutation");
+    let loaded = sylvander_channel::UiService::load_session(
+        runtime.ui_service.as_ref(),
+        &owner,
+        &session.session_id,
+    )
+    .await
+    .expect("the owner may load its durable history");
+    assert_eq!(loaded.session.label, "renamed by runtime");
+
+    sylvander_channel::UiService::archive_session(
+        runtime.ui_service.as_ref(),
+        &owner,
+        &session.session_id,
+    )
+    .await
+    .expect("archive must pass through the Runtime lifecycle");
+    assert!(
+        runtime
+            .session_store
+            .get(&session.session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    sylvander_channel::UiService::restore_session(
+        runtime.ui_service.as_ref(),
+        &owner,
+        &session.session_id,
+    )
+    .await
+    .expect("an owner must be able to restore an archived session");
+    assert!(
+        runtime
+            .session_store
+            .get(&session.session_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
     let deletion = sylvander_channel::UiService::delete_session(
         runtime.ui_service.as_ref(),
         &attacker,

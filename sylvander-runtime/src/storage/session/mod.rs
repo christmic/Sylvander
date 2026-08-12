@@ -316,6 +316,15 @@ pub trait SessionStore: Send + Sync {
     /// Look up a session by ID.
     async fn get(&self, id: &SessionId) -> Result<Option<StoredSession>, SessionStoreError>;
 
+    /// Look up a session by ID without hiding an archived record.
+    ///
+    /// This is a Runtime-internal authorization primitive for restore flows;
+    /// transports must never receive the storage handle or raw record.
+    async fn get_including_archived(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<StoredSession>, SessionStoreError>;
+
     /// List sessions matching a filter. Used by runtime to scope by
     /// user / agent / lifetime without loading everything.
     ///

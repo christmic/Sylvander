@@ -41,7 +41,6 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{MessageKind, StreamEvent};
-use sylvander_agent::session_store::SessionMetadataPatch;
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
@@ -49,8 +48,7 @@ use sylvander_channel::{
 };
 use sylvander_protocol::{
     SessionConfigOverrides, SessionWorkspaceBinding, UiClientMessage as ClientMsg,
-    UiHistoryMessage as HistoryMessage, UiServerMessage as ServerMsg, UiSessionInfo as SessionInfo,
-    UiToolInfo as ToolInfo,
+    UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
 };
 
 // ===========================================================================
@@ -508,10 +506,6 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         boundary_denied(tx, error);
         return;
     }
-    let principal_id = boundary
-        .principal
-        .as_ref()
-        .map_or("__unauthenticated__", |principal| principal.id.0.as_str());
     match msg {
         ClientMsg::Hello { .. } => {}
         ClientMsg::Chat {
@@ -1050,45 +1044,12 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             });
         }
         ClientMsg::ListSessions => {
-            if let Some(ui) = &ctx.ui {
-                match ui.list_sessions(boundary).await {
-                    Ok(sessions) => {
-                        let _ = tx.send(ServerMsg::SessionsList { sessions });
-                    }
-                    Err(error) => {
-                        warn!(error = %error, "unix: failed to list sessions");
-                        operation_error(tx, "list_sessions", error.to_string());
-                    }
-                }
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "list_sessions", "Runtime channel host is unavailable");
                 return;
-            }
-            let caller = sylvander_protocol::SessionContext::new(
-                principal_id,
-                agent_id.clone(),
-                "__session_list__",
-            );
-            let filter = sylvander_agent::session_store::SessionFilter {
-                identity: Some(caller.identity.clone()),
-                limit: Some(100),
-                ..Default::default()
             };
-            match ctx.sessions.list(&caller, filter).await {
+            match ui.list_sessions(boundary).await {
                 Ok(sessions) => {
-                    let now = sylvander_agent::session::now_secs();
-                    let sessions = sessions
-                        .into_iter()
-                        .map(|session| SessionInfo {
-                            id: session.id.0,
-                            label: if session.name.is_empty() {
-                                "untitled session".into()
-                            } else {
-                                session.name
-                            },
-                            workspace: session.metadata.workspace.display().to_string(),
-                            last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at))
-                                .unwrap_or(0),
-                        })
-                        .collect();
                     let _ = tx.send(ServerMsg::SessionsList { sessions });
                 }
                 Err(error) => {
@@ -1105,89 +1066,64 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 unreachable!()
             };
             let session_id = SessionId::new(session_id);
-            let caller = unix_session_context(principal_id, agent_id, session_id.clone());
-            match ctx.sessions.get(&session_id).await {
-                Ok(Some(session)) => match ctx
-                    .sessions
-                    .read_history(&caller, &session_id, true, None)
-                    .await
-                {
-                    Ok(messages) => {
-                        let messages = messages
-                            .into_iter()
-                            .filter_map(|message| {
-                                history_text(&message.content).map(|text| HistoryMessage {
-                                    role: match message.role {
-                                        sylvander_agent::session_store::MessageRole::User => "user",
-                                        sylvander_agent::session_store::MessageRole::Assistant => {
-                                            "assistant"
-                                        }
-                                        sylvander_agent::session_store::MessageRole::Tool => "tool",
-                                    }
-                                    .into(),
-                                    text,
-                                })
-                            })
-                            .collect();
-                        let usage = ctx.sessions.usage(&session_id).await.unwrap_or_default();
-                        let mut history = ServerMsg::SessionHistory {
-                            session: session_info(session),
-                            messages,
-                            iterations: usage.iterations,
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            cost_nano_usd: usage.cost_nano_usd,
-                            notice: None,
-                            source_session_id: None,
-                            recovery,
-                            replay_truncated: false,
-                        };
-                        let mut hub = hub.lock().await;
-                        for clients in hub.session_clients.values_mut() {
-                            clients.remove(&client_id);
-                        }
-                        hub.session_clients
-                            .entry(session_id.clone())
-                            .or_default()
-                            .insert(client_id);
-                        let replay = hub.replay.get(&session_id);
-                        let truncated = replay.is_some_and(|replay| replay.truncated);
-                        let events = replay
-                            .map(|replay| replay.events.clone())
-                            .unwrap_or_default();
-                        let ServerMsg::SessionHistory {
-                            replay_truncated, ..
-                        } = &mut history
-                        else {
-                            unreachable!()
-                        };
-                        *replay_truncated = truncated;
-                        let _ = tx.send(history);
-                        for event in events {
-                            let _ = tx.send(event);
-                        }
-                        drop(hub);
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "load_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match ui.load_session(boundary, &session_id).await {
+                Ok(snapshot) => {
+                    let mut history = ServerMsg::SessionHistory {
+                        session: snapshot.session,
+                        messages: snapshot.messages,
+                        iterations: snapshot.iterations,
+                        input_tokens: snapshot.input_tokens,
+                        output_tokens: snapshot.output_tokens,
+                        cost_nano_usd: snapshot.cost_nano_usd,
+                        notice: None,
+                        source_session_id: None,
+                        recovery,
+                        replay_truncated: false,
+                    };
+                    let mut hub = hub.lock().await;
+                    for clients in hub.session_clients.values_mut() {
+                        clients.remove(&client_id);
                     }
-                    Err(error) => warn!(%error, "unix: failed to load session history"),
-                },
-                Ok(None) => operation_error(tx, "load_session", "session not found"),
+                    hub.session_clients
+                        .entry(session_id.clone())
+                        .or_default()
+                        .insert(client_id);
+                    let replay = hub.replay.get(&session_id);
+                    let truncated = replay.is_some_and(|replay| replay.truncated);
+                    let events = replay
+                        .map(|replay| replay.events.clone())
+                        .unwrap_or_default();
+                    let ServerMsg::SessionHistory {
+                        replay_truncated, ..
+                    } = &mut history
+                    else {
+                        unreachable!()
+                    };
+                    *replay_truncated = truncated;
+                    let _ = tx.send(history);
+                    for event in events {
+                        let _ = tx.send(event);
+                    }
+                    drop(hub);
+                }
                 Err(error) => {
-                    warn!(%error, "unix: failed to get session");
+                    warn!(%error, "unix: failed to load session");
                     operation_error(tx, "load_session", error.to_string());
                 }
             }
         }
         ClientMsg::RenameSession { session_id, label } => {
             let session_id = SessionId::new(session_id);
-            match ctx
-                .sessions
-                .patch_metadata(
-                    &session_id,
-                    SessionMetadataPatch {
-                        name: Some(label.clone()),
-                        external_meta: std::collections::HashMap::new(),
-                    },
-                )
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "rename_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match ui
+                .rename_session(boundary, &session_id, label.clone())
                 .await
             {
                 Ok(()) => {
@@ -1197,12 +1133,16 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                         archived: false,
                     });
                 }
-                Err(error) => warn!(%error, "unix: failed to rename session"),
+                Err(error) => operation_error(tx, "rename_session", error.to_string()),
             }
         }
         ClientMsg::ArchiveSession { session_id } => {
             let session_id = SessionId::new(session_id);
-            match ctx.sessions.archive(&session_id).await {
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "archive_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match ui.archive_session(boundary, &session_id).await {
                 Ok(()) => {
                     let _ = tx.send(ServerMsg::SessionUpdated {
                         session_id: session_id.0,
@@ -1210,12 +1150,16 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                         archived: true,
                     });
                 }
-                Err(error) => warn!(%error, "unix: failed to archive session"),
+                Err(error) => operation_error(tx, "archive_session", error.to_string()),
             }
         }
         ClientMsg::RestoreSession { session_id } => {
             let session_id = SessionId::new(session_id);
-            match ctx.sessions.restore(&session_id).await {
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "restore_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match ui.restore_session(boundary, &session_id).await {
                 Ok(()) => {
                     let _ = tx.send(ServerMsg::SessionUpdated {
                         session_id: session_id.0,
@@ -1223,22 +1167,16 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                         archived: false,
                     });
                 }
-                Err(error) => warn!(%error, "unix: failed to restore session"),
+                Err(error) => operation_error(tx, "restore_session", error.to_string()),
             }
         }
         ClientMsg::DeleteSession { session_id } => {
             let session_id = SessionId::new(session_id);
-            let result = if let Some(ui) = &ctx.ui {
-                ui.delete_session(boundary, &session_id)
-                    .await
-                    .map_err(|error| error.message)
-            } else {
-                ctx.sessions
-                    .delete(&session_id)
-                    .await
-                    .map_err(|error| error.to_string())
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "delete_session", "Runtime channel host is unavailable");
+                return;
             };
-            match result {
+            match ui.delete_session(boundary, &session_id).await {
                 Ok(()) => {
                     let _ = tx.send(ServerMsg::SessionDeleted {
                         session_id: session_id.0,
@@ -1246,7 +1184,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
                 Err(error) => {
                     warn!(%error, "unix: failed to permanently delete session");
-                    operation_error(tx, "delete_session", error.clone());
+                    operation_error(tx, "delete_session", error.to_string());
                 }
             }
         }
@@ -1264,104 +1202,22 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 return;
             }
             let source_id = SessionId::new(session_id);
-            let caller = unix_session_context(principal_id, agent_id, source_id.clone());
-            match ctx.sessions.get(&source_id).await {
-                Ok(Some(source)) => {
-                    let fork_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-                    let mut fork = source.clone();
-                    fork.id = fork_id.clone();
-                    fork.name = completed_turns.map_or_else(
-                        || {
-                            if checkpoint {
-                                format!("{} (checkpoint)", source.name)
-                            } else {
-                                format!("{} (fork)", source.name)
-                            }
-                        },
-                        |turn| format!("{} (rewind {turn})", source.name),
-                    );
-                    fork.metadata.name = fork.name.clone();
-                    fork.created_at = sylvander_agent::session::now_secs();
-                    fork.updated_at = fork.created_at;
-                    let mut history = match ctx
-                        .sessions
-                        .read_history(&caller, &source_id, true, None)
-                        .await
-                    {
-                        Ok(history) => history,
-                        Err(error) => {
-                            warn!(%error, "unix: failed to read source history for fork");
-                            return;
-                        }
-                    };
-                    if let Some(turns) = completed_turns {
-                        let boundary = history
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, message)| {
-                                message.role
-                                    == sylvander_agent::session_store::MessageRole::Assistant
-                            })
-                            .nth(turns.saturating_sub(1))
-                            .map(|(index, _)| index + 1);
-                        let Some(boundary) = boundary else {
-                            operation_error(
-                                tx,
-                                "rewind_session",
-                                format!("completed turn {turns} does not exist"),
-                            );
-                            return;
-                        };
-                        history.truncate(boundary);
-                    }
-                    if let Err(error) = ctx.sessions.save(&fork).await {
-                        warn!(%error, "unix: failed to save forked session");
-                        return;
-                    }
-                    let fork_caller = unix_session_context(principal_id, agent_id, fork_id.clone());
-                    for message in &history {
-                        if let Err(error) = ctx
-                            .sessions
-                            .append_message(
-                                &fork_caller,
-                                &fork_id,
-                                message.role,
-                                message.content.clone(),
-                                message.model_id.as_deref(),
-                                message.tool_name.as_deref(),
-                                None,
-                            )
-                            .await
-                        {
-                            warn!(%error, "unix: failed to copy fork history");
-                            let _ = ctx.sessions.delete(&fork_id).await;
-                            operation_error(tx, "fork_session", error.to_string());
-                            return;
-                        }
-                    }
-                    let messages = history
-                        .into_iter()
-                        .filter_map(|message| {
-                            history_text(&message.content).map(|text| HistoryMessage {
-                                role: match message.role {
-                                    sylvander_agent::session_store::MessageRole::User => "user",
-                                    sylvander_agent::session_store::MessageRole::Assistant => {
-                                        "assistant"
-                                    }
-                                    sylvander_agent::session_store::MessageRole::Tool => "tool",
-                                }
-                                .into(),
-                                text,
-                            })
-                        })
-                        .collect();
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "fork_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match ui
+                .fork_session(boundary, &source_id, completed_turns, checkpoint)
+                .await
+            {
+                Ok(snapshot) => {
                     let _ = tx.send(ServerMsg::SessionHistory {
-                        session: session_info(fork),
-                        messages,
-                        iterations: 0,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cost_nano_usd: Some(0),
+                        session: snapshot.session,
+                        messages: snapshot.messages,
+                        iterations: snapshot.iterations,
+                        input_tokens: snapshot.input_tokens,
+                        output_tokens: snapshot.output_tokens,
+                        cost_nano_usd: snapshot.cost_nano_usd,
                         notice: completed_turns.map(|turn| {
                             format!(
                                 "Conversation rewound through completed turn {turn} · source session and workspace files unchanged"
@@ -1374,8 +1230,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                         replay_truncated: false,
                     });
                 }
-                Ok(None) => warn!(%source_id, "unix: fork source not found"),
-                Err(error) => warn!(%error, "unix: failed to get fork source"),
+                Err(error) => operation_error(tx, "fork_session", error.to_string()),
             }
         }
         ClientMsg::GetRuntimeInfo => {
@@ -1721,28 +1576,6 @@ fn visible_model_catalog(
         .collect()
 }
 
-fn unix_session_context(
-    principal_id: &str,
-    agent_id: &AgentId,
-    session_id: SessionId,
-) -> sylvander_protocol::SessionContext {
-    sylvander_protocol::SessionContext::new(principal_id, agent_id.clone(), session_id)
-}
-
-fn session_info(session: sylvander_agent::session_store::StoredSession) -> SessionInfo {
-    let now = sylvander_agent::session::now_secs();
-    SessionInfo {
-        id: session.id.0,
-        label: if session.name.is_empty() {
-            "untitled session".into()
-        } else {
-            session.name
-        },
-        workspace: session.metadata.workspace.display().to_string(),
-        last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
-    }
-}
-
 fn operation_error(
     tx: &mpsc::UnboundedSender<ServerMsg>,
     operation: &str,
@@ -1759,25 +1592,6 @@ fn boundary_denied(
     error: sylvander_protocol::BoundaryError,
 ) {
     let _ = tx.send(ServerMsg::BoundaryDenied { error });
-}
-
-fn history_text(value: &serde_json::Value) -> Option<String> {
-    let content = value.get("content")?;
-    if let Some(text) = content.as_str() {
-        return Some(text.to_string());
-    }
-    let text = content
-        .as_array()?
-        .iter()
-        .filter_map(|block| {
-            block
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| block.get("content").and_then(serde_json::Value::as_str))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    (!text.is_empty()).then_some(text)
 }
 
 #[cfg(test)]

@@ -901,6 +901,29 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
+    async fn get_including_archived(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<StoredSession>, SessionStoreError> {
+        let id = id.clone();
+        self.run(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
+                        s.created_at, s.updated_at, s.external_meta, s.config_revision, \
+                        s.config_overrides, s.effective_config, \
+                        GROUP_CONCAT(sa.agent_id, ',') AS agents \
+                 FROM sessions s \
+                 LEFT JOIN session_agents sa ON sa.session_id = s.id \
+                 WHERE s.id = ?1 \
+                 GROUP BY s.id",
+            )?;
+            stmt.query_row(params![id.0], row_to_session_with_agents)
+                .optional()
+                .map_err(Into::into)
+        })
+        .await
+    }
+
     async fn list(
         &self,
         ctx: &sylvander_protocol::SessionContext,

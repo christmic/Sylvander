@@ -607,6 +607,13 @@ impl SessionStore for FailingSessionStore {
         self.inner.get(id).await
     }
 
+    async fn get_including_archived(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<StoredSession>, crate::storage::session::SessionStoreError> {
+        self.inner.get_including_archived(id).await
+    }
+
     async fn list(
         &self,
         context: &sylvander_protocol::SessionContext,

@@ -166,8 +166,9 @@ use sylvander_protocol::{
     RegistryAdminResponse, RunFeedback, SessionConfigOverrides, SessionConfigState,
     SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig,
     SessionRevisionPinError, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage as ClientMessage,
-    UserId, UserProfileAction, UserProfileCapabilities, UserProfileError, UserProfileErrorCode,
-    UserProfileOperation, UserProfileRequest, UserProfileResponse,
+    UiHistoryMessage, UiSessionHistory, UiSessionInfo, UserId, UserProfileAction,
+    UserProfileCapabilities, UserProfileError, UserProfileErrorCode, UserProfileOperation,
+    UserProfileRequest, UserProfileResponse,
 };
 
 use crate::agent_admin::{
@@ -205,7 +206,8 @@ use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, Pri
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use crate::session::SessionMetadata;
 use crate::storage::session::{
-    SESSION_SCHEMA_OBJECT_NAMES, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+    MessageRole, SESSION_SCHEMA_OBJECT_NAMES, SessionLifetime, SessionMetadataPatch, SessionStore,
+    SqliteSessionStore, StoredMessage, StoredSession,
 };
 use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
 use agent_registry::{AgentRegistry, REGISTRY_SCHEMA_OBJECT_NAMES};
@@ -894,6 +896,177 @@ impl sylvander_channel::UiService for RuntimeUiService {
             });
         }
         Ok(visible)
+    }
+
+    async fn load_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<UiSessionHistory, sylvander_protocol::BoundaryError> {
+        let session = self
+            .owned_session(boundary, session_id, "load_session")
+            .await?;
+        self.session_history(boundary, &session, "load_session")
+            .await
+    }
+
+    async fn rename_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+        label: String,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        self.owned_session(boundary, session_id, "rename_session")
+            .await?;
+        let label = label.trim().to_string();
+        if label.is_empty() || label.len() > 200 {
+            return Err(boundary_failure(
+                boundary,
+                "rename_session",
+                "session label must contain 1..=200 bytes",
+            ));
+        }
+        self.sessions
+            .patch_metadata(
+                session_id,
+                SessionMetadataPatch {
+                    name: Some(label),
+                    external_meta: HashMap::new(),
+                },
+            )
+            .await
+            .map_err(|error| boundary_failure(boundary, "rename_session", error.to_string()))
+    }
+
+    async fn archive_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        let (_, agent) = self
+            .owned_session_agent(boundary, session_id, "archive_session")
+            .await?;
+        self.sessions
+            .archive(session_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, "archive_session", error.to_string()))?;
+        self.engine.detach_session(session_id).await;
+        agent.detach_authenticated_session(session_id).await;
+        Ok(())
+    }
+
+    async fn restore_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        let session = self
+            .owned_session_including_archived(boundary, session_id, "restore_session")
+            .await?;
+        self.sessions
+            .restore(session_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, "restore_session", error.to_string()))?;
+        let agent = self
+            .active_agent(
+                session
+                    .agents
+                    .first()
+                    .expect("archived session ownership rejects empty Agent bindings"),
+                boundary,
+                "restore_session",
+            )
+            .await?;
+        if let Err(error) = agent
+            .attach_authenticated_session(session_id.clone(), session.metadata.clone())
+            .await
+        {
+            let _ = self.sessions.archive(session_id).await;
+            return Err(boundary_failure(
+                boundary,
+                "restore_session",
+                error.to_string(),
+            ));
+        }
+        if let Err(error) = self
+            .engine
+            .attach_session(
+                session_id.clone(),
+                &session.name,
+                session.metadata.clone(),
+                &session.agents,
+            )
+            .await
+        {
+            agent.detach_authenticated_session(session_id).await;
+            let _ = self.sessions.archive(session_id).await;
+            return Err(boundary_failure(
+                boundary,
+                "restore_session",
+                error.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn fork_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+        completed_turns: Option<usize>,
+        checkpoint: bool,
+    ) -> Result<UiSessionHistory, sylvander_protocol::BoundaryError> {
+        if checkpoint && completed_turns.is_some() {
+            return Err(boundary_failure(
+                boundary,
+                "fork_session",
+                "checkpoint and completed_turns are mutually exclusive",
+            ));
+        }
+        let (source, agent) = self
+            .owned_session_agent(boundary, session_id, "fork_session")
+            .await?;
+        let source_context = stored_session_context(&source);
+        let mut messages = self
+            .sessions
+            .read_history(&source_context, session_id, true, None)
+            .await
+            .map_err(|error| boundary_failure(boundary, "fork_session", error.to_string()))?;
+        if let Some(turns) = completed_turns {
+            let end = messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.role == MessageRole::Assistant)
+                .nth(turns.saturating_sub(1))
+                .map(|(index, _)| index + 1)
+                .ok_or_else(|| {
+                    boundary_failure(
+                        boundary,
+                        "fork_session",
+                        format!("completed turn {turns} does not exist"),
+                    )
+                })?;
+            messages.truncate(end);
+        }
+        let fork_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        let mut fork = source.clone();
+        fork.id = fork_id.clone();
+        fork.name = completed_turns.map_or_else(
+            || {
+                if checkpoint {
+                    format!("{} (checkpoint)", source.name)
+                } else {
+                    format!("{} (fork)", source.name)
+                }
+            },
+            |turn| format!("{} (rewind {turn})", source.name),
+        );
+        fork.metadata.name.clone_from(&fork.name);
+        fork.created_at = crate::session::now_secs();
+        fork.updated_at = fork.created_at;
+        self.persist_fork(boundary, &agent, &fork, &messages)
+            .await?;
+        self.session_history(boundary, &fork, "fork_session").await
     }
 
     async fn resolve_external_session(
@@ -2131,6 +2304,99 @@ impl sylvander_channel::UiService for RuntimeUiService {
 }
 
 impl RuntimeUiService {
+    async fn session_history(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session: &StoredSession,
+        operation: &str,
+    ) -> Result<UiSessionHistory, sylvander_protocol::BoundaryError> {
+        let context = stored_session_context(session);
+        let messages = self
+            .sessions
+            .read_history(&context, &session.id, true, None)
+            .await
+            .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?;
+        let usage = self
+            .sessions
+            .usage(&session.id)
+            .await
+            .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?;
+        Ok(UiSessionHistory {
+            session: ui_session_info(session),
+            messages: messages.iter().filter_map(ui_history_message).collect(),
+            iterations: usage.iterations,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cost_nano_usd: usage.cost_nano_usd,
+        })
+    }
+
+    async fn persist_fork(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        agent: &ConfiguredAgent,
+        fork: &StoredSession,
+        messages: &[StoredMessage],
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        self.sessions
+            .save(fork)
+            .await
+            .map_err(|error| boundary_failure(boundary, "fork_session", error.to_string()))?;
+        let context = stored_session_context(fork);
+        for message in messages {
+            if let Err(error) = self
+                .sessions
+                .append_message(
+                    &context,
+                    &fork.id,
+                    message.role,
+                    message.content.clone(),
+                    message.model_id.as_deref(),
+                    message.tool_name.as_deref(),
+                    None,
+                )
+                .await
+            {
+                let _ = self.sessions.delete(&fork.id).await;
+                return Err(boundary_failure(
+                    boundary,
+                    "fork_session",
+                    error.to_string(),
+                ));
+            }
+        }
+        if let Err(error) = agent
+            .attach_authenticated_session(fork.id.clone(), fork.metadata.clone())
+            .await
+        {
+            let _ = self.sessions.delete(&fork.id).await;
+            return Err(boundary_failure(
+                boundary,
+                "fork_session",
+                error.to_string(),
+            ));
+        }
+        if let Err(error) = self
+            .engine
+            .attach_session(
+                fork.id.clone(),
+                &fork.name,
+                fork.metadata.clone(),
+                &fork.agents,
+            )
+            .await
+        {
+            agent.detach_authenticated_session(&fork.id).await;
+            let _ = self.sessions.delete(&fork.id).await;
+            return Err(boundary_failure(
+                boundary,
+                "fork_session",
+                error.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn create_session_with_metadata(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -2491,8 +2757,17 @@ impl RuntimeUiService {
             ));
         }
         if let Some(session_id) = ui_session_id(message) {
-            self.owned_session(boundary, &SessionId::new(session_id), ui_operation(message))
-                .await?;
+            let session_id = SessionId::new(session_id);
+            if matches!(
+                message,
+                sylvander_protocol::UiClientMessage::RestoreSession { .. }
+            ) {
+                self.owned_session_including_archived(boundary, &session_id, ui_operation(message))
+                    .await?;
+            } else {
+                self.owned_session(boundary, &session_id, ui_operation(message))
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -2590,6 +2865,42 @@ impl RuntimeUiService {
                 .map_err(|_| {
                     boundary_failure(boundary, operation, "session registry binding is invalid")
                 })?;
+        }
+        Ok(session)
+    }
+
+    async fn owned_session_including_archived(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+        operation: &str,
+    ) -> Result<StoredSession, sylvander_protocol::BoundaryError> {
+        let user_id = self.effective_user_id(boundary, operation).await?;
+        let session = self
+            .sessions
+            .get_including_archived(session_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?
+            .ok_or_else(|| sylvander_protocol::BoundaryError::forbidden(boundary, operation))?;
+        if session.metadata.user_id != user_id.0 && !privileged_principal(boundary) {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary, operation,
+            ));
+        }
+        if session.agents.is_empty() {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary, operation,
+            ));
+        }
+        for agent_id in &session.agents {
+            if !self
+                .current_agent_access_allowed(agent_id, boundary, operation)
+                .await?
+            {
+                return Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary, operation,
+                ));
+            }
         }
         Ok(session)
     }
@@ -3364,6 +3675,64 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
         ClientMessage::SelectPermissions { .. } => "select_permissions",
         ClientMessage::Ping => "ping",
     }
+}
+
+fn stored_session_context(session: &StoredSession) -> sylvander_protocol::SessionContext {
+    sylvander_protocol::SessionContext::new(
+        session.metadata.user_id.clone(),
+        session
+            .agents
+            .first()
+            .expect("Runtime rejects sessions without Agent bindings")
+            .clone(),
+        session.id.clone(),
+    )
+}
+
+fn ui_session_info(session: &StoredSession) -> UiSessionInfo {
+    let now = crate::session::now_secs();
+    UiSessionInfo {
+        id: session.id.0.clone(),
+        label: if session.name.is_empty() {
+            "untitled session".into()
+        } else {
+            session.name.clone()
+        },
+        workspace: session.metadata.workspace.display().to_string(),
+        last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
+    }
+}
+
+fn ui_history_message(message: &StoredMessage) -> Option<UiHistoryMessage> {
+    let content = message.content.get("content")?;
+    let text = if let Some(text) = content.as_str() {
+        text.to_string()
+    } else {
+        let text = content
+            .as_array()?
+            .iter()
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| block.get("content").and_then(serde_json::Value::as_str))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() {
+            return None;
+        }
+        text
+    };
+    let role = match message.role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+    };
+    Some(UiHistoryMessage {
+        role: role.into(),
+        text,
+    })
 }
 
 fn ui_session_id(message: &sylvander_protocol::UiClientMessage) -> Option<&str> {

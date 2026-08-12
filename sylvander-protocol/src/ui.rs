@@ -436,6 +436,22 @@ pub struct UiHistoryMessage {
     pub text: String,
 }
 
+/// Runtime-produced snapshot for loading or branching one conversation.
+///
+/// Channels only render this protocol DTO. They never receive persistence
+/// records, storage handles, or enough information to bypass Runtime
+/// ownership checks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UiSessionHistory {
+    pub session: UiSessionInfo,
+    pub messages: Vec<UiHistoryMessage>,
+    pub iterations: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cost_nano_usd: Option<u64>,
+}
+
 /// Reviewable state of one server-managed coding worktree.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
