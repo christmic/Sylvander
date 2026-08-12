@@ -1,204 +1,101 @@
 # Module Reference — `sylvander-protocol`
 
-> Wire-format protocol types for Sylvander's message bus.
+> 当前公共服务线协议与 JSON Schema crate；最终名称为 `sylvander-api`。
 > Source: [`sylvander-protocol/src/`](../sylvander-protocol/src)
 
-## 1. Purpose
+## 1. 是什么
 
-`sylvander-protocol` owns Sylvander's **public, UI-facing language-neutral
-contract**. Current wire DTOs derive `serde::Serialize`,
-`serde::Deserialize`, and `schemars::JsonSchema`; their JSON Schema output is
-the basis for TypeScript, Python, Swift, and other client code generation.
-The crate also contains Rust-only in-process bus primitives, which are not
-part of the generated client contract.
+`sylvander-protocol` 只拥有客户端、Channel 与 Runtime 跨服务边界交换的版本化
+DTO、协议协商、纯校验和 JSON Schema。公开数据使用 `serde` 和
+`schemars::JsonSchema`；它们是 TUI、桌面和其他语言客户端代码生成的依据。
 
-The crate is split into two layers:
+它不拥有异步运行时、进程内消息总线、数据库、网络客户端、Agent 执行或 provider
+协议。`MessageBus` 与默认的有界内存实现属于 `sylvander-channel`；Runtime 负责组合
+应用端口和本 crate 的消息 DTO。
 
-- **Cross-language data definitions** (`types`, `boundary`, `identity_binding`,
-  `user_profile`, `memory_confirmation`, `ui`, `schema`, `agent_admin`,
-  `registry_admin`) — strict current-contract DTOs with `JsonSchema` derives.
-- **Rust-only runtime types** (`bus_trait`, `in_process`, `session_context`) —
-  the in-process bus and the umbrella request context.
+## 2. 为什么按领域拆分
 
-## 2. Public surface (top-level types)
+曾经的 `types.rs` 同时包含协商、模型、平台、Session、消息和反馈类型，所有权不清，
+也使新协议容易继续堆进一个公共文件。该集散模块已删除。每个领域现在同时拥有类型、
+校验、模块文档与白盒测试；crate 根只做公共 DTO 的统一导出。
 
-```text
-mod agent_admin;       // AgentAdminRequest / AgentAdminResponse / AgentAdminError
-mod boundary;          // BoundaryContext, AuthenticatedPrincipal, BoundaryError
-mod bus_trait;         // MessageBus trait, SubscriptionFilter, BusDiagnostics
-mod identity_binding;  // IdentityBindingRequest / IdentityBindingResponse
-mod in_process;        // InProcessMessageBus (tokio mpsc-backed MessageBus)
-mod memory_confirmation; // owner-free Guardian list/decide envelopes
-mod registry_admin;    // RegistryAdminRequest / RegistryAdminResponse
-mod schema;            // Generated JSON Schema helpers
-mod session_context;   // SessionContext, Identity, Origin, RequestMeta
-mod types;             // StreamEvent, BusMessage, AgentId, SessionId, UserId, ...
-mod ui;                // UiClientMessage, UiServerMessage
-mod user_profile;      // UserProfileRequest / UserProfileResponse
-```
+领域拆分不改变 serde wire shape、Schema 类型名或协议版本。内部调用者应使用明确的
+领域路径，外部普通调用者可以使用 crate 根导出。
 
-Re-exports from `lib.rs`:
+## 3. 领域模块
 
-```rust
-pub use agent_admin::*;
-pub use boundary::*;
-pub use bus_trait::{BusDiagnostics, BusError, MessageBus, SubscriptionFilter};
-pub use identity_binding::*;
-pub use in_process::InProcessMessageBus;
-pub use memory_confirmation::*;
-pub use registry_admin::*;
-pub use session_context::*;
-pub use types::*;
-pub use ui::*;
-pub use user_profile::*;
-```
+| 模块 | 所有内容 | 不包含 |
+|---|---|---|
+| `negotiation` | UI 版本范围、能力名、握手与失败 | 连接状态、兼容降级 |
+| `identity` | `AgentId`、`SessionId`、`UserId` | 已认证执行身份 |
+| `model` | provider-qualified 模型选择、能力、价格、推理级别 | provider wire 请求 |
+| `platform` | 脱敏能力、命令和工具展示声明 | 凭据、回调、命令参数 |
+| `session` | sparse overrides、有效配置、版本钉住、prompt manifest、workspace DTO | Session 生命周期和存储 |
+| `message` | 消息信封、附件、流式事件、系统控制 | 发布、订阅和背压实现 |
+| `execution` | 权限、上下文、压缩、回滚、超时和重试结果 DTO | 沙箱句柄和可执行权限 |
+| `feedback` | opaque target 与证据引用 | Runtime run/turn 内部 ID |
+| `boundary` | 已认证入口上下文和内容安全错误 | transport 凭据 |
+| `ui` | 顶层客户端/服务端消息 | 监听器和处理器 |
+| `agent_admin` | Agent 定义管理子协议 | Runtime Agent 定义实现 |
+| `registry_admin` | Provider、Model、Credential 管理子协议 | provider 客户端和密钥值 |
+| `identity_binding` | transport 身份绑定子协议 | transport 认证实现 |
+| `user_profile` | owner-free User Profile 子协议 | Agent prompt snapshot |
+| `memory_confirmation` | Guardian 记忆确认子协议 | 记忆存储 |
+| `session_context` | 历史服务上下文 DTO | Agent `AgentExecutionContext` |
+| `schema` | 当前协议 Schema 聚合函数 | 代码生成运行时 |
 
-Selected verbatim signatures:
-
-```rust
-// types.rs
-pub const UI_PROTOCOL_VERSION: u16 = 5;
-pub const UI_PROTOCOL_MIN_VERSION: u16 = UI_PROTOCOL_VERSION;
-pub const UI_PROTOCOL_MAX_VERSION: u16 = UI_PROTOCOL_VERSION;
-
-pub enum StreamEvent { TextDelta{delta}, ThinkingDelta{delta}, ModelRetry{...},
-    ToolCall{call_id, tool_name, input}, ToolOutputDelta{...}, ToolResult{...},
-    IterationStart{iteration}, IterationEnd{...}, Done{text},
-    Error{message},
-    ToolApprovalRequired{batch_id, tools, allowed_scopes}, AskUser{...},
-    UserAnswer{...}, TurnInterrupted{reason}, PlanProposed{...},
-    TaskStarted{...}, TaskProgress{...}, TaskCompleted{...},
-    CompactionStarted{automatic}, CompactionCompleted{report}, ... }
-
-pub struct BusMessage { session_id, sender, recipient, kind, payload,
-                        attachments, timestamp, id }
-
-pub struct AgentId(pub String);
-pub struct SessionId(pub String);
-pub struct UserId(pub String);            // with UserId::system() sentinel
-
-// bus_trait.rs
-#[async_trait]
-pub trait MessageBus: Send + Sync {
-    async fn publish(&self, msg: BusMessage) -> Result<(), BusError>;
-    async fn subscribe(&self, filter: SubscriptionFilter)
-        -> Result<mpsc::Receiver<BusMessage>, BusError>;
-    async fn diagnostics(&self) -> BusDiagnostics { ... }
-}
-```
-
-## 3. Architecture
+## 4. 运行时边界
 
 ```text
-             cross-language wire types          Rust runtime
-            +-----------------------------+  +-------------------+
-            | types                       |  | bus_trait         |
-            | boundary                    |  | in_process        |
-            | identity_binding            |  | session_context   |
-            | user_profile                |  +-------------------+
-            | memory_confirmation         |           |
-            | ui                          |           |
-            | agent_admin                 |           v
-            | registry_admin              |    MessageBus trait
-            | schema (JSON Schema gen)    |    InProcessMessageBus
-            +-----------------------------+
-                       ^                          ^
-                       |                          |
-                       |                          |
-                 transports, agents           Sylvander runtime
-                 (channels, TUI,              (agents, services)
-                  CLI clients)
+TUI / Desktop / external Channel
+              |
+              v
+      protocol DTO + schema
+              |
+              v
+Runtime authorization / Session service
+              |
+      +-------+--------+
+      |                |
+Channel MessageBus   AgentTurnRequest
+(Rust app port)      (Agent domain)
 ```
 
-## 4. Lifecycle / data flow
+典型请求流程：
 
-A typical request crosses these layers in order:
+1. Channel 建立可信 `BoundaryContext`；客户端不能自行声明认证结果。
+2. transport 解码当前版本 `UiClientMessage` 并交给 Runtime `ChannelHost`。
+3. Runtime 认证、授权并加载钉住的 Session/config 快照。
+4. Runtime 把公共 DTO 显式投影成 Agent 领域输入，并把 Agent 事件投影回
+   `StreamEvent`。
+5. Runtime 完成持久化后，通过 Channel 层的 `MessageBus` 发布 DTO。
 
-1. **Ingress authentication.** A transport (channel) produces a
-   `BoundaryContext` containing the `AuthenticatedPrincipal` (or
-   `None` for unauthenticated requests), `channel_instance_id`,
-   `transport`, and `request_id`.
-2. **UI dispatch.** The transport parses one current-shape
-   `UiClientMessage` (see `ui.rs`) and submits it with the sealed boundary to
-   Runtime-owned `ChannelHost`. Old versions, unknown fields, and unnegotiated
-   operations fail before mutation.
-3. **Authorized bus routing.** Runtime resolves the stable user, Agent,
-   session ownership, operation policy, and optimistic revision. Only then
-   does it publish the corresponding chat/control message.
-   `InProcessMessageBus` matches each `BusMessage`
-   against subscriber `SubscriptionFilter`s (session / recipient /
-   kind) and fans out via `tokio::mpsc` channels. Backpressure is
-   enforced: `publish` returns `BusError::Backpressure` if any
-   matching subscriber is saturated.
-4. **Runtime work.** Agents consume messages, emit `StreamEvent`s
-   (through `MessageKind::Stream`), and finally write `Done{text}`.
-5. **Audit/inspection.** `agent_admin` and `registry_admin` envelopes
-   carry administrative operations; their responses redact secrets,
-   command arguments, and workspace paths before serialization.
+## 5. 约束
 
-The `SessionContext` umbrella (`session_context.rs`) is the Rust-side
-"who/where/when/why" passed into agent and tool APIs. It carries
-`Identity`, `Origin`, `RequestMeta`, and a free-form `AttributeBag`
-that lets new fields land without changing call-site signatures.
+- 本 crate 的正常依赖不得包含 Tokio、async-trait、HTTP、数据库、Agent、Runtime 或
+  provider crate。
+- 新公开字段必须可序列化、可生成 Schema，并由当前版本信封约束。
+- 未知字段、未知版本和旧 shape 默认失败关闭；禁止隐式 fallback 或双读写。
+- Model 选择始终是 `(provider_id, model_id)`；裸 `model_id` 不是有效选择。
+- 凭据、原始 prompt、内部 run/turn ID 和可执行 authority 不得进入公开 DTO。
+- Rust `use` 必须位于模块作用域；不得在函数体内临时导入。
 
-## 5. Configuration knobs
-
-The crate itself does not read environment variables. Configuration
-is owned by `sylvander-runtime`. Schema-generation helpers are
-exposed via the example binary:
+## 6. Schema 与测试
 
 ```bash
 cargo run -p sylvander-protocol --example generate_ui_schema
+cargo test -p sylvander-protocol
 ```
 
-Each generated schema is also available programmatically through
-`crate::schema::{ui_protocol_schema, agent_admin_protocol_schema,
-registry_admin_protocol_schema, identity_binding_protocol_schema,
-user_profile_protocol_schema}`. Governed-memory confirmation is included in
-the `UiClientMessage`/`UiServerMessage` shapes generated by
-`ui_protocol_schema`.
+测试文件与领域一一对应：`identity.rs`、`model.rs`、`platform.rs`、`session.rs`、
+`message.rs`、`feedback.rs`、`negotiation.rs`，以及各版本化子协议测试。`schema.rs`
+验证顶层 Schema 仍覆盖当前 UI、管理、身份、Profile 和记忆确认契约。
 
-## 6. Extension rules
+## 7. 相关文档
 
-- Add a wire field only when every current producer and consumer can be changed
-  in the same bounded change. Do not add a fallback decoder for an unspecified
-  historical shape.
-- Administrative mutations require a typed request, typed response, JSON
-  Schema coverage, and an explicit minimum negotiated UI protocol version.
-- Model selection is always the exact `(provider_id, model_id)` pair. Durable
-  effective configuration requires its optimistic revision, immutable
-  Agent/Provider/Model pins, and prompt manifest; missing or historical
-  alternatives fail closed instead of being inferred.
-- Identity and authorization values must originate at a trusted ingress.
-  Client-provided display names, workspace paths, and Agent identifiers are
-  requests, never proof of authority.
-- New cross-language data belongs in a serde/JsonSchema module. Rust-only
-  runtime helpers stay outside generated wire schemas.
-
-## 7. Tests
-
-| Submodule | Test file | Coverage |
-|-----------|-----------|----------|
-| `types` | `sylvander-protocol/tests/unit/types.rs` | Round-trip, revision pins, prompt manifest, current negotiated shapes, model selection resolution |
-| `boundary` | `sylvander-protocol/tests/unit/boundary.rs` | Credentials never appear in serialized context, `AuthenticationFailure` is content-free |
-| `identity_binding` | `sylvander-protocol/tests/unit/identity_binding.rs` | Secret validation, serialization redaction, one-time-secret exhaustion |
-| `user_profile` | `sylvander-protocol/tests/unit/user_profile.rs` | Privacy classifications, constraint count limit, owner-free envelopes |
-| `memory_confirmation` | `sylvander-protocol/tests/unit/memory_confirmation.rs` | Current version, bounded identifiers, owner-free list/decide shapes, explicit decision |
-| `bus_trait` | exercised by `in_process/tests` | filter matching semantics |
-| `in_process` | `sylvander-protocol/tests/unit/in_process.rs` | publish/subscribe, filter, backpressure rejection, concurrent publisher burst |
-| `session_context` | `sylvander-protocol/tests/unit/session_context.rs` | builder methods, attribute bag, system sentinel |
-| `schema` | `sylvander-protocol/tests/unit/schema.rs` | Current UI schema surface and content-safe secret handling |
-| `ui` | `sylvander-protocol/tests/unit/ui.rs` | strict-shape parsing, registry/user-profile/identity-binding envelopes |
-| `agent_admin` | `sylvander-protocol/tests/unit/agent_admin.rs` | conflict errors, allowed_models round-trip, prompt redaction |
-| `registry_admin` | `sylvander-protocol/tests/unit/registry_admin.rs` | generation reads, credential redaction |
-
-## 8. Related docs
-
-- [`docs/boundary-authorization.md`](boundary-authorization.md) — boundary contract, authentication methods, denial codes.
-- [`docs/identity-binding-protocol.md`](identity-binding-protocol.md) — identity link challenges, one-time secrets.
-- [`docs/user-profile-protocol.md`](user-profile-protocol.md) — owner-safe profile CRUD and privacy classes.
-- [`docs/sylvander-agent-platform.md`](sylvander-agent-platform.md) — Agent platform overview that consumes these types.
-- [`docs/server-configuration.md`](server-configuration.md) — how runtime configuration interacts with the wire protocol.
-- [`AGENTS.md`](../AGENTS.md) — project-wide agent guide.
-
-Co-Authored-By: 🦀 <oraculo@oraculo.ai>
+- [`agent-runtime-api-boundaries.md`](agent-runtime-api-boundaries.md)
+- [`product-module-architecture.md`](product-module-architecture.md)
+- [`boundary-authorization.md`](boundary-authorization.md)
+- [`identity-binding-protocol.md`](identity-binding-protocol.md)
+- [`user-profile-protocol.md`](user-profile-protocol.md)
+- [`server-configuration.md`](server-configuration.md)

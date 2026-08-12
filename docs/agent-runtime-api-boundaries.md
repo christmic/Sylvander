@@ -232,18 +232,20 @@ Migration is performed without compatibility aliases:
    Agent-definition values now have Agent- or Runtime-owned domain types with
    explicit Runtime projections at the API edge. Agent's normal dependency
    graph contains only `sylvander-llm-core` among first-party crates.
-5. **In progress:** split the large wire `types` module by API domain.
+5. **Complete:** split the large wire `types` module by API domain.
    `MessageBus`, subscription policy, delivery errors, diagnostics, and the
    bounded `InProcessMessageBus` have moved to `sylvander-channel`; Protocol no
    longer depends on Tokio or async-trait. Runtime and Channel implementations
    consume the application port while message payloads remain Protocol DTOs.
-   Message/event envelopes, public identities, and evidence-bound feedback now
-   have dedicated `message`, `identity`, and `feedback` modules with their
-   tests; crate-root DTO names and wire/schema shapes remain unchanged.
+   Message/event envelopes, public identities, evidence-bound feedback,
+   Session/config, model catalog, platform inspection, execution results, and
+   negotiation now have dedicated modules with their tests. The old `types`
+   catch-all module is deleted; crate-root DTO names and wire/schema shapes
+   remain unchanged.
 6. **Complete:** replace Channel access to Agent and `SessionStore` with
    `ChannelHost`.
-7. Rename the pure wire crate to `sylvander-api` and add dependency-graph
-   verification to CI.
+7. **In progress:** add dependency-graph verification to CI, then rename the
+   pure wire crate to `sylvander-api` without a compatibility crate.
 
 At each step, the new owner becomes authoritative before the previous owner is
 deleted. No deprecated alias or dual production path is retained.

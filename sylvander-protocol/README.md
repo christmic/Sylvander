@@ -19,12 +19,18 @@ Runtime 是唯一同时组合 Protocol DTO、Channel 应用端口和 Agent 执�
 - `identity`：Agent、Session、User 的稳定公共标识；
 - `message`：消息信封、附件、流式事件和系统控制 DTO；
 - `feedback`：Runtime 证据绑定的用户评价 DTO；
+- `model`：provider-qualified 模型目录、能力和推理级别；
+- `platform`：脱敏平台能力与展示声明；
+- `session`：Session 配置、版本钉住、prompt manifest 与 workspace DTO；
+- `execution`：权限、进度和恢复结果，不含可执行 authority；
+- `negotiation`：当前 UI 版本和能力协商；
 - `ui`：客户端与服务端顶层消息；
 - `agent_admin`、`registry_admin`、`identity_binding`、`user_profile`、
   `memory_confirmation`：各自独立版本化的服务子协议。
 
 crate 根重新导出公共 DTO，供普通调用者使用；领域模块路径用于所有权清晰的内部实现
-和文档。拆分不得改变 serde 形状、Schema 名称或协议版本。
+和文档。旧的 `types` 集散模块已经删除。拆分不得改变 serde 形状、Schema 名称或
+协议版本。
 
 ## 依赖约束
 
