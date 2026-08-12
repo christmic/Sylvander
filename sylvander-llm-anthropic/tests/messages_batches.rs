@@ -63,7 +63,7 @@ async fn batches_create_success() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages/batches"))
-        .and(header("authorization", "Bearer test-key"))
+        .and(header("x-api-key", "test-key"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(sample_batch("msgbatch_001", ProcessingStatus::InProgress)),

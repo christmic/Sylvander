@@ -34,7 +34,7 @@ async fn create_simple_text_response() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(header("authorization", "Bearer test-key"))
+        .and(header("x-api-key", "test-key"))
         .and(header("anthropic-version", "2023-06-01"))
         .and(header("content-type", "application/json"))
         .and(body_partial_json(json!({

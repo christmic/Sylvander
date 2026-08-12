@@ -64,7 +64,7 @@ async fn stream_full_assembly() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(header("authorization", "Bearer test-key"))
+        .and(header("x-api-key", "test-key"))
         .and(header("accept", "*/*"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(SAMPLE_STREAM, "text/event-stream"))
         .mount(&server)

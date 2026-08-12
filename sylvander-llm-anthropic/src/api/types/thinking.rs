@@ -13,9 +13,6 @@ use serde::{Deserialize, Serialize};
 /// To disable thinking, omit the field from the request — there is no
 /// "disabled" variant.
 ///
-/// Requires the `extended-thinking-2025-01-01` beta header, which the
-/// client adds automatically when this field is present.
-///
 /// See [Anthropic extended thinking docs](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
 /// for budget sizing guidance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

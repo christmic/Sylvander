@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Url;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use super::error::AnthropicError;
 use super::messages::MessagesApi;
@@ -126,8 +126,8 @@ impl AnthropicClient {
     #[must_use]
     pub fn build_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", self.inner.api_key)) {
-            headers.insert(AUTHORIZATION, v);
+        if let Ok(value) = HeaderValue::from_str(&self.inner.api_key) {
+            headers.insert("x-api-key", value);
         }
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
@@ -144,34 +144,16 @@ impl AnthropicClient {
         headers
     }
 
-    /// Build headers for a specific request, including per-request beta
-    /// headers derived from the request fields:
+    /// Build headers for a specific request.
     ///
-    /// - `extended-thinking-2025-01-01` when `thinking` is set
-    /// - `structured-outputs-2025-06-01` when `output_config` is set
-    ///
-    /// Always includes the client-level `beta_header(...)` extras and
-    /// the base headers.
+    /// Stable Messages fields do not imply beta headers. Only beta values
+    /// explicitly supplied to the client builder are sent.
     #[must_use]
     pub fn build_request_headers(
         &self,
-        request: &super::request::CreateMessageRequest,
+        _request: &super::request::CreateMessageRequest,
     ) -> HeaderMap {
-        let mut headers = self.build_headers();
-        let mut extras: Vec<&str> = self.inner.beta_headers.iter().map(String::as_str).collect();
-        if request.thinking.is_some() {
-            extras.push("extended-thinking-2025-01-01");
-        }
-        if request.output_config.is_some() {
-            extras.push("structured-outputs-2025-06-01");
-        }
-        if !extras.is_empty() {
-            let combined = extras.join(", ");
-            if let Ok(v) = HeaderValue::from_str(&combined) {
-                headers.insert("anthropic-beta", v);
-            }
-        }
-        headers
+        self.build_headers()
     }
 
     /// Borrow the inner reqwest client. Used internally by
@@ -238,9 +220,8 @@ impl AnthropicClientBuilder {
     }
 
     /// Add an extra `anthropic-beta` header value. Multiple values are
-    /// comma-separated in the final header. The client also auto-attaches
-    /// beta headers when request fields require them (extended thinking,
-    /// structured output, prompt caching).
+    /// comma-separated in the final header. No beta is inferred from request
+    /// fields.
     #[must_use]
     pub fn beta_header(mut self, header: impl Into<String>) -> Self {
         self.beta_headers.push(header.into());

@@ -36,13 +36,11 @@ pub struct CreateMessageRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
 
-    /// Extended thinking configuration. When present, the client
-    /// auto-attaches the `extended-thinking-2025-01-01` beta header.
+    /// Extended thinking configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
 
-    /// Structured output schema constraint. When present, the client
-    /// auto-attaches the `structured-outputs-2025-06-01` beta header.
+    /// Structured output schema constraint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_config: Option<OutputConfig>,
 

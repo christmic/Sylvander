@@ -7,9 +7,6 @@ use serde_json::Value as JsonValue;
 
 /// Output configuration. Attach to a request to constrain the model's
 /// output shape (e.g., force JSON Schema compliance).
-///
-/// Requires the `structured-outputs-2025-06-01` beta header, which the
-/// client adds automatically when this field is present.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OutputConfig {
     /// Reasoning effort level. Higher effort costs more tokens.

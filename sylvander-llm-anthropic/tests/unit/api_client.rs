@@ -1,3 +1,5 @@
+use super::super::request::CreateMessageRequest;
+use super::super::types::{MessageParam, OutputConfig};
 use super::*;
 
 #[test]
@@ -65,7 +67,10 @@ fn build_headers_includes_required_fields() {
         .build()
         .expect("build should succeed");
     let headers = client.build_headers();
-    assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer sk-test-123");
+    // Derived from anthropic-sdk-python@009b035
+    // src/anthropic/_client.py::_api_key_auth.
+    assert_eq!(headers.get("x-api-key").unwrap(), "sk-test-123");
+    assert!(headers.get("authorization").is_none());
     assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "application/json");
     assert_eq!(
         headers.get("anthropic-version").unwrap(),
@@ -86,11 +91,7 @@ fn build_headers_combines_beta_headers() {
 }
 
 #[test]
-fn build_request_headers_adds_thinking_beta() {
-    // ModelId removed; pass model string directly
-    use super::super::request::CreateMessageRequest;
-    use super::super::types::MessageParam;
-
+fn stable_request_fields_do_not_invent_beta_headers() {
     let client = AnthropicClient::builder()
         .api_key("sk-test")
         .build()
@@ -100,23 +101,19 @@ fn build_request_headers_adds_thinking_beta() {
         .max_tokens(2048)
         .messages(vec![MessageParam::user("Hi")])
         .thinking(1024)
+        .output_config(OutputConfig::default())
         .build()
         .unwrap();
 
     let headers = client.build_request_headers(&req);
-    let beta = headers.get("anthropic-beta").unwrap().to_str().unwrap();
-    assert!(beta.contains("extended-thinking-2025-01-01"));
-    assert!(!beta.contains("structured-outputs"));
+    assert!(headers.get("anthropic-beta").is_none());
 }
 
 #[test]
-fn build_request_headers_adds_structured_output_beta() {
-    // ModelId removed; pass model string directly
-    use super::super::request::CreateMessageRequest;
-    use super::super::types::{MessageParam, OutputConfig};
-
+fn build_request_headers_preserves_only_explicit_betas() {
     let client = AnthropicClient::builder()
         .api_key("sk-test")
+        .beta_header("explicit-beta")
         .build()
         .expect("build should succeed");
     let req = CreateMessageRequest::builder()
@@ -128,42 +125,11 @@ fn build_request_headers_adds_structured_output_beta() {
         .unwrap();
 
     let headers = client.build_request_headers(&req);
-    let beta = headers.get("anthropic-beta").unwrap().to_str().unwrap();
-    assert!(beta.contains("structured-outputs-2025-06-01"));
-    assert!(!beta.contains("extended-thinking"));
-}
-
-#[test]
-fn build_request_headers_combines_client_and_request_betas() {
-    // ModelId removed; pass model string directly
-    use super::super::request::CreateMessageRequest;
-    use super::super::types::MessageParam;
-
-    let client = AnthropicClient::builder()
-        .api_key("sk-test")
-        .beta_header("prompt-caching-2024-07-31")
-        .build()
-        .expect("build should succeed");
-    let req = CreateMessageRequest::builder()
-        .model("claude-sonnet-5-20260601")
-        .max_tokens(2048)
-        .messages(vec![MessageParam::user("Hi")])
-        .thinking(1024)
-        .build()
-        .unwrap();
-
-    let headers = client.build_request_headers(&req);
-    let beta = headers.get("anthropic-beta").unwrap().to_str().unwrap();
-    assert!(beta.contains("prompt-caching-2024-07-31"));
-    assert!(beta.contains("extended-thinking-2025-01-01"));
+    assert_eq!(headers.get("anthropic-beta").unwrap(), "explicit-beta");
 }
 
 #[test]
 fn build_request_headers_no_betas_when_request_plain() {
-    // ModelId removed; pass model string directly
-    use super::super::request::CreateMessageRequest;
-    use super::super::types::MessageParam;
-
     let client = AnthropicClient::builder()
         .api_key("sk-test")
         .build()
