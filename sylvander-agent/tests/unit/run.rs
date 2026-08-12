@@ -1,9 +1,12 @@
 use super::*;
 use crate::bus::{InProcessMessageBus, Recipient};
+use crate::compress::error::CompactionFailureCode;
 use crate::test_support::qualified_anthropic_run_builder;
+use crate::tool::Tool;
 use crate::tools::memory::InMemoryMemoryStore;
 use std::path::PathBuf;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
+use sylvander_llm_core::ModelInfo as ProviderModelInfo;
 
 #[allow(clippy::too_many_arguments)]
 async fn with_workspace_context(
@@ -1080,14 +1083,9 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         "model-selection-test",
     ));
 
-    crate::loop_::run(
-        &snapshot,
-        vec![sylvander_llm_anthropic::api::types::MessageParam::user(
-            "hello",
-        )],
-    )
-    .await
-    .unwrap();
+    crate::loop_::run(&snapshot, vec![ChatMessage::user("hello")])
+        .await
+        .unwrap();
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(
@@ -1189,14 +1187,9 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         "router-agent",
         "cross-provider-test",
     ));
-    crate::loop_::run(
-        &snapshot,
-        vec![sylvander_llm_anthropic::api::types::MessageParam::user(
-            "hello",
-        )],
-    )
-    .await
-    .unwrap();
+    crate::loop_::run(&snapshot, vec![ChatMessage::user("hello")])
+        .await
+        .unwrap();
     assert_eq!(
         router.requests.lock().unwrap()[0].model,
         sylvander_llm_core::ModelRef::new("remote", "shared")
@@ -1231,9 +1224,7 @@ async fn provider_manual_compaction_uses_backend_factory() {
         let mut sessions = run.inner.sessions.write().await;
         let session = sessions.get_mut(&session_id).unwrap();
         for index in 0..6 {
-            session.append_user_message(sylvander_llm_anthropic::api::types::MessageParam::user(
-                format!("message {index}"),
-            ));
+            session.append_user_message(ChatMessage::user(format!("message {index}")));
         }
     }
 
@@ -1245,8 +1236,6 @@ async fn provider_manual_compaction_uses_backend_factory() {
 
 #[tokio::test]
 async fn manual_compaction_failures_are_typed_before_string_facade() {
-    use crate::compress::error::CompactionFailureCode;
-
     let (spec, client) = test_spec_and_client();
     let run = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
@@ -1592,14 +1581,15 @@ fn configured_pricing_calculates_nano_usd_and_requires_cache_rates() {
         cache_write_usd_micros_per_million: None,
         cache_read_usd_micros_per_million: Some(300_000),
     };
-    let mut usage = sylvander_llm_anthropic::api::types::Usage {
+    let mut usage = TokenUsage {
         input_tokens: 1_000,
         output_tokens: 100,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: Some(10_000),
+        cache_write_tokens: None,
+        cache_read_tokens: Some(10_000),
+        ..TokenUsage::default()
     };
     assert_eq!(usage_cost_nano_usd(pricing, &usage), Some(7_500_000));
-    usage.cache_creation_input_tokens = Some(1);
+    usage.cache_write_tokens = Some(1);
     assert_eq!(usage_cost_nano_usd(pricing, &usage), None);
 }
 
@@ -1617,7 +1607,6 @@ async fn agent_run_is_cloneable() {
 
 #[tokio::test]
 async fn agent_run_previews_and_rolls_back_journaled_write() {
-    use crate::tool::Tool;
     let workspace = tempfile::TempDir::new().unwrap();
     let journal = tempfile::TempDir::new().unwrap();
     let file = workspace.path().join("file.txt");
@@ -1743,9 +1732,7 @@ async fn context_report_separates_window_usage_from_cumulative_accounting() {
         .await
         .get_mut(&session_id)
         .expect("session")
-        .append_user_message(sylvander_llm_anthropic::api::types::MessageParam::user(
-            "hello",
-        ));
+        .append_user_message(ChatMessage::user("hello"));
     run.inner.context_usage.write().await.insert(
         session_id.clone(),
         ContextUsage {
@@ -2442,7 +2429,7 @@ async fn compacted_history_write_failure_keeps_live_and_durable_history_unchange
     run.attach_authenticated_session(authenticated)
         .await
         .expect("attach");
-    let replacement = vec![sylvander_llm_anthropic::api::types::MessageParam::user(
+    let replacement = vec![ChatMessage::user(
         "[Earlier conversation summary]\nimportant decision",
     )];
     let layers = vec![crate::compress::layer::LayerReport {
@@ -2506,10 +2493,7 @@ async fn durable_session_history_restores_into_agent_context() {
             &caller,
             &session_id,
             StoredMessageRole::User,
-            serde_json::to_value(sylvander_llm_anthropic::api::types::MessageParam::user(
-                "remember me",
-            ))
-            .expect("serialize"),
+            serde_json::to_value(ChatMessage::user("remember me")).expect("serialize"),
             None,
             None,
             None,
@@ -2610,10 +2594,8 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
                 &caller,
                 &session_id,
                 StoredMessageRole::User,
-                serde_json::to_value(sylvander_llm_anthropic::api::types::MessageParam::user(
-                    format!("message {index}"),
-                ))
-                .expect("serialize"),
+                serde_json::to_value(ChatMessage::user(format!("message {index}")))
+                    .expect("serialize"),
                 None,
                 None,
                 None,
@@ -2631,11 +2613,9 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
         SessionContext::new(session_id.clone(), metadata),
     );
     let history = vec![
-        sylvander_llm_anthropic::api::types::MessageParam::user(
-            "[Earlier conversation summary]\nimportant decisions",
-        ),
-        sylvander_llm_anthropic::api::types::MessageParam::user("recent one"),
-        sylvander_llm_anthropic::api::types::MessageParam::user("recent two"),
+        ChatMessage::user("[Earlier conversation summary]\nimportant decisions"),
+        ChatMessage::user("recent one"),
+        ChatMessage::user("recent two"),
     ];
     let layers = vec![crate::compress::layer::LayerReport {
         name: "auto_compact".into(),

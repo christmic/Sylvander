@@ -1,6 +1,8 @@
 use super::*;
 use std::path::PathBuf;
-use sylvander_llm_anthropic::api::types::MessageParam;
+use sylvander_llm_core::{
+    ChatMessage, ContentBlock, ModelRef, ModelResponse, StopReason, TokenUsage,
+};
 
 fn test_metadata() -> SessionMetadata {
     SessionMetadata {
@@ -24,7 +26,7 @@ fn new_session_context_is_empty() {
 #[test]
 fn append_user_message_grows_history() {
     let mut ctx = SessionContext::new(SessionId::new("s1"), test_metadata());
-    ctx.append_user_message(MessageParam::user("Hello"));
+    ctx.append_user_message(ChatMessage::user("Hello"));
     assert_eq!(ctx.len(), 1);
     assert!(ctx.updated_at >= ctx.created_at);
 }
@@ -33,27 +35,17 @@ fn append_user_message_grows_history() {
 fn append_assistant_message_converts_to_param() {
     let mut ctx = SessionContext::new(SessionId::new("s1"), test_metadata());
 
-    use sylvander_llm_anthropic::api::types::{
-        ContentBlock, Message, MessageKind as ApiMessageKind, MessageRole, StopReason, TextBlock,
-        Usage, block::TextBlockKind,
-    };
-    let msg = Message {
+    let msg = ModelResponse {
         id: "msg_1".into(),
-        kind: ApiMessageKind::Message,
-        role: MessageRole::Assistant,
-        content: vec![ContentBlock::Text(TextBlock {
-            kind: TextBlockKind::Text,
+        content: vec![ContentBlock::Text {
             text: "Hi there!".into(),
-            cache_control: None,
-        })],
-        model: "test-model".into(),
-        stop_reason: Some(StopReason::EndTurn),
-        stop_sequence: None,
-        usage: Usage {
+        }],
+        model: ModelRef::new("test", "test-model"),
+        stop_reason: StopReason::EndTurn,
+        usage: TokenUsage {
             input_tokens: 5,
             output_tokens: 3,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
+            ..TokenUsage::default()
         },
     };
 
@@ -66,13 +58,13 @@ fn append_assistant_message_converts_to_param() {
 #[test]
 fn history_snapshot_is_independent() {
     let mut ctx = SessionContext::new(SessionId::new("s1"), test_metadata());
-    ctx.append_user_message(MessageParam::user("first"));
+    ctx.append_user_message(ChatMessage::user("first"));
 
     let snap = ctx.history_snapshot();
     assert_eq!(snap.len(), 1);
 
     // Mutate original — snapshot unchanged
-    ctx.append_user_message(MessageParam::user("second"));
+    ctx.append_user_message(ChatMessage::user("second"));
     assert_eq!(snap.len(), 1);
     assert_eq!(ctx.len(), 2);
 }
@@ -82,8 +74,8 @@ fn multiple_sessions_have_independent_histories() {
     let mut ctx_a = SessionContext::new(SessionId::new("sa"), test_metadata());
     let mut ctx_b = SessionContext::new(SessionId::new("sb"), test_metadata());
 
-    ctx_a.append_user_message(MessageParam::user("to A"));
-    ctx_b.append_user_message(MessageParam::user("to B"));
+    ctx_a.append_user_message(ChatMessage::user("to A"));
+    ctx_b.append_user_message(ChatMessage::user("to B"));
 
     assert_eq!(ctx_a.len(), 1);
     assert_eq!(ctx_b.len(), 1);

@@ -1,15 +1,15 @@
 use super::*;
 use crate::test_support::MockTool;
 use serde_json::json;
-use sylvander_llm_anthropic::api::model::ModelCapabilities;
-use sylvander_llm_anthropic::api::types::{CacheControl, TextBlock, UserContentBlock};
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ChatRole, ContentBlock as ProviderBlock, DocumentContent, ImageContent,
-    MediaSource, ModelCapabilities as ProviderCapabilities, ModelEventStream, ModelRef,
-    ModelResponse, ModelStreamEvent, ProviderError, ProviderErrorKind, ProviderErrorPhase,
-    ProviderFuture, StopReason as ProviderStopReason, SystemInstruction, TokenUsage,
-    ToolResultContent,
+    InputSchema, MediaSource, ModelCapabilities as ProviderCapabilities, ModelEventStream,
+    ModelInfo as ProviderModelInfo, ModelRef, ModelResponse, ModelStreamEvent, ProviderError,
+    ProviderErrorKind, ProviderErrorPhase, ProviderFuture, StopReason as ProviderStopReason,
+    SystemInstruction, TokenUsage, ToolResultContent,
 };
+
+type MessageParam = ChatMessage;
 
 type ProviderOpen = Result<Vec<Result<ModelStreamEvent, ProviderError>>, ProviderError>;
 
@@ -62,8 +62,8 @@ impl crate::tool::Tool for SlowTool {
         "waits beyond its deadline"
     }
 
-    fn input_schema(&self) -> sylvander_llm_anthropic::api::types::InputSchema {
-        sylvander_llm_anthropic::api::types::InputSchema::empty()
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::empty()
     }
 
     async fn execute(
@@ -102,13 +102,12 @@ async fn tool_deadline_is_a_typed_outcome() {
 }
 
 fn shadow_model(model_id: &str) -> ModelInfo {
-    ModelInfo::builder()
-        .id(model_id)
-        .context_window(200_000)
-        .max_output_tokens(8192)
-        .capability(ModelCapabilities::TOOL_USE)
-        .build()
-        .expect("model build")
+    ModelInfo {
+        reference: ModelRef::new("shadow", model_id),
+        context_window: 200_000,
+        max_output_tokens: 8192,
+        capabilities: ProviderCapabilities::TOOL_USE,
+    }
 }
 
 fn provider_model() -> ProviderModelInfo {
@@ -155,7 +154,7 @@ fn builder_succeeds_with_required_fields() {
         .provider_model(provider_model())
         .build()
         .expect("build should succeed");
-    assert_eq!(loop_.model().id.as_str(), "test-model");
+    assert_eq!(loop_.model().reference.model.as_str(), "test-model");
     assert_eq!(loop_.max_iterations(), 50);
     assert_eq!(loop_.max_retries(), 3);
 }
@@ -212,7 +211,7 @@ fn provider_builder_preserves_qualified_identity_and_safe_debug() {
     let debug = format!("{builder:?}");
     assert!(!debug.contains("secret-provider-state"));
     let loop_ = builder.build().unwrap();
-    assert_eq!(loop_.model.id, "test-model");
+    assert_eq!(loop_.model.reference.model, "test-model");
     assert_eq!(
         loop_.provider_model.reference,
         ModelRef::new("local", "test-model")
@@ -256,7 +255,7 @@ fn prompt_cache_hints_follow_the_selected_model_capability() {
 }
 
 #[test]
-fn lossy_message_cache_metadata_fails_before_dispatch() {
+fn provider_neutral_message_builds_without_protocol_translation() {
     let provider = Arc::new(ScriptedProvider::new(Vec::<ProviderOpen>::new()));
     let loop_ = loop_builder()
         .qualified_router(provider.clone())
@@ -264,19 +263,16 @@ fn lossy_message_cache_metadata_fails_before_dispatch() {
         .max_retries(0)
         .build()
         .unwrap();
-    let messages = [MessageParam::user_blocks(vec![UserContentBlock::Text(
-        TextBlock::new("secret-text").with_cache_control(CacheControl::ephemeral()),
-    )])];
-    let error = loop_
+    let messages = [MessageParam::user("neutral-text")];
+    let request = loop_
         .build_provider_request(&messages)
-        .expect_err("lossy cache metadata must fail before provider dispatch");
-    assert!(matches!(error, AgentLoopError::Validation(_)));
-    assert!(!error.to_string().contains("secret-text"));
+        .expect("neutral request");
+    assert_eq!(request.messages, messages);
     assert!(provider.requests.lock().unwrap().is_empty());
 }
 
 #[test]
-fn qualified_router_accepts_cross_provider_runtime_model() {
+fn qualified_router_rejects_cross_provider_runtime_model() {
     let router: Arc<dyn ModelProvider> = Arc::new(FakeProvider { _secret: "secret" });
     let mut loop_ = loop_builder()
         .qualified_router(router)
@@ -287,17 +283,17 @@ fn qualified_router_accepts_cross_provider_runtime_model() {
         provider_id: "remote".into(),
         model_id: "model-b".into(),
     };
-    loop_
+    let error = loop_
         .apply_runtime_model(
             &selection,
             &shadow_model("model-b"),
             Some(&provider_model_for("remote", "model-b")),
         )
-        .unwrap();
-    assert_eq!(loop_.model.id, "model-b");
+        .expect_err("one qualified router cannot silently cross providers");
+    assert!(matches!(error, AgentLoopError::IncompatibleModel(_)));
     assert_eq!(
         loop_.provider_model.reference,
-        ModelRef::new("remote", "model-b")
+        ModelRef::new("local", "test-model")
     );
 }
 
@@ -674,7 +670,7 @@ fn reasoning_effort_builds_a_capability_checked_budget() {
     let request = loop_
         .build_provider_request(&[MessageParam::user("think")])
         .expect("provider request");
-    assert_eq!(request.reasoning.unwrap().budget_tokens, 8_192);
+    assert_eq!(request.reasoning.unwrap().budget_tokens, Some(8_192));
     assert_eq!(
         loop_.reasoning_effort(),
         sylvander_protocol::ReasoningEffort::High
@@ -732,51 +728,47 @@ fn default_max_iterations_is_50() {
 
 #[test]
 fn cumulative_usage_saturates_and_preserves_optional_cache_semantics() {
-    let total = Usage {
-        input_tokens: u32::MAX - 1,
+    let mut total = TokenUsage {
+        input_tokens: u64::MAX - 1,
         output_tokens: 10,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: Some(u32::MAX),
+        cache_write_tokens: None,
+        cache_read_tokens: Some(u64::MAX),
+        ..TokenUsage::default()
     };
-    let next = Usage {
+    let next = TokenUsage {
         input_tokens: 10,
-        output_tokens: u32::MAX,
-        cache_creation_input_tokens: Some(4),
-        cache_read_input_tokens: None,
+        output_tokens: u64::MAX,
+        cache_write_tokens: Some(4),
+        cache_read_tokens: None,
+        ..TokenUsage::default()
     };
 
-    let cumulative = saturating_add_usage(&total, &next);
-    assert_eq!(cumulative.input_tokens, u32::MAX);
-    assert_eq!(cumulative.output_tokens, u32::MAX);
-    assert_eq!(cumulative.cache_creation_input_tokens, Some(4));
-    assert_eq!(cumulative.cache_read_input_tokens, Some(u32::MAX));
-    assert_eq!(saturating_add_optional_tokens(None, None), None);
+    total.saturating_add_assign(next);
+    assert_eq!(total.input_tokens, u64::MAX);
+    assert_eq!(total.output_tokens, u64::MAX);
+    assert_eq!(total.cache_write_tokens, Some(4));
+    assert_eq!(total.cache_read_tokens, Some(u64::MAX));
 }
 
 #[test]
 fn agent_run_debug_impl() {
     let run = AgentLoopResult {
-        final_message: Message {
+        final_message: ModelResponse {
             id: "msg_x".into(),
-            kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
-            role: sylvander_llm_anthropic::api::types::MessageRole::Assistant,
             content: vec![],
-            model: "test-model".into(),
-            stop_reason: Some(sylvander_llm_anthropic::api::types::StopReason::EndTurn),
-            stop_sequence: None,
-            usage: Usage {
+            model: ModelRef::new("local", "test-model"),
+            stop_reason: ProviderStopReason::EndTurn,
+            usage: TokenUsage {
                 input_tokens: 1,
                 output_tokens: 1,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
+                ..TokenUsage::default()
             },
         },
         iterations: 1,
-        total_usage: Usage {
+        total_usage: TokenUsage {
             input_tokens: 1,
             output_tokens: 1,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
+            ..TokenUsage::default()
         },
     };
     let _ = format!("{run:?}");

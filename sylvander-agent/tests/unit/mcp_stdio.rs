@@ -91,7 +91,10 @@ fn fake_config(temp: &TempDir) -> McpServerConfig {
         name: "fake".into(),
         command: "python3".into(),
         args: vec![script.display().to_string()],
-        envs: HashMap::from([("MCP_TEST_LOG".into(), log.display().to_string())]),
+        envs: HashMap::from([
+            ("MCP_TEST_LOG".into(), log.display().to_string()),
+            ("MCP_TEST_SLOW_SECONDS".into(), "2".into()),
+        ]),
     }
 }
 
@@ -198,7 +201,7 @@ async fn real_process_handshake_discovery_call_and_shutdown() {
 async fn tool_call_timeout_is_reported_and_process_can_be_stopped() {
     let temp = TempDir::new().expect("temp dir");
     let config = fake_config(&temp);
-    let timeout = Duration::from_millis(200);
+    let timeout = Duration::from_secs(1);
     let client = McpStdioClient::connect(&config, timeout)
         .await
         .expect("connect");

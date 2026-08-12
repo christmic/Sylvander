@@ -240,7 +240,7 @@ fn to_model_info() {
         .expect("build should succeed");
 
     let info = spec.to_model_info().unwrap();
-    assert_eq!(info.id, "claude-sonnet-5-20260601");
+    assert_eq!(info.reference.model, "claude-sonnet-5-20260601");
     assert_eq!(info.max_output_tokens, 8192);
     assert_eq!(info.context_window, 200_000);
 }

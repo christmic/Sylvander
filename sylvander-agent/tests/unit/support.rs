@@ -7,14 +7,11 @@ use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use sylvander_llm_anthropic::{
     AnthropicProvider,
-    api::{
-        client::AnthropicClient,
-        model::{ModelCapabilities as AnthropicModelCapabilities, ModelInfo as AnthropicModelInfo},
-        types::InputSchema,
-    },
+    api::{client::AnthropicClient, model::ModelCapabilities as AnthropicModelCapabilities},
 };
 use sylvander_llm_core::{
-    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+    InputSchema, ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo,
+    ModelRef,
 };
 
 use crate::compress::disk::{DiskHandle, ToolResultDisk};
@@ -62,13 +59,13 @@ pub(crate) fn provider_capabilities(
 
 pub(crate) fn exact_anthropic_model(
     provider_id: &str,
-    model: &AnthropicModelInfo,
+    model: &ProviderModelInfo,
 ) -> ProviderModelInfo {
     ProviderModelInfo {
-        reference: ModelRef::new(provider_id, &model.id),
+        reference: ModelRef::new(provider_id, &model.reference.model),
         context_window: model.context_window,
         max_output_tokens: model.max_output_tokens,
-        capabilities: provider_capabilities(model.capabilities),
+        capabilities: model.capabilities,
     }
 }
 
