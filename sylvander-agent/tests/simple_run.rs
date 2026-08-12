@@ -48,28 +48,30 @@ struct ProgressTool;
 
 struct BurstProgressTool;
 
+impl ToolDefinition for ProgressTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            "progress_probe",
+            "emits output before completion",
+            InputSchema::empty().schema,
+            sylvander_agent::tool_invocation::ToolInvocationClass::Extension,
+        )
+    }
+}
+
 #[async_trait::async_trait]
-impl Tool for ProgressTool {
-    fn name(&self) -> &'static str {
-        "progress_probe"
-    }
-    fn description(&self) -> &'static str {
-        "emits output before completion"
-    }
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::empty()
-    }
-    async fn execute(
+impl ToolExecutor for ProgressTool {
+    async fn handle(
         &self,
         _ctx: &ToolContext,
-        _input: serde_json::Value,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::ok("first second"))
     }
-    async fn execute_streaming(
+    async fn handle_streaming(
         &self,
         _ctx: &ToolContext,
-        _input: serde_json::Value,
+        _call: &PreparedToolCall,
         progress: ToolProgressSink,
     ) -> Result<ToolOutput, ToolError> {
         progress.emit("first ");
@@ -131,28 +133,30 @@ async fn tool_output_deltas_arrive_before_final_result() {
     );
 }
 
+impl ToolDefinition for BurstProgressTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            "burst_progress_probe",
+            "emits more progress than the bounded queue can retain",
+            InputSchema::empty().schema,
+            sylvander_agent::tool_invocation::ToolInvocationClass::Extension,
+        )
+    }
+}
+
 #[async_trait::async_trait]
-impl Tool for BurstProgressTool {
-    fn name(&self) -> &'static str {
-        "burst_progress_probe"
-    }
-    fn description(&self) -> &'static str {
-        "emits more progress than the bounded queue can retain"
-    }
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::empty()
-    }
-    async fn execute(
+impl ToolExecutor for BurstProgressTool {
+    async fn handle(
         &self,
         _ctx: &ToolContext,
-        _input: serde_json::Value,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::ok("complete"))
     }
-    async fn execute_streaming(
+    async fn handle_streaming(
         &self,
         _ctx: &ToolContext,
-        _input: serde_json::Value,
+        _call: &PreparedToolCall,
         progress: ToolProgressSink,
     ) -> Result<ToolOutput, ToolError> {
         for index in 0..1_000 {
@@ -257,49 +261,46 @@ async fn serial_tool_progress_is_bounded_and_reports_one_omission() {
     assert_burst_is_bounded(&run_burst_progress(true).await);
 }
 
+impl ToolDefinition for BarrierTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            "parallel_probe",
+            "waits for another invocation",
+            InputSchema::empty().schema,
+            sylvander_agent::tool_invocation::ToolInvocationClass::Extension,
+        )
+    }
+}
+
 #[async_trait::async_trait]
-impl Tool for BarrierTool {
-    fn name(&self) -> &'static str {
-        "parallel_probe"
-    }
-    fn description(&self) -> &'static str {
-        "waits for another invocation"
-    }
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::empty()
-    }
-    async fn execute(
+impl ToolExecutor for BarrierTool {
+    async fn handle(
         &self,
         _ctx: &ToolContext,
-        _input: serde_json::Value,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         self.barrier.wait().await;
         Ok(ToolOutput::ok("ready"))
     }
 }
 
+impl ToolDefinition for ExclusiveProbeTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            "exclusive_probe",
+            "records whether exclusive calls overlap",
+            InputSchema::empty().schema,
+            sylvander_agent::tool_invocation::ToolInvocationClass::FilesystemMutation,
+        )
+    }
+}
+
 #[async_trait::async_trait]
-impl Tool for ExclusiveProbeTool {
-    fn name(&self) -> &'static str {
-        "exclusive_probe"
-    }
-
-    fn description(&self) -> &'static str {
-        "records whether exclusive calls overlap"
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::empty()
-    }
-
-    fn invocation_class(&self) -> sylvander_agent::tool_invocation::ToolInvocationClass {
-        sylvander_agent::tool_invocation::ToolInvocationClass::FilesystemMutation
-    }
-
-    async fn execute(
+impl ToolExecutor for ExclusiveProbeTool {
+    async fn handle(
         &self,
         _ctx: &ToolContext,
-        _input: serde_json::Value,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.maximum.fetch_max(active, Ordering::SeqCst);

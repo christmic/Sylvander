@@ -127,9 +127,10 @@ async fn real_process_handshake_discovery_call_and_shutdown() {
 
     let tools = client.list_tools().await.expect("list tools");
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name(), "mcp__fake__echo");
-    assert_eq!(tools[0].description(), "Echo an input value");
-    assert_eq!(tools[0].input_schema().schema["type"], "object");
+    let spec = tools[0].spec();
+    assert_eq!(spec.name, "mcp__fake__echo");
+    assert_eq!(spec.description, "Echo an input value");
+    assert_eq!(spec.input_schema["type"], "object");
     let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
     assert_eq!(
         feature.status,
@@ -162,7 +163,7 @@ async fn real_process_handshake_discovery_call_and_shutdown() {
     assert_eq!(resource_tools.len(), 2);
     let list = resource_tools
         .iter()
-        .find(|tool| tool.name().ends_with("__list_resources"))
+        .find(|tool| tool.spec().name.ends_with("__list_resources"))
         .expect("list resources tool");
     let listed = list
         .execute(&context, json!({}))
@@ -171,7 +172,7 @@ async fn real_process_handshake_discovery_call_and_shutdown() {
     assert!(listed.content.contains("memory://fake/guide"));
     let read = resource_tools
         .iter()
-        .find(|tool| tool.name().ends_with("__read_resource"))
+        .find(|tool| tool.spec().name.ends_with("__read_resource"))
         .expect("read resource tool");
     let resource_output = read
         .execute(&context, json!({ "uri": "memory://fake/guide" }))

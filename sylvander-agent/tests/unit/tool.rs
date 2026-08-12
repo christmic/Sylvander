@@ -7,55 +7,49 @@ use std::sync::{Arc, Mutex};
 struct DeferredWeatherTool;
 struct ChangedDeferredWeatherTool;
 
+impl ToolDefinition for DeferredWeatherTool {
+    fn spec(&self) -> ToolSpec {
+        let mut spec = ToolSpec::immediate(
+            "mcp_weather_forecast",
+            "Get a weather forecast for one city",
+            InputSchema::new_with_properties(json!({"city": {"type": "string"}}), &["city"]).schema,
+            ToolInvocationClass::Extension,
+        );
+        spec.exposure = ToolExposure::Deferred;
+        spec
+    }
+}
+
 #[async_trait]
-impl Tool for DeferredWeatherTool {
-    fn name(&self) -> &str {
-        "mcp_weather_forecast"
-    }
-
-    fn description(&self) -> &str {
-        "Get a weather forecast for one city"
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(json!({"city": {"type": "string"}}), &["city"])
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Deferred
-    }
-
-    async fn execute(
+impl ToolExecutor for DeferredWeatherTool {
+    async fn handle(
         &self,
         _ctx: &ToolContext,
-        _input: JsonValue,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::ok("sunny"))
     }
 }
 
+impl ToolDefinition for ChangedDeferredWeatherTool {
+    fn spec(&self) -> ToolSpec {
+        let mut spec = ToolSpec::immediate(
+            "mcp_weather_forecast",
+            "Get a detailed weather forecast for one city",
+            InputSchema::new_with_properties(json!({"city": {"type": "string"}}), &["city"]).schema,
+            ToolInvocationClass::Extension,
+        );
+        spec.exposure = ToolExposure::Deferred;
+        spec
+    }
+}
+
 #[async_trait]
-impl Tool for ChangedDeferredWeatherTool {
-    fn name(&self) -> &str {
-        "mcp_weather_forecast"
-    }
-
-    fn description(&self) -> &str {
-        "Get a detailed weather forecast for one city"
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(json!({"city": {"type": "string"}}), &["city"])
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Deferred
-    }
-
-    async fn execute(
+impl ToolExecutor for ChangedDeferredWeatherTool {
+    async fn handle(
         &self,
         _ctx: &ToolContext,
-        _input: JsonValue,
+        _call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::ok("sunny"))
     }
@@ -95,7 +89,7 @@ fn hook_progress_is_control_safe_and_bounded() {
 #[test]
 fn registry_register_and_get() {
     let tool = MockTool::new("echo", "echoes input", ToolOutput::ok("hi"));
-    let registry = ToolRegistry::new().register(tool);
+    let registry = ToolRegistry::new().register(tool.clone());
     assert_eq!(registry.len(), 1);
     assert!(!registry.is_empty());
     assert!(registry.get("echo").is_some());
@@ -151,10 +145,11 @@ async fn deferred_tools_are_searchable_without_eager_schema_exposure() {
     assert_eq!(definitions[0].name, TOOL_SEARCH_NAME);
     assert!(registry.get("mcp_weather_forecast").is_some());
 
-    let output = registry
-        .get(TOOL_SEARCH_NAME)
-        .expect("search tool")
-        .execute(&ctx(), json!({"query": "weather city"}))
+    let search = registry
+        .prepare(TOOL_SEARCH_NAME, json!({"query": "weather city"}))
+        .expect("prepared search tool");
+    let output = search
+        .execute_streaming(&ctx(), ToolProgressSink::new(|_| {}))
         .await
         .expect("search execution");
     let result: JsonValue = serde_json::from_str(&output.content).expect("search JSON");
@@ -179,19 +174,124 @@ fn deferred_contract_changes_invalidate_the_capability_revision() {
 
 #[test]
 fn execution_mode_defaults_are_conservative_for_side_effects() {
-    let input = json!({});
     assert_eq!(
-        DeferredWeatherTool.execution_mode(&input),
+        ToolRegistry::new()
+            .register(DeferredWeatherTool)
+            .prepare("mcp_weather_forecast", json!({"city": "Hangzhou"}))
+            .expect("prepared deferred tool")
+            .execution_mode(),
         ToolExecutionMode::Parallel
     );
     assert_eq!(
-        crate::tools::WriteTool::new().execution_mode(&input),
+        ToolRegistry::new()
+            .register(crate::tools::WriteTool::new())
+            .prepare("Write", json!({"file_path": "out", "content": "x"}))
+            .expect("prepared write")
+            .execution_mode(),
         ToolExecutionMode::Exclusive
     );
     assert_eq!(
-        crate::tools::CommandTool::new().execution_mode(&input),
+        ToolRegistry::new()
+            .register(crate::tools::CommandTool::new())
+            .prepare("Command", json!({"command": "true"}))
+            .expect("prepared command")
+            .execution_mode(),
         ToolExecutionMode::Exclusive
     );
+}
+
+#[test]
+fn process_tools_fail_closed_without_an_enforcing_sandbox() {
+    let command = ToolRegistry::new()
+        .register(crate::tools::CommandTool::new())
+        .prepare("Command", json!({"command": "true"}))
+        .expect("prepared command");
+    let error = command
+        .validate_environment(&ctx())
+        .expect_err("local execution must not claim sandbox isolation");
+    assert_eq!(
+        error,
+        ToolEnvironmentError::SandboxUnavailable("Command".into())
+    );
+}
+
+#[test]
+fn preparation_validates_declared_schema_before_authorization() {
+    let commands = ToolRegistry::new().register(crate::tools::CommandTool::new());
+    for input in [
+        json!({}),
+        json!({"command": 7}),
+        json!({"command": "true", "environment": {"CI": false}}),
+    ] {
+        assert!(matches!(
+            commands.prepare("Command", input),
+            Err(ToolPrepareError::InvalidInput(_))
+        ));
+    }
+    let reads = ToolRegistry::new().register(crate::tools::ReadTool::new());
+    assert!(matches!(
+        reads.prepare("Read", json!({"file_path": "README.md", "owner": "forged"})),
+        Err(ToolPrepareError::InvalidInput(_))
+    ));
+}
+
+#[test]
+fn structured_workspace_tools_do_not_claim_process_sandboxing() {
+    for (name, call) in [
+        (
+            "Read",
+            ToolRegistry::new()
+                .register(crate::tools::ReadTool::new())
+                .prepare("Read", json!({"file_path": "README.md"}))
+                .expect("prepared read"),
+        ),
+        (
+            "Write",
+            ToolRegistry::new()
+                .register(crate::tools::WriteTool::new())
+                .prepare("Write", json!({"file_path": "out", "content": "x"}))
+                .expect("prepared write"),
+        ),
+    ] {
+        assert_eq!(
+            call.execution_policy().sandbox,
+            SandboxRequirement::NotApplicable,
+            "{name} is a structured executor operation"
+        );
+        call.validate_environment(&ctx())
+            .expect("structured operation policy");
+    }
+}
+
+#[test]
+fn prepared_calls_are_identical_across_supported_model_families() {
+    let registry = ToolRegistry::new().register(crate::tools::CommandTool::new());
+    let input = json!({"command": "cargo test", "environment": {"CI": "1"}});
+    let expected = registry
+        .prepare("Command", input.clone())
+        .expect("reference prepared call");
+    for model in [
+        sylvander_llm_core::ModelRef::new("anthropic", "claude-sonnet-5-20260601"),
+        sylvander_llm_core::ModelRef::new("openai", "gpt-5.6"),
+        sylvander_llm_core::ModelRef::new("dashscope", "qwen3-max"),
+        sylvander_llm_core::ModelRef::new("deepseek", "deepseek-reasoner"),
+    ] {
+        let actual = registry
+            .prepare("Command", input.clone())
+            .expect("model-neutral prepared call");
+        assert_eq!(actual.spec(), expected.spec(), "model={model:?}");
+        assert_eq!(actual.input(), expected.input(), "model={model:?}");
+        assert_eq!(
+            actual.execution_policy(),
+            expected.execution_policy(),
+            "model={model:?}"
+        );
+        assert_eq!(
+            actual.execution_mode(),
+            expected.execution_mode(),
+            "model={model:?}"
+        );
+    }
 }
 
 #[test]
@@ -237,8 +337,17 @@ fn capability_revision_tracks_tool_contract_and_hooks() {
 async fn mock_tool_records_calls() {
     let tool = MockTool::new("echo", "echo", ToolOutput::ok("hi"));
     let c = ctx();
-    let _ = tool.execute(&c, json!({"input": "hello"})).await.unwrap();
-    let _ = tool.execute(&c, json!({"input": "world"})).await.unwrap();
+    let registry = ToolRegistry::new().register(tool.clone());
+    let hello = registry.prepare("echo", json!({"input": "hello"})).unwrap();
+    let world = registry.prepare("echo", json!({"input": "world"})).unwrap();
+    let _ = hello
+        .execute_streaming(&c, ToolProgressSink::new(|_| {}))
+        .await
+        .unwrap();
+    let _ = world
+        .execute_streaming(&c, ToolProgressSink::new(|_| {}))
+        .await
+        .unwrap();
     let calls = tool.calls();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0]["input"], "hello");
@@ -255,9 +364,15 @@ async fn mock_tool_cycles_responses() {
             ToolOutput::ok("third"),
         ]);
     let c = ctx();
-    assert_eq!(tool.execute(&c, json!({})).await.unwrap().content, "first");
-    assert_eq!(tool.execute(&c, json!({})).await.unwrap().content, "second");
-    assert_eq!(tool.execute(&c, json!({})).await.unwrap().content, "third");
+    let registry = ToolRegistry::new().register(tool.clone());
+    for expected in ["first", "second", "third"] {
+        let call = registry.prepare("multi", json!({})).unwrap();
+        let output = call
+            .execute_streaming(&c, ToolProgressSink::new(|_| {}))
+            .await
+            .unwrap();
+        assert_eq!(output.content, expected);
+    }
     // 4th call: cycles back to last configured response
     assert_eq!(tool.execute(&c, json!({})).await.unwrap().content, "third");
 }

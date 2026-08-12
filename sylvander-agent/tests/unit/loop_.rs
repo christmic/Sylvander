@@ -53,24 +53,23 @@ impl ModelProvider for FakeProvider {
 
 struct SlowTool;
 
+impl crate::tool::ToolDefinition for SlowTool {
+    fn spec(&self) -> crate::tool::ToolSpec {
+        crate::tool::ToolSpec::immediate(
+            "slow",
+            "waits beyond its deadline",
+            InputSchema::empty().schema,
+            crate::tool_invocation::ToolInvocationClass::Extension,
+        )
+    }
+}
+
 #[async_trait::async_trait]
-impl crate::tool::Tool for SlowTool {
-    fn name(&self) -> &'static str {
-        "slow"
-    }
-
-    fn description(&self) -> &'static str {
-        "waits beyond its deadline"
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::empty()
-    }
-
-    async fn execute(
+impl crate::tool::ToolExecutor for SlowTool {
+    async fn handle(
         &self,
         _ctx: &crate::tool_context::ToolContext,
-        _input: serde_json::Value,
+        _call: &crate::tool::PreparedToolCall,
     ) -> Result<crate::tool::ToolOutput, crate::tool::ToolError> {
         std::future::pending().await
     }
@@ -83,11 +82,10 @@ async fn tool_deadline_is_a_typed_outcome() {
         crate::tool_invocation::RegistryBoundToolGateway::new(tools.invocation_descriptors());
     let snapshot = crate::tool_invocation::ToolInvocationGateway::snapshot(gateway.as_ref());
     let outcome = execute_registered_tool(RegisteredToolExecutionRequest {
-        tool: tools.get("slow"),
+        prepared_call: tools.prepare("slow", serde_json::json!({})),
         invocation_gateway: gateway,
         invocation_snapshot: snapshot,
         tool_context: crate::tool_context::defaults::system_tool_context(),
-        input: serde_json::json!({}),
         call_id: "call-slow".into(),
         route: "slow".into(),
         timeout: Some(std::time::Duration::from_millis(1)),

@@ -2,7 +2,7 @@ use super::*;
 use crate::bus::{InProcessMessageBus, Recipient};
 use crate::compress::error::CompactionFailureCode;
 use crate::test_support::qualified_anthropic_run_builder;
-use crate::tool::Tool;
+use crate::tool::ToolTestExt as _;
 use crate::tools::memory::InMemoryMemoryStore;
 use std::path::PathBuf;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -2659,7 +2659,7 @@ async fn memory_is_infrastructure_not_tool() {
         .expect("build");
     let tools = run.memory_tools();
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name(), "read_memory");
+    assert_eq!(tools[0].spec().name, "read_memory");
 }
 
 #[tokio::test]

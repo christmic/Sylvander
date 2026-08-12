@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use sylvander_agent::compress::disk::{DiskHandle, ToolResultDisk};
 use sylvander_agent::prelude::{AgentLoop, AgentLoopBuilder};
-use sylvander_agent::tool::{Tool, ToolError, ToolOutput};
+use sylvander_agent::tool::{
+    PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
+};
 use sylvander_agent::tool_context::ToolContext;
 use sylvander_llm_anthropic::{
     AnthropicProvider,
@@ -142,24 +144,27 @@ impl MockTool {
     }
 }
 
+impl ToolDefinition for MockTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            self.name.clone(),
+            self.description.clone(),
+            self.schema.schema.clone(),
+            sylvander_agent::tool_invocation::ToolInvocationClass::Extension,
+        )
+    }
+}
+
 #[async_trait]
-impl Tool for MockTool {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        self.schema.clone()
-    }
-
-    async fn execute(&self, _ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+impl ToolExecutor for MockTool {
+    async fn handle(
+        &self,
+        _ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
         let index = {
             let mut calls = self.calls.lock().expect("MockTool lock poisoned");
-            calls.push(input);
+            calls.push(call.input().clone());
             calls.len() - 1
         };
         self.responses

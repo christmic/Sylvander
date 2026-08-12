@@ -15,7 +15,6 @@ mod support;
 
 use std::sync::Arc;
 
-use serde_json::Value as JsonValue;
 use serde_json::json;
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -50,22 +49,30 @@ struct ReadTool {
     fs: FakeFileSystem,
 }
 
-#[async_trait::async_trait]
-impl sylvander_agent::tool::Tool for ReadTool {
-    fn name(&self) -> &'static str {
-        "Read"
-    }
-    fn description(&self) -> &'static str {
-        "Read a file from disk and return its contents"
-    }
-    fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            json!({"file_path": {"type": "string", "description": "Absolute path to the file"}}),
-            &["file_path"],
+impl sylvander_agent::tool::ToolDefinition for ReadTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::immediate(
+            "Read",
+            "Read a file from disk and return its contents",
+            InputSchema::new_with_properties(
+                json!({"file_path": {"type": "string", "description": "Absolute path to the file"}}),
+                &["file_path"],
+            )
+            .schema,
+            sylvander_agent::tool_invocation::ToolInvocationClass::Read,
         )
     }
-    async fn execute(&self, _ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
-        let path = input
+}
+
+#[async_trait::async_trait]
+impl sylvander_agent::tool::ToolExecutor for ReadTool {
+    async fn handle(
+        &self,
+        _ctx: &ToolContext,
+        call: &PreparedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
+        let path = call
+            .input()
             .get("file_path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::Other("missing file_path".into()))?;
