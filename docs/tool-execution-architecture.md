@@ -60,8 +60,19 @@ mode, `--network=none`, read-only root filesystem, private temporary storage,
 no new privileges, dropped capabilities, and memory, CPU, and PID ceilings.
 
 Agent owns only this port and its neutral routing policy. Runtime owns all
-three concrete executors and must inject one explicitly; constructing a
-`ToolContext` or attaching a filesystem root never grants host-local access.
+three concrete executors. Runtime boot constructs one immutable
+`RuntimeExecutionService`, resolves transport credentials once, validates
+exact target identities, and injects the same snapshot into initial and lazy
+Agent revisions. `local` is a named built-in target; it is never substituted
+for an unknown target. Constructing a `ToolContext` or attaching a filesystem
+root never grants host-local access.
+
+The execution service owns adapter selection and target resolution. The
+sandbox adapter itself owns the enforcing operation boundary: disposable
+process creation, mounts, network namespace, resource limits, filtered
+environment, cancellation, bounded streams, artifact collection, violation
+reporting, and cleanup. Agent uses that service; Agent and Runtime control
+planes do not run inside each per-tool sandbox.
 
 This release does not claim native Seatbelt, bubblewrap, Windows token/WFP, or
 approved-network proxy support. `ToolNetworkPolicy::FullAfterApproval` remains

@@ -31,6 +31,16 @@ violations, and cleanup. OCI is the current enforcing adapter. Local and SSH
 remain non-sandboxed adapters and cannot execute a tool whose prepared policy
 requires a sandbox.
 
+Current implementation status: Runtime boot constructs one crate-private,
+immutable `RuntimeExecutionService` from the built-in exact `local` target and
+configured SSH/OCI targets. It resolves adapter credentials at composition,
+rejects invalid target registries, and shares the same service with initial
+and lazily recomposed Agent revisions. Unknown target identifiers receive an
+explicit unavailable executor; they never fall back to `local`. Worktree
+lifecycle is still a neighboring Runtime service rather than part of this
+registry, and execution health has not yet been added to the operational
+snapshot.
+
 ## Unified storage
 
 The target is one closed Runtime storage facade owning sessions, messages,

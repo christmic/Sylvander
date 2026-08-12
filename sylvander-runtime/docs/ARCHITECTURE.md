@@ -98,7 +98,9 @@ crate without retaining a second production path.
   workspace selection, the concrete host-local/SSH/OCI adapters, and isolated
   local/host-backed and SSH coding worktrees. The local adapter enforces path,
   output, deadline, and process-tree cancellation bounds but truthfully
-  reports no sandbox isolation.
+  reports no sandbox isolation. Runtime boot builds one immutable exact-target
+  execution service and reuses it for initial and lazy Agent revisions;
+  unknown targets never inherit the built-in `local` adapter.
 - `storage::memory` owns the closed SQLite relationship-memory backend,
   authenticated file/HTTP integrity anchors, finite retention, evidence
   checkpoints, backup rotation, and offline restore. Agent owns only the

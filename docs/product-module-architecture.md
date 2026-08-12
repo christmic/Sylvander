@@ -97,6 +97,12 @@ artifacts, and records the terminal execution fact. Host-local execution,
 workspace mutation manifests, rollback recovery, and filesystem-backed tool
 result artifacts are concrete Runtime adapters rather than Agent facilities.
 
+Implementation status: Runtime composes one immutable exact-target service and
+shares it across every Agent revision. The named built-in `local` target and
+configured SSH/OCI targets are resolved only by exact ID; missing IDs fail
+closed. Adapter health and execution-resource observations remain follow-up
+work.
+
 ### Authorization service
 
 The authorization service derives actor authority from authenticated Runtime
