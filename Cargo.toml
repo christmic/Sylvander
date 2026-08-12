@@ -14,6 +14,7 @@ members = [
     "sylvander-llm-core",
     "sylvander-llm-anthropic",
     "sylvander-llm-openai",
+    "sylvander-llm-dashscope",
     "sylvander-agent",
     "sylvander-runtime",
 ]

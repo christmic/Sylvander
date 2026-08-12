@@ -3016,6 +3016,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sylvander-llm-dashscope"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "sylvander-llm-core",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "sylvander-llm-openai"
 version = "0.1.0"
 dependencies = [
