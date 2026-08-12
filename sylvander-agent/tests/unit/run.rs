@@ -752,7 +752,7 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
 
     let memory = Arc::new(InMemoryMemoryStore::new());
     let memory_caller =
-        sylvander_protocol::SessionContext::new("user-1", "test-agent", "memory-seed");
+        AgentExecutionContext::restricted_for("user-1", "test-agent", "memory-seed");
     let memory_context = MemoryExecutionContext::application_worker(&memory_caller);
     memory
         .append_relationship(
@@ -1077,7 +1077,7 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         .unwrap();
     // This test dispatches the loop snapshot directly instead of entering an
     // AgentRun turn, so it must supply the explicit context a real turn would.
-    snapshot.tool_context = ToolContext::new(sylvander_protocol::SessionContext::new(
+    snapshot.tool_context = ToolContext::new(AgentExecutionContext::restricted_for(
         "test-user",
         "router-agent",
         "model-selection-test",
@@ -1182,7 +1182,7 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         .inner
         .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
         .unwrap();
-    snapshot.tool_context = ToolContext::new(sylvander_protocol::SessionContext::new(
+    snapshot.tool_context = ToolContext::new(AgentExecutionContext::restricted_for(
         "test-user",
         "router-agent",
         "cross-provider-test",
@@ -1625,7 +1625,7 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
         })
         .await;
     let context = ToolContext::new(
-        sylvander_protocol::SessionContext::new("user-1", "test-agent", session_id.clone())
+        AgentExecutionContext::restricted_for("user-1", "test-agent", session_id.0.clone())
             .with_trace_id("turn-1"),
     )
     .with_fs_root(workspace.path())
@@ -1819,8 +1819,8 @@ fn permission_profile_builds_a_workspace_scoped_tool_context() {
     assert!(context.has_cap(Cap::Network));
     assert!(context.host_allowed("example.com"));
     assert!(context.has_cap(Cap::MemoryRead));
-    assert_eq!(context.user_id().0, metadata.user_id);
-    assert_eq!(context.session.request.trace_id.as_deref(), Some("turn-1"));
+    assert_eq!(context.user_id(), metadata.user_id);
+    assert_eq!(context.trace_id(), Some("turn-1"));
 }
 
 #[test]

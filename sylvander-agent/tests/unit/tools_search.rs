@@ -1,11 +1,12 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use serde_json::Value as JsonValue;
-use sylvander_protocol::SessionContext;
-
 fn context(root: &std::path::Path) -> ToolContext {
-    ToolContext::new(SessionContext::new("user", "agent", "session"))
-        .with_fs_root(root)
-        .with_capability(Cap::Read)
+    ToolContext::new(AgentExecutionContext::restricted_for(
+        "user", "agent", "session",
+    ))
+    .with_fs_root(root)
+    .with_capability(Cap::Read)
 }
 
 #[tokio::test]

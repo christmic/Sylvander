@@ -3,11 +3,12 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tool_context::{Cap, ToolContext};
 use crate::tools::{CommandTool, EditTool, GitTool, ListTool, ReadTool, SearchTool, WriteTool};
 
 fn context(target: WorkspaceTarget) -> ToolContext {
-    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_executor(Arc::new(LocalExecutor), target)
         .with_capability(Cap::Read)
         .with_capability(Cap::Write)
@@ -136,7 +137,7 @@ impl WorkspaceExecutor for RecordingExecutor {
 #[tokio::test]
 async fn tool_uses_injected_executor_and_preserves_target_identity() {
     let executor = Arc::new(RecordingExecutor::default());
-    let context = ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    let context = ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_executor(
             executor.clone(),
             WorkspaceTarget {
@@ -159,7 +160,7 @@ async fn tool_uses_injected_executor_and_preserves_target_identity() {
 
 #[tokio::test]
 async fn every_workspace_tool_fails_closed_when_the_context_has_no_workspace() {
-    let context = ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    let context = ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_capability(Cap::Read)
         .with_capability(Cap::Write)
         .with_capability(Cap::Spawn)
@@ -715,7 +716,7 @@ async fn unavailable_target_never_falls_back_to_local() {
     tokio::fs::write(workspace.path().join("value.txt"), "secret")
         .await
         .unwrap();
-    let context = ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    let context = ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_execution_target("ssh:build", workspace.path(), false)
         .with_capability(Cap::Read);
     let output = ReadTool::new()

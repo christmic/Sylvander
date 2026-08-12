@@ -1,9 +1,10 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::{InMemoryMemoryStore, MemoryAppend};
 
 use crate::tool_context::ToolContext;
 fn ctx() -> ToolContext {
-    ToolContext::application(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    ToolContext::application(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_capability(crate::tool_context::Cap::Read)
         .with_capability(crate::tool_context::Cap::Write)
         .with_capability(crate::tool_context::Cap::MemoryRead)

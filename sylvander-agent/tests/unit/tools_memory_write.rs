@@ -1,9 +1,10 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 use crate::tools::memory::InMemoryMemoryStore;
 
 use crate::tool_context::ToolContext;
 fn ctx() -> ToolContext {
-    ToolContext::application(sylvander_protocol::SessionContext::new("u", "a", "s"))
+    ToolContext::application(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_capability(crate::tool_context::Cap::Read)
         .with_capability(crate::tool_context::Cap::Write)
         .with_capability(crate::tool_context::Cap::MemoryRead)
@@ -191,7 +192,7 @@ async fn production_candidate_path_queues_typed_scope_without_direct_storage() {
 async fn caller_built_tool_context_cannot_forge_memory_authority() {
     let store = test_store();
     let tool = MemoryWriteTool::new(store.clone());
-    let forged = ToolContext::new(sylvander_protocol::SessionContext::new(
+    let forged = ToolContext::new(AgentExecutionContext::restricted_for(
         "victim", "agent", "session",
     ))
     .with_capability(crate::tool_context::Cap::MemoryWrite);

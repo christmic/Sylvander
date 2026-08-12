@@ -1,4 +1,5 @@
 use super::*;
+use crate::execution_context::AgentExecutionContext;
 
 use crate::tools::memory::{InMemoryMemoryStore, MemoryAppend, MemoryKind};
 use crate::workspace_executor::LocalExecutor;
@@ -214,8 +215,8 @@ fn required_layer_fails_closed_instead_of_silently_truncating() {
 #[tokio::test]
 async fn relationship_retrieval_uses_query_and_never_returns_superseded_heads() {
     let store = InMemoryMemoryStore::new();
-    let session = sylvander_protocol::SessionContext::new("user", "agent", "session");
-    let context = MemoryExecutionContext::application_worker(&session);
+    let execution = AgentExecutionContext::restricted_for("user", "agent", "session");
+    let context = MemoryExecutionContext::application_worker(&execution);
     let relevant = store
         .append_relationship(
             &context,
