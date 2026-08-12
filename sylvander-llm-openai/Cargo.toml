@@ -1,0 +1,22 @@
+[package]
+name = "sylvander-llm-openai"
+description = "Provider-neutral adapters for OpenAI Responses and Chat Completions protocols"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sylvander-llm-core = { path = "../sylvander-llm-core" }
+async-stream = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+
+[lints]
+workspace = true

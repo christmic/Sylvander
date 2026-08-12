@@ -13,6 +13,7 @@ members = [
     "sylvander-server",
     "sylvander-llm-core",
     "sylvander-llm-anthropic",
+    "sylvander-llm-openai",
     "sylvander-agent",
     "sylvander-runtime",
 ]
