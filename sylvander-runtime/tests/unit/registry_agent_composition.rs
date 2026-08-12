@@ -608,7 +608,8 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         .configured_agent(&AgentId::new("assistant"))
         .unwrap();
     let effective_user = restarted
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()

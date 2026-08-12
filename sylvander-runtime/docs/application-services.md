@@ -33,23 +33,36 @@ requires a sandbox.
 
 ## Unified storage
 
-One closed Runtime storage facade owns sessions, messages, runs, turns, steps,
-usage, artifacts, approvals, audit, registries, profiles, memory, and evidence.
-Services request repository operations through one transaction rather than
-opening SQLite independently. Schema namespaces may retain separate integrity
-fingerprints, but backend lifecycle, connection, transaction, backup, and
-health ownership are unified.
+The target is one closed Runtime storage facade owning sessions, messages,
+runs, turns, steps, usage, artifacts, approvals, audit, registries, profiles,
+memory, and evidence. Services will request repository operations through one
+transaction rather than opening SQLite independently. Schema namespaces may
+retain separate integrity fingerprints, but backend lifecycle, connection,
+transaction, backup, and health ownership must be unified.
 
 The initial backend is built-in SQLite. There is no storage plugin registry or
 public backend trait.
 
+Current implementation status: the crate-private `RuntimeStorage` composition
+root owns the exact Session and relationship-memory repository handles selected
+at boot. `Runtime` no longer exposes either repository as a public field.
+Registry, profile, evidence, audit, Guardian, and artifact stores still open
+through their existing Runtime-owned services; there is not yet a cross-domain
+transaction or one backend health record. Those are remaining implementation
+work, not capabilities callers may assume today.
+
 ## Built-in observability
 
-Runtime assigns correlation identifiers and emits one typed internal lifecycle
-event for admitted, started, retried, authorized, executed, persisted,
-published, interrupted, and failed states. Built-in tracing, metrics, durable
-evidence, and health views consume those facts. Observability sinks are not
-runtime extensions at this stage.
+The target is for Runtime to assign correlation identifiers and emit one typed
+internal lifecycle event for admitted, started, retried, authorized, executed,
+persisted, published, interrupted, and failed states. Built-in tracing,
+metrics, durable evidence, and health views consume those facts.
+Observability sinks are not runtime extensions at this stage.
+
+Current implementation status: correlated tracing spans, durable evidence, and
+an operational health snapshot exist, but they are separate paths. The typed
+internal `RuntimeEvent` recorder and its mandatory terminal-fact rule have not
+yet been implemented.
 
 A public success event requires both a committed storage outcome and a terminal
 observability fact. Content is excluded by default and governed separately

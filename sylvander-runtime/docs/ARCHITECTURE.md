@@ -104,6 +104,11 @@ crate without retaining a second production path.
   checkpoints, backup rotation, and offline restore. Agent owns only the
   provider-neutral memory values, validation rules, and `MemoryStore` port;
   Runtime selects, opens, maintains, and injects the concrete store.
+- `storage::RuntimeStorage` is the crate-private composition root for durable
+  repositories. It currently closes public access to the selected Session and
+  relationship-memory handles. Other Runtime-owned stores and cross-domain
+  transactions remain to be folded into this facade; see
+  [`application-services.md`](application-services.md) for exact status.
 - `mcp_stdio` owns the MCP child process, JSON-RPC protocol, health probing,
   cancellation, reconnect, discovery, and governed result-artifact handoff.
   Agent receives only implementations of its generic dynamic-tool contract.

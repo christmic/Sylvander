@@ -68,6 +68,8 @@ Runtime also owns the single configured storage facade, the built-in
 observability pipeline, and the execution service. Their full product-level
 contract is defined in
 [`product-module-architecture.md`](product-module-architecture.md).
+That document distinguishes target contracts from implemented slices; the
+current storage facade and observability paths are not yet the complete target.
 
 ### API
 

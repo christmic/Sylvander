@@ -124,6 +124,9 @@ pub mod self_change;
 pub mod session;
 /// Durable Runtime storage contracts and implementations.
 pub mod storage;
+#[cfg(test)]
+#[path = "../tests/unit/storage.rs"]
+mod storage_tests;
 #[allow(dead_code)] // Runtime-owned profile dispatch is integrated in the next bounded batch
 mod user_profile_store;
 
@@ -207,6 +210,7 @@ use crate::memory_maintenance::{
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use crate::session::SessionMetadata;
+use crate::storage::RuntimeStorage;
 use crate::storage::memory::{
     HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, MemoryIntegrityConfig,
     SqliteMemoryStore,
@@ -362,10 +366,8 @@ impl CredentialSecretResolver for SecretResolverBridge {
 pub struct Runtime {
     /// The agent lifecycle engine.
     engine: Arc<AgentRunEngine>,
-    /// Session persistence backend.
-    pub session_store: Arc<dyn SessionStore>,
-    /// Runtime-owned long-term memory shared by every Agent revision.
-    pub memory_store: Arc<dyn MemoryStore>,
+    /// Closed facade over Runtime-owned durable repositories.
+    storage: RuntimeStorage,
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
@@ -3879,8 +3881,7 @@ impl Runtime {
         });
         Ok(Self {
             engine,
-            session_store,
-            memory_store,
+            storage: RuntimeStorage::new(session_store, memory_store),
             bus,
             configured_agents,
             revision_provider: None,
@@ -4417,8 +4418,7 @@ impl Runtime {
         ));
         Ok(Self {
             engine,
-            session_store,
-            memory_store,
+            storage: RuntimeStorage::new(session_store, memory_store),
             bus,
             configured_agents,
             revision_provider: Some(revision_provider),
@@ -4455,7 +4455,8 @@ impl Runtime {
         session_id: &SessionId,
     ) -> Result<git_worktree::WorkspaceDiff, RuntimeError> {
         let session = self
-            .session_store
+            .storage
+            .sessions()
             .get(session_id)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
@@ -4475,7 +4476,8 @@ impl Runtime {
     /// Merge the reviewed coding-session changes while keeping the session open.
     pub async fn accept_coding_session(&self, session_id: &SessionId) -> Result<(), RuntimeError> {
         let session = self
-            .session_store
+            .storage
+            .sessions()
             .get(session_id)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
@@ -4495,7 +4497,8 @@ impl Runtime {
     /// Abandon an isolated coding session and remove its worktree.
     pub async fn discard_coding_session(&self, session_id: &SessionId) -> Result<(), RuntimeError> {
         let session = self
-            .session_store
+            .storage
+            .sessions()
             .get(session_id)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
@@ -4516,7 +4519,8 @@ impl Runtime {
                 agent.detach_authenticated_session(session_id).await;
             }
         }
-        self.session_store
+        self.storage
+            .sessions()
             .delete(session_id)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
@@ -4549,7 +4553,8 @@ impl Runtime {
         overrides: SessionConfigOverrides,
     ) -> Result<(u64, SessionEffectiveConfig), RuntimeError> {
         let session = self
-            .session_store
+            .storage
+            .sessions()
             .get(session_id)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
@@ -4579,7 +4584,8 @@ impl Runtime {
             })?;
         bind_effective_workspace(&mut effective, &session.metadata.workspace);
         let revision = self
-            .session_store
+            .storage
+            .sessions()
             .update_config(session_id, expected_revision, overrides, effective.clone())
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
@@ -4713,7 +4719,8 @@ impl Runtime {
     pub async fn operational_snapshot(&self) -> Result<RuntimeOperationalSnapshot, RuntimeError> {
         let agent_count = self.engine.list_agents().await.len();
         let persistent_session_count = self
-            .session_store
+            .storage
+            .sessions()
             .list_persistent()
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?

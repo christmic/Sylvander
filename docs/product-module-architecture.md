@@ -154,7 +154,8 @@ holds broader model, storage, and control-plane authority than one tool call.
 
 ## Unified storage backend
 
-Runtime owns one configured storage backend and one internal storage facade.
+This section defines the target contract. Runtime owns one configured storage
+backend and one internal storage facade.
 Product services do not open independent databases or call a concrete driver
 directly.
 
@@ -190,9 +191,16 @@ third-party extension point yet. Schema namespaces may remain separately
 fingerprinted for integrity, but connection, transaction, lifecycle, backup,
 and health ownership are unified.
 
+Implementation status: `RuntimeStorage` currently owns the boot-selected
+Session and relationship-memory repositories and `Runtime` exposes neither
+backend publicly. The other Runtime stores, shared cross-domain transaction,
+backup lifecycle, and unified health record remain incomplete. Callers must
+not infer those target capabilities from this architecture contract.
+
 ## Built-in observability
 
-Runtime observability is mandatory and not currently extensible. Every
+This section defines the target contract. Runtime observability is mandatory
+and not currently extensible. Every
 operation carries stable `run_id`, `turn_id`, `step_id`, `tool_call_id`, and
 trace correlation assigned by trusted Runtime code.
 
@@ -209,6 +217,10 @@ plugin registry. Content is excluded by default; captured content follows the
 configured privacy, encryption, retention, and user opt-out policy. Sink
 failure becomes visible Runtime health state and cannot be silently treated as
 a successfully observed operation.
+
+Implementation status: correlation-bearing tracing, evidence recording, and
+operational snapshots exist independently. The typed `RuntimeEvent` pipeline,
+metrics aggregation, and terminal observability commit rule remain incomplete.
 
 ## Service and presentation layers
 

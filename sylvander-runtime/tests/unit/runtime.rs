@@ -644,7 +644,8 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
     );
 
     let session_owner = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()
@@ -672,7 +673,8 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
     );
 
     let stored = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()
@@ -905,7 +907,8 @@ async fn coding_tool_review_and_resume_survive_runtime_restart() {
     assert!(!worktree.exists());
     assert!(
         restarted
-            .session_store
+            .storage
+            .sessions()
             .get(&created.session_id)
             .await
             .unwrap()
@@ -1098,7 +1101,13 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     let agent = runtime
         .configured_agent(&AgentId::new("assistant"))
         .unwrap();
-    let initial_store = runtime.session_store.list_persistent().await.unwrap().len();
+    let initial_store = runtime
+        .storage
+        .sessions()
+        .list_persistent()
+        .await
+        .unwrap()
+        .len();
     let initial_engine = runtime
         .engine
         .list_sessions()
@@ -1117,7 +1126,13 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     assert_eq!(join_bus.operations(), ["publish"]);
     assert!(join_failure.engine.list_sessions().await.is_empty());
     assert_eq!(
-        runtime.session_store.list_persistent().await.unwrap().len(),
+        runtime
+            .storage
+            .sessions()
+            .list_persistent()
+            .await
+            .unwrap()
+            .len(),
         initial_store
     );
     assert_eq!(agent.run.list_sessions().await, initial_agent);
@@ -1133,7 +1148,13 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
             .expect_err("injected delivery failure must reject a new session");
         assert_eq!(bus.operations(), expected);
         assert_eq!(
-            runtime.session_store.list_persistent().await.unwrap().len(),
+            runtime
+                .storage
+                .sessions()
+                .list_persistent()
+                .await
+                .unwrap()
+                .len(),
             initial_store
         );
         assert_eq!(
@@ -1172,7 +1193,8 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     .expect_err("existing-session publish failure must be reported");
     assert!(
         runtime
-            .session_store
+            .storage
+            .sessions()
             .get(&existing.session_id)
             .await
             .unwrap()
@@ -1343,7 +1365,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     .expect("archive must pass through the Runtime lifecycle");
     assert!(
         runtime
-            .session_store
+            .storage
+            .sessions()
             .get(&session.session_id)
             .await
             .unwrap()
@@ -1358,7 +1381,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     .expect("an owner must be able to restore an archived session");
     assert!(
         runtime
-            .session_store
+            .storage
+            .sessions()
             .get(&session.session_id)
             .await
             .unwrap()
@@ -1382,7 +1406,8 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     .expect("the owner may close the session through the Runtime lifecycle");
     assert!(
         runtime
-            .session_store
+            .storage
+            .sessions()
             .get(&session.session_id)
             .await
             .unwrap()
@@ -1440,7 +1465,8 @@ async fn attach_memory_session(
     .await
     .unwrap();
     let stored = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()
@@ -1632,7 +1658,8 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
     .expect("a linked external principal must resolve to the same stable user");
     assert_eq!(from_external.session_id, created.session_id);
     let stored = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()
@@ -2091,13 +2118,13 @@ async fn production_memory_isolates_same_user_across_agent_owners() {
         runtime
             .configured_agent(&AgentId::new("agent-a"))
             .unwrap()
-            .uses_memory_store(&runtime.memory_store)
+            .uses_memory_store(runtime.storage.memory())
     );
     assert!(
         runtime
             .configured_agent(&AgentId::new("agent-b"))
             .unwrap()
-            .uses_memory_store(&runtime.memory_store)
+            .uses_memory_store(runtime.storage.memory())
     );
     assert_eq!(
         agent_a
@@ -2490,12 +2517,15 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     configure_test_memory_integrity(&mut config, directory.path(), &secret);
     let runtime = Runtime::boot_config(config.clone()).await.unwrap();
     let provider = runtime.revision_provider.as_ref().unwrap();
-    assert!(Arc::ptr_eq(&runtime.memory_store, &provider.memory));
+    assert!(Arc::ptr_eq(
+        runtime.storage.memory(),
+        runtime.storage.memory()
+    ));
     assert!(
         runtime
             .configured_agent(&AgentId::new("assistant"))
             .unwrap()
-            .uses_memory_store(&runtime.memory_store)
+            .uses_memory_store(runtime.storage.memory())
     );
     let session_id = attach_memory_session(&runtime, "assistant", "user-a").await;
     runtime
@@ -2511,14 +2541,14 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .configured_revision(&AgentId::new("assistant"), 1)
             .await
             .unwrap()
-            .uses_memory_store(&runtime.memory_store)
+            .uses_memory_store(runtime.storage.memory())
     );
     assert!(
         provider
             .revalidate_revision(&AgentId::new("assistant"), 1)
             .await
             .unwrap()
-            .uses_memory_store(&runtime.memory_store)
+            .uses_memory_store(runtime.storage.memory())
     );
     runtime.shutdown().await.unwrap();
     drop(runtime);
@@ -2641,7 +2671,12 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     });
     stored.effective_config =
         Some(resolve_session_config(agent, &stored.config_overrides, None, None).unwrap());
-    first_runtime.session_store.save(&stored).await.unwrap();
+    first_runtime
+        .storage
+        .sessions()
+        .save(&stored)
+        .await
+        .unwrap();
     first_runtime.shutdown().await.unwrap();
     let runtime = Runtime::boot_config(restart_config.clone()).await.unwrap();
 
@@ -2658,7 +2693,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .is_some()
     );
     let restored = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&SessionId::new("restored-session"))
         .await
         .unwrap()
@@ -2690,7 +2726,12 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         close_session_revision_pins(registry, &unconfigured, active_agent).await,
         Err(SessionBindingError::UnresolvedPins(_))
     ));
-    runtime.session_store.save(&unconfigured).await.unwrap();
+    runtime
+        .storage
+        .sessions()
+        .save(&unconfigured)
+        .await
+        .unwrap();
     assert!(
         runtime
             .revision_provider
@@ -2702,7 +2743,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "execution routing must not repair unresolved pins on demand"
     );
     runtime
-        .session_store
+        .storage
+        .sessions()
         .delete(&unconfigured.id)
         .await
         .unwrap();
@@ -2763,7 +2805,13 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "unix",
         "request-create",
     );
-    let before_invalid_create = runtime.session_store.list_persistent().await.unwrap().len();
+    let before_invalid_create = runtime
+        .storage
+        .sessions()
+        .list_persistent()
+        .await
+        .unwrap()
+        .len();
     let invalid_create = sylvander_channel::ChannelHost::create_session(
         runtime.channel_host.as_ref(),
         &owner,
@@ -2785,7 +2833,13 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .contains("prompt configuration is invalid")
     );
     assert_eq!(
-        runtime.session_store.list_persistent().await.unwrap().len(),
+        runtime
+            .storage
+            .sessions()
+            .list_persistent()
+            .await
+            .unwrap()
+            .len(),
         before_invalid_create,
         "invalid session prompt must fail before session persistence"
     );
@@ -2809,7 +2863,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     .unwrap();
     assert!(created.effective.require_revision_pins().is_ok());
     let stored = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()
@@ -2838,7 +2893,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     );
     assert!(!invalid_update.message.contains("private"));
     let unchanged = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()
@@ -2984,7 +3040,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         sylvander_api::Recipient::Agent(AgentId::new("assistant"))
     );
     let platform_stored = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&platform_session)
         .await
         .unwrap()
@@ -3740,7 +3797,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "an existing session must not drift to the activated revision"
     );
     let original_user = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()
@@ -3748,7 +3806,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         .metadata
         .user_id;
     let activated_user = runtime
-        .session_store
+        .storage
+        .sessions()
         .get(&activated_session.session_id)
         .await
         .unwrap()
@@ -4042,7 +4101,8 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         next_definition.revision
     );
     let preserved = restarted
-        .session_store
+        .storage
+        .sessions()
         .get(&created.session_id)
         .await
         .unwrap()
