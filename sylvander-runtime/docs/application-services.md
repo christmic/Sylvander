@@ -60,11 +60,34 @@ metrics, durable evidence, and health views consume those facts.
 Observability sinks are not runtime extensions at this stage.
 
 Current implementation status: the closed `RuntimeObservability` recorder
-consumes typed, content-free chat-admitted and chat-dispatched facts, updates
-built-in counters, emits structured tracing, and exposes the counters through
-the operational snapshot. Existing turn tracing and durable evidence remain
-separate paths. Turn/tool/persistence facts, durable observation, failure
-health, and the mandatory terminal-fact rule remain incomplete.
+consumes typed, content-free ingress, turn, retry, tool, persistence, and
+terminal facts. One recorder is composed at Runtime boot and injected into
+every current and lazily recomposed Agent revision. It updates built-in
+counters, emits structured tracing, and exposes the counters through the
+operational snapshot. Existing durable evidence remains a separate path;
+durable observation, sink-failure health, resource histograms, and an atomic
+storage/terminal-observation commit rule remain incomplete.
+
+### Design evidence
+
+The lifecycle vocabulary was checked against pinned local implementations:
+
+- Codex `16fbfe557446a1af94da81e1144029ccc1311ad0`, especially
+  `sdk/typescript/src/events.ts` and
+  `codex-rs/code-mode-runtime/src/runtime/mod.rs`, separates turn terminals
+  from item/tool terminals and keeps runtime events typed.
+- pi `11b5403fade1502a9a58a9cd4e9f983a3d1d734e`, especially
+  `packages/agent/src/types.ts`, pairs agent/message/tool start and end facts
+  and tests their ordering.
+- Claude Code `3da94d5e5f2b99c9d82b0d8f09448b04775cd41f`, especially
+  `src/entrypoints/sdk/coreSchemas.ts`, distinguishes successful and failed
+  post-tool/stop lifecycle hooks.
+
+Sylvander adopts explicit start/terminal pairing and typed success/failure,
+but does not reuse UI messages or extensible hooks as observability. Runtime
+adds persistence facts because a product turn is not successful until its
+Session writes commit. Facts deliberately omit prompt text, tool input/output,
+provider errors, credentials, and user content.
 
 A public success event requires both a committed storage outcome and a terminal
 observability fact. Content is excluded by default and governed separately

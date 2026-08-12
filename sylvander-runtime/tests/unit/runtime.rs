@@ -664,6 +664,18 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         .await
         .unwrap();
     assert_eq!(
+        runtime.operational_snapshot().await.unwrap().observability,
+        RuntimeObservabilitySnapshot {
+            event_count: 8,
+            turns_started: 1,
+            turns_completed: 1,
+            tools_started: 1,
+            tools_succeeded: 1,
+            persistence_succeeded: 4,
+            ..RuntimeObservabilitySnapshot::default()
+        }
+    );
+    assert_eq!(
         std::fs::read_to_string(effective_workspace.join("routed.txt")).unwrap(),
         "worktree only\n"
     );

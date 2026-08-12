@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
+use crate::observability::RuntimeObservability;
 use crate::storage::session::SqliteSessionStore;
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_api::ModelSelection;
@@ -190,6 +191,7 @@ async fn versioned_builder_preserves_the_full_qualified_catalog() {
         versioned_snapshot(&config),
         registry,
         bus,
+        RuntimeObservability::new(),
         sessions,
         Arc::new(InMemoryMemoryStore::new()),
         None,
@@ -294,6 +296,7 @@ async fn versioned_builder_preflights_every_model_before_router_construction() {
         snapshot,
         registry,
         bus,
+        RuntimeObservability::new(),
         sessions,
         Arc::new(InMemoryMemoryStore::new()),
         None,

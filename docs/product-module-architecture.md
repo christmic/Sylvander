@@ -219,11 +219,12 @@ failure becomes visible Runtime health state and cannot be silently treated as
 a successfully observed operation.
 
 Implementation status: the closed typed `RuntimeEvent` recorder now covers
-authorized chat admission and message-bus dispatch, feeding content-safe
-counters, structured tracing, and the operational snapshot. Existing turn
-tracing and evidence recording remain separate. Complete turn/tool/storage
-facts, durable aggregation, sink-failure health, and the terminal observability
-commit rule remain incomplete.
+authorized chat admission, message-bus dispatch, turn and tool terminals,
+model retries, and Session persistence outcomes. Runtime shares one recorder
+with every Agent revision, feeding content-safe counters, structured tracing,
+and the operational snapshot. Evidence recording remains separate. Durable
+aggregation, resource histograms, sink-failure health, and the atomic terminal
+observability commit rule remain incomplete.
 
 ## Service and presentation layers
 

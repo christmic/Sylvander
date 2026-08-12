@@ -23,6 +23,7 @@ use crate::config::{
     ExecutionTargetConfig, ExecutionTransportConfig, SecretRef, ServerConfig, SystemSecretResolver,
     WorkspaceBindingConfig,
 };
+use crate::observability::RuntimeObservability;
 use crate::registry_domain::CredentialBindingRevision;
 
 const TEXT_STREAM: &str = "\
@@ -402,6 +403,7 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
         snapshot.clone(),
         registry.clone(),
         bus,
+        RuntimeObservability::new(),
         sessions,
         Arc::new(InMemoryMemoryStore::new()),
         None,

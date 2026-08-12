@@ -5,9 +5,38 @@ use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::tool::ToolExecutor as _;
 use sylvander_agent::tools::memory::InMemoryMemoryStore;
 use sylvander_api::Recipient;
-use sylvander_channel::InProcessMessageBus;
+use sylvander_channel::{BusDiagnostics, BusError, InProcessMessageBus, MessageBus};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_core::ModelInfo as ProviderModelInfo;
+
+struct TerminalOrderBus {
+    inner: InProcessMessageBus,
+    observability: crate::observability::RuntimeObservability,
+}
+
+#[async_trait::async_trait]
+impl MessageBus for TerminalOrderBus {
+    async fn publish(&self, message: BusMessage) -> Result<(), BusError> {
+        if matches!(
+            message.kind,
+            MessageKind::Stream(sylvander_api::StreamEvent::Done { .. })
+        ) {
+            assert_eq!(self.observability.snapshot().turns_completed, 1);
+        }
+        self.inner.publish(message).await
+    }
+
+    async fn subscribe(
+        &self,
+        filter: SubscriptionFilter,
+    ) -> Result<mpsc::Receiver<BusMessage>, BusError> {
+        self.inner.subscribe(filter).await
+    }
+
+    async fn diagnostics(&self) -> BusDiagnostics {
+        self.inner.diagnostics().await
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 async fn with_workspace_context(
@@ -743,8 +772,13 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
         max_output_tokens: 4096,
         capabilities: sylvander_llm_core::ModelCapabilities::empty(),
     };
+    let observability = crate::observability::RuntimeObservability::new();
     let run = AgentRun::qualified_router_builder(spec, provider.clone(), model)
-        .bus(Arc::new(InProcessMessageBus::new()))
+        .bus(Arc::new(TerminalOrderBus {
+            inner: InProcessMessageBus::new(),
+            observability: observability.clone(),
+        }))
+        .observability(observability.clone())
         .session_store(store.clone())
         .prompt_resolver(resolver)
         .build()
@@ -779,6 +813,17 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
     ))
     .await
     .unwrap();
+
+    assert_eq!(
+        observability.snapshot(),
+        crate::RuntimeObservabilitySnapshot {
+            event_count: 5,
+            turns_started: 1,
+            turns_completed: 1,
+            persistence_succeeded: 3,
+            ..crate::RuntimeObservabilitySnapshot::default()
+        }
+    );
 
     let system = {
         let requests = provider.requests.lock().unwrap();
@@ -2389,6 +2434,16 @@ async fn persistent_user_write_failure_stops_before_provider_work() {
         .await
         .expect_err("begin-turn failure must terminate the turn");
     assert_persistence_failure(error, SessionPersistenceOperation::BeginTurn);
+    assert_eq!(
+        run.inner.observability.snapshot(),
+        crate::RuntimeObservabilitySnapshot {
+            event_count: 3,
+            turns_started: 1,
+            turns_failed: 1,
+            persistence_failed: 1,
+            ..crate::RuntimeObservabilitySnapshot::default()
+        }
+    );
     assert!(provider.requests.lock().unwrap().is_empty());
     assert_eq!(run.get_session(&session_id).await.unwrap().len(), 0);
     let caller =
