@@ -40,7 +40,9 @@ pub(crate) enum RuntimePersistenceOperation {
     /// Accumulate one provider iteration's usage.
     RecordUsage,
     /// Persist the terminal assistant message.
-    AppendAssistant,
+    CompleteTurn,
+    /// Persist a failed or interrupted terminal.
+    FinishTurn,
     /// Commit a compacted active history.
     ReplaceHistory,
 }

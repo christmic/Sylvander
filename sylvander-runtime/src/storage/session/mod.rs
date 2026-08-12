@@ -1,8 +1,10 @@
 //! Runtime Session persistence contract and `SQLite` backend.
 //!
 //! The current schema owns session metadata, Agent membership, ordered
-//! messages, cumulative usage, and immutable per-turn configuration
-//! snapshots. Compaction marks retired messages with `is_summarized`; they
+//! messages, cumulative usage, and durable turn state. A turn owns its
+//! immutable effective configuration and terminal outcome, so Runtime can
+//! commit an assistant reply and the corresponding completion fact in one
+//! transaction. Compaction marks retired messages with `is_summarized`; they
 //! remain auditable on disk while the active loop view excludes them.
 
 mod sqlite;
@@ -199,14 +201,38 @@ pub struct ReplacementMessage {
     pub tool_name: Option<String>,
 }
 
-/// Immutable configuration snapshot associated with one durable turn.
+/// Durable lifecycle state of a Runtime turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnState {
+    Running,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+/// Content-free classification persisted for an unsuccessful turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnFailureKind {
+    UnknownSession,
+    Authentication,
+    AgentLoop,
+    Configuration,
+    Persistence,
+}
+
+/// Immutable configuration and lifecycle snapshot of one durable turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TurnConfigSnapshot {
+pub struct TurnSnapshot {
     pub session_id: SessionId,
     pub turn_id: String,
     pub config_revision: u64,
     pub effective_config: SessionEffectiveConfig,
     pub created_at: i64,
+    pub state: TurnState,
+    pub ended_at: Option<i64>,
+    pub failure_kind: Option<TurnFailureKind>,
 }
 
 /// Inputs atomically persisted when a user turn begins.
@@ -217,6 +243,15 @@ pub struct TurnStart {
     pub config_revision: u64,
     pub effective_config: SessionEffectiveConfig,
     pub user_content: JsonValue,
+    pub model_id: String,
+}
+
+/// Assistant output committed together with a successful turn terminal.
+#[derive(Debug, Clone)]
+pub struct TurnCompletion {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub assistant_content: JsonValue,
     pub model_id: String,
 }
 
@@ -286,11 +321,28 @@ pub trait SessionStore: Send + Sync {
         start: TurnStart,
     ) -> Result<StoredMessage, SessionStoreError>;
 
-    async fn turn_config(
+    /// Read the immutable configuration and current lifecycle of one turn.
+    async fn turn(
         &self,
         session_id: &SessionId,
         turn_id: &str,
-    ) -> Result<Option<TurnConfigSnapshot>, SessionStoreError>;
+    ) -> Result<Option<TurnSnapshot>, SessionStoreError>;
+
+    /// Atomically append the assistant message and mark the turn completed.
+    async fn complete_turn(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        completion: TurnCompletion,
+    ) -> Result<StoredMessage, SessionStoreError>;
+
+    /// Mark a running turn unsuccessful before publishing its public terminal.
+    async fn finish_turn(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+        state: TurnState,
+        failure_kind: Option<TurnFailureKind>,
+    ) -> Result<(), SessionStoreError>;
 
     /// Soft-delete (sets `is_archived=1`). The row and its messages
     /// remain on disk for audit / undo; `get` returns `None`.

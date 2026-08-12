@@ -187,13 +187,61 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     };
     let message = store.begin_turn(&ctx(), start.clone()).await.unwrap();
     assert_eq!(message.seq, 0);
-    let snapshot = store
-        .turn_config(&session.id, "turn-1")
-        .await
-        .unwrap()
-        .unwrap();
+    let snapshot = store.turn(&session.id, "turn-1").await.unwrap().unwrap();
     assert_eq!(snapshot.config_revision, 1);
     assert_eq!(snapshot.effective_config, effective);
+    assert_eq!(snapshot.state, TurnState::Running);
+    assert_eq!(snapshot.ended_at, None);
+
+    let assistant = store
+        .complete_turn(
+            &ctx(),
+            TurnCompletion {
+                session_id: session.id.clone(),
+                turn_id: "turn-1".into(),
+                assistant_content: serde_json::json!({"role": "assistant", "content": "done"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(assistant.seq, 1);
+    assert_eq!(assistant.role, MessageRole::Assistant);
+    let completed = store.turn(&session.id, "turn-1").await.unwrap().unwrap();
+    assert_eq!(completed.state, TurnState::Completed);
+    assert!(completed.ended_at.is_some());
+    assert_eq!(completed.failure_kind, None);
+    assert!(
+        store
+            .complete_turn(
+                &ctx(),
+                TurnCompletion {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-1".into(),
+                    assistant_content: serde_json::json!({"role": "assistant", "content": "again"}),
+                    model_id: "model-a".into(),
+                },
+            )
+            .await
+            .is_err()
+    );
+
+    let mut failed_start = start.clone();
+    failed_start.turn_id = "turn-2".into();
+    failed_start.user_content = serde_json::json!({"role": "user", "content": "fail"});
+    store.begin_turn(&ctx(), failed_start).await.unwrap();
+    store
+        .finish_turn(
+            &session.id,
+            "turn-2",
+            TurnState::Failed,
+            Some(TurnFailureKind::AgentLoop),
+        )
+        .await
+        .unwrap();
+    let failed = store.turn(&session.id, "turn-2").await.unwrap().unwrap();
+    assert_eq!(failed.state, TurnState::Failed);
+    assert_eq!(failed.failure_kind, Some(TurnFailureKind::AgentLoop));
 
     assert!(store.begin_turn(&ctx(), start).await.is_err());
     let stale = TurnStart {
@@ -210,7 +258,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     ));
     assert!(
         store
-            .turn_config(&session.id, "turn-stale")
+            .turn(&session.id, "turn-stale")
             .await
             .unwrap()
             .is_none()
@@ -221,7 +269,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
             .await
             .unwrap()
             .len(),
-        1
+        3
     );
 }
 

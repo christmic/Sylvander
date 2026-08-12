@@ -57,7 +57,7 @@ use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::storage::session::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
-    SessionStoreError, StoredSession, TurnStart,
+    SessionStoreError, StoredSession, TurnCompletion, TurnFailureKind, TurnStart, TurnState,
 };
 use crate::storage::workspace_journal::{RollbackPreview, RollbackReport, WorkspaceJournal};
 use sylvander_agent::approval::{
@@ -2265,6 +2265,31 @@ impl AgentRunInner {
                 .handle_message_with_interrupt(msg, interrupted, &correlation.turn)
                 .await;
             if let Err(error) = &result {
+                if let Some(store) = &self.session_store {
+                    let persisted = match store.turn(&session_id, &correlation.turn).await {
+                        Ok(Some(turn)) if turn.state == TurnState::Running => Some(
+                            store
+                                .finish_turn(
+                                    &session_id,
+                                    &correlation.turn,
+                                    TurnState::Failed,
+                                    Some(turn_failure_kind(error)),
+                                )
+                                .await,
+                        ),
+                        Ok(_) => None,
+                        Err(source) => Some(Err(source)),
+                    };
+                    if let Some(persisted) = persisted {
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: correlation.turn.clone(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::FinishTurn,
+                                succeeded: persisted.is_ok(),
+                            });
+                    }
+                }
                 if let AgentRunError::SessionPersistence { operation, .. } = error {
                     self.observability
                         .record(RuntimeEvent::PersistenceFinished {
@@ -2788,6 +2813,29 @@ impl AgentRunInner {
                 biased;
                 _ = &mut interrupted => {
                     self.cancel_pending_decisions(&session_id).await;
+                    if let Some(store) = &self.session_store {
+                        store
+                            .finish_turn(
+                                &session_id,
+                                turn_id,
+                                TurnState::Interrupted,
+                                None,
+                            )
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::FinishTurn,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::FinishTurn,
+                                succeeded: true,
+                            });
+                    }
                     self.observability.record(RuntimeEvent::TurnInterrupted {
                         turn_id: turn_id.to_owned(),
                         session_id: session_id.clone(),
@@ -3110,24 +3158,24 @@ impl AgentRunInner {
             let message = ChatMessage::assistant(msg.content.clone());
             let content = serde_json::to_value(message).map_err(|_| {
                 AgentRunError::session_persistence(
-                    SessionPersistenceOperation::AppendAssistant,
+                    SessionPersistenceOperation::CompleteTurn,
                     SessionStoreError::Invalid("assistant message serialization failed".into()),
                 )
             })?;
             store
-                .append_message(
+                .complete_turn(
                     &caller,
-                    &session_id,
-                    StoredMessageRole::Assistant,
-                    content,
-                    Some(&msg.model.model),
-                    None,
-                    None,
+                    TurnCompletion {
+                        session_id: session_id.clone(),
+                        turn_id: turn_id.to_owned(),
+                        assistant_content: content,
+                        model_id: msg.model.model.clone(),
+                    },
                 )
                 .await
                 .map_err(|source| {
                     AgentRunError::session_persistence(
-                        SessionPersistenceOperation::AppendAssistant,
+                        SessionPersistenceOperation::CompleteTurn,
                         source,
                     )
                 })?;
@@ -3135,7 +3183,7 @@ impl AgentRunInner {
                 .record(RuntimeEvent::PersistenceFinished {
                     turn_id: turn_id.to_owned(),
                     session_id: session_id.clone(),
-                    operation: RuntimePersistenceOperation::AppendAssistant,
+                    operation: RuntimePersistenceOperation::CompleteTurn,
                     succeeded: true,
                 });
         }
@@ -3413,6 +3461,16 @@ fn runtime_failure_kind(error: &AgentRunError) -> RuntimeFailureKind {
     }
 }
 
+fn turn_failure_kind(error: &AgentRunError) -> TurnFailureKind {
+    match error {
+        AgentRunError::UnknownSession(_) => TurnFailureKind::UnknownSession,
+        AgentRunError::Authentication(_) => TurnFailureKind::Authentication,
+        AgentRunError::Loop(_) => TurnFailureKind::AgentLoop,
+        AgentRunError::Build(_) | AgentRunError::Configuration(_) => TurnFailureKind::Configuration,
+        AgentRunError::SessionPersistence { .. } => TurnFailureKind::Persistence,
+    }
+}
+
 fn runtime_persistence_operation(
     operation: SessionPersistenceOperation,
 ) -> RuntimePersistenceOperation {
@@ -3422,9 +3480,8 @@ fn runtime_persistence_operation(
         SessionPersistenceOperation::RestoreHistory => RuntimePersistenceOperation::RestoreHistory,
         SessionPersistenceOperation::BeginTurn => RuntimePersistenceOperation::BeginTurn,
         SessionPersistenceOperation::RecordUsage => RuntimePersistenceOperation::RecordUsage,
-        SessionPersistenceOperation::AppendAssistant => {
-            RuntimePersistenceOperation::AppendAssistant
-        }
+        SessionPersistenceOperation::CompleteTurn => RuntimePersistenceOperation::CompleteTurn,
+        SessionPersistenceOperation::FinishTurn => RuntimePersistenceOperation::FinishTurn,
         SessionPersistenceOperation::ReplaceHistory => RuntimePersistenceOperation::ReplaceHistory,
     }
 }
@@ -3986,7 +4043,8 @@ pub enum SessionPersistenceOperation {
     RestoreHistory,
     BeginTurn,
     RecordUsage,
-    AppendAssistant,
+    CompleteTurn,
+    FinishTurn,
     ReplaceHistory,
 }
 
@@ -3998,7 +4056,8 @@ impl std::fmt::Display for SessionPersistenceOperation {
             Self::RestoreHistory => "restore_history",
             Self::BeginTurn => "begin_turn",
             Self::RecordUsage => "record_usage",
-            Self::AppendAssistant => "append_assistant",
+            Self::CompleteTurn => "complete_turn",
+            Self::FinishTurn => "finish_turn",
             Self::ReplaceHistory => "replace_history",
         })
     }

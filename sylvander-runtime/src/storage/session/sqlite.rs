@@ -34,8 +34,8 @@ use crate::session::SessionMetadata;
 
 use super::{
     MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch,
-    SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession,
-    TurnConfigSnapshot, TurnStart,
+    SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession, TurnCompletion,
+    TurnFailureKind, TurnSnapshot, TurnStart, TurnState,
 };
 
 /// SQLite-backed session store.
@@ -192,7 +192,7 @@ impl SqliteSessionStore {
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 1;
+const SESSION_SCHEMA_VERSION: i64 = 2;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -204,7 +204,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_agents",
     "session_messages",
     "session_usage",
-    "session_turn_configs",
+    "session_turns",
     "idx_messages_user",
     "idx_messages_agent",
     "idx_messages_trace",
@@ -279,12 +279,15 @@ CREATE TABLE session_usage (
     cost_complete   INTEGER NOT NULL DEFAULT 1
 );
 
-CREATE TABLE session_turn_configs (
+CREATE TABLE session_turns (
     session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     turn_id         TEXT NOT NULL,
     config_revision INTEGER NOT NULL,
     effective_config TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
+    state           TEXT NOT NULL,
+    ended_at        INTEGER,
+    failure_kind    TEXT,
     PRIMARY KEY (session_id, turn_id)
 );
 
@@ -308,7 +311,7 @@ CREATE INDEX idx_messages_session
     ON session_messages(session_id, seq);
 CREATE INDEX idx_messages_unsummarized
     ON session_messages(session_id, is_summarized);
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 COMMIT;
 ";
 
@@ -685,9 +688,9 @@ impl SessionStore for SqliteSessionStore {
             let now = crate::session::now_secs();
             transaction
                 .execute(
-                    "INSERT INTO session_turn_configs \
-                     (session_id, turn_id, config_revision, effective_config, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO session_turns \
+                     (session_id, turn_id, config_revision, effective_config, created_at, state) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
                     params![
                         start.session_id.0,
                         start.turn_id,
@@ -754,23 +757,23 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
-    async fn turn_config(
+    async fn turn(
         &self,
         session_id: &SessionId,
         turn_id: &str,
-    ) -> Result<Option<TurnConfigSnapshot>, SessionStoreError> {
+    ) -> Result<Option<TurnSnapshot>, SessionStoreError> {
         let session_id = session_id.clone();
         let turn_id = turn_id.to_string();
         self.run(move |connection| {
             connection
                 .query_row(
-                    "SELECT config_revision, effective_config, created_at \
-                     FROM session_turn_configs WHERE session_id = ?1 AND turn_id = ?2",
+                    "SELECT config_revision, effective_config, created_at, state, ended_at, failure_kind \
+                     FROM session_turns WHERE session_id = ?1 AND turn_id = ?2",
                     params![session_id.0, turn_id],
                     |row| {
                         let config_revision: i64 = row.get(0)?;
                         let effective: String = row.get(1)?;
-                        Ok(TurnConfigSnapshot {
+                        Ok(TurnSnapshot {
                             session_id: session_id.clone(),
                             turn_id: turn_id.clone(),
                             config_revision: config_revision.try_into().map_err(|error| {
@@ -782,11 +785,155 @@ impl SessionStore for SqliteSessionStore {
                             })?,
                             effective_config: decode_json(1, &effective)?,
                             created_at: row.get(2)?,
+                            state: decode_turn_state(row.get::<_, String>(3)?.as_str())?,
+                            ended_at: row.get(4)?,
+                            failure_kind: row
+                                .get::<_, Option<String>>(5)?
+                                .map(|value| decode_turn_failure_kind(&value))
+                                .transpose()?,
                         })
                     },
                 )
                 .optional()
                 .map_err(sqlite_err)
+        })
+        .await
+    }
+
+    async fn complete_turn(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        completion: TurnCompletion,
+    ) -> Result<StoredMessage, SessionStoreError> {
+        let content_json = serde_json::to_string(&completion.assistant_content)
+            .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
+        let user_id = ctx.identity.user_id.0.clone();
+        let agent_id = ctx.identity.agent_id.0.clone();
+        let trace_id = ctx.request.trace_id.clone();
+        let priority = priority_str(ctx.request.priority);
+        let stored_priority = Some(ctx.request.priority);
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let state: Option<String> = transaction
+                .query_row(
+                    "SELECT state FROM session_turns WHERE session_id = ?1 AND turn_id = ?2",
+                    params![completion.session_id.0, completion.turn_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            let Some(state) = state else {
+                return Err(SessionStoreError::Invalid(
+                    "durable turn does not exist".into(),
+                ));
+            };
+            if state != "running" {
+                return Err(SessionStoreError::Invalid(
+                    "only a running turn can be completed".into(),
+                ));
+            }
+            let now = crate::session::now_secs();
+            let next_seq: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages WHERE session_id = ?1",
+                    params![completion.session_id.0],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_err)?;
+            transaction
+                .execute(
+                    "INSERT INTO session_messages \
+                     (session_id, seq, role, content_json, user_id, agent_id, trace_id, priority, \
+                      model_id, is_summarized, created_at) \
+                     VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+                    params![
+                        completion.session_id.0,
+                        next_seq,
+                        content_json,
+                        user_id,
+                        agent_id,
+                        trace_id,
+                        priority,
+                        completion.model_id,
+                        now,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            let message_id = transaction.last_insert_rowid();
+            transaction
+                .execute(
+                    "UPDATE session_turns SET state = 'completed', ended_at = ?3 \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running'",
+                    params![completion.session_id.0, completion.turn_id, now],
+                )
+                .map_err(sqlite_err)?;
+            transaction
+                .execute(
+                    "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+                    params![now, completion.session_id.0],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)?;
+            Ok(StoredMessage {
+                id: message_id,
+                session_id: completion.session_id,
+                user_id: user_id.into(),
+                agent_id: AgentId::new(agent_id),
+                trace_id,
+                priority: stored_priority,
+                seq: next_seq.try_into().map_err(|_| {
+                    SessionStoreError::Store("message sequence exceeds u32 range".into())
+                })?,
+                role: MessageRole::Assistant,
+                content: completion.assistant_content,
+                model_id: Some(completion.model_id),
+                tool_name: None,
+                parent_msg_id: None,
+                is_summarized: false,
+                created_at: now,
+            })
+        })
+        .await
+    }
+
+    async fn finish_turn(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+        state: TurnState,
+        failure_kind: Option<TurnFailureKind>,
+    ) -> Result<(), SessionStoreError> {
+        let (state, failure_kind) = match (state, failure_kind) {
+            (TurnState::Failed, Some(kind)) => ("failed", Some(turn_failure_kind_str(kind))),
+            (TurnState::Interrupted, None) => ("interrupted", None),
+            _ => {
+                return Err(SessionStoreError::Invalid(
+                    "finish_turn requires failed with a kind or interrupted without one".into(),
+                ));
+            }
+        };
+        let session_id = session_id.clone();
+        let turn_id = turn_id.to_string();
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE session_turns SET state = ?3, ended_at = ?4, failure_kind = ?5 \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running'",
+                    params![
+                        session_id.0,
+                        turn_id,
+                        state,
+                        crate::session::now_secs(),
+                        failure_kind
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 0 {
+                return Err(SessionStoreError::Invalid(
+                    "durable turn is missing or already terminal".into(),
+                ));
+            }
+            Ok(())
         })
         .await
     }
@@ -1502,6 +1649,37 @@ fn priority_str(p: sylvander_api::session_context::Priority) -> String {
         Priority::Urgent => "urgent",
     }
     .to_string()
+}
+
+fn turn_failure_kind_str(kind: TurnFailureKind) -> &'static str {
+    match kind {
+        TurnFailureKind::UnknownSession => "unknown_session",
+        TurnFailureKind::Authentication => "authentication",
+        TurnFailureKind::AgentLoop => "agent_loop",
+        TurnFailureKind::Configuration => "configuration",
+        TurnFailureKind::Persistence => "persistence",
+    }
+}
+
+fn decode_turn_state(value: &str) -> rusqlite::Result<TurnState> {
+    match value {
+        "running" => Ok(TurnState::Running),
+        "completed" => Ok(TurnState::Completed),
+        "failed" => Ok(TurnState::Failed),
+        "interrupted" => Ok(TurnState::Interrupted),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn decode_turn_failure_kind(value: &str) -> rusqlite::Result<TurnFailureKind> {
+    match value {
+        "unknown_session" => Ok(TurnFailureKind::UnknownSession),
+        "authentication" => Ok(TurnFailureKind::Authentication),
+        "agent_loop" => Ok(TurnFailureKind::AgentLoop),
+        "configuration" => Ok(TurnFailureKind::Configuration),
+        "persistence" => Ok(TurnFailureKind::Persistence),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
 }
 
 fn parse_priority(s: &str) -> rusqlite::Result<sylvander_api::session_context::Priority> {

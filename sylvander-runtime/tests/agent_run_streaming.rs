@@ -731,9 +731,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
 
     let connection = rusqlite::Connection::open(database).expect("inspect database");
     let turn_count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM session_turn_configs", [], |row| {
-            row.get(0)
-        })
+        .query_row("SELECT COUNT(*) FROM session_turns", [], |row| row.get(0))
         .expect("turn snapshot count");
     let message_count: i64 = connection
         .query_row("SELECT COUNT(*) FROM session_messages", [], |row| {

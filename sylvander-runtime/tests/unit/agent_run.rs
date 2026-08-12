@@ -569,15 +569,39 @@ impl SessionStore for FailingSessionStore {
         self.inner.begin_turn(context, start).await
     }
 
-    async fn turn_config(
+    async fn turn(
         &self,
         session_id: &SessionId,
         turn_id: &str,
     ) -> Result<
-        Option<crate::storage::session::TurnConfigSnapshot>,
+        Option<crate::storage::session::TurnSnapshot>,
         crate::storage::session::SessionStoreError,
     > {
-        self.inner.turn_config(session_id, turn_id).await
+        self.inner.turn(session_id, turn_id).await
+    }
+
+    async fn complete_turn(
+        &self,
+        context: &sylvander_api::SessionContext,
+        completion: crate::storage::session::TurnCompletion,
+    ) -> Result<crate::storage::session::StoredMessage, crate::storage::session::SessionStoreError>
+    {
+        if self.fail == SessionStoreFailPoint::AppendMessage {
+            return Err(Self::injected());
+        }
+        self.inner.complete_turn(context, completion).await
+    }
+
+    async fn finish_turn(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+        state: crate::storage::session::TurnState,
+        failure_kind: Option<crate::storage::session::TurnFailureKind>,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
+        self.inner
+            .finish_turn(session_id, turn_id, state, failure_kind)
+            .await
     }
 
     async fn archive(
@@ -1104,7 +1128,7 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
         assert!(provider.requests.lock().unwrap().is_empty());
 
         let connection = rusqlite::Connection::open(&database).expect("inspect database");
-        for table in ["session_turn_configs", "session_messages"] {
+        for table in ["session_turns", "session_messages"] {
             let count: i64 = connection
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                     row.get(0)
@@ -2466,7 +2490,7 @@ async fn persistent_terminal_write_failures_never_publish_done() {
         ),
         (
             SessionStoreFailPoint::AppendMessage,
-            SessionPersistenceOperation::AppendAssistant,
+            SessionPersistenceOperation::CompleteTurn,
         ),
     ] {
         let (run, issuer, provider, inner, session_id, metadata) =
