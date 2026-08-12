@@ -8,11 +8,11 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex as StdMutex, RwLock};
 use sylvander_agent::bus::InProcessMessageBus;
-use sylvander_agent::session_store::SqliteSessionStore;
 use sylvander_channel::UiService;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
+use sylvander_protocol::SessionId;
 
 impl WechatChannel {
     fn with_api_base_url(mut self, api_base_url: impl Into<String>) -> Self {
@@ -248,9 +248,12 @@ fn request_limit_is_configurable() {
 #[tokio::test]
 async fn invalid_signature_reaches_runtime_authentication_boundary() {
     let ui = Arc::new(AuthenticationRecorder(AtomicUsize::new(0)));
-    let sessions = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
-    let mut context = ChannelContext::new(Arc::new(InProcessMessageBus::new()), sessions.clone());
-    context.ui = Some(ui.clone());
+    let context = ChannelContext::with_runtime_services(
+        Arc::new(InProcessMessageBus::new()),
+        "app-a",
+        ui.clone(),
+        None,
+    );
     let channel = Arc::new(
         WechatChannel::new(
             "corp".into(),
@@ -266,7 +269,6 @@ async fn invalid_signature_reaches_runtime_authentication_boundary() {
         ctx: Arc::new(context),
         channel,
         agent_id: AgentId::new("agent"),
-        sessions,
         instance_id: "app-a".into(),
         replay: ReplayCache::default(),
     };

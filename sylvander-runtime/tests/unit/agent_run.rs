@@ -1670,7 +1670,7 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
     .with_workspace_journal(run.inner.workspace_journal.clone().unwrap());
     let tool = sylvander_agent::tools::WriteTool::new();
     let call = ToolRegistry::new()
-        .register(tool.clone())
+        .register(tool)
         .prepare(
             "Write",
             serde_json::json!({"file_path":"file.txt","content":"after"}),

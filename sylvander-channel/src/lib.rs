@@ -191,6 +191,36 @@ pub trait UiService: Send + Sync {
             retry_after_ms: None,
         })
     }
+    /// Resolve one channel-native identity to a visible Runtime Session.
+    ///
+    /// Runtime binds `channel_instance_id` when constructing the context and
+    /// must require every selector to match exactly. The default fails closed.
+    async fn resolve_external_session(
+        &self,
+        boundary: &BoundaryContext,
+        channel_instance_id: &str,
+        _selectors: &BTreeMap<String, String>,
+    ) -> Result<Option<SessionId>, BoundaryError> {
+        Err(BoundaryError {
+            code: BoundaryErrorCode::InvalidScope,
+            operation: "resolve_external_session".into(),
+            request_id: boundary.request_id.clone(),
+            message: format!("runtime session resolution is unavailable for {channel_instance_id}"),
+            retry_after_ms: None,
+        })
+    }
+    /// Read one adapter-owned routing value for an emitted Session event.
+    ///
+    /// Runtime verifies that the Session belongs to the bound Channel
+    /// instance before returning the value. The default returns no value.
+    async fn session_external_value(
+        &self,
+        _channel_instance_id: &str,
+        _session_id: &SessionId,
+        _key: &str,
+    ) -> Result<Option<String>, BoundaryError> {
+        Ok(None)
+    }
     /// Return Agent definitions visible to the authenticated principal.
     async fn discover_agents(
         &self,
@@ -537,6 +567,7 @@ pub struct ChannelContext {
     /// [`ChannelContext::mark_ready`] only after external input can arrive.
     #[doc(hidden)]
     pub readiness: Option<ChannelReadiness>,
+    channel_instance_id: Option<String>,
     session_defaults: SessionConfigOverrides,
 }
 
@@ -548,6 +579,7 @@ impl ChannelContext {
             bus,
             ui: None,
             readiness: None,
+            channel_instance_id: None,
             session_defaults: SessionConfigOverrides::default(),
         }
     }
@@ -556,16 +588,18 @@ impl ChannelContext {
     #[must_use]
     pub fn with_runtime_services(
         bus: Arc<dyn MessageBus>,
+        channel_instance_id: impl Into<String>,
         ui: Arc<dyn UiService>,
         readiness: Option<ChannelReadiness>,
     ) -> Self {
-        Self::with_services(bus, Some(ui), readiness)
+        Self::with_services(bus, Some(channel_instance_id.into()), Some(ui), readiness)
     }
 
     #[doc(hidden)]
     #[must_use]
     pub fn with_runtime_services_and_defaults(
         bus: Arc<dyn MessageBus>,
+        channel_instance_id: impl Into<String>,
         ui: Arc<dyn UiService>,
         readiness: Option<ChannelReadiness>,
         session_defaults: SessionConfigOverrides,
@@ -574,6 +608,7 @@ impl ChannelContext {
             bus,
             ui: Some(ui),
             readiness,
+            channel_instance_id: Some(channel_instance_id.into()),
             session_defaults,
         }
     }
@@ -582,6 +617,7 @@ impl ChannelContext {
     #[must_use]
     pub fn with_services(
         bus: Arc<dyn MessageBus>,
+        channel_instance_id: Option<String>,
         ui: Option<Arc<dyn UiService>>,
         readiness: Option<ChannelReadiness>,
     ) -> Self {
@@ -589,8 +625,63 @@ impl ChannelContext {
             bus,
             ui,
             readiness,
+            channel_instance_id,
             session_defaults: SessionConfigOverrides::default(),
         }
+    }
+
+    /// Resolve adapter-native identifiers through the scoped Runtime host.
+    pub async fn resolve_external_session(
+        &self,
+        boundary: &BoundaryContext,
+        selectors: &BTreeMap<String, String>,
+    ) -> Result<Option<SessionId>, BoundaryError> {
+        let ui = self.ui.as_ref().ok_or_else(|| BoundaryError {
+            code: BoundaryErrorCode::InvalidScope,
+            operation: "resolve_external_session".into(),
+            request_id: boundary.request_id.clone(),
+            message: "runtime authorization service is unavailable".into(),
+            retry_after_ms: None,
+        })?;
+        let instance_id = self
+            .channel_instance_id
+            .as_deref()
+            .ok_or_else(|| BoundaryError::forbidden(boundary, "resolve_external_session"))?;
+        if boundary.channel_instance_id != instance_id {
+            return Err(BoundaryError::forbidden(
+                boundary,
+                "resolve_external_session",
+            ));
+        }
+        ui.resolve_external_session(boundary, instance_id, selectors)
+            .await
+    }
+
+    /// Read one scoped routing value for a Runtime-emitted Session event.
+    pub async fn session_external_value(
+        &self,
+        session_id: &SessionId,
+        key: &str,
+    ) -> Result<Option<String>, BoundaryError> {
+        let ui = self.ui.as_ref().ok_or_else(|| BoundaryError {
+            code: BoundaryErrorCode::InvalidScope,
+            operation: "session_external_value".into(),
+            request_id: String::new(),
+            message: "runtime authorization service is unavailable".into(),
+            retry_after_ms: None,
+        })?;
+        let instance_id = self
+            .channel_instance_id
+            .as_deref()
+            .ok_or_else(|| BoundaryError {
+                code: BoundaryErrorCode::InvalidScope,
+                operation: "session_external_value".into(),
+                request_id: String::new(),
+                message: "channel instance scope is unavailable".into(),
+                retry_after_ms: None,
+            })?;
+        ui.session_external_value(instance_id, session_id, key)
+            .await
     }
 
     /// Subscribe to runtime output without obtaining publish authority.

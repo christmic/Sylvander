@@ -896,6 +896,122 @@ impl sylvander_channel::UiService for RuntimeUiService {
         Ok(visible)
     }
 
+    async fn resolve_external_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        channel_instance_id: &str,
+        selectors: &BTreeMap<String, String>,
+    ) -> Result<Option<SessionId>, sylvander_protocol::BoundaryError> {
+        require_principal(boundary, "resolve_external_session")?;
+        if boundary.channel_instance_id != channel_instance_id
+            || selectors.is_empty()
+            || selectors.len() > 16
+            || selectors.iter().any(|(key, value)| {
+                key.is_empty()
+                    || key.len() > 128
+                    || value.is_empty()
+                    || value.len() > 2_048
+                    || key.chars().any(char::is_control)
+                    || value.chars().any(char::is_control)
+            })
+        {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "resolve_external_session",
+            ));
+        }
+        let user_id = self
+            .effective_user_id(boundary, "resolve_external_session")
+            .await?;
+        let sessions = self.sessions.list_persistent().await.map_err(|error| {
+            boundary_failure(boundary, "resolve_external_session", error.to_string())
+        })?;
+        let mut resolved = None;
+        for session in sessions {
+            if session.metadata.user_id != user_id.0 && !privileged_principal(boundary) {
+                continue;
+            }
+            if session
+                .external_meta
+                .get("channel_instance_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(channel_instance_id)
+                || !selectors.iter().all(|(key, value)| {
+                    session
+                        .external_meta
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        == Some(value.as_str())
+                })
+            {
+                continue;
+            }
+            for agent_id in &session.agents {
+                if !self
+                    .current_agent_access_allowed(agent_id, boundary, "resolve_external_session")
+                    .await?
+                {
+                    return Err(sylvander_protocol::BoundaryError::forbidden(
+                        boundary,
+                        "resolve_external_session",
+                    ));
+                }
+            }
+            if resolved.replace(session.id).is_some() {
+                return Err(boundary_failure(
+                    boundary,
+                    "resolve_external_session",
+                    "external session identity is ambiguous",
+                ));
+            }
+        }
+        Ok(resolved)
+    }
+
+    async fn session_external_value(
+        &self,
+        channel_instance_id: &str,
+        session_id: &SessionId,
+        key: &str,
+    ) -> Result<Option<String>, sylvander_protocol::BoundaryError> {
+        if channel_instance_id.is_empty()
+            || channel_instance_id.len() > 128
+            || key.is_empty()
+            || key.len() > 128
+            || channel_instance_id.chars().any(char::is_control)
+            || key.chars().any(char::is_control)
+        {
+            return Ok(None);
+        }
+        let session =
+            self.sessions
+                .get(session_id)
+                .await
+                .map_err(|_| sylvander_protocol::BoundaryError {
+                    code: sylvander_protocol::BoundaryErrorCode::InvalidScope,
+                    operation: "session_external_value".into(),
+                    request_id: String::new(),
+                    message: "runtime session routing is unavailable".into(),
+                    retry_after_ms: None,
+                })?;
+        let Some(session) = session else {
+            return Ok(None);
+        };
+        if session
+            .external_meta
+            .get("channel_instance_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(channel_instance_id)
+        {
+            return Ok(None);
+        }
+        Ok(session
+            .external_meta
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned))
+    }
+
     async fn create_session(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -4164,6 +4280,7 @@ impl Runtime {
                 restart_count: 0,
             }));
             let task_instance_id = instance_id.clone();
+            let host_instance_id = instance_id.clone();
             let exit_tx = self.channel_exit_tx.clone();
             let task_lifecycle = lifecycle.clone();
             let task_health = health.clone();
@@ -4178,6 +4295,7 @@ impl Runtime {
                     registration.channel,
                     registration.restart,
                     registration.session_defaults,
+                    host_instance_id,
                     (bus, ui),
                     task_lifecycle,
                     task_health,
@@ -4375,6 +4493,7 @@ async fn supervise_channel(
     channel: Arc<dyn Channel>,
     policy: ChannelRestartPolicy,
     session_defaults: SessionConfigOverrides,
+    channel_instance_id: String,
     services: (Arc<dyn MessageBus>, Arc<RuntimeUiService>),
     lifecycle: ChannelReadiness,
     health: Arc<std::sync::RwLock<ChannelHealth>>,
@@ -4395,6 +4514,7 @@ async fn supervise_channel(
         let attempt = lifecycle.next_attempt();
         let ctx = ChannelContext::with_runtime_services_and_defaults(
             bus.clone(),
+            channel_instance_id.clone(),
             ui.clone(),
             Some(attempt.clone()),
             session_defaults.clone(),

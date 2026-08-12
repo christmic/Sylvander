@@ -1,4 +1,4 @@
-//! End-to-end tests for Runtime-owned AgentRun streaming events.
+//! End-to-end tests for Runtime-owned `AgentRun` streaming events.
 //!
 //! Verifies that `AgentRun::handle_message` publishes `StreamEvent`
 //! variants (`TextDelta`, `ToolCall`, `ToolResult`, Done, etc.) to the bus

@@ -1,7 +1,4 @@
 use super::*;
-use sylvander_agent::session::SessionMetadata;
-use sylvander_agent::session_store::SqliteSessionStore;
-use sylvander_agent::session_store::{SessionLifetime, StoredSession};
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
@@ -40,7 +37,7 @@ async fn readiness_is_reported_only_by_the_connected_callback() {
     let readiness = sylvander_channel::ChannelReadiness::new();
     let context = Arc::new(ChannelContext::with_services(
         Arc::new(sylvander_agent::bus::InProcessMessageBus::new()),
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+        Some("bot-a".into()),
         None,
         Some(readiness.clone()),
     ));
@@ -55,49 +52,6 @@ async fn readiness_is_reported_only_by_the_connected_callback() {
     assert!(!readiness.is_ready());
     handler.on_connected().await;
     assert!(readiness.is_ready());
-}
-
-#[tokio::test]
-async fn conversation_lookup_requires_instance_and_sender() {
-    let store: Arc<dyn SessionStore> =
-        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
-    let session_id = SessionId::new("session-a");
-    let stored = StoredSession::new(
-        session_id.clone(),
-        "test",
-        SessionLifetime::Persistent,
-        SessionMetadata {
-            workspace: "/tmp".into(),
-            name: "test".into(),
-            user_id: "dingtalk:bot-a:user-a".into(),
-        },
-        vec![AgentId::new("agent-a")],
-    )
-    .with_external_meta("channel_instance_id", "bot-a")
-    .with_external_meta("conversation_id", "conversation-a")
-    .with_external_meta("sender_staff_id", "user-a")
-    .with_external_meta("session_webhook", "https://example.invalid/reply");
-    store.save(&stored).await.unwrap();
-
-    assert_eq!(
-        find_by_conversation_id(&store, "bot-a", "conversation-a", "user-a").await,
-        Some(session_id.clone())
-    );
-    assert!(
-        find_by_conversation_id(&store, "bot-b", "conversation-a", "user-a")
-            .await
-            .is_none()
-    );
-    assert!(
-        find_by_conversation_id(&store, "bot-a", "conversation-a", "user-b")
-            .await
-            .is_none()
-    );
-    assert!(
-        get_webhook_url(&store, &session_id, "bot-b")
-            .await
-            .is_none()
-    );
 }
 
 #[test]

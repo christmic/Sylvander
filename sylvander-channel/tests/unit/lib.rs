@@ -293,6 +293,7 @@ fn external_controls_are_typed_and_require_an_existing_session() {
 async fn identity_binding_defaults_to_no_capability_and_denial() {
     let context = ChannelContext::with_runtime_services(
         Arc::new(InProcessMessageBus::new()),
+        "bot-a",
         Arc::new(DefaultUiService),
         None,
     );
@@ -373,6 +374,7 @@ async fn authenticated_channel_context_derives_the_only_transport_identity() {
     });
     let context = ChannelContext::with_runtime_services(
         Arc::new(InProcessMessageBus::new()),
+        "bot-a",
         service.clone(),
         None,
     );
@@ -400,6 +402,7 @@ async fn unauthenticated_or_non_user_ingress_never_reaches_identity_service() {
     });
     let context = ChannelContext::with_runtime_services(
         Arc::new(InProcessMessageBus::new()),
+        "bot-a",
         service.clone(),
         None,
     );

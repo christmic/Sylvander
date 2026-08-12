@@ -27,8 +27,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{MessageKind, StreamEvent, SubscriptionFilter};
-use sylvander_agent::session_store::SessionStore;
-use sylvander_agent::spec::{AgentId, SessionId};
+use sylvander_agent::spec::AgentId;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
@@ -173,7 +172,6 @@ impl Channel for TelegramChannel {
 
         // HTTP server for incoming webhooks
         let state = Arc::new(AppState {
-            sessions: ctx.sessions.clone(),
             ctx,
             channel: self.clone(),
             agent_id: self.agent_id.clone(),
@@ -234,7 +232,6 @@ struct AppState {
     ctx: Arc<ChannelContext>,
     channel: Arc<TelegramChannel>,
     agent_id: AgentId,
-    sessions: Arc<dyn SessionStore>,
     instance_id: String,
     replay: ReplayCache,
 }
@@ -300,14 +297,24 @@ async fn handle_webhook(
     let chat_id_str = chat_id.to_string();
     let principal_id = platform_principal_id(&state.instance_id, &chat_id_str);
 
-    // Find or create session
-    let existing = find_by_chat_id(&state.sessions, &state.instance_id, &chat_id_str).await;
     let boundary = BoundaryContext::authenticated(
         AuthenticatedPrincipal::user(principal_id.clone(), AuthenticationMethod::PlatformIdentity),
         &state.instance_id,
         "telegram",
         format!("telegram-update-{}", update.update_id),
     );
+    let selectors = BTreeMap::from([("chat_id".into(), chat_id_str.clone())]);
+    let existing = match state
+        .ctx
+        .resolve_external_session(&boundary, &selectors)
+        .await
+    {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            warn!(code = ?error.code, request_id = %error.request_id, "telegram: session resolution denied");
+            return Ok("denied");
+        }
+    };
     if let Some(control) = parse_external_control(&text, existing.as_ref()) {
         let response = match control {
             Ok(control) => match state.ctx.submit_control(&boundary, control).await {
@@ -408,25 +415,6 @@ fn platform_principal_id(instance_id: &str, chat_id: &str) -> String {
     format!("telegram:{instance_id}:{chat_id}")
 }
 
-async fn find_by_chat_id(
-    store: &Arc<dyn SessionStore>,
-    instance_id: &str,
-    chat_id: &str,
-) -> Option<SessionId> {
-    let list = store.list_persistent().await.ok()?;
-    for s in &list {
-        if s.external_meta
-            .get("channel_instance_id")
-            .and_then(|v| v.as_str())
-            == Some(instance_id)
-            && s.external_meta.get("chat_id").and_then(|v| v.as_str()) == Some(chat_id)
-        {
-            return Some(s.id.clone());
-        }
-    }
-    None
-}
-
 // ===========================================================================
 // Outgoing: bus → sendMessage
 // ===========================================================================
@@ -448,7 +436,10 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
             continue;
         };
 
-        let Some(chat_id) = get_chat_id(&ctx.sessions, &msg.session_id, &ch.instance_id).await
+        let Ok(Some(chat_id)) = ctx
+            .session_external_value(&msg.session_id, "chat_id")
+            .await
+            .map(|value| value.and_then(|value| value.parse::<i64>().ok()))
         else {
             continue;
         };
@@ -551,24 +542,6 @@ fn render_nonterminal_event(event: &StreamEvent) -> Option<String> {
         | StreamEvent::TaskCompleted { .. }
         | StreamEvent::Done { .. } => None,
     }
-}
-
-async fn get_chat_id(
-    store: &Arc<dyn SessionStore>,
-    sid: &SessionId,
-    instance_id: &str,
-) -> Option<i64> {
-    let session = store.get(sid).await.ok()??;
-    if session
-        .external_meta
-        .get("channel_instance_id")
-        .and_then(|value| value.as_str())
-        != Some(instance_id)
-    {
-        return None;
-    }
-    let v = session.external_meta.get("chat_id")?.as_str()?;
-    v.parse().ok()
 }
 
 async fn send_message(ch: &TelegramChannel, chat_id: i64, text: &str) {

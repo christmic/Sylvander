@@ -30,8 +30,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{MessageKind, SubscriptionFilter};
-use sylvander_agent::session_store::SessionStore;
-use sylvander_agent::spec::{AgentId, SessionId};
+use sylvander_agent::spec::AgentId;
 use sylvander_channel::credential::{CredentialLeaseError, CredentialLeaseSource};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, parse_external_control, submit_external_chat,
@@ -68,13 +67,6 @@ impl MessageHandler for ChannelMessageHandler {
             return;
         }
         let text = msg.text.as_ref().map_or("", |t| t.content.as_str());
-        let existing = find_by_conversation_id(
-            &self.ctx.sessions,
-            &self.instance_id,
-            &msg.conversation_id,
-            &msg.sender_staff_id,
-        )
-        .await;
         let principal_id = platform_principal_id(&self.instance_id, &msg.sender_staff_id);
         let boundary = BoundaryContext::authenticated(
             AuthenticatedPrincipal::user(
@@ -85,6 +77,21 @@ impl MessageHandler for ChannelMessageHandler {
             "dingtalk",
             format!("dingtalk-message-{}", msg.msg_id),
         );
+        let selectors = BTreeMap::from([
+            ("conversation_id".into(), msg.conversation_id.clone()),
+            ("sender_staff_id".into(), msg.sender_staff_id.clone()),
+        ]);
+        let existing = match self
+            .ctx
+            .resolve_external_session(&boundary, &selectors)
+            .await
+        {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                warn!(code = ?error.code, request_id = %error.request_id, "dingtalk: session resolution denied");
+                return;
+            }
+        };
         if let Some(control) = parse_external_control(text, existing.as_ref()) {
             let response = match control {
                 Ok(control) => match self.ctx.submit_control(&boundary, control).await {
@@ -184,46 +191,10 @@ fn platform_principal_id(instance_id: &str, sender_staff_id: &str) -> String {
 }
 
 // ===========================================================================
-// Session mapping
-// ===========================================================================
-
-async fn find_by_conversation_id(
-    store: &Arc<dyn SessionStore>,
-    instance_id: &str,
-    conv_id: &str,
-    sender_staff_id: &str,
-) -> Option<SessionId> {
-    let persistent = store.list_persistent().await.ok()?;
-    for s in &persistent {
-        if s.external_meta
-            .get("channel_instance_id")
-            .and_then(|v| v.as_str())
-            == Some(instance_id)
-            && s.external_meta
-                .get("conversation_id")
-                .and_then(|v| v.as_str())
-                == Some(conv_id)
-            && s.external_meta
-                .get("sender_staff_id")
-                .and_then(|v| v.as_str())
-                == Some(sender_staff_id)
-        {
-            return Some(s.id.clone());
-        }
-    }
-    None
-}
-
-// ===========================================================================
 // Outgoing: bus events → DingTalk webhook
 // ===========================================================================
 
-async fn run_outgoing(
-    ctx: Arc<ChannelContext>,
-    client: Client,
-    instance_id: String,
-    agent_id: AgentId,
-) {
+async fn run_outgoing(ctx: Arc<ChannelContext>, client: Client, agent_id: AgentId) {
     let mut rx = match ctx.subscribe(SubscriptionFilter::for_agent(agent_id)).await {
         Ok(rx) => rx,
         Err(e) => {
@@ -237,7 +208,11 @@ async fn run_outgoing(
             continue;
         };
 
-        let webhook_url = get_webhook_url(&ctx.sessions, &msg.session_id, &instance_id).await;
+        let webhook_url = ctx
+            .session_external_value(&msg.session_id, "session_webhook")
+            .await
+            .ok()
+            .flatten();
         let Some(ref url) = webhook_url else { continue };
 
         match ev {
@@ -298,27 +273,6 @@ async fn run_outgoing(
     }
 }
 
-async fn get_webhook_url(
-    store: &Arc<dyn SessionStore>,
-    session_id: &SessionId,
-    instance_id: &str,
-) -> Option<String> {
-    let session = store.get(session_id).await.ok()??;
-    if session
-        .external_meta
-        .get("channel_instance_id")
-        .and_then(|value| value.as_str())
-        != Some(instance_id)
-    {
-        return None;
-    }
-    session
-        .external_meta
-        .get("session_webhook")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-}
-
 // ===========================================================================
 // Channel impl
 // ===========================================================================
@@ -365,10 +319,9 @@ impl Channel for DingTalkChannel {
         // Outgoing loop
         let out_ctx = ctx.clone();
         let out_client = self.client.clone();
-        let out_instance_id = self.instance_id.clone();
         let out_agent_id = self.agent_id.clone();
         let outgoing = tokio::spawn(async move {
-            run_outgoing(out_ctx, out_client, out_instance_id, out_agent_id).await;
+            run_outgoing(out_ctx, out_client, out_agent_id).await;
         });
 
         // Incoming loop (blocking — runs until WebSocket closes)

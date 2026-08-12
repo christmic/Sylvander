@@ -16,8 +16,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{MessageKind, StreamEvent, SubscriptionFilter};
-use sylvander_agent::session_store::SessionStore;
-use sylvander_agent::spec::{AgentId, SessionId};
+use sylvander_agent::spec::AgentId;
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest,
     credential::{CredentialLeaseRequest, CredentialLeaseSource},
@@ -154,7 +153,6 @@ impl Channel for WechatChannel {
 
         // HTTP server
         let state = Arc::new(AppState {
-            sessions: ctx.sessions.clone(),
             ctx,
             channel: self.clone(),
             agent_id: self.agent_id.clone(),
@@ -198,7 +196,6 @@ struct AppState {
     ctx: Arc<ChannelContext>,
     channel: Arc<WechatChannel>,
     agent_id: AgentId,
-    sessions: Arc<dyn SessionStore>,
     instance_id: String,
     replay: ReplayCache,
 }
@@ -337,8 +334,6 @@ async fn handle_callback(
 
     info!(from = %msg.from_user_name, msg_type = %msg.msg_type, "wechat: message");
 
-    // Session mapping
-    let existing = find_by_user(&state.sessions, &state.instance_id, &msg.from_user_name).await;
     let principal_id = platform_principal_id(&state.instance_id, &msg.from_user_name);
     let boundary = BoundaryContext::authenticated(
         AuthenticatedPrincipal::user(principal_id.clone(), AuthenticationMethod::PlatformIdentity),
@@ -346,6 +341,18 @@ async fn handle_callback(
         "wechat",
         format!("wechat-message-{}", msg.msg_id),
     );
+    let selectors = BTreeMap::from([("from_user_name".into(), msg.from_user_name.clone())]);
+    let existing = match state
+        .ctx
+        .resolve_external_session(&boundary, &selectors)
+        .await
+    {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            warn!(code = ?error.code, request_id = %error.request_id, "wechat: session resolution denied");
+            return "success".into();
+        }
+    };
     if let Some(control) = parse_external_control(&msg.content, existing.as_ref()) {
         let response = match control {
             Ok(control) => match state.ctx.submit_control(&boundary, control).await {
@@ -412,28 +419,6 @@ fn platform_principal_id(instance_id: &str, user_name: &str) -> String {
     format!("wechat:{instance_id}:{user_name}")
 }
 
-async fn find_by_user(
-    store: &Arc<dyn SessionStore>,
-    instance_id: &str,
-    user: &str,
-) -> Option<SessionId> {
-    let list = store.list_persistent().await.ok()?;
-    for s in &list {
-        if s.external_meta
-            .get("channel_instance_id")
-            .and_then(|v| v.as_str())
-            == Some(instance_id)
-            && s.external_meta
-                .get("from_user_name")
-                .and_then(|v| v.as_str())
-                == Some(user)
-        {
-            return Some(s.id.clone());
-        }
-    }
-    None
-}
-
 // ===========================================================================
 // Outgoing: bus → encrypt → reply XML
 // ===========================================================================
@@ -456,7 +441,9 @@ async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
         };
 
         // Find from_user_name for this session
-        let Some(user_name) = get_user_name(&ctx.sessions, &msg.session_id, &ch.instance_id).await
+        let Ok(Some(user_name)) = ctx
+            .session_external_value(&msg.session_id, "from_user_name")
+            .await
         else {
             continue;
         };
@@ -516,27 +503,6 @@ fn truncate_utf8_bytes(value: &str, limit: usize) -> &str {
         end -= 1;
     }
     &value[..end]
-}
-
-async fn get_user_name(
-    store: &Arc<dyn SessionStore>,
-    sid: &SessionId,
-    instance_id: &str,
-) -> Option<String> {
-    let session = store.get(sid).await.ok()??;
-    if session
-        .external_meta
-        .get("channel_instance_id")
-        .and_then(|value| value.as_str())
-        != Some(instance_id)
-    {
-        return None;
-    }
-    session
-        .external_meta
-        .get("from_user_name")
-        .and_then(|v| v.as_str())
-        .map(String::from)
 }
 
 #[derive(Debug, Deserialize)]

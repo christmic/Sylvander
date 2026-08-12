@@ -1458,8 +1458,12 @@ async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         user_id: "alice".into(),
     }];
     let runtime = Runtime::boot_config(config).await.unwrap();
-    let context =
-        ChannelContext::with_runtime_services(runtime.bus(), runtime.ui_service.clone(), None);
+    let context = ChannelContext::with_runtime_services(
+        runtime.bus(),
+        "terminal",
+        runtime.ui_service.clone(),
+        None,
+    );
     assert_eq!(
         context.identity_binding_capabilities(),
         IdentityBindingCapabilities::current()
@@ -2904,8 +2908,12 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "telegram",
         "telegram-update-1",
     );
-    let channel_context =
-        ChannelContext::with_runtime_services(runtime.bus(), runtime.ui_service.clone(), None);
+    let channel_context = ChannelContext::with_runtime_services(
+        runtime.bus(),
+        "bot-a",
+        runtime.ui_service.clone(),
+        None,
+    );
     let mut platform_submission = sylvander_channel::submit_external_chat(
         &channel_context,
         &platform_boundary,
@@ -2951,6 +2959,24 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "bot-a"
     );
     assert!(platform_stored.effective_config.is_some());
+    assert_eq!(
+        channel_context
+            .resolve_external_session(
+                &platform_boundary,
+                &std::collections::BTreeMap::from([("chat_id".into(), "42".into())]),
+            )
+            .await
+            .unwrap(),
+        Some(platform_session.clone())
+    );
+    assert_eq!(
+        channel_context
+            .session_external_value(&platform_session, "chat_id")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("42")
+    );
     let other_bot = sylvander_protocol::BoundaryContext::authenticated(
         sylvander_protocol::AuthenticatedPrincipal::user(
             "telegram:bot-b:42",
@@ -2959,6 +2985,30 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         "bot-b",
         "telegram",
         "telegram-update-2",
+    );
+    let resolution_denial = channel_context
+        .resolve_external_session(
+            &other_bot,
+            &std::collections::BTreeMap::from([("chat_id".into(), "42".into())]),
+        )
+        .await
+        .expect_err("a context cannot resolve sessions for another Channel instance");
+    assert_eq!(
+        resolution_denial.code,
+        sylvander_protocol::BoundaryErrorCode::Forbidden
+    );
+    let other_context = ChannelContext::with_runtime_services(
+        runtime.bus(),
+        "bot-b",
+        runtime.ui_service.clone(),
+        None,
+    );
+    assert_eq!(
+        other_context
+            .session_external_value(&platform_session, "chat_id")
+            .await
+            .unwrap(),
+        None
     );
     let mut victim_inbox = runtime
         .bus()

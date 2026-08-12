@@ -1,11 +1,11 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use sylvander_agent::bus::InProcessMessageBus;
-use sylvander_agent::session_store::SqliteSessionStore;
 use sylvander_channel::UiService;
 use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
+use sylvander_protocol::SessionId;
 
 impl TelegramChannel {
     fn with_api_base_url(mut self, api_base_url: impl Into<String>) -> Self {
@@ -147,16 +147,18 @@ fn request_limit_is_configurable() {
 #[tokio::test]
 async fn invalid_secret_reaches_runtime_authentication_boundary() {
     let ui = Arc::new(AuthenticationRecorder(AtomicUsize::new(0)));
-    let sessions = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
-    let mut context = ChannelContext::new(Arc::new(InProcessMessageBus::new()), sessions.clone());
-    context.ui = Some(ui.clone());
+    let context = ChannelContext::with_runtime_services(
+        Arc::new(InProcessMessageBus::new()),
+        "bot-a",
+        ui.clone(),
+        None,
+    );
     let state = AppState {
         ctx: Arc::new(context),
         channel: Arc::new(test_channel(Arc::new(TestCredentials::new(
             "token", "secret",
         )))),
         agent_id: AgentId::new("agent"),
-        sessions,
         instance_id: "bot-a".into(),
         replay: ReplayCache::default(),
     };
@@ -171,15 +173,10 @@ async fn invalid_secret_reaches_runtime_authentication_boundary() {
 #[tokio::test]
 async fn webhook_authentication_rotates_and_fails_closed_without_restart() {
     let credentials = Arc::new(TestCredentials::new("token", "first-secret"));
-    let sessions = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     let state = AppState {
-        ctx: Arc::new(ChannelContext::new(
-            Arc::new(InProcessMessageBus::new()),
-            sessions.clone(),
-        )),
+        ctx: Arc::new(ChannelContext::new(Arc::new(InProcessMessageBus::new()))),
         channel: Arc::new(test_channel(credentials.clone())),
         agent_id: AgentId::new("agent"),
-        sessions,
         instance_id: "bot-a".into(),
         replay: ReplayCache::default(),
     };
