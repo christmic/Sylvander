@@ -19,7 +19,7 @@ use serde_json::Value as JsonValue;
 use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
 use sylvander_protocol::UserId;
-use sylvander_protocol::types::{SessionConfigOverrides, SessionEffectiveConfig};
+use sylvander_protocol::session::{SessionConfigOverrides, SessionEffectiveConfig};
 
 // ---------------------------------------------------------------------------
 // SessionLifetime

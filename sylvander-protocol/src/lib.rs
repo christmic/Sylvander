@@ -36,6 +36,8 @@ pub mod message;
 pub mod registry_admin;
 /// JSON Schema generation for UI and boundary protocol types.
 pub mod schema;
+/// Durable Session configuration and redacted public state DTOs.
+pub mod session;
 /// Session-scoped context, metadata, and immutable snapshots.
 pub mod session_context;
 /// Language-neutral identities, events, and cross-boundary data types.
@@ -53,6 +55,7 @@ pub use identity_binding::*;
 pub use memory_confirmation::*;
 pub use message::*;
 pub use registry_admin::*;
+pub use session::*;
 pub use session_context::*;
 pub use types::*;
 pub use ui::*;
