@@ -1747,9 +1747,9 @@ impl TaskGate for BusTaskGate {
                             message: format!("running {name}"),
                         })
                     }
-                    crate::event::AgentEvent::Done(message) => Some(StreamEvent::TaskCompleted {
+                    crate::event::AgentEvent::Done(outcome) => Some(StreamEvent::TaskCompleted {
                         task_id: running_id.clone(),
-                        summary: message.text(),
+                        summary: outcome.final_response.text(),
                     }),
                     crate::event::AgentEvent::Error(error) => Some(StreamEvent::TaskFailed {
                         task_id: running_id.clone(),
@@ -2852,8 +2852,8 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::Done(msg) => {
-                    final_message = Some(msg);
+                crate::event::AgentEvent::Done(outcome) => {
+                    final_message = Some(outcome.final_response);
                 }
                 crate::event::AgentEvent::Error(e) => {
                     self.publish_error(&session_id, &e).await;

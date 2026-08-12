@@ -176,9 +176,7 @@ pub mod prelude {
         AgentExecutionContext, ExecutionActor, ExecutionCapability, ExecutionWorkspace,
     };
     pub use crate::execution_ports::AgentExecutionPorts;
-    pub use crate::loop_::{
-        AgentLoop, AgentLoopBuilder, AgentLoopResult, run, run_stream, run_with_events,
-    };
+    pub use crate::loop_::{AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events};
     pub use crate::mcp_stdio::{McpError, McpStdioClient, McpTool};
     pub use crate::outcome::AgentOutcome;
     pub use crate::request::AgentTurnRequest;

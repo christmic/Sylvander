@@ -133,7 +133,7 @@ async fn read_e2e_wiremock() {
     // Verify the agent completed in 2 iterations
     assert_eq!(run.iterations, 2);
     // Verify the final response mentions the file content
-    let text = run.final_message.text();
+    let text = run.final_response.text();
     assert!(
         text.contains("Phase 1") && text.contains("Phase 2") && text.contains("Phase 3"),
         "final response should mention all 3 phases, got: {text}"
@@ -213,7 +213,7 @@ async fn read_e2e_wiremock_missing_file() {
         .expect("run should succeed even with file-not-found error");
 
     assert_eq!(run.iterations, 2);
-    let text = run.final_message.text();
+    let text = run.final_response.text();
     assert!(
         text.contains("does not exist"),
         "final response should mention missing file, got: {text}"

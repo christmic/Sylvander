@@ -4,7 +4,7 @@
 //! The agent loop has a single core API — [`AgentLoop::run_stream`](crate::loop_::run_stream) —
 //! that drives the iteration and yields events. [`AgentLoop::run`](crate::loop_::run) is
 //! a thin wrapper that consumes the stream and returns an
-//! [`AgentLoopResult`](crate::loop_::AgentLoopResult). [`AgentLoop::run_with_events`](crate::loop_::run_with_events) is a wrapper
+//! [`AgentOutcome`](crate::outcome::AgentOutcome). [`AgentLoop::run_with_events`](crate::loop_::run_with_events) is a wrapper
 //! that fires events into a callback as they flow.
 //!
 //! Events fire in chronological order within a single iteration:
@@ -13,10 +13,11 @@
 
 use serde_json::Value as JsonValue;
 
-use sylvander_llm_core::{ChatMessage, ModelResponse, TokenUsage};
+use sylvander_llm_core::{ChatMessage, TokenUsage};
 
 use crate::compress::layer::LayerReport;
 use crate::error::AgentLoopError;
+use crate::outcome::AgentOutcome;
 
 /// Events emitted by the agent loop. All consumption paths
 /// (`run()`, `run_with_events()`, `run_stream()`) consume the same
@@ -128,9 +129,11 @@ pub enum AgentEvent {
         provider_usage: TokenUsage,
     },
 
-    /// The loop has terminated successfully (model emitted `end_turn`
-    /// or hit `max_iterations` without `end_turn`).
-    Done(ModelResponse),
+    /// The loop terminated successfully with its complete commit candidate.
+    ///
+    /// Runtime persists the returned conversation and usage; intermediate
+    /// stream events are not authoritative storage records.
+    Done(AgentOutcome),
 
     /// The loop terminated with an error.
     Error(AgentLoopError),

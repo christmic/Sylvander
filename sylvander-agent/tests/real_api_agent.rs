@@ -131,8 +131,8 @@ async fn real_api_agent_loop_completes() {
                     );
                 }
             }
-            AgentEvent::Done(msg) => {
-                final_message = Some(msg);
+            AgentEvent::Done(outcome) => {
+                final_message = Some(outcome.final_response);
             }
             AgentEvent::Error(e) => {
                 eprintln!();

@@ -194,14 +194,14 @@ async fn real_use_case_read_and_summarize() {
         "expected 2 iterations (tool_use + end_turn)"
     );
     assert!(
-        run.final_message
+        run.final_response
             .content
             .iter()
             .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("M1"))),
         "final message should mention M1"
     );
     assert!(
-        run.final_message
+        run.final_response
             .content
             .iter()
             .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("M3"))),
@@ -260,7 +260,7 @@ async fn real_use_case_read_and_summarize() {
 
     println!("=== real_use_case_read_and_summarize ===");
     println!("Iterations: {}", run.iterations);
-    println!("Final message: {}", run.final_message.text());
+    println!("Final message: {}", run.final_response.text());
     println!("Events emitted: {}", event_kinds.len());
     println!("=======================================");
 }
@@ -347,7 +347,7 @@ async fn real_use_case_tool_error_recovery() {
 
     assert_eq!(run.iterations, 2);
     assert!(
-        run.final_message
+        run.final_response
             .content
             .iter()
             .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("does not exist"))),

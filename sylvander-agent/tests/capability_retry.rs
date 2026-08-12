@@ -286,7 +286,7 @@ async fn llm_5xx_succeeds_after_retry() {
     )
     .await
     .expect("run");
-    assert_eq!(run.final_message.id, "msg_retry_ok");
+    assert_eq!(run.final_response.id, "msg_retry_ok");
     assert_eq!(run.iterations, 1);
     assert_eq!(retries.lock().unwrap().as_slice(), &[(1, 3, 100)]);
 }
@@ -338,7 +338,7 @@ async fn llm_429_retries_and_succeeds() {
     )
     .await
     .expect("run");
-    assert_eq!(run.final_message.id, "msg_429_ok");
+    assert_eq!(run.final_response.id, "msg_429_ok");
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
     assert_eq!(retries.lock().unwrap().as_slice(), &[1, 2]);
 }
@@ -399,7 +399,7 @@ async fn tool_use_capability_passes_validation() {
     let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
         .await
         .expect("run");
-    assert_eq!(run.final_message.id, "msg_cap");
+    assert_eq!(run.final_response.id, "msg_cap");
 }
 
 #[tokio::test]
@@ -432,5 +432,5 @@ async fn thinking_capability_passes_validation() {
     let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
         .await
         .expect("run");
-    assert_eq!(run.final_message.id, "msg_thinking");
+    assert_eq!(run.final_response.id, "msg_thinking");
 }

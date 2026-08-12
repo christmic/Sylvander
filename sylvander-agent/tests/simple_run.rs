@@ -444,7 +444,7 @@ async fn single_iteration_end_turn_returns_final_message() {
     .await
     .expect("run should succeed");
 
-    assert_eq!(run.final_message.id, "msg_1");
+    assert_eq!(run.final_response.id, "msg_1");
     assert_eq!(run.iterations, 1);
     assert_eq!(run.total_usage.output_tokens, 5);
 
@@ -540,13 +540,13 @@ async fn tool_use_triggers_tool_execution_and_continues() {
     .await
     .expect("run should succeed");
 
-    assert_eq!(run.final_message.id, "msg_2");
+    assert_eq!(run.final_response.id, "msg_2");
     assert_eq!(run.iterations, 2);
     assert_eq!(run.total_usage.input_tokens, 30);
     assert_eq!(run.total_usage.output_tokens, 13);
     assert_eq!(run.total_usage.cache_write_tokens, Some(7));
     assert_eq!(run.total_usage.cache_read_tokens, Some(11));
-    assert_eq!(run.final_message.usage, run.total_usage);
+    assert_eq!(run.final_response.usage, run.total_usage);
 
     let iteration_usage = events
         .lock()
@@ -623,7 +623,7 @@ async fn max_iterations_returns_the_last_partial_message() {
 
     let result = result.expect("last partial message remains usable at the iteration cap");
     assert_eq!(result.iterations, 3);
-    assert_eq!(result.final_message.id, "msg_loop");
+    assert_eq!(result.final_response.id, "msg_loop");
 }
 
 #[tokio::test]

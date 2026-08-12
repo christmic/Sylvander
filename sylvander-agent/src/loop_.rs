@@ -3,11 +3,11 @@
 //! # Architecture
 //!
 //! The loop logic lives in three module-level free functions:
-//! - [`run`](crate::loop_::run) — consumes the stream, returns `Result<AgentLoopResult, _>`
+//! - [`run`](crate::loop_::run) — consumes the stream, returns `Result<AgentOutcome, _>`
 //! - [`run_stream`](crate::loop_::run_stream) — the single source of truth: drives the
 //!   iteration, yields `AgentEvent`s
 //! - [`run_with_events`](crate::loop_::run_with_events) — consumes the stream, fires events into a
-//!   callback, returns the final `AgentLoopResult`
+//!   callback, returns the final `AgentOutcome`
 //!
 //! `AgentLoop` itself is just a configuration holder (LLM client,
 //! model, tools, compressor, iteration limits). The methods
@@ -35,8 +35,10 @@ use sylvander_protocol::{AgentHookPhase, ModelSelection};
 
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
+use super::outcome::AgentOutcome;
 use super::tool::ToolRegistry;
 use super::tool_context::ToolContext;
+use crate::conversation::ConversationSnapshot;
 
 /// The agent loop. Holds the LLM client, resolved model, tools, and
 /// configuration. Iteration logic is in the free functions [`run`],
@@ -85,18 +87,6 @@ impl std::fmt::Debug for AgentLoop {
             .field("max_retries", &self.max_retries)
             .finish_non_exhaustive()
     }
-}
-
-/// Outcome of a completed [`run`] / [`run_with_events`].
-#[derive(Debug, Clone)]
-pub struct AgentLoopResult {
-    /// Final assembled message (the last assistant turn before the loop
-    /// terminated).
-    pub final_message: ModelResponse,
-    /// Total iterations executed.
-    pub iterations: u32,
-    /// Cumulative token usage across all LLM calls.
-    pub total_usage: TokenUsage,
 }
 
 // =====================================================================
@@ -412,6 +402,7 @@ pub fn run_stream(
         let mut cumulative_usage = TokenUsage::default();
         let mut last_provider_usage = cumulative_usage;
         let mut final_message: Option<ModelResponse> = None;
+        let mut completed_iterations = 0;
 
         if let Err(blocked) = config
             .tools
@@ -1071,6 +1062,7 @@ pub fn run_stream(
                 usage: cumulative_usage,
                 provider_usage: last_provider_usage,
             };
+            completed_iterations = iteration;
 
             // 10. Check stop_reason.
             //
@@ -1115,7 +1107,12 @@ pub fn run_stream(
                     .run_turn_hooks(AgentHookPhase::AfterTurn, &config.tool_context)
                     .await
                 {
-                    Ok(()) => yield AgentEvent::Done(msg),
+                    Ok(()) => yield AgentEvent::Done(AgentOutcome {
+                        final_response: msg,
+                        conversation: ConversationSnapshot::new(messages),
+                        iterations: completed_iterations,
+                        total_usage: cumulative_usage,
+                    }),
                     Err(blocked) => {
                         yield AgentEvent::Error(AgentLoopError::Tool(blocked.to_string()));
                     }
@@ -1131,7 +1128,7 @@ pub fn run_stream(
 }
 
 /// Convenience wrapper around [`run_stream`] that consumes the
-/// event stream and returns the final [`AgentLoopResult`].
+/// event stream and returns the final [`AgentOutcome`].
 ///
 /// # Errors
 /// - [`AgentLoopError::MaxIterationsReached`] — loop hit cap
@@ -1142,50 +1139,36 @@ pub fn run_stream(
 pub async fn run(
     config: &AgentLoop,
     initial_messages: Vec<ChatMessage>,
-) -> Result<AgentLoopResult, AgentLoopError> {
+) -> Result<AgentOutcome, AgentLoopError> {
     let max_iterations = config.max_iterations;
     consume_stream_to_run(max_iterations, run_stream(config, initial_messages)).await
 }
 
 /// Convenience wrapper around [`run_stream`] that fires every event
-/// into the supplied callback, then returns the final [`AgentLoopResult`].
+/// into the supplied callback, then returns the final [`AgentOutcome`].
 /// Terminal `Done` / `Error` events are extracted into the return
 /// value rather than fired to the callback.
 pub async fn run_with_events<F>(
     config: &AgentLoop,
     initial_messages: Vec<ChatMessage>,
     mut on_event: F,
-) -> Result<AgentLoopResult, AgentLoopError>
+) -> Result<AgentOutcome, AgentLoopError>
 where
     F: FnMut(AgentEvent) + Send,
 {
     let max_iterations = config.max_iterations;
     let mut stream = Box::pin(run_stream(config, initial_messages));
-    let mut final_message: Option<ModelResponse> = None;
-    let mut total_usage = TokenUsage::default();
-    let mut iterations: u32 = 0;
+    let mut outcome: Option<AgentOutcome> = None;
 
     while let Some(event) = stream.next().await {
-        match &event {
-            AgentEvent::IterationStart { iteration } => iterations = *iteration,
-            AgentEvent::IterationEnd { usage, .. } => total_usage = *usage,
-            _ => {}
-        }
         match event {
-            AgentEvent::Done(msg) => final_message = Some(msg),
+            AgentEvent::Done(completed) => outcome = Some(completed),
             AgentEvent::Error(e) => return Err(e),
             other => on_event(other),
         }
     }
 
-    let final_message =
-        final_message.ok_or(AgentLoopError::MaxIterationsReached(max_iterations))?;
-
-    Ok(AgentLoopResult {
-        final_message,
-        iterations,
-        total_usage,
-    })
+    outcome.ok_or(AgentLoopError::MaxIterationsReached(max_iterations))
 }
 
 enum ParallelToolOutcome {
@@ -1571,41 +1554,27 @@ pub(crate) fn tool_definitions_for_model(
 // =====================================================================
 
 /// Internal helper for [`run`]: pull events from the stream,
-/// accumulate final state, return `AgentLoopResult` or `Err`.
+/// return the terminal `AgentOutcome` or the first error.
 async fn consume_stream_to_run(
     max_iterations: u32,
     stream: impl Stream<Item = AgentEvent> + Send,
-) -> Result<AgentLoopResult, AgentLoopError> {
+) -> Result<AgentOutcome, AgentLoopError> {
     let mut stream = Box::pin(stream);
-    let mut final_message: Option<ModelResponse> = None;
-    let mut total_usage = TokenUsage::default();
-    let mut iterations: u32 = 0;
+    let mut outcome: Option<AgentOutcome> = None;
 
     while let Some(event) = stream.next().await {
         match event {
-            AgentEvent::Done(msg) => {
-                final_message = Some(msg);
+            AgentEvent::Done(completed) => {
+                outcome = Some(completed);
             }
             AgentEvent::Error(e) => {
                 return Err(e);
-            }
-            AgentEvent::IterationStart { iteration } => {
-                iterations = iteration;
-            }
-            AgentEvent::IterationEnd { usage, .. } => {
-                total_usage = usage;
             }
             _ => {}
         }
     }
 
-    let final_message =
-        final_message.ok_or(AgentLoopError::MaxIterationsReached(max_iterations))?;
-    Ok(AgentLoopResult {
-        final_message,
-        iterations,
-        total_usage,
-    })
+    outcome.ok_or(AgentLoopError::MaxIterationsReached(max_iterations))
 }
 
 // =====================================================================

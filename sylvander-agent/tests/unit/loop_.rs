@@ -550,6 +550,8 @@ async fn provider_backend_runs_tool_then_text_with_qualified_requests() {
         .await
         .unwrap();
     assert_eq!(result.iterations, 2);
+    assert_eq!(result.conversation.messages().len(), 4);
+    assert_eq!(result.final_response.text(), "done");
     assert_eq!(tool.call_count(), 1);
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
@@ -746,9 +748,9 @@ fn cumulative_usage_saturates_and_preserves_optional_cache_semantics() {
 }
 
 #[test]
-fn agent_run_debug_impl() {
-    let run = AgentLoopResult {
-        final_message: ModelResponse {
+fn agent_outcome_debug_impl() {
+    let run = AgentOutcome {
+        final_response: ModelResponse {
             id: "msg_x".into(),
             content: vec![],
             model: ModelRef::new("local", "test-model"),
@@ -759,6 +761,7 @@ fn agent_run_debug_impl() {
                 ..TokenUsage::default()
             },
         },
+        conversation: ConversationSnapshot::default(),
         iterations: 1,
         total_usage: TokenUsage {
             input_tokens: 1,

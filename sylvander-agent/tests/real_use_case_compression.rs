@@ -152,7 +152,7 @@ async fn real_use_case_l0_offloads_huge_read_result() {
 
     // === Verify run completed correctly ===
     assert_eq!(run.iterations, 2, "expected tool_use + end_turn");
-    assert!(!run.final_message.text().is_empty());
+    assert!(!run.final_response.text().is_empty());
 
     // === Verify L0 actually offloaded the big body ===
     assert!(
