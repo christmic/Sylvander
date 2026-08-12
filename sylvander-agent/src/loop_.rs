@@ -468,13 +468,7 @@ pub fn run_stream(
             }
 
             // 2. Build and validate one exact provider-qualified request.
-            let provider_request = match config.build_provider_request(&messages) {
-                Ok(request) => request,
-                Err(error) => {
-                    yield AgentEvent::Error(error);
-                    break;
-                }
-            };
+            let provider_request = config.build_provider_request(&messages);
 
             // 4. Open the provider stream. This is the only retry owner;
             //    provider adapters never retry and a failed streaming
@@ -1150,7 +1144,7 @@ where
     while let Some(event) = stream.next().await {
         match &event {
             AgentEvent::IterationStart { iteration } => iterations = *iteration,
-            AgentEvent::IterationEnd { usage, .. } => total_usage = usage.clone(),
+            AgentEvent::IterationEnd { usage, .. } => total_usage = *usage,
             _ => {}
         }
         match event {
@@ -1382,7 +1376,7 @@ async fn consume_provider_stream(
     }
     let response =
         completed.ok_or_else(|| provider_protocol("provider stream ended without completion"))?;
-    Ok(response)
+    Ok(*response)
 }
 
 impl AgentLoop {
@@ -1483,12 +1477,9 @@ impl AgentLoop {
         unreachable!("retry loop always returns success or the final error")
     }
 
-    fn build_provider_request(
-        &self,
-        messages: &[ChatMessage],
-    ) -> Result<ModelRequest, AgentLoopError> {
+    fn build_provider_request(&self, messages: &[ChatMessage]) -> ModelRequest {
         let tools = tool_definitions_for_model(&self.tools, &self.model);
-        Ok(ModelRequest {
+        ModelRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
             model: self.provider_model.reference.clone(),
             system: self
@@ -1513,7 +1504,7 @@ impl AgentLoop {
                 }
             }),
             output_schema: None,
-        })
+        }
     }
 }
 

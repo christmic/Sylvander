@@ -246,9 +246,7 @@ fn prompt_cache_hints_follow_the_selected_model_capability() {
             .build()
             .unwrap();
 
-        let neutral = loop_
-            .build_provider_request(&[MessageParam::user("go")])
-            .unwrap();
+        let neutral = loop_.build_provider_request(&[MessageParam::user("go")]);
         assert_eq!(neutral.system[0].cache_hint.is_some(), enabled);
         assert_eq!(neutral.tools[0].cache_hint.is_some(), enabled);
     }
@@ -264,9 +262,7 @@ fn provider_neutral_message_builds_without_protocol_translation() {
         .build()
         .unwrap();
     let messages = [MessageParam::user("neutral-text")];
-    let request = loop_
-        .build_provider_request(&messages)
-        .expect("neutral request");
+    let request = loop_.build_provider_request(&messages);
     assert_eq!(request.messages, messages);
     assert!(provider.requests.lock().unwrap().is_empty());
 }
@@ -339,13 +335,13 @@ fn completed_events(
     content: Vec<ProviderBlock>,
     stop_reason: ProviderStopReason,
 ) -> Vec<Result<ModelStreamEvent, ProviderError>> {
-    vec![Ok(ModelStreamEvent::Completed(ModelResponse {
+    vec![Ok(ModelStreamEvent::Completed(Box::new(ModelResponse {
         id: "response".into(),
         model: ModelRef::new("local", "test-model"),
         content,
         stop_reason,
         usage: TokenUsage::default(),
-    }))]
+    })))]
 }
 
 fn neutral_request() -> ModelRequest {
@@ -667,9 +663,7 @@ fn reasoning_effort_builds_a_capability_checked_budget() {
         .reasoning_effort(sylvander_protocol::ReasoningEffort::High)
         .build()
         .expect("loop");
-    let request = loop_
-        .build_provider_request(&[MessageParam::user("think")])
-        .expect("provider request");
+    let request = loop_.build_provider_request(&[MessageParam::user("think")]);
     assert_eq!(request.reasoning.unwrap().budget_tokens, Some(8_192));
     assert_eq!(
         loop_.reasoning_effort(),

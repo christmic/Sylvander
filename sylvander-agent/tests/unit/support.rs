@@ -51,7 +51,7 @@ pub(crate) fn provider_capabilities(
         ),
     ] {
         if capabilities.contains(anthropic) {
-            provider_capabilities = provider_capabilities | provider;
+            provider_capabilities |= provider;
         }
     }
     provider_capabilities

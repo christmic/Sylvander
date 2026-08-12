@@ -91,9 +91,9 @@ fn provider_model() -> sylvander_llm_core::ModelInfo {
 #[tokio::test]
 async fn provider_summary_is_qualified_text_only_and_minimal() {
     let provider = provider(vec![Ok(sylvander_llm_core::ModelStreamEvent::Completed(
-        response(vec![sylvander_llm_core::ContentBlock::Text {
+        Box::new(response(vec![sylvander_llm_core::ContentBlock::Text {
             text: "summary".into(),
-        }]),
+        }])),
     ))]);
     let llm = ProviderAutoCompactLlm::new(provider.clone(), provider_model());
     let summary = llm
@@ -118,35 +118,41 @@ async fn provider_summary_rejects_missing_late_and_non_text_completion() {
     let cases = [
         Vec::new(),
         vec![
-            Ok(sylvander_llm_core::ModelStreamEvent::Completed(response(
-                vec![sylvander_llm_core::ContentBlock::Text { text: "ok".into() }],
+            Ok(sylvander_llm_core::ModelStreamEvent::Completed(Box::new(
+                response(vec![sylvander_llm_core::ContentBlock::Text {
+                    text: "ok".into(),
+                }]),
             ))),
             Ok(sylvander_llm_core::ModelStreamEvent::TextDelta(
                 "late".into(),
             )),
         ],
         vec![Ok(sylvander_llm_core::ModelStreamEvent::Completed(
-            response(vec![sylvander_llm_core::ContentBlock::ToolCall {
+            Box::new(response(vec![sylvander_llm_core::ContentBlock::ToolCall {
                 id: "call".into(),
                 name: "tool".into(),
                 arguments: serde_json::json!({}),
-            }]),
+            }])),
         ))],
         vec![
-            Ok(sylvander_llm_core::ModelStreamEvent::Completed(response(
-                vec![sylvander_llm_core::ContentBlock::Text { text: "one".into() }],
+            Ok(sylvander_llm_core::ModelStreamEvent::Completed(Box::new(
+                response(vec![sylvander_llm_core::ContentBlock::Text {
+                    text: "one".into(),
+                }]),
             ))),
-            Ok(sylvander_llm_core::ModelStreamEvent::Completed(response(
-                vec![sylvander_llm_core::ContentBlock::Text { text: "two".into() }],
+            Ok(sylvander_llm_core::ModelStreamEvent::Completed(Box::new(
+                response(vec![sylvander_llm_core::ContentBlock::Text {
+                    text: "two".into(),
+                }]),
             ))),
         ],
         vec![Ok(sylvander_llm_core::ModelStreamEvent::ReasoningDelta(
             "not allowed".into(),
         ))],
         vec![Ok(sylvander_llm_core::ModelStreamEvent::Completed(
-            response(vec![sylvander_llm_core::ContentBlock::Text {
+            Box::new(response(vec![sylvander_llm_core::ContentBlock::Text {
                 text: "  ".into(),
-            }]),
+            }])),
         ))],
     ];
     for events in cases {

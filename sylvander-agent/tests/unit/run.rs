@@ -424,7 +424,7 @@ impl sylvander_llm_core::ModelProvider for RecordingProvider {
                 usage: sylvander_llm_core::TokenUsage::default(),
             };
             Ok(Box::pin(futures_util::stream::iter([Ok(
-                sylvander_llm_core::ModelStreamEvent::Completed(response),
+                sylvander_llm_core::ModelStreamEvent::Completed(Box::new(response)),
             )])) as sylvander_llm_core::ModelEventStream)
         })
     }

@@ -61,7 +61,7 @@ pub(crate) fn qualified_anthropic_loop_builder(
         ),
     ] {
         if model.capabilities.contains(anthropic) {
-            capabilities = capabilities | provider;
+            capabilities |= provider;
         }
     }
 

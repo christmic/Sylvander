@@ -476,7 +476,7 @@ async fn tool_use_triggers_tool_execution_and_continues() {
                 usage,
                 provider_usage,
                 ..
-            } => Some((usage.clone(), provider_usage.clone())),
+            } => Some((*usage, *provider_usage)),
             _ => None,
         })
         .collect::<Vec<_>>();
