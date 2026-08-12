@@ -924,12 +924,18 @@ pub fn run_stream(
                     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
                         crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
                     );
+                    let execution_coordination = Arc::new(tokio::sync::RwLock::new(()));
                     let executions = tool_blocks.iter().zip(decisions.iter()).map(|(tool_use, decision)| {
                         let id = tool_use.id.clone();
                         let name = tool_use.name.clone();
                         let input = tool_use.input.clone();
                         let decision = decision.clone();
                         let tool = config.tools.get(&name);
+                        let execution_mode = tool.as_ref().map_or(
+                            crate::tool::ToolExecutionMode::Exclusive,
+                            |tool| tool.execution_mode(&input),
+                        );
+                        let execution_coordination = execution_coordination.clone();
                         let invocation_gateway = config.invocation_gateway.clone();
                         let invocation_snapshot = config.invocation_snapshot.clone();
                         let context = config.tool_context.clone();
@@ -949,8 +955,26 @@ pub fn run_stream(
                         async move {
                             let outcome = match decision {
                                 crate::approval::ApprovalDecision::Approved => {
-                                    ParallelToolOutcome::Executed(
-                                        execute_registered_tool(
+                                    let execution = match execution_mode {
+                                        crate::tool::ToolExecutionMode::Parallel => {
+                                            let _guard = execution_coordination.read().await;
+                                            execute_registered_tool(
+                                                RegisteredToolExecutionRequest {
+                                                    tool,
+                                                    invocation_gateway,
+                                                    invocation_snapshot,
+                                                    tool_context: context,
+                                                    input,
+                                                    call_id: id.clone(),
+                                                    route: name.clone(),
+                                                    timeout: tool_timeout,
+                                                    progress,
+                                                },
+                                            ).await
+                                        }
+                                        crate::tool::ToolExecutionMode::Exclusive => {
+                                            let _guard = execution_coordination.write().await;
+                                            execute_registered_tool(
                                             RegisteredToolExecutionRequest {
                                                 tool,
                                                 invocation_gateway,
@@ -962,8 +986,10 @@ pub fn run_stream(
                                                 timeout: tool_timeout,
                                                 progress,
                                             },
-                                        ).await,
-                                    )
+                                            ).await
+                                        }
+                                    };
+                                    ParallelToolOutcome::Executed(execution)
                                 }
                                 crate::approval::ApprovalDecision::Rejected { reason } => {
                                     ParallelToolOutcome::Rejected(reason)

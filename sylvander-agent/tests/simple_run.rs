@@ -6,6 +6,7 @@
 mod support;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::json;
 use sylvander_agent::prelude::*;
@@ -36,6 +37,11 @@ fn test_model() -> ModelInfo {
 
 struct BarrierTool {
     barrier: Arc<tokio::sync::Barrier>,
+}
+
+struct ExclusiveProbeTool {
+    active: Arc<AtomicUsize>,
+    maximum: Arc<AtomicUsize>,
 }
 
 struct ProgressTool;
@@ -272,6 +278,37 @@ impl Tool for BarrierTool {
     }
 }
 
+#[async_trait::async_trait]
+impl Tool for ExclusiveProbeTool {
+    fn name(&self) -> &'static str {
+        "exclusive_probe"
+    }
+
+    fn description(&self) -> &'static str {
+        "records whether exclusive calls overlap"
+    }
+
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::empty()
+    }
+
+    fn invocation_class(&self) -> sylvander_agent::tool_invocation::ToolInvocationClass {
+        sylvander_agent::tool_invocation::ToolInvocationClass::FilesystemMutation
+    }
+
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum.fetch_max(active, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Ok(ToolOutput::ok("done"))
+    }
+}
+
 #[tokio::test]
 async fn ordinary_tool_batch_starts_and_executes_concurrently() {
     let server = MockServer::start().await;
@@ -328,6 +365,49 @@ async fn ordinary_tool_batch_starts_and_executes_concurrently() {
         })
         .collect::<Vec<_>>();
     assert_eq!(lifecycle, ["start:one", "start:two", "end:one", "end:two"]);
+}
+
+#[tokio::test]
+async fn exclusive_tool_calls_never_overlap_within_one_model_batch() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"msg_exclusive","type":"message","role":"assistant",
+            "content":[
+                {"type":"tool_use","id":"one","name":"exclusive_probe","input":{}},
+                {"type":"tool_use","id":"two","name":"exclusive_probe","input":{}}
+            ],
+            "model":"claude-sonnet-5-20260601","stop_reason":"tool_use",
+            "usage":{"input_tokens":10,"output_tokens":5}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"msg_done","type":"message","role":"assistant",
+            "content":[{"type":"text","text":"done"}],
+            "model":"claude-sonnet-5-20260601","stop_reason":"end_turn",
+            "usage":{"input_tokens":20,"output_tokens":3}
+        })))
+        .mount(&server)
+        .await;
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
+        .tool(ExclusiveProbeTool {
+            active,
+            maximum: maximum.clone(),
+        })
+        .build()
+        .expect("build");
+
+    run(&loop_, vec![MessageParam::user("exclusive")])
+        .await
+        .expect("run");
+    assert_eq!(maximum.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
