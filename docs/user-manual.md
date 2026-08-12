@@ -631,7 +631,7 @@ Trust boundary:
 authenticated transport ingress
   -> BoundaryContext established by that transport
   -> ChannelContext derives AuthenticatedTransportIdentity
-  -> Runtime UiService re-authorizes boundary + typed identity
+  -> Runtime ChannelHost re-authorizes boundary + typed identity
   -> Runtime-owned PrincipalBindingStore
 ```
 

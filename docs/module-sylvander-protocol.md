@@ -120,7 +120,7 @@ A typical request crosses these layers in order:
    `transport`, and `request_id`.
 2. **UI dispatch.** The transport parses one current-shape
    `UiClientMessage` (see `ui.rs`) and submits it with the sealed boundary to
-   Runtime-owned `UiService`. Old versions, unknown fields, and unnegotiated
+   Runtime-owned `ChannelHost`. Old versions, unknown fields, and unnegotiated
    operations fail before mutation.
 3. **Authorized bus routing.** Runtime resolves the stable user, Agent,
    session ownership, operation policy, and optimistic revision. Only then

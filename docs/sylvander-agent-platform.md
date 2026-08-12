@@ -313,7 +313,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   `sylvander-protocol`; add Agent discovery, session create/update/effective
   state, feedback, and optimistic concurrency; generate and strictly test the
   current schema. Evidence: one shared `UiClientMessage`/`UiServerMessage` contract
-  across Unix, WebSocket, and TUI; runtime-owned `UiService`; durable configured
+  across Unix, WebSocket, and TUI; runtime-owned `ChannelHost`; durable configured
   session creation and optimistic updates; evidence-linked feedback; and
   generated JSON Schema with old/unknown-shape rejection.
 - [x] **P0.5 Boundary authorization:** authenticated principals, Agent/session

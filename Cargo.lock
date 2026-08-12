@@ -3132,6 +3132,7 @@ dependencies = [
  "sylvander-llm-anthropic",
  "sylvander-llm-core",
  "sylvander-protocol",
+ "sylvander-runtime",
  "tempfile",
  "tokio",
  "unicode-segmentation",

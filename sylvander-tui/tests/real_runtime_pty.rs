@@ -11,14 +11,11 @@ use std::time::{Duration, Instant};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::json;
 use sylvander_agent::prelude::{
-    AgentRun, AgentRunEngine, AgentSessionIssuer, AgentSpec, InProcessMessageBus, MessageBus,
-    MessageKind, StreamEvent, SubscriptionFilter, ToolRegistry,
-};
-use sylvander_agent::session_store::{
-    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+    AgentSpec, InProcessMessageBus, MessageBus, MessageKind, StreamEvent, SubscriptionFilter,
+    ToolRegistry,
 };
 use sylvander_agent::tools::{AskUserTool, WriteTool};
-use sylvander_channel::{Channel, ChannelContext, UiService};
+use sylvander_channel::{Channel, ChannelContext, ChannelHost};
 use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
@@ -30,6 +27,11 @@ use sylvander_protocol::{
     SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind, SessionConfigState,
     SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig, SessionId,
     SessionMetadata, UiClientMessage, UiSessionInfo,
+};
+use sylvander_runtime::agent_run::{AgentRun, AgentSessionIssuer};
+use sylvander_runtime::agent_supervisor::AgentRunEngine;
+use sylvander_runtime::storage::session::{
+    SessionFilter, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -136,11 +138,11 @@ struct RuntimeHarness {
     channel_task: tokio::task::JoinHandle<()>,
 }
 
-/// Test-only implementation of the same fail-closed UI boundary required by
+/// Test-only implementation of the same fail-closed ChannelHost boundary required by
 /// production channels. It authenticates every operation, binds sessions to
 /// the Unix principal and channel instance, and joins the exact durable
 /// session to the real `AgentRun` before chat can be published.
-struct HarnessUiService {
+struct HarnessChannelHost {
     bus: Arc<InProcessMessageBus>,
     sessions: Arc<dyn SessionStore>,
     run: AgentRun,
@@ -153,7 +155,7 @@ struct HarnessUiService {
     next_session: AtomicUsize,
 }
 
-impl HarnessUiService {
+impl HarnessChannelHost {
     fn denial(
         boundary: &BoundaryContext,
         code: BoundaryErrorCode,
@@ -264,7 +266,7 @@ impl HarnessUiService {
 }
 
 #[async_trait::async_trait]
-impl UiService for HarnessUiService {
+impl ChannelHost for HarnessChannelHost {
     async fn authorize_message(
         &self,
         boundary: &BoundaryContext,
@@ -336,7 +338,7 @@ impl UiService for HarnessUiService {
                 &error.to_string(),
             )
         })?;
-        let now = sylvander_agent::session::now_secs();
+        let now = sylvander_runtime::session::now_secs();
         Ok(sessions
             .into_iter()
             .filter(|session| {
@@ -538,7 +540,7 @@ impl UiService for HarnessUiService {
                 kind: MessageKind::Chat,
                 payload: request.text,
                 attachments: request.attachments,
-                timestamp: sylvander_agent::session::now_secs(),
+                timestamp: sylvander_runtime::session::now_secs(),
                 id: sylvander_agent::bus::MessageId::new(),
             })
             .await
@@ -598,7 +600,7 @@ impl UiService for HarnessUiService {
                 kind: MessageKind::System(system),
                 payload: String::new(),
                 attachments: Vec::new(),
-                timestamp: sylvander_agent::session::now_secs(),
+                timestamp: sylvander_runtime::session::now_secs(),
                 id: sylvander_agent::bus::MessageId::new(),
             })
             .await
@@ -741,7 +743,7 @@ async fn start_runtime(
             platform_provider: None,
         }),
     );
-    let ui: Arc<dyn UiService> = Arc::new(HarnessUiService {
+    let host: Arc<dyn ChannelHost> = Arc::new(HarnessChannelHost {
         bus: bus.clone(),
         sessions: store.clone(),
         run: test_run,
@@ -755,8 +757,8 @@ async fn start_runtime(
     });
     let channel_task = tokio::spawn(channel.run(ChannelContext::with_services(
         bus.clone(),
-        store,
-        Some(ui),
+        Some("tui-real-runtime".into()),
+        Some(host),
         None,
     )));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -1315,10 +1317,7 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
         "__multi_client_audit__",
     );
     let sessions = store
-        .list(
-            &caller,
-            sylvander_agent::session_store::SessionFilter::default(),
-        )
+        .list(&caller, SessionFilter::default())
         .await
         .expect("list isolated sessions");
     assert_eq!(sessions.len(), 3);

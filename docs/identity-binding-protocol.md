@@ -12,7 +12,7 @@ An identity request contains an action, never an external principal:
 authenticated transport ingress
   -> BoundaryContext established by that transport
   -> ChannelContext derives AuthenticatedTransportIdentity
-  -> Runtime UiService re-authorizes boundary + typed identity
+  -> Runtime ChannelHost re-authorizes boundary + typed identity
   -> Runtime-owned PrincipalBindingStore
 ```
 
@@ -39,7 +39,7 @@ are not persisted.
 
 The latest-only subprotocol version is `1`; unsupported versions fail closed.
 The public UI capability is `identity_binding_v1`. Both client hello and server
-welcome must explicitly advertise it. Separately, `UiService` advertises an
+welcome must explicitly advertise it. Separately, `ChannelHost` advertises an
 `IdentityBindingCapabilities` version set. Its default is empty, and the
 default operation returns `service_unavailable` without reflecting request or
 principal data.

@@ -63,7 +63,7 @@ re-authenticating individual frames.
    `tool_call`, `tool_result`, and `iteration_start`, then finish with `done`
    or `error`.
 6. **Session discovery** — `list_sessions` dispatches through Runtime
-   `UiService`, preserving stable-user visibility rules, and returns one typed
+   `ChannelHost`, preserving stable-user visibility rules, and returns one typed
    `sessions_list` response.
 7. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
    list/decide envelopes pass unchanged to Runtime under the authenticated

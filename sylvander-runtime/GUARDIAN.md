@@ -194,7 +194,7 @@ The latest-only protocol has two operations:
   records one explicit decision.
 
 Neither operation carries a user, Agent, workspace, or owner selector.
-`UiService` authorizes the authenticated boundary, loads the persisted owned
+`ChannelHost` authorizes the authenticated boundary, loads the persisted owned
 session, and derives the Guardian owner from that state. A pending candidate
 is returned only when both its owner and immutable `origin_session_id` match.
 The candidate revision is an optimistic-concurrency token: stale, replayed,
