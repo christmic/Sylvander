@@ -6,3 +6,4 @@ pub mod handoff;
 pub mod mailbox;
 pub mod task;
 pub mod topology;
+pub mod workspace;

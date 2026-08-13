@@ -109,6 +109,16 @@ impl GovernanceCaseId {
     }
 }
 
+/// Stable identity for one Agent-specific workspace view and its lease.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceViewId(pub String);
+
+impl WorkspaceViewId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
 /// Stable identity for one durable unit of Agent work.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskId(pub String);
