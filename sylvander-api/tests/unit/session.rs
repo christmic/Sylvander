@@ -182,6 +182,35 @@ fn session_config_update_contract_preserves_optimistic_revision() {
     );
 }
 
+#[test]
+fn field_patch_preserves_omitted_write_only_values() {
+    let mut overrides = SessionConfigOverrides {
+        model: Some(model("provider-a", "model-a")),
+        permissions: Some(PermissionProfile::default()),
+        system_prompt: Some("private session sentinel".into()),
+        ..SessionConfigOverrides::default()
+    };
+    let patch = SessionConfigPatch {
+        model: Some(SessionConfigFieldPatch::Set {
+            value: model("provider-b", "model-b"),
+        }),
+        permissions: Some(SessionConfigFieldPatch::Inherit),
+        ..SessionConfigPatch::default()
+    };
+    let encoded = serde_json::to_value(&patch).unwrap();
+    assert_eq!(encoded["model"]["operation"], "set");
+    assert_eq!(encoded["permissions"]["operation"], "inherit");
+    assert!(encoded.get("system_prompt").is_none());
+
+    patch.apply_to(&mut overrides);
+    assert_eq!(overrides.model, Some(model("provider-b", "model-b")));
+    assert!(overrides.permissions.is_none());
+    assert_eq!(
+        overrides.system_prompt.as_deref(),
+        Some("private session sentinel")
+    );
+}
+
 fn model(provider_id: &str, model_id: &str) -> ModelSelection {
     ModelSelection {
         provider_id: provider_id.into(),
