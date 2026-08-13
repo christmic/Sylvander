@@ -410,7 +410,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   model/provider profiles, Agent prompt, allowed write-only session input,
   ordered provenance/digests, byte limits, deterministic restart, and
   execution-boundary tamper rejection. Evidence: `sylvander-agent/src/context/prompt.rs`,
-  `sylvander-agent/src/run.rs`, protocol schema/redaction tests, real Unix and
+  `sylvander-agent/src/kernel/agent_loop.rs`, protocol schema/redaction tests, real Unix and
   WebSocket response tests, provider-wire composition tests, and runtime
   restart acceptance in `registry_agent_composition_tests.rs`.
 - [x] **P1.4 Durable memory:** durable Agent-owned memory lifecycle and
