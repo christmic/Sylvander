@@ -29,6 +29,28 @@ fn make_session(id: &str, lifetime: SessionLifetime) -> StoredSession {
     )
 }
 
+#[tokio::test]
+async fn file_store_enforces_recovery_durability_controls() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = SqliteSessionStore::open(dir.path().join("sessions.db"))
+        .await
+        .unwrap();
+    let connection = store.inner.conn.lock().await;
+    let journal_mode = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+        .unwrap();
+    let synchronous = connection
+        .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    let foreign_keys = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+
+    assert_eq!(journal_mode, "wal");
+    assert_eq!(synchronous, SQLITE_SYNCHRONOUS_FULL);
+    assert_eq!(foreign_keys, 1);
+}
+
 fn effective_config() -> sylvander_api::SessionEffectiveConfig {
     let source = sylvander_api::SessionConfigSource {
         kind: sylvander_api::SessionConfigSourceKind::AgentDefault,

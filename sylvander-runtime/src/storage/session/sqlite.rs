@@ -42,6 +42,9 @@ use super::{
     TurnStart, TurnState,
 };
 
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const SQLITE_SYNCHRONOUS_FULL: i64 = 2;
+
 /// SQLite-backed session store.
 #[derive(Clone)]
 pub struct SqliteSessionStore {
@@ -100,10 +103,7 @@ impl SqliteSessionStore {
         let path = path.as_ref().to_path_buf();
         task::spawn_blocking(move || -> Result<Self, SessionStoreError> {
             let conn = Connection::open(&path).map_err(sqlite_err)?;
-            conn.busy_timeout(Duration::from_secs(5))
-                .map_err(sqlite_err)?;
-            conn.execute_batch("PRAGMA foreign_keys=ON;")
-                .map_err(sqlite_err)?;
+            configure_durable_connection(&conn)?;
             Self::init_schema_with_foreign_objects(&conn, &allowed_foreign_objects)?;
             Ok(Self {
                 inner: Arc::new(StoreInner {
@@ -225,6 +225,32 @@ impl SqliteSessionStore {
         })
         .await
     }
+}
+
+fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreError> {
+    conn.busy_timeout(SQLITE_BUSY_TIMEOUT).map_err(sqlite_err)?;
+    let journal_mode = conn
+        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get::<_, String>(0))
+        .map_err(sqlite_err)?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        return Err(SessionStoreError::Store(
+            "session database cannot enable durable journal mode".into(),
+        ));
+    }
+    conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")
+        .map_err(sqlite_err)?;
+    let synchronous = conn
+        .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
+        .map_err(sqlite_err)?;
+    let foreign_keys = conn
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .map_err(sqlite_err)?;
+    if synchronous != SQLITE_SYNCHRONOUS_FULL || foreign_keys != 1 {
+        return Err(SessionStoreError::Store(
+            "session database durability controls are unavailable".into(),
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
