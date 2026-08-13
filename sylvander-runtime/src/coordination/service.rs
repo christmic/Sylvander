@@ -8,7 +8,8 @@ use sylvander_api::{AgentInstanceId, CoordinationMessageId, GovernanceCaseId, Se
 use crate::agent::instance::AgentInstanceState;
 use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
 use crate::coordination::governance::{
-    GovernanceAssessment, GovernancePolicy, GovernanceSnapshot, assess,
+    GovernanceAssessment, GovernancePolicy, GovernanceSnapshot, ProgressObservation,
+    WaitDependency, assess,
 };
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
@@ -56,6 +57,24 @@ pub struct ProposeHandoffRequest {
     pub requested_by: AgentInstanceId,
     pub reason: String,
     pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportWaitRequest {
+    pub session_id: SessionId,
+    pub task_id: TaskId,
+    pub waiter: AgentInstanceId,
+    pub awaited: AgentInstanceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportProgressRequest {
+    pub observation_id: String,
+    pub session_id: SessionId,
+    pub task_id: TaskId,
+    pub agent_instance_id: AgentInstanceId,
+    pub consumed_tokens: u64,
+    pub evidence_digest: Option<String>,
 }
 
 /// Single policy-enforcing entry point above coordination repositories.
@@ -369,6 +388,99 @@ where
             .acknowledge_message(&message.message_id, recipient, message.revision, now)
             .await
             .map_err(Into::into)
+    }
+
+    /// Add or refresh one wait-for edge using current durable revision fences.
+    pub async fn report_wait(
+        &self,
+        request: &ReportWaitRequest,
+        now: i64,
+    ) -> Result<(), CoordinationServiceError> {
+        let membership = self
+            .store
+            .session_membership(&request.session_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::MissingMembership(request.session_id.clone())
+            })?;
+        ensure_available(&membership, &request.waiter)?;
+        ensure_available(&membership, &request.awaited)?;
+        let topology = self
+            .store
+            .topology(&request.session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingTopology(request.session_id.clone()))?;
+        let task = self
+            .store
+            .task(&request.task_id)
+            .await?
+            .ok_or(CoordinationServiceError::UnknownTask)?;
+        self.store
+            .record_wait(
+                &request.session_id,
+                &WaitDependency {
+                    task_id: request.task_id.clone(),
+                    waiter: request.waiter.clone(),
+                    awaited: request.awaited.clone(),
+                },
+                task.revision,
+                topology.topology_revision,
+                now,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Resolve one exact wait edge. Repetition is intentionally idempotent.
+    pub async fn clear_wait(
+        &self,
+        request: &ReportWaitRequest,
+    ) -> Result<(), CoordinationServiceError> {
+        self.store
+            .clear_wait(
+                &request.session_id,
+                &WaitDependency {
+                    task_id: request.task_id.clone(),
+                    waiter: request.waiter.clone(),
+                    awaited: request.awaited.clone(),
+                },
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Append an idempotent progress sample bound to current task execution.
+    pub async fn report_progress(
+        &self,
+        request: ReportProgressRequest,
+        now: i64,
+    ) -> Result<ProgressObservation, CoordinationServiceError> {
+        let membership = self
+            .store
+            .session_membership(&request.session_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::MissingMembership(request.session_id.clone())
+            })?;
+        ensure_available(&membership, &request.agent_instance_id)?;
+        let task = self
+            .store
+            .task(&request.task_id)
+            .await?
+            .ok_or(CoordinationServiceError::UnknownTask)?;
+        let observation = ProgressObservation {
+            observation_id: request.observation_id,
+            task_id: request.task_id,
+            agent_instance_id: request.agent_instance_id,
+            task_revision: task.revision,
+            consumed_tokens: request.consumed_tokens,
+            evidence_digest: request.evidence_digest,
+            observed_at: now,
+        };
+        self.store
+            .record_progress(&request.session_id, &observation)
+            .await?;
+        Ok(observation)
     }
 }
 

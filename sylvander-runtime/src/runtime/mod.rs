@@ -64,7 +64,9 @@ use crate::composition::{
 use crate::config::{
     MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
 };
-use crate::coordination::service::{DispatchMessageOutcome, DispatchMessageRequest};
+use crate::coordination::service::{
+    DispatchMessageOutcome, DispatchMessageRequest, ReportProgressRequest, ReportWaitRequest,
+};
 use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::credential::registry::CredentialSecretResolver;
 use crate::evidence::{
@@ -4851,19 +4853,64 @@ impl Runtime {
         actor: &AuthenticatedSession,
         request: DispatchMessageRequest,
     ) -> Result<DispatchMessageOutcome, RuntimeError> {
-        if actor.id() != &request.session_id
-            || actor.agent_instance_id() != &request.sender_instance_id
-        {
-            return Err(RuntimeError::Coordination(
-                "coordination actor does not match authenticated Agent participant".into(),
-            ));
-        }
+        validate_coordination_actor(actor, &request.session_id, &request.sender_instance_id)?;
         self.storage
             .coordination()
             .ok_or_else(|| {
                 RuntimeError::Coordination("durable coordination is unavailable".into())
             })?
             .dispatch_message(request, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Persist one authenticated wait-for edge for deadlock governance.
+    pub async fn report_agent_wait(
+        &self,
+        actor: &AuthenticatedSession,
+        request: ReportWaitRequest,
+    ) -> Result<(), RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.waiter)?;
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .report_wait(&request, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Resolve one authenticated wait-for edge after its dependency changes.
+    pub async fn clear_agent_wait(
+        &self,
+        actor: &AuthenticatedSession,
+        request: ReportWaitRequest,
+    ) -> Result<(), RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.waiter)?;
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .clear_wait(&request)
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Persist task progress under the reporting Agent's exact authority.
+    pub async fn report_agent_progress(
+        &self,
+        actor: &AuthenticatedSession,
+        request: ReportProgressRequest,
+    ) -> Result<crate::coordination::governance::ProgressObservation, RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.agent_instance_id)?;
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .report_progress(request, crate::session::now_secs())
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))
     }
@@ -5435,6 +5482,20 @@ pub enum SessionBindingError {
     Snapshot,
     #[error(transparent)]
     InvalidPins(#[from] SessionRevisionPinError),
+}
+
+fn validate_coordination_actor(
+    actor: &AuthenticatedSession,
+    session_id: &SessionId,
+    agent_instance_id: &AgentInstanceId,
+) -> Result<(), RuntimeError> {
+    if actor.id() == session_id && actor.agent_instance_id() == agent_instance_id {
+        Ok(())
+    } else {
+        Err(RuntimeError::Coordination(
+            "coordination actor does not match authenticated Agent participant".into(),
+        ))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

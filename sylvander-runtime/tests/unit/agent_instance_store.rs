@@ -16,6 +16,7 @@ use crate::coordination::mailbox::{
 };
 use crate::coordination::service::{
     CoordinationService, DispatchMessageOutcome, DispatchMessageRequest, ProposeHandoffRequest,
+    ReportWaitRequest,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -415,6 +416,80 @@ async fn governance_wait_and_progress_facts_are_revision_fenced_and_idempotent()
             .waits
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn durable_wait_cycle_blocks_dispatch_and_escalates_to_moderator() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let mut task = CoordinationTask {
+        task_id: TaskId::new("cycle-left"),
+        session_id: SessionId::new("multi-session"),
+        membership_revision: 0,
+        parent_task_id: None,
+        created_by: AgentInstanceId::new("moderator-1"),
+        assigned_to: Some(AgentInstanceId::new("worker-1")),
+        objective: "left side".into(),
+        state: CoordinationTaskState::Running,
+        token_budget: 1_000,
+        consumed_tokens: 10,
+        max_handoffs: 2,
+        handoff_count: 0,
+        revision: 0,
+        created_at: 10,
+        updated_at: 10,
+    };
+    store.create_task(&task).await.unwrap();
+    task.task_id = TaskId::new("cycle-right");
+    task.assigned_to = Some(AgentInstanceId::new("coordinator-1"));
+    task.objective = "right side".into();
+    store.create_task(&task).await.unwrap();
+    let service = CoordinationService::new(store, GovernancePolicy::default(), 30);
+    service
+        .report_wait(
+            &ReportWaitRequest {
+                session_id: SessionId::new("multi-session"),
+                task_id: TaskId::new("cycle-left"),
+                waiter: AgentInstanceId::new("worker-1"),
+                awaited: AgentInstanceId::new("coordinator-1"),
+            },
+            20,
+        )
+        .await
+        .unwrap();
+    service
+        .report_wait(
+            &ReportWaitRequest {
+                session_id: SessionId::new("multi-session"),
+                task_id: TaskId::new("cycle-right"),
+                waiter: AgentInstanceId::new("coordinator-1"),
+                awaited: AgentInstanceId::new("worker-1"),
+            },
+            20,
+        )
+        .await
+        .unwrap();
+
+    let DispatchMessageOutcome::RequiresArbitration { assessment, .. } = service
+        .dispatch_message(dispatch_request("cycle-blocked-message"), 21)
+        .await
+        .unwrap()
+    else {
+        panic!("durable wait cycle must block automatic dispatch");
+    };
+    assert!(assessment.findings.iter().any(|finding| matches!(
+        finding,
+        GovernanceFinding::WaitCycle { agents } if agents.len() == 2
+    )));
 }
 
 #[tokio::test]
