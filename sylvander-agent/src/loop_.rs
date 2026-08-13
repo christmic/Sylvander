@@ -32,8 +32,9 @@ use sylvander_llm_core::{
 };
 
 use super::execution_ports::AgentExecutionPorts;
-use super::plan_gate::PlanDecision;
 use super::tool::{AgentHookPhase, ToolRegistry};
+use crate::interaction::approval::{ApprovalDecision, ToolUseRequest};
+use crate::interaction::plan::PlanDecision;
 use crate::turn::conversation::ConversationSnapshot;
 use crate::turn::error::AgentLoopError;
 use crate::turn::event::{AgentEvent, ModelRetryCause};
@@ -374,18 +375,18 @@ pub fn run_stream(
 
                 // Check approval gate before executing tools.
                 // The loop PAUSES here if the gate waits for external input.
-                let decisions: Vec<crate::approval::ApprovalDecision> =
+                let decisions: Vec<ApprovalDecision> =
                     if let Some(gate) = &ports.approval_gate {
                         // `present_plan` is itself the consent UI. Requiring a
                         // tool approval before showing it would create two
                         // consecutive prompts for one decision.
-                        let requests: Vec<crate::approval::ToolUseRequest> = tool_blocks
+                        let requests: Vec<ToolUseRequest> = tool_blocks
                             .iter()
                             .filter(|t| {
                                 t.name != "present_plan" && t.name != "start_background_task"
                                     && t.name != "update_plan"
                             })
-                            .map(|t| crate::approval::ToolUseRequest {
+                            .map(|t| ToolUseRequest {
                                 call_id: t.id.clone(),
                                 tool_name: t.name.clone(),
                                 input: t.input.clone(),
@@ -399,10 +400,10 @@ pub fn run_stream(
                                     || tool.name == "start_background_task"
                                     || tool.name == "update_plan"
                                 {
-                                    crate::approval::ApprovalDecision::Approved
+                                    ApprovalDecision::Approved
                                 } else {
                                     gated.next().unwrap_or_else(|| {
-                                        crate::approval::ApprovalDecision::Rejected {
+                                        ApprovalDecision::Rejected {
                                             reason: "approval gate returned no decision".into(),
                                         }
                                     })
@@ -412,7 +413,7 @@ pub fn run_stream(
                     } else {
                         // No gate → auto-approve all (backward compatible)
                         vec![
-                            crate::approval::ApprovalDecision::Approved;
+                            ApprovalDecision::Approved;
                             tool_blocks.len()
                         ]
                     };
@@ -428,7 +429,7 @@ pub fn run_stream(
                 let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
                 for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
                     match decision {
-                        crate::approval::ApprovalDecision::Approved => {
+                        ApprovalDecision::Approved => {
                             yield AgentEvent::ToolCallStart {
                                 id: tool_use.id.clone(),
                                 name: tool_use.name.clone(),
@@ -692,7 +693,7 @@ pub fn run_stream(
                                 tool_use.id.clone(), output, is_error,
                             ));
                         }
-                        crate::approval::ApprovalDecision::Rejected { reason } => {
+                        ApprovalDecision::Rejected { reason } => {
                             yield AgentEvent::ToolRejected {
                                 id: tool_use.id.clone(),
                                 name: tool_use.name.clone(),
@@ -711,7 +712,7 @@ pub fn run_stream(
                     // Ordinary tools are independent within one model batch. Emit every
                     // start first, execute concurrently, then publish results in model order.
                     for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
-                        if matches!(decision, crate::approval::ApprovalDecision::Approved) {
+                        if matches!(decision, ApprovalDecision::Approved) {
                             yield AgentEvent::ToolCallStart {
                                 id: tool_use.id.clone(),
                                 name: tool_use.name.clone(),
@@ -752,7 +753,7 @@ pub fn run_stream(
                             });
                         async move {
                             let outcome = match decision {
-                                crate::approval::ApprovalDecision::Approved => {
+                                ApprovalDecision::Approved => {
                                     let execution = match execution_mode {
                                         crate::tool::ToolExecutionMode::Parallel => {
                                             let _guard = execution_coordination.read().await;
@@ -787,7 +788,7 @@ pub fn run_stream(
                                     };
                                     ParallelToolOutcome::Executed(execution)
                                 }
-                                crate::approval::ApprovalDecision::Rejected { reason } => {
+                                ApprovalDecision::Rejected { reason } => {
                                     ParallelToolOutcome::Rejected(reason)
                                 }
                             };

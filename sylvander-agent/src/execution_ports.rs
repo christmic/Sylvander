@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use sylvander_llm_core::ModelProvider;
 
-use crate::approval::ApprovalGate;
 use crate::artifact::TurnArtifactStore;
-use crate::ask_user_gate::AskUserGate;
-use crate::plan_gate::PlanGate;
-use crate::task_gate::TaskGate;
+use crate::interaction::approval::ApprovalGate;
+use crate::interaction::ask_user::AskUserGate;
+use crate::interaction::background_task::TaskGate;
+use crate::interaction::plan::PlanGate;
 use crate::tool_context::ToolContext;
 use crate::tool_invocation::{ToolInvocationGateway, ToolInvocationSnapshot};
 use crate::turn::error::AgentLoopError;

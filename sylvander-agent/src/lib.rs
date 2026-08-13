@@ -86,30 +86,27 @@
 
 #![doc(html_root_url = "https://docs.rs/sylvander-agent/0.1.0")]
 
-/// Approval policy evaluation and user decisions inside one execution.
-pub mod approval;
 /// Turn-bound, location-neutral artifact retention port.
 pub mod artifact;
-/// One-shot AskUser prompt/answer gate for an Agent run.
-pub mod ask_user_gate;
 /// Context-window compaction contracts and pipeline implementations.
 pub mod compress;
 /// Runtime-owned Guardian candidate and curated-context contracts.
 pub mod curated_memory;
 pub mod execution_ports;
+/// User decisions and bounded background-work boundaries for one turn.
+pub mod interaction;
 /// Provider-compatible iterative model/tool execution loop.
 pub mod loop_;
-/// Plan proposal and acknowledgement gate.
-pub mod plan_gate;
 /// Deterministic system-prompt composition.
 pub mod prompt;
-/// Restricted background-task lifecycle and result gate.
-pub mod task_gate;
 /// Immutable input, authority, progress, and result vocabulary for one turn.
 pub mod turn;
 
 // Public facade for the established crate API. Internal code uses `turn::*`
 // paths so the physical ownership remains visible during development.
+pub use interaction::{
+    approval, ask_user as ask_user_gate, background_task as task_gate, plan as plan_gate,
+};
 pub use turn::{conversation, error, event, execution_context, identity, outcome, request, time};
 /// Tool registration, schemas, invocation, and normalized output.
 pub mod tool;
@@ -159,8 +156,8 @@ pub mod prelude {
         MemoryCandidateSubmission,
     };
     pub use crate::execution_ports::AgentExecutionPorts;
+    pub use crate::interaction::plan::PlanDecision;
     pub use crate::loop_::{AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events};
-    pub use crate::plan_gate::PlanDecision;
     pub use crate::tool::{
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
         ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
