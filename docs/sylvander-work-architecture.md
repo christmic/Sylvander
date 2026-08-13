@@ -355,6 +355,16 @@ React can call only the two application-specific preference commands; it cannot
 choose a notification title/body, enumerate notifications, select a store
 filename, or read arbitrary host keys.
 
+User Profile export is the sole native file-save workflow. Runtime first
+returns the exact typed owner export; React passes that DTO—not an arbitrary
+path or byte buffer—to one Rust command. Rust re-deserializes it as the public
+`UserProfileExport`, bounds the pretty JSON to 2 MiB, derives the filename from
+the trusted revision, and opens the official native Dialog plugin with a JSON-
+only filter. The selected path never returns to React. Cancellation is a normal
+non-error result and a successful write is flushed before confirmation. The
+main-window capability grants no `dialog:*` or `fs:*` command, so this feature
+does not create a general picker or filesystem authority for the WebView.
+
 Handshake rejection preserves the protocol's public error code, bounded safe
 message, and supported version range. Native transport, TLS, and credential
 errors remain generic. This gives the user an actionable compatibility fact
@@ -428,11 +438,11 @@ included in the application bootstrap. The compiled
 ## Version baseline
 
 The foundation pins exact, verified stable patches so a clean build is
-reproducible: Tauri `2.11.5`, Window State `2.4.1`, Notification `2.3.3`,
-Store `2.4.4`, React and React DOM `19.2.8`, Vite `8.2.1`, TypeScript `6.0.3`,
-and Vitest `4.1.10`. Dependency updates are deliberate maintenance changes
-with build, protocol, visual, and accessibility evidence; "latest" is not
-resolved dynamically during release builds.
+reproducible: Tauri `2.11.5`, Dialog `2.7.2`, Window State `2.4.1`,
+Notification `2.3.3`, Store `2.4.4`, React and React DOM `19.2.8`, Vite
+`8.2.1`, TypeScript `6.0.3`, and Vitest `4.1.10`. Dependency updates are
+deliberate maintenance changes with build, protocol, visual, and accessibility
+evidence; "latest" is not resolved dynamically during release builds.
 
 On macOS, the normal interactive `npm run build` lets Tauri's bundled
 `create-dmg` ask Finder to position the volume contents. Non-interactive
@@ -467,6 +477,6 @@ defines ownership and invariants.
 1. Build the responsive React shell and typed presentation store.
 2. Add the bounded native Rust WebSocket gateway and protocol conformance tests.
 3. Add approval, AskUser, plan, task, diff, artifact, and settings surfaces.
-4. Add native dialogs, signing, and updates; bounded window persistence and
-   opt-in terminal notifications are complete.
+4. Add signing and updates; bounded window persistence, opt-in terminal
+   notifications, and the native User Profile export dialog are complete.
 5. Establish cross-platform performance and accessibility release evidence.

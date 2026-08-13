@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
-import type { DesktopEvent, RuntimeCommand, RuntimeGatewayPort } from "./lib/gateway";
+import type { DesktopEvent, RuntimeCommand, RuntimeGatewayPort, RuntimeUserProfileExport } from "./lib/gateway";
 import type { DesktopHostPort, DesktopHostPreferences } from "./lib/host";
 
 afterEach(cleanup);
@@ -33,6 +33,7 @@ class TestGateway implements RuntimeGatewayPort {
 class TestHost implements DesktopHostPort {
   preferences: DesktopHostPreferences = { turn_notifications: false };
   rejectWrites = false;
+  savedExports: RuntimeUserProfileExport[] = [];
   writes: boolean[] = [];
 
   async getPreferences() {
@@ -44,6 +45,11 @@ class TestHost implements DesktopHostPort {
     if (this.rejectWrites) throw new Error("save failed");
     this.preferences = { turn_notifications: enabled };
     return this.preferences;
+  }
+
+  async saveUserProfileExport(exported: RuntimeUserProfileExport) {
+    this.savedExports.push(exported);
+    return { saved: true };
   }
 }
 
@@ -554,7 +560,8 @@ describe("Sylvander Work", () => {
 
   it("edits the authenticated owner's typed profile without raw JSON", async () => {
     const gateway = new TestGateway();
-    render(<App gateway={gateway} />);
+    const host = new TestHost();
+    render(<App gateway={gateway} host={host} />);
     await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
     act(() => gateway.emit({
       type: "connected",
@@ -689,7 +696,10 @@ describe("Sylvander Work", () => {
         },
       },
     } }));
-    expect(await screen.findByRole("button", { name: "Download JSON export" })).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Save JSON export…" }).click());
+    expect(await screen.findByText("Profile export saved.")).toBeTruthy();
+    expect(host.savedExports).toHaveLength(1);
+    expect(host.savedExports[0]?.profile.revision).toBe(3);
 
     act(() => screen.getByRole("button", { name: "Delete profile…" }).click());
     act(() => screen.getByRole("button", { name: "Confirm profile deletion" }).click());

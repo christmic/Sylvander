@@ -15,6 +15,7 @@ fn main() {
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(host::setup)
@@ -24,6 +25,7 @@ fn main() {
             gateway::disconnect_runtime,
             gateway::submit_runtime,
             host::get_host_preferences,
+            host::save_user_profile_export,
             host::set_turn_notifications,
         ])
         .run(tauri::generate_context!())

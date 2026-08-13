@@ -138,6 +138,10 @@ export default function App({ gateway, host }: AppProps) {
     }
   }
 
+  async function saveProfileExport(exported: Parameters<DesktopHostPort["saveUserProfileExport"]>[0]) {
+    return (await desktopHost.saveUserProfileExport(exported)).saved;
+  }
+
   async function attachFiles(event: ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
     const sessionId = state.selectedId;
@@ -514,7 +518,7 @@ export default function App({ gateway, host }: AppProps) {
       </div>
     </main>
 
-    {accountView === "profile" && <ProfileSettings state={state.userProfile} onClose={closeAccount} onOpenIdentity={state.protocol?.capabilities.includes("identity_binding_v1") ? openIdentityBinding : undefined} onRequest={requestUserProfile} />}
+    {accountView === "profile" && <ProfileSettings state={state.userProfile} onClose={closeAccount} onOpenIdentity={state.protocol?.capabilities.includes("identity_binding_v1") ? openIdentityBinding : undefined} onRequest={requestUserProfile} onSaveExport={saveProfileExport} />}
     {accountView === "identity" && <IdentitySettings state={state.identityBinding} onClose={closeAccount} onOpenProfile={state.protocol?.capabilities.includes("user_profile_v1") ? openUserProfile : undefined} onClearChallenge={clearIdentityChallenge} onRequest={requestIdentityBinding} />}
     {agentAdministrationOpen && <AgentAdministration agents={state.agents} state={state.agentAdministration} onClose={closeAgentAdministration} onRequest={requestAgentAdministration} />}
     {registryAdministrationOpen && <RegistryAdministration state={state.registryAdministration} onClose={closeRegistryAdministration} onRequest={requestRegistryAdministration} />}

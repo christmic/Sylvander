@@ -4,8 +4,10 @@
 //! Runtime command, transcript, diagnostic, or user-profile record.
 
 use serde::Serialize;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{App, AppHandle, Manager, State, Wry};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_store::{Store, StoreExt};
 
@@ -13,6 +15,7 @@ use sylvander_api::UiServerMessage;
 
 const PREFERENCES_FILE: &str = "desktop-preferences.json";
 const TURN_NOTIFICATIONS_KEY: &str = "turn_notifications";
+const MAX_PROFILE_EXPORT_BYTES: usize = 2 * 1024 * 1024;
 
 pub(crate) struct DesktopHost {
     turn_notifications: AtomicBool,
@@ -22,6 +25,11 @@ pub(crate) struct DesktopHost {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct HostPreferences {
     turn_notifications: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct SaveExportResult {
+    saved: bool,
 }
 
 pub(crate) fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
@@ -61,6 +69,41 @@ pub(crate) fn set_turn_notifications(
     Ok(HostPreferences {
         turn_notifications: enabled,
     })
+}
+
+#[tauri::command]
+pub(crate) async fn save_user_profile_export(
+    app: AppHandle,
+    export: sylvander_api::UserProfileExport,
+) -> Result<SaveExportResult, String> {
+    let revision = export.profile.revision;
+    let mut bytes = serde_json::to_vec_pretty(&export)
+        .map_err(|_| "User Profile export could not be encoded".to_owned())?;
+    bytes.push(b'\n');
+    if bytes.len() > MAX_PROFILE_EXPORT_BYTES {
+        return Err("User Profile export exceeds the Desktop limit".to_owned());
+    }
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_file_name(format!("sylvander-user-profile-r{revision}.json"))
+            .add_filter("JSON", &["json"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|_| "User Profile save dialog failed".to_owned())?;
+    let Some(selected) = selected else {
+        return Ok(SaveExportResult { saved: false });
+    };
+    let path = selected
+        .into_path()
+        .map_err(|_| "Selected export destination is not a local file".to_owned())?;
+    let mut file = std::fs::File::create(path)
+        .map_err(|_| "User Profile export could not be created".to_owned())?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| "User Profile export could not be saved".to_owned())?;
+    Ok(SaveExportResult { saved: true })
 }
 
 pub(crate) fn notify_if_backgrounded(app: &AppHandle, body: &'static str) {

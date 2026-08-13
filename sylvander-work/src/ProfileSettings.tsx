@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 
-import type { RuntimePrivacyClass, RuntimeUserProfileAction, RuntimeUserProfileData, RuntimeUserProfileView } from "./lib/gateway";
+import type { RuntimePrivacyClass, RuntimeUserProfileAction, RuntimeUserProfileData, RuntimeUserProfileExport, RuntimeUserProfileView } from "./lib/gateway";
 import type { RuntimeViewState } from "./lib/useRuntime";
 
 interface ProfileSettingsProps {
@@ -8,11 +8,12 @@ interface ProfileSettingsProps {
   onClose(): void;
   onOpenIdentity?: () => void;
   onRequest(action: RuntimeUserProfileAction): Promise<boolean>;
+  onSaveExport(exported: RuntimeUserProfileExport): Promise<boolean>;
 }
 
 type OptionalEnum<T extends string> = "" | T;
 
-export function ProfileSettings({ state, onClose, onOpenIdentity, onRequest }: ProfileSettingsProps) {
+export function ProfileSettings({ state, onClose, onOpenIdentity, onRequest, onSaveExport }: ProfileSettingsProps) {
   const [language, setLanguage] = useState("");
   const [languagePrivacy, setLanguagePrivacy] = useState<RuntimePrivacyClass>("personal");
   const [locale, setLocale] = useState("");
@@ -28,10 +29,12 @@ export function ProfileSettings({ state, onClose, onOpenIdentity, onRequest }: P
   const [highContrast, setHighContrast] = useState(false);
   const [constraints, setConstraints] = useState<Array<{ value: string; privacy: RuntimePrivacyClass }>>([]);
   const [deleteArmed, setDeleteArmed] = useState(false);
+  const [exportStatus, setExportStatus] = useState<"saving" | "saved" | "cancelled" | "error">();
   const profile = state.profile;
   const busy = state.status === "loading" || state.status === "submitting";
 
   useEffect(() => loadEditor(profile), [profile?.revision]);
+  useEffect(() => setExportStatus(undefined), [state.export?.exported_at_unix_secs]);
 
   function loadEditor(current?: RuntimeUserProfileView) {
     const data = current?.profile;
@@ -95,18 +98,14 @@ export function ProfileSettings({ state, onClose, onOpenIdentity, onRequest }: P
       : item));
   }
 
-  function downloadExport() {
+  async function downloadExport() {
     if (!state.export) return;
-    // The object URL exists only for this explicit owner export action.
-    const url = URL.createObjectURL(new Blob(
-      [JSON.stringify(state.export, null, 2)],
-      { type: "application/json" },
-    ));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `sylvander-user-profile-r${state.export.profile.revision}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    setExportStatus("saving");
+    try {
+      setExportStatus(await onSaveExport(state.export) ? "saved" : "cancelled");
+    } catch {
+      setExportStatus("error");
+    }
   }
 
   return <aside className="inspector account-panel" aria-label="Account settings">
@@ -129,7 +128,8 @@ export function ProfileSettings({ state, onClose, onOpenIdentity, onRequest }: P
         <div className="context-actions"><button className="primary-button" disabled={busy}>{profile ? "Save profile" : "Create profile"}</button>{profile && <button type="button" className="secondary-button" disabled={busy} onClick={() => void onRequest({ operation: "correct", expected_revision: profile.revision, profile: profileData() })}>Record correction</button>}</div>
       </form>}
       {profile && <div className="context-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => void onRequest({ operation: "set_do_not_learn", expected_revision: profile.revision, enabled: !profile.do_not_learn })}>{profile.do_not_learn ? "Allow learning" : "Do not learn"}</button><button type="button" className="secondary-button" disabled={busy} onClick={() => void onRequest({ operation: "export", format: "json" })}>Prepare JSON export</button>{deleteArmed ? <button type="button" className="primary-button" disabled={busy} onClick={() => void onRequest({ operation: "delete", expected_revision: profile.revision })}>Confirm profile deletion</button> : <button type="button" className="secondary-button" disabled={busy} onClick={() => setDeleteArmed(true)}>Delete profile…</button>}</div>}
-      {state.export && <button type="button" className="primary-button" onClick={downloadExport}>Download JSON export</button>}
+      {state.export && <button type="button" className="primary-button" disabled={exportStatus === "saving"} onClick={() => void downloadExport()}>Save JSON export…</button>}
+      {exportStatus && exportStatus !== "saving" && <p role={exportStatus === "error" ? "alert" : "status"}>{exportStatus === "saved" ? "Profile export saved." : exportStatus === "cancelled" ? "Profile export was not saved." : "Profile export could not be saved."}</p>}
     </section>
   </aside>;
 }

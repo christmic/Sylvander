@@ -1,11 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import type { RuntimeUserProfileExport } from "./gateway";
+
 export interface DesktopHostPreferences {
   turn_notifications: boolean;
 }
 
 export interface DesktopHostPort {
   getPreferences(): Promise<DesktopHostPreferences>;
+  saveUserProfileExport(exported: RuntimeUserProfileExport): Promise<{ saved: boolean }>;
   setTurnNotifications(enabled: boolean): Promise<DesktopHostPreferences>;
 }
 
@@ -13,6 +16,10 @@ export interface DesktopHostPort {
 export class DesktopHost implements DesktopHostPort {
   getPreferences() {
     return invoke<DesktopHostPreferences>("get_host_preferences");
+  }
+
+  saveUserProfileExport(exported: RuntimeUserProfileExport) {
+    return invoke<{ saved: boolean }>("save_user_profile_export", { export: exported });
   }
 
   setTurnNotifications(enabled: boolean) {

@@ -113,6 +113,12 @@ interrupted notification from the matching Runtime terminal; no conversation
 content or Session identity appears in the operating-system surface. Focused
 work never produces a duplicate notification.
 
+Preparing a User Profile export does not download through the WebView. “Save
+JSON export…” opens the operating system save panel with a revision-derived
+filename and JSON filter. Cancelling leaves a visible non-error status; success
+appears only after the native host flushes the file. The chosen path is never
+shown in the transcript, diagnostics, or React state.
+
 ## Decisions and questions
 
 Approval, AskUser, and plan review use an anchored Decision Dock immediately
