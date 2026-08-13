@@ -42,6 +42,10 @@ Runtime Agent service
   router, bounds, and fail-closed unavailable sentinel. Concrete local, SSH,
   and OCI implementations live in Runtime. `ToolContext` never grants host
   access merely because a filesystem path was supplied.
+- `artifact` defines the asynchronous, turn-bound retention port. Agent sends
+  media type, bytes, and call correlation only; Runtime binds identity,
+  encryption, retention, backend, and locator resolution. Compression exposes
+  only an opaque `artifact:` locator and never a host path.
 - `tools` contains Agent-owned definitions and prepared-call handlers. Concrete
   storage and process services are injected through the execution context.
   Relationship-memory domain values, validation, and the `MemoryStore` port
@@ -61,8 +65,9 @@ Runtime Agent service
 3. Approval, AskUser, plan, and task gates pause or constrain the current run;
    they never let model content forge a response under another session.
 4. Every concrete tool call checks its `ToolContext` capability snapshot and
-   records content-safe lifecycle evidence. Tool output is size-bounded before
-   returning to the model or a client. Workspace tools are stateless and reject
+   records content-safe lifecycle evidence. Oversized plain text is replaced
+   only after Runtime confirms durable artifact retention; failure preserves
+   the only inline copy. Workspace tools are stateless and reject
    an empty context workspace instead of falling back to constructor or process
    paths.
 5. Background tasks get a new explicit task prompt and a reduced read-only

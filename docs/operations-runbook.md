@@ -23,16 +23,20 @@ principal IDs, credentials, paths, or memory content.
 
 The `storage.components` entries currently cover `sessions`,
 `relationship_memory`, `agent_registry`, `user_profiles`, `evidence`,
-`credential_audit`, `guardian_curation`, and `guardian_canonical`. `ready`
+`artifacts`, `credential_audit`, `guardian_curation`, and
+`guardian_canonical`. `ready`
 means the live database integrity probe passed;
 `degraded` makes top-level readiness false. Production must never report
-`unverified`: that state exists only for isolated in-memory test composition.
+`unverified` for a required configured store; that state is valid for the
+optional artifact component when governed encryption is disabled.
 Session probing verifies the exact owned schema and foreign keys; relationship
 memory additionally verifies its authenticated anchor when one is configured.
 Registry probing verifies the declared shared namespace, current ledger, and
 owned foreign keys. User Profile probing verifies its exact current schema.
 Evidence verifies base schema, database/foreign-key integrity, and governed
-table shape; credential audit verifies exact schema and database integrity.
+table shape. Artifacts independently report that governed probe, or
+`unverified` when encrypted artifact retention is disabled. Credential audit
+verifies exact schema and database integrity.
 Guardian curation verifies exact schema, pages, and foreign keys; canonical
 memory verifies its exact schema and pages. A Guardian storage failure reports
 `Storage`, whereas a worker/supervisor failure reports `GuardianSupervisor`.

@@ -82,21 +82,25 @@ authenticated integrity anchor when configured. Registry verifies the exact
 shared namespace, current schema ledger, owned foreign keys, and `SQLite`
 pages; User Profiles verify their exact schema and `SQLite` pages. Evidence
 verifies its exact base schema, page/foreign-key integrity, and governed table
-shape when enabled. Credential audit verifies its exact schema and database
+shape when enabled. Artifact health independently verifies that same governed
+store only when encrypted retention is configured; otherwise it is
+`unverified` and Agent compression keeps the only inline copy. Credential audit verifies its exact schema and database
 integrity. Guardian's two stores reject non-current object sets both at open
 and during health; curation also verifies foreign keys. RuntimeStorage receives
 a health-only pair of cloned store handles, not the supervisor or its
 credential/mutation authority. Public results contain only component identity and
 `ready`, `unverified`, or `degraded`; raw errors and storage locations remain
 private. Any degraded component, or a failed Session-count read, contributes
-the stable `Storage` health issue and makes Runtime unready. `Unverified` is a
-test-composition state, not production success.
+the stable `Storage` health issue and makes Runtime unready. `Unverified` is
+valid only when a component is intentionally absent, including disabled
+artifact governance, or in isolated composition; it is never success for a
+required configured store.
 
-Artifact stores still open through their existing Runtime-owned services;
-there is not yet a cross-domain
-transaction, unified backup lifecycle, or health coverage for every store.
-Those are remaining implementation work, not capabilities callers may assume
-today.
+Turn artifacts now enter one Runtime-owned encrypted service bound to the
+authenticated user, Agent, Session, and turn. Agent receives only a
+location-neutral port and opaque locator. There is not yet an authorized
+retrieval service, cross-domain transaction, or unified backup lifecycle;
+callers must not infer those target capabilities today.
 
 Evidence has two deliberately separate health facts. Database/schema failures
 are part of the unified `Storage` issue. The asynchronous recorder's sticky

@@ -39,7 +39,8 @@ pub enum RuntimeStorageComponent {
 pub enum RuntimeStorageStatus {
     /// A live integrity check completed successfully.
     Ready,
-    /// No concrete production probe is installed, as in isolated unit boot.
+    /// No concrete probe is installed, as for an optional disabled component
+    /// or isolated unit composition.
     Unverified,
     /// The live integrity check failed; details remain inside Runtime.
     Degraded,

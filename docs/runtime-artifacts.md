@@ -124,15 +124,26 @@ These repositories are design evidence, not wire specifications:
   truncation metadata, while `core/messages.ts` may expose a full-output path.
   Sylvander adopts structured outcomes and rejects the path coupling.
 
-## Implementation order
+## Implementation status
 
-1. Replace `ToolResultDisk` with the asynchronous turn-bound Agent port.
-2. Make the default compression pipeline include the budget layer; it remains
-   a no-op when Runtime does not install the port.
-3. Implement Runtime's governed artifact adapter and attach it per turn.
-4. Add storage health, failure injection, Unicode boundary, identity binding,
-   and different-model compression tests.
-5. Add separately authorized artifact retrieval and client projections.
+Implemented:
+
+1. `ToolResultDisk` and the plaintext filesystem adapter were removed.
+2. `TurnArtifactStore` is asynchronous and attached only through immutable
+   `AgentExecutionPorts`.
+3. The default compression pipeline includes L0 and safely becomes a no-op
+   without a bound store.
+4. Runtime binds user, Agent, Session, turn, and admission time before Agent
+   execution, then stores restricted content through AES-256-GCM governance.
+5. Runtime storage health reports Artifacts separately from Evidence; disabled
+   governance is `Unverified`, a failed live governed-store probe is
+   `Degraded`.
+6. Tests cover encryption at rest, plaintext rejection, invalid payloads,
+   opaque locators, UTF-8 preview boundaries, persistence failure, and the
+   Anthropic, OpenAI, and DashScope model families.
+
+Separately authorized artifact retrieval, client download projections, and
+cross-repository backup/transaction policy remain future work.
 
 MCP artifact handling is reviewed afterward and may delegate to this Runtime
 service, but it must not shape this neutral Agent contract.

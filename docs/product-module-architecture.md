@@ -211,8 +211,8 @@ persisted before their public event when a durable turn exists.
 
 The same facade now emits a unified, content-free health snapshot for Session,
 relationship memory, the Agent Registry, User Profiles, Evidence, the
-credential-operation audit ledger, Guardian curation, and Guardian canonical
-memory. Production composition retains concrete probe handles while
+encrypted turn-artifact service, credential-operation audit ledger, Guardian
+curation, and Guardian canonical memory. Production composition retains concrete probe handles while
 Agent revisions receive only their provider-neutral ports. Session health
 rechecks the exact live schema, SQLite pages, and owned foreign keys;
 relationship-memory health rechecks its exact schema, SQLite pages, and, when
@@ -226,14 +226,16 @@ any non-current object set on open and recheck their exact schema and SQLite
 pages during health; curation additionally checks foreign keys. A health-only
 `GuardianStorageProbe` carries cloned store handles without granting supervisor
 control, credential rotation, or mutation authority. `Ready` means that live
-probe succeeded, `Degraded` makes Runtime unready, and `Unverified` is reserved
-for isolated test composition without production probes. A failed Session
+probe succeeded, `Degraded` makes Runtime unready, and `Unverified` means the
+component is intentionally absent (such as disabled artifact governance) or an
+isolated composition has no concrete probe. A failed Session
 count no longer makes the health endpoint fail before it can report Storage as
 degraded. Paths, database errors, row data, and anchor material never enter the
 snapshot.
 
-Artifact stores, cross-repository transactions, unified backup
-lifecycle, and full-store health coverage remain incomplete. Callers must not
+Turn artifacts are now location-neutral, encrypted, scoped, and independently
+represented in unified health. Authorized retrieval, cross-repository
+transactions, and unified backup lifecycle remain incomplete. Callers must not
 infer those target capabilities from this architecture contract.
 
 ## Built-in observability

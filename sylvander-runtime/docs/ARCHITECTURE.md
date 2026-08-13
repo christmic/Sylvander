@@ -132,12 +132,13 @@ crate without retaining a second production path.
   Runtime selects, opens, maintains, and injects the concrete store.
 - `storage::RuntimeStorage` is the crate-private composition root for durable
   repositories. It closes public access to the selected Session and
-  relationship-memory handles and aggregates live integrity for eight
+  relationship-memory handles and aggregates live integrity for nine
   production stores. Session schema v2 makes turn lifecycle
   authoritative: admission commits user input, configuration, and `running`;
   successful completion commits assistant output and `completed` in one
-  transaction. Artifact lifecycle and cross-domain transactions remain to be
-  folded into this facade; see
+  transaction. Turn-bound artifacts use the encrypted governed store, an
+  independent health component, and opaque locators. Retrieval,
+  cross-domain transactions, and unified backup remain incomplete; see
   [`application-services.md`](application-services.md) for exact status.
 - `observability` is the closed typed lifecycle recorder. Its first slice
   covers authorized chat admission, message-bus dispatch, turn terminals,
