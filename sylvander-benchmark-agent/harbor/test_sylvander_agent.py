@@ -27,6 +27,9 @@ class BoundedDiagnosticTest(unittest.TestCase):
         self.assertEqual(metrics["total_prompt_tokens"], 42)
         self.assertEqual(metrics["total_completion_tokens"], 7)
 
+    def test_last_json_line_returns_none_when_runtime_swallows_output(self) -> None:
+        self.assertIsNone(_last_json_line(">>>> podman-compose notice\n"))
+
 
 if __name__ == "__main__":
     unittest.main()
