@@ -59,7 +59,7 @@ impl sylvander_agent::tool::ToolDefinition for ReadTool {
                 &["file_path"],
             )
             .schema,
-            sylvander_agent::tool_invocation::ToolInvocationClass::Read,
+            sylvander_agent::tool::invocation::ToolInvocationClass::Read,
         )
     }
 }

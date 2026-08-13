@@ -10,7 +10,7 @@
 //!
 //! ```ignore
 //! use sylvander_agent::prelude::*;
-//! use sylvander_agent::compress::layers::*;
+//! use sylvander_agent::context::compression::layers::*;
 //!
 //! let pipeline = CompressionPipeline::builder()
 //!     .layer(ToolResultBudgetLayer::new())
@@ -29,7 +29,7 @@
 //! ## Driver dispatch
 //!
 //! The pipeline's `run_all` is async. The legacy `Compressor::maybe_compress`
-//! is synchronous. The `CompressionDriver` enum in `loop_.rs` owns that
+//! is synchronous. The `CompressionDriver` enum in `kernel/agent_loop.rs` owns that
 //! dispatch boundary.
 
 use std::fmt;

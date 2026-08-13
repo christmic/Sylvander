@@ -43,7 +43,7 @@ use serde_json::json;
 mod support;
 
 use support::{InMemoryArtifactStore, qualified_anthropic_loop_builder};
-use sylvander_agent::compress::layers::{
+use sylvander_agent::context::compression::layers::{
     context_collapse::ContextCollapseLayer, micro_compact::MicroCompactLayer,
     orphan_snip::OrphanSnipLayer, tool_result_budget::ToolResultBudgetLayer,
 };
@@ -148,9 +148,11 @@ async fn real_api_l4_smoke_test() {
     let pipeline = CompressionPipeline::builder()
         .layer(OrphanSnipLayer::new())
         .layer(MicroCompactLayer::new())
-        .layer(sylvander_agent::compress::layers::context_collapse::ContextCollapseLayer::new())
         .layer(
-            sylvander_agent::compress::layers::auto_compact::AutoCompactLayer::new()
+            sylvander_agent::context::compression::layers::context_collapse::ContextCollapseLayer::new(),
+        )
+        .layer(
+            sylvander_agent::context::compression::layers::auto_compact::AutoCompactLayer::new()
                 .with_trigger_ratio(0.5),
         )
         .build();

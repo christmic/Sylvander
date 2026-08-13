@@ -12,7 +12,7 @@ use std::sync::Arc;
 mod support;
 
 use support::{InMemoryArtifactStore, qualified_anthropic_loop_builder, workspace_tool_context};
-use sylvander_agent::compress::layers::tool_result_budget::ToolResultBudgetLayer;
+use sylvander_agent::context::compression::layers::tool_result_budget::ToolResultBudgetLayer;
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -72,7 +72,7 @@ async fn real_api_natural_multi_turn_with_compression() {
         .tool(read_tool)
         .tool_context(workspace_tool_context(
             tmp.path(),
-            [sylvander_agent::tool_context::Cap::Read],
+            [sylvander_agent::execution::tool_context::Cap::Read],
         ))
         .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)

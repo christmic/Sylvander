@@ -38,8 +38,8 @@ fn edit_context(root: &std::path::Path) -> ToolContext {
     workspace_tool_context(
         root,
         [
-            sylvander_agent::tool_context::Cap::Read,
-            sylvander_agent::tool_context::Cap::Write,
+            sylvander_agent::execution::tool_context::Cap::Read,
+            sylvander_agent::execution::tool_context::Cap::Write,
         ],
     )
 }

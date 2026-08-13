@@ -10,7 +10,7 @@ use serde_json::json;
 mod support;
 
 use support::{InMemoryArtifactStore, qualified_anthropic_loop_builder, workspace_tool_context};
-use sylvander_agent::compress::layers::{
+use sylvander_agent::context::compression::layers::{
     auto_compact::AutoCompactLayer, context_collapse::ContextCollapseLayer,
     micro_compact::MicroCompactLayer, orphan_snip::OrphanSnipLayer,
     tool_result_budget::ToolResultBudgetLayer,
@@ -130,7 +130,7 @@ async fn default_pipeline_drop_orphans_in_tool_calling_scenario() {
         .tool(read_tool)
         .tool_context(workspace_tool_context(
             std::env::temp_dir().as_path(),
-            [sylvander_agent::tool_context::Cap::Read],
+            [sylvander_agent::execution::tool_context::Cap::Read],
         ))
         .max_iterations(3)
         .build()
@@ -226,7 +226,7 @@ async fn l0_offloads_oversized_tool_result() {
         .tool(read_tool)
         .tool_context(workspace_tool_context(
             tmp.path(),
-            [sylvander_agent::tool_context::Cap::Read],
+            [sylvander_agent::execution::tool_context::Cap::Read],
         ))
         .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)

@@ -27,6 +27,44 @@ fn source_root() -> PathBuf {
 }
 
 #[test]
+fn physical_modules_match_the_documented_architecture() {
+    let root = source_root();
+
+    for module in [
+        "turn",
+        "kernel",
+        "context",
+        "tool",
+        "execution",
+        "interaction",
+        "memory",
+    ] {
+        let path = root.join(module).join("mod.rs");
+        assert!(
+            path.is_file(),
+            "documented physical module `{module}` must own a mod.rs"
+        );
+    }
+
+    for legacy_root in [
+        "loop_.rs",
+        "tool.rs",
+        "turn_context.rs",
+        "prompt.rs",
+        "workspace_executor.rs",
+        "execution_ports.rs",
+        "tool_context.rs",
+        "tool_invocation.rs",
+    ] {
+        let path = root.join(legacy_root);
+        assert!(
+            !path.exists(),
+            "legacy root module `{legacy_root}` hides physical ownership"
+        );
+    }
+}
+
+#[test]
 fn execution_kernel_has_no_product_or_provider_dependencies() {
     for module in KERNEL_MODULES {
         let path = source_root().join(module);

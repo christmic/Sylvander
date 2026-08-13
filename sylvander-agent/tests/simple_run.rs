@@ -54,7 +54,7 @@ impl ToolDefinition for ProgressTool {
             "progress_probe",
             "emits output before completion",
             InputSchema::empty().schema,
-            sylvander_agent::tool_invocation::ToolInvocationClass::Extension,
+            sylvander_agent::tool::invocation::ToolInvocationClass::Extension,
         )
     }
 }
@@ -140,7 +140,7 @@ impl ToolDefinition for BurstProgressTool {
             "burst_progress_probe",
             "emits more progress than the bounded queue can retain",
             InputSchema::empty().schema,
-            sylvander_agent::tool_invocation::ToolInvocationClass::Extension,
+            sylvander_agent::tool::invocation::ToolInvocationClass::Extension,
         )
     }
 }
@@ -269,7 +269,7 @@ impl ToolDefinition for BarrierTool {
             "parallel_probe",
             "waits for another invocation",
             InputSchema::empty().schema,
-            sylvander_agent::tool_invocation::ToolInvocationClass::Extension,
+            sylvander_agent::tool::invocation::ToolInvocationClass::Extension,
         )
     }
 }
@@ -292,7 +292,7 @@ impl ToolDefinition for ExclusiveProbeTool {
             "exclusive_probe",
             "records whether exclusive calls overlap",
             InputSchema::empty().schema,
-            sylvander_agent::tool_invocation::ToolInvocationClass::FilesystemMutation,
+            sylvander_agent::tool::invocation::ToolInvocationClass::FilesystemMutation,
         )
     }
 }

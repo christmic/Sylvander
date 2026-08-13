@@ -18,7 +18,7 @@ use serde_json::json;
 mod support;
 
 use support::{InMemoryArtifactStore, qualified_anthropic_loop_builder, workspace_tool_context};
-use sylvander_agent::compress::layers::{
+use sylvander_agent::context::compression::layers::{
     auto_compact::AutoCompactLayer, context_collapse::ContextCollapseLayer,
     micro_compact::MicroCompactLayer, orphan_snip::OrphanSnipLayer,
     tool_result_budget::ToolResultBudgetLayer,
@@ -59,7 +59,7 @@ fn thinking_test_model() -> ModelInfo {
 }
 
 fn read_context(root: &std::path::Path) -> ToolContext {
-    workspace_tool_context(root, [sylvander_agent::tool_context::Cap::Read])
+    workspace_tool_context(root, [sylvander_agent::execution::tool_context::Cap::Read])
 }
 
 #[tokio::test]

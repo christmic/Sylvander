@@ -68,7 +68,7 @@ async fn real_api_does_multi_turn_work() {
         .tool(read_tool)
         .tool_context(workspace_tool_context(
             tmp.path(),
-            [sylvander_agent::tool_context::Cap::Read],
+            [sylvander_agent::execution::tool_context::Cap::Read],
         ))
         .max_iterations(3)
         .build()

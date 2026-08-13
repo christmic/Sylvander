@@ -63,8 +63,8 @@ async fn real_api_edit_tool_e2e() {
         .tool_context(workspace_tool_context(
             tmp.path(),
             [
-                sylvander_agent::tool_context::Cap::Read,
-                sylvander_agent::tool_context::Cap::Write,
+                sylvander_agent::execution::tool_context::Cap::Read,
+                sylvander_agent::execution::tool_context::Cap::Write,
             ],
         ))
         .max_iterations(4)

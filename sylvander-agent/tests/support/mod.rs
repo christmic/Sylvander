@@ -9,32 +9,32 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use serde_json::Value as JsonValue;
 use sylvander_agent::approval::ApprovalGate;
-use sylvander_agent::artifact::{
+use sylvander_agent::context::compression::pipeline::CompressionPipeline;
+use sylvander_agent::execution::artifact::{
     ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore,
 };
-use sylvander_agent::ask_user_gate::AskUserGate;
-use sylvander_agent::compress::pipeline::CompressionPipeline;
-use sylvander_agent::conversation::ConversationSnapshot;
-use sylvander_agent::error::AgentLoopError;
-use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::execution_ports::AgentExecutionPorts;
-use sylvander_agent::outcome::AgentOutcome;
-use sylvander_agent::plan_gate::PlanGate;
+use sylvander_agent::execution::ports::AgentExecutionPorts;
+use sylvander_agent::execution::tool_context::ToolContext;
+use sylvander_agent::execution::workspace::{
+    WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListRequest,
+    WorkspaceListResult, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
+};
+use sylvander_agent::interaction::ask_user::AskUserGate;
+use sylvander_agent::interaction::background_task::TaskGate;
+use sylvander_agent::interaction::plan::PlanGate;
 use sylvander_agent::prelude::{AgentEvent, AgentLoop};
-use sylvander_agent::request::AgentTurnRequest;
-use sylvander_agent::task_gate::TaskGate;
+use sylvander_agent::tool::invocation::{
+    RegistryBoundToolGateway, ToolInvocationGateway, ToolInvocationSnapshot,
+};
 use sylvander_agent::tool::{
     PreparedToolCall, RegisteredTool, ToolDefinition, ToolError, ToolExecutor, ToolOutput,
     ToolRegistry, ToolSpec,
 };
-use sylvander_agent::tool_context::ToolContext;
-use sylvander_agent::tool_invocation::{
-    RegistryBoundToolGateway, ToolInvocationGateway, ToolInvocationSnapshot,
-};
-use sylvander_agent::workspace_executor::{
-    WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListRequest,
-    WorkspaceListResult, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
-};
+use sylvander_agent::turn::conversation::ConversationSnapshot;
+use sylvander_agent::turn::error::AgentLoopError;
+use sylvander_agent::turn::execution_context::AgentExecutionContext;
+use sylvander_agent::turn::outcome::AgentOutcome;
+use sylvander_agent::turn::request::AgentTurnRequest;
 use sylvander_llm_anthropic::{
     AnthropicProvider,
     api::{
@@ -50,7 +50,7 @@ use sylvander_llm_core::{
 pub(crate) struct TestAgentBuilder {
     provider: Arc<dyn ModelProvider>,
     model: ProviderModelInfo,
-    kernel: sylvander_agent::loop_::AgentLoopBuilder,
+    kernel: sylvander_agent::kernel::agent_loop::AgentLoopBuilder,
     tools: ToolRegistry,
     tool_context: ToolContext,
     system_prompt: Option<String>,
@@ -221,7 +221,7 @@ impl TestAgent {
         messages: Vec<ChatMessage>,
     ) -> Result<AgentOutcome, AgentLoopError> {
         let (request, ports) = self.turn(messages);
-        sylvander_agent::loop_::run(&self.kernel, request, ports).await
+        sylvander_agent::kernel::agent_loop::run(&self.kernel, request, ports).await
     }
 
     pub(crate) async fn run_with_events<F>(
@@ -233,7 +233,8 @@ impl TestAgent {
         F: FnMut(AgentEvent) + Send,
     {
         let (request, ports) = self.turn(messages);
-        sylvander_agent::loop_::run_with_events(&self.kernel, request, ports, on_event).await
+        sylvander_agent::kernel::agent_loop::run_with_events(&self.kernel, request, ports, on_event)
+            .await
     }
 
     pub(crate) fn run_stream(
@@ -241,7 +242,7 @@ impl TestAgent {
         messages: Vec<ChatMessage>,
     ) -> impl Stream<Item = AgentEvent> + Send + '_ {
         let (request, ports) = self.turn(messages);
-        sylvander_agent::loop_::run_stream(&self.kernel, request, ports)
+        sylvander_agent::kernel::agent_loop::run_stream(&self.kernel, request, ports)
     }
 }
 
@@ -299,7 +300,7 @@ pub(crate) fn qualified_anthropic_loop_builder(
         model: provider_model,
         kernel: AgentLoop::builder(),
         tools: ToolRegistry::new(),
-        tool_context: sylvander_agent::tool_context::defaults::system_tool_context(),
+        tool_context: sylvander_agent::execution::tool_context::defaults::system_tool_context(),
         system_prompt: None,
         approval_gate: None,
         ask_user_gate: None,
@@ -313,7 +314,7 @@ pub(crate) fn qualified_anthropic_loop_builder(
 /// Build an explicit workspace-bound context for integration tools.
 pub(crate) fn workspace_tool_context(
     root: &std::path::Path,
-    capabilities: impl IntoIterator<Item = sylvander_agent::tool_context::Cap>,
+    capabilities: impl IntoIterator<Item = sylvander_agent::execution::tool_context::Cap>,
 ) -> ToolContext {
     let target = WorkspaceTarget::local(root.to_path_buf(), false);
     capabilities.into_iter().fold(
@@ -478,7 +479,7 @@ impl ToolDefinition for MockTool {
             self.name.clone(),
             self.description.clone(),
             self.schema.schema.clone(),
-            sylvander_agent::tool_invocation::ToolInvocationClass::Extension,
+            sylvander_agent::tool::invocation::ToolInvocationClass::Extension,
         )
     }
 }
