@@ -33,6 +33,8 @@ pub use agent::supervisor as agent_supervisor;
 mod capability_runtime;
 /// Coding workspace selection, local and remote worktrees, and governed self-change.
 mod workspace;
+/// Agent-specific worktree provisioning and crash recovery.
+pub use workspace::agent_views as agent_workspace;
 /// Target-aware local and remote coding-session isolation.
 pub use workspace::coding as coding_worktree;
 /// Builds configured Agent revisions, prompt layers, providers, and tools.
