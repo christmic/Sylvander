@@ -108,14 +108,16 @@ use sylvander_agent::workspace_executor::{
 };
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
 use sylvander_api::{
-    AgentStatus as BusAgentStatus, BusMessage, MessageKind, Sender, StreamEvent, SystemMessage,
+    AgentStatus as BusAgentStatus, BusMessage, MessageKind, Sender, SystemMessage,
 };
 use sylvander_channel::{MessageBus, SubscriptionFilter};
 
+mod background;
 mod interaction;
 #[path = "workspace_context.rs"]
 mod workspace_context;
 
+use background::{ActiveBackgroundTask, BusTaskGate};
 use interaction::{
     BusApprovalGate, BusAskUserGate, BusPlanGate, DenyAllApprovalGate, PendingAnswer,
     PendingApproval, PendingPlan, normalize_rejection_reason, publish_interaction_timeout,
@@ -329,11 +331,6 @@ fn validate_tool_gateway_surface(
 enum MemorySource {
     None,
     RuntimeInjected,
-}
-
-struct ActiveBackgroundTask {
-    session_id: SessionId,
-    cancel: oneshot::Sender<()>,
 }
 
 struct ActiveTurn {
@@ -1543,148 +1540,6 @@ fn public_compaction_report(
         condensed_blocks: sylvander_agent::compress::layer::total_condensed(layers),
         freed_tokens: sylvander_agent::compress::layer::total_freed(layers),
         summary: compaction_summary(layers),
-    }
-}
-
-// ===========================================================================
-// BusTaskGate — isolated, read-only background investigation
-// ===========================================================================
-
-struct BusTaskGate {
-    bus: Arc<dyn MessageBus>,
-    agent_id: AgentId,
-    session_id: SessionId,
-    kernel: AgentLoop,
-    request: AgentTurnRequest,
-    ports: AgentExecutionPorts,
-    tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
-}
-
-#[async_trait::async_trait]
-impl TaskGate for BusTaskGate {
-    async fn start(&self, purpose: String, prompt: String) -> Result<String, String> {
-        if prompt.trim().is_empty() {
-            return Err("background task prompt cannot be empty".into());
-        }
-        let task_id = uuid::Uuid::new_v4().to_string();
-        let (cancel, mut cancelled) = oneshot::channel();
-        self.tasks.lock().await.insert(
-            task_id.clone(),
-            ActiveBackgroundTask {
-                session_id: self.session_id.clone(),
-                cancel,
-            },
-        );
-        let _ = self
-            .bus
-            .publish(BusMessage::stream_event(
-                self.session_id.clone(),
-                self.agent_id.clone(),
-                StreamEvent::TaskStarted {
-                    task_id: task_id.clone(),
-                    owner: self.agent_id.0.clone(),
-                    purpose,
-                },
-            ))
-            .await;
-
-        let bus = self.bus.clone();
-        let agent_id = self.agent_id.clone();
-        let session_id = self.session_id.clone();
-        let kernel = self.kernel.clone();
-        let mut request = self.request.clone();
-        let ports = self.ports.clone();
-        let tasks = self.tasks.clone();
-        let running_id = task_id.clone();
-        tokio::spawn(async move {
-            request.conversation = ConversationSnapshot::new(vec![ChatMessage::user(prompt)]);
-            let mut stream = Box::pin(agent_loop::run_stream(&kernel, request, ports));
-            let deadline = tokio::time::sleep(std::time::Duration::from_mins(10));
-            tokio::pin!(deadline);
-            loop {
-                let event = tokio::select! {
-                    biased;
-                    _ = &mut cancelled => {
-                        let _ = bus.publish(BusMessage::stream_event(
-                            session_id.clone(),
-                            agent_id.clone(),
-                            StreamEvent::TaskCancelled {
-                                task_id: running_id.clone(),
-                                reason: "cancelled by user".into(),
-                            },
-                        )).await;
-                        break;
-                    }
-                    () = &mut deadline => {
-                        publish_interaction_timeout(
-                            &bus,
-                            &session_id,
-                            &agent_id,
-                            sylvander_api::InteractionTimeoutKind::Task,
-                            &running_id,
-                            600,
-                            sylvander_api::TimeoutRecovery::NarrowScope,
-                        ).await;
-                        let _ = bus.publish(BusMessage::stream_event(
-                            session_id.clone(),
-                            agent_id.clone(),
-                            StreamEvent::TaskFailed {
-                                task_id: running_id.clone(),
-                                error: "background task timed out after 600s".into(),
-                            },
-                        )).await;
-                        break;
-                    }
-                    event = stream.next() => event,
-                };
-                let Some(event) = event else { break };
-                let public = match event {
-                    sylvander_agent::turn::event::AgentEvent::IterationStart { iteration } => {
-                        Some(StreamEvent::TaskProgress {
-                            task_id: running_id.clone(),
-                            message: format!("iteration {iteration}"),
-                        })
-                    }
-                    sylvander_agent::turn::event::AgentEvent::ToolCallStart { name, .. } => {
-                        Some(StreamEvent::TaskProgress {
-                            task_id: running_id.clone(),
-                            message: format!("running {name}"),
-                        })
-                    }
-                    sylvander_agent::turn::event::AgentEvent::Done(outcome) => {
-                        Some(StreamEvent::TaskCompleted {
-                            task_id: running_id.clone(),
-                            summary: outcome.final_response.text(),
-                        })
-                    }
-                    sylvander_agent::turn::event::AgentEvent::Error(error) => {
-                        Some(StreamEvent::TaskFailed {
-                            task_id: running_id.clone(),
-                            error: error.to_string(),
-                        })
-                    }
-                    _ => None,
-                };
-                let terminal = matches!(
-                    public,
-                    Some(StreamEvent::TaskCompleted { .. } | StreamEvent::TaskFailed { .. })
-                );
-                if let Some(event) = public {
-                    let _ = bus
-                        .publish(BusMessage::stream_event(
-                            session_id.clone(),
-                            agent_id.clone(),
-                            event,
-                        ))
-                        .await;
-                }
-                if terminal {
-                    break;
-                }
-            }
-            tasks.lock().await.remove(&running_id);
-        });
-        Ok(task_id)
     }
 }
 

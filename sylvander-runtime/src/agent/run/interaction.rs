@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{Mutex, oneshot};
 
@@ -14,6 +15,9 @@ use sylvander_api::{AgentId, BusMessage, SessionId, StreamEvent, ToolCallInfo};
 use sylvander_channel::MessageBus;
 
 use crate::agent::approval::{ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory};
+
+const APPROVAL_TIMEOUT_SECS: u64 = 2 * 60;
+const USER_RESPONSE_TIMEOUT_SECS: u64 = 5 * 60;
 
 pub(super) struct PendingApproval {
     pub(super) session_id: SessionId,
@@ -124,7 +128,7 @@ impl ApprovalGate for BusApprovalGate {
 
         for (index, call_id, rx) in receivers {
             let decision = if let Ok(Ok(decision)) =
-                tokio::time::timeout(std::time::Duration::from_mins(2), rx).await
+                tokio::time::timeout(Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx).await
             {
                 decision
             } else {
@@ -134,7 +138,7 @@ impl ApprovalGate for BusApprovalGate {
                     &self.agent_id,
                     sylvander_api::InteractionTimeoutKind::Approval,
                     &call_id,
-                    120,
+                    APPROVAL_TIMEOUT_SECS,
                     sylvander_api::TimeoutRecovery::RetryRequest,
                 )
                 .await;
@@ -196,7 +200,7 @@ impl AskUserGate for BusAskUserGate {
             .await;
 
         let answer = if let Ok(Ok(answer)) =
-            tokio::time::timeout(std::time::Duration::from_mins(5), rx).await
+            tokio::time::timeout(Duration::from_secs(USER_RESPONSE_TIMEOUT_SECS), rx).await
         {
             answer
         } else {
@@ -206,7 +210,7 @@ impl AskUserGate for BusAskUserGate {
                 &self.agent_id,
                 sylvander_api::InteractionTimeoutKind::Question,
                 call_id,
-                300,
+                USER_RESPONSE_TIMEOUT_SECS,
                 sylvander_api::TimeoutRecovery::RetryRequest,
             )
             .await;
@@ -252,7 +256,7 @@ impl PlanGate for BusPlanGate {
             .await;
 
         let decision = if let Ok(Ok(decision)) =
-            tokio::time::timeout(std::time::Duration::from_mins(5), rx).await
+            tokio::time::timeout(Duration::from_secs(USER_RESPONSE_TIMEOUT_SECS), rx).await
         {
             decision
         } else {
@@ -262,7 +266,7 @@ impl PlanGate for BusPlanGate {
                 &self.agent_id,
                 sylvander_api::InteractionTimeoutKind::Plan,
                 plan_id,
-                300,
+                USER_RESPONSE_TIMEOUT_SECS,
                 sylvander_api::TimeoutRecovery::RetryRequest,
             )
             .await;

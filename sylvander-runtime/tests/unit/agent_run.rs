@@ -11,7 +11,7 @@ use sylvander_agent::tool::ToolExecutor as _;
 use sylvander_agent::tool::invocation::ToolInvocationClass;
 use sylvander_agent::tool::{ToolExecutionMode, ToolExecutionPolicy};
 use sylvander_agent::tools::{ReadTool, WriteTool};
-use sylvander_api::Recipient;
+use sylvander_api::{Recipient, StreamEvent};
 use sylvander_channel::{BusDiagnostics, BusError, InProcessMessageBus, MessageBus};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_core::ModelInfo as ProviderModelInfo;
