@@ -127,6 +127,7 @@ kbd, code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .session-heading h2, .inspector h2 { margin: 0; font-size: 13px; letter-spacing: -0.01em; }
 .session-heading p { max-width: 48vw; margin: 3px 0 0; overflow: hidden; color: var(--muted-2); font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
+.mobile-nav { display: none; width: 30px; height: 30px; border-radius: 7px; color: var(--muted); background: transparent; }
 .quiet-button, .secondary-button, .primary-button {
   min-height: 34px;
   padding: 0 12px;
@@ -188,17 +189,19 @@ kbd, code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .inspector-summary { padding-top: 14px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 10px; }.inspector-summary strong { float: right; color: var(--text); font-weight: 500; }.inspector-summary > div { height: 3px; margin-top: 8px; overflow: hidden; border-radius: 2px; background: var(--line); }.inspector-summary > div span { display: block; height: 100%; background: var(--violet); }
 
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-@media (max-width: 1179px) {
+@media (max-width: 1099px) {
   .app-shell, .app-shell:has(.inspector) { grid-template-columns: 64px 260px minmax(440px, 1fr); }
   .inspector { position: fixed; z-index: 5; top: 0; right: 0; bottom: 0; width: 320px; box-shadow: -20px 0 50px #000b; }
 }
 @media (max-width: 860px) {
   .app-shell, .app-shell:has(.inspector) { grid-template-columns: 56px minmax(0, 1fr); }
   .session-sidebar { position: fixed; z-index: 4; top: 0; bottom: 0; left: 56px; width: 270px; transform: translateX(-110%); }
+  .session-sidebar.open { transform: translateX(0); box-shadow: 24px 0 60px #000c; }
+  .mobile-nav { display: grid; place-items: center; }
   .product-rail { padding-inline: 8px; }.transcript { padding-inline: 24px; }.conversation-header { padding-inline: 18px; }
 }
 @media (max-width: 620px) {
-  .app-shell, .app-shell:has(.inspector) { display: block; }.product-rail, .session-sidebar { display: none; }
+  .app-shell, .app-shell:has(.inspector) { display: block; }.product-rail { display: none; }.session-sidebar { left: 0; display: flex; }
   .conversation { height: 100vh; }.conversation-header { min-height: 56px; }.transcript { padding: 28px 18px 22px; }
   .inspector { width: 100%; }.decision-dock { grid-template-columns: 26px 1fr; }.decision-actions { grid-column: 1 / -1; justify-content: flex-end; }
   .send-group > span, .quiet-button { display: none; }.interaction-zone { padding-inline: 10px; padding-bottom: 10px; }
