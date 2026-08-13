@@ -17,7 +17,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | Contract | Status | Remaining product work |
 |---|---|---|
 | `Hello` | complete, native-owned | none |
-| `Chat` | text and authoritative turn admission complete | attachments |
+| `Chat` | text, selected-file attachments, request-limit preflight, and authoritative turn admission complete | Runtime-native document input when the Agent turn path supports it |
 | `Approve` | complete | renders only Runtime `allowed_scopes`, defaulting to protocol `Once` |
 | `Answer` | complete | none |
 | `Interrupt` | complete | stop remains pending until a Runtime terminal event |
@@ -78,7 +78,7 @@ execution, persistence, or policy ownership moved into Desktop.
 
 ## Ordered implementation gates
 
-1. Complete identity, administration, attachments, and
+1. Complete native dialogs, notifications, window persistence, and release
    liveness surfaces with protocol and accessibility tests.
 
 Every row moves to complete only with a typed command/event test and a product

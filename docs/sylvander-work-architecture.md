@@ -208,6 +208,33 @@ decision. Candidate summaries are never copied into Session history, logs,
 local storage, diagnostics, or feedback. This keeps Runtime's governed memory
 store and authenticated decision record as the only durable truth.
 
+### Composer attachment boundary
+
+Attachments are ephemeral Composer input, not Desktop-owned documents. The
+WebView can read only files the user explicitly grants through the browser file
+picker. It receives no filesystem path, uses no Tauri filesystem capability,
+and does not copy selected bytes into browser storage, diagnostics, feedback,
+or the transcript. The public `MessageAttachment` shape is serialized without
+a Desktop-specific wrapper and Runtime remains responsible for admission,
+persistence, and conversion into provider-neutral model content.
+
+Desktop currently accepts UTF-8 text, PNG, and JPEG. It identifies images from
+their bytes rather than trusting the filename or browser MIME hint, rejects
+other binary input, limits each selected file to 2 MiB, and limits a Composer
+draft to 32 attachments. These local bounds protect the WebView; they do not
+pretend to be Runtime policy. Before submission, Desktop measures the complete
+UTF-8 JSON command and rejects it when it exceeds Runtime's advertised
+`max_request_bytes`. Runtime performs the authoritative limit check again.
+
+Image admission is model-specific. Desktop resolves the active model by the
+full `(provider_id, model_id)` identity and enables image selection only when
+that exact catalog entry advertises `vision`. A shared model id under another
+provider cannot donate capabilities. Text remains available without vision.
+PDF and arbitrary document input stay rejected even when a model advertises
+`document_input`, because the current Runtime Agent-turn conversion implements
+native image content but not a public document-content path. This avoids
+claiming a capability that the end-to-end path cannot execute.
+
 ### Account, identity, and administration surfaces
 
 Account state is not Session state. User Profile, Identity Binding, Agent

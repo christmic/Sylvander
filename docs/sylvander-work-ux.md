@@ -93,15 +93,18 @@ content region. It does not center itself within the entire application window.
 The Composer is visually stable at the bottom of the conversation. It includes:
 
 - a multiline text field that grows to eight lines;
-- attachment and context affordances only when advertised by Runtime;
+- explicitly selected UTF-8 files, with PNG/JPEG enabled only for the exact
+  provider-qualified model that advertises vision;
 - the selected model, reasoning effort, and permission profile as compact
   controls;
 - Send while idle and Interrupt while the selected Session is running;
 - a concise shortcut hint that disappears at narrow widths.
 
 `Enter` sends and `Shift+Enter` inserts a line break. Input remains responsive
-while streaming. Empty submit is ignored. Drafts are local presentation state
-and are never reported as persisted Session content.
+while streaming. A text-empty draft may send selected attachments; a fully
+empty draft is ignored. Drafts are local presentation state and are never
+reported as persisted Session content. Attachment errors name only the public
+file name and limit failure; they never expose file paths or content.
 
 ## Decisions and questions
 
