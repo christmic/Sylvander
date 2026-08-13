@@ -17,6 +17,8 @@ members = [
     "sylvander-llm-dashscope",
     "sylvander-agent",
     "sylvander-runtime",
+    "sylvander-benchmark-agent",
+    "sylvander-benchmark-llm",
 ]
 
 [workspace.package]

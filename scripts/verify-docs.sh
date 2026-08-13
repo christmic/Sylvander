@@ -33,8 +33,10 @@ boundaries = {
     "sylvander-llm-dashscope/Cargo.toml": "docs/llm-provider-protocols.md",
     "sylvander-llm-openai/Cargo.toml": "docs/llm-provider-protocols.md",
     "sylvander-api/Cargo.toml": "docs/module-sylvander-api.md",
+    "sylvander-benchmark-agent/Cargo.toml": "docs/module-sylvander-benchmark-agent.md",
     "sylvander-runtime/Cargo.toml": "sylvander-runtime/docs/ARCHITECTURE.md",
     "sylvander-server/Cargo.toml": "docs/module-sylvander-server.md",
+    "sylvander-benchmark-llm/Cargo.toml": "docs/module-sylvander-benchmark-llm.md",
     "sylvander-tui/Cargo.toml": "sylvander-tui/docs/ARCHITECTURE.md",
 }
 

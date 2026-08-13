@@ -344,6 +344,7 @@ pub(crate) fn error(input: AnthropicError, phase: core::ProviderErrorPhase) -> c
         } => (
             match *status {
                 401 => core::ProviderErrorKind::Authentication,
+                402 => core::ProviderErrorKind::QuotaExceeded,
                 403 => core::ProviderErrorKind::PermissionDenied,
                 404 => core::ProviderErrorKind::ModelNotFound,
                 429 => core::ProviderErrorKind::RateLimited,
@@ -367,6 +368,7 @@ pub(crate) fn error(input: AnthropicError, phase: core::ProviderErrorPhase) -> c
         core::ProviderErrorKind::Timeout => "model provider request timed out",
         core::ProviderErrorKind::RateLimited => "model provider rate limit reached",
         core::ProviderErrorKind::Authentication => "model provider authentication failed",
+        core::ProviderErrorKind::QuotaExceeded => "model provider quota is exhausted",
         core::ProviderErrorKind::PermissionDenied => "model provider denied the request",
         core::ProviderErrorKind::ModelNotFound => "requested model is unavailable",
         core::ProviderErrorKind::InvalidRequest => "model provider rejected the request",

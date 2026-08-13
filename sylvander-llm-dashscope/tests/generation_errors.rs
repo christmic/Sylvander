@@ -3,10 +3,16 @@
 //! Evidence: dashscope-sdk-python `397e02b`, `common/utils.py` and
 //! `api_entities/http_request.py`.
 
+use std::time::Duration;
+
 use futures_util::StreamExt as _;
 use reqwest::Url;
-use sylvander_llm_core::{ModelProvider, ModelRef, ModelRequest, ProviderErrorKind};
-use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
+use sylvander_llm_core::{
+    ModelProvider, ModelRef, ModelRequest, ProviderErrorKind, ProviderErrorPhase,
+};
+use sylvander_llm_dashscope::{
+    DashScopeFeatures, DashScopeProtocol, DashScopeProvider, DashScopeProviderConfig,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[test]
@@ -15,6 +21,7 @@ fn generation_rejects_unknown_feature_at_construction() {
         provider_id: "dashscope".into(),
         base_url: Url::parse("https://dashscope.aliyuncs.com").expect("URL"),
         api_key: "key".into(),
+        protocol: DashScopeProtocol::TextGeneration,
         features: DashScopeFeatures::new(["response_format"]),
     })
     .expect_err("unknown feature");
@@ -39,6 +46,7 @@ fn provider(server: &MockServer) -> DashScopeProvider {
         provider_id: "dashscope".into(),
         base_url: Url::parse(&server.uri()).expect("mock URL"),
         api_key: "key".into(),
+        protocol: DashScopeProtocol::TextGeneration,
         features: DashScopeFeatures::default(),
     })
     .expect("provider")
@@ -66,6 +74,25 @@ async fn sse_error_preserves_status_and_request_id() {
     assert_eq!(error.kind, ProviderErrorKind::RateLimited);
     assert_eq!(error.status, Some(429));
     assert_eq!(error.request_id.as_deref(), Some("req_limit"));
+}
+
+#[tokio::test]
+async fn payment_required_is_non_retryable_quota_exhaustion() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(402).set_body_json(serde_json::json!({
+            "code": "Arrearage", "message": "empty"
+        })))
+        .mount(&server)
+        .await;
+    let error = provider(&server)
+        .complete_stream(request())
+        .await
+        .err()
+        .expect("quota error");
+    assert_eq!(error.kind, ProviderErrorKind::QuotaExceeded);
+    assert_eq!(error.status, Some(402));
+    assert!(!error.is_retryable());
 }
 
 #[tokio::test]
@@ -105,4 +132,32 @@ async fn output_schema_is_rejected_instead_of_downgraded_to_json_object() {
         .err()
         .expect("unsupported schema");
     assert_eq!(error.kind, ProviderErrorKind::Unsupported);
+}
+
+#[tokio::test]
+async fn configured_deadline_is_a_retryable_open_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)))
+        .mount(&server)
+        .await;
+    let provider = DashScopeProvider::new_with_timeout(
+        DashScopeProviderConfig {
+            provider_id: "dashscope".into(),
+            base_url: Url::parse(&server.uri()).expect("mock URL"),
+            api_key: "key".into(),
+            protocol: DashScopeProtocol::TextGeneration,
+            features: DashScopeFeatures::default(),
+        },
+        Duration::from_millis(20),
+    )
+    .expect("provider");
+    let error = provider
+        .complete_stream(request())
+        .await
+        .err()
+        .expect("deadline");
+    assert_eq!(error.kind, ProviderErrorKind::Timeout);
+    assert_eq!(error.phase, ProviderErrorPhase::Open);
+    assert!(error.is_retryable());
 }

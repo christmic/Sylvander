@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "repetitions": 1,
+  "benchmarks": [
+    {
+      "benchmark_id": "harbor",
+      "dataset_name": "terminal-bench",
+      "dataset_version": "2.0",
+      "tasks": [
+        {
+          "task_id": "replace-with-versioned-smoke-task",
+          "required_capabilities": ["terminal", "filesystem"]
+        }
+      ]
+    },
+    {
+      "benchmark_id": "swe-bench",
+      "dataset_name": "swe-bench-verified",
+      "dataset_version": "replace-with-pinned-revision",
+      "tasks": [
+        {
+          "task_id": "replace-with-instance-id",
+          "required_capabilities": ["terminal", "filesystem", "git"]
+        }
+      ]
+    },
+    {
+      "benchmark_id": "tau3-bench",
+      "dataset_name": "retail",
+      "dataset_version": "replace-with-pinned-revision",
+      "tasks": [
+        {
+          "task_id": "replace-with-task-id",
+          "required_capabilities": ["interactive_user", "domain_tools"]
+        }
+      ]
+    }
+  ],
+  "deployments": [
+    {
+      "agent_revision": "replace-with-sylvander-commit",
+      "provider_id": "minimax-cn",
+      "protocol": "openai_chat_completions",
+      "model_id": "MiniMax-M2.7",
+      "capabilities": ["terminal", "filesystem", "git"]
+    },
+    {
+      "agent_revision": "replace-with-sylvander-commit",
+      "provider_id": "minimax-cn",
+      "protocol": "openai_chat_completions",
+      "model_id": "MiniMax-M2.7-highspeed",
+      "capabilities": ["terminal", "filesystem", "git"]
+    }
+  ]
+}

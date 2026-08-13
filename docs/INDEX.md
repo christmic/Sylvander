@@ -34,6 +34,8 @@ Wire contracts the server implements, audited as the latest interface.
 - [llm-provider-protocols.md](llm-provider-protocols.md) — official SDK
   baselines, protocol kinds, Provider feature switches, token accounting, and
   model-family test matrix.
+- [llm-live-conformance.md](llm-live-conformance.md) — credential-gated live
+  Provider reliability cases, normalized results, safety bounds, and gates.
 
 ## Operations
 
@@ -130,6 +132,12 @@ and this index in the same change.
   latest wire schema, identifiers, negotiation, and generated contracts.
 - [module-sylvander-llm-core.md](module-sylvander-llm-core.md) —
   provider-neutral model requests, streaming, capabilities, and errors.
+- [module-sylvander-benchmark-llm.md](module-sylvander-benchmark-llm.md) —
+  live LLM conformance, fault injection, and machine-readable evidence.
+- [module-sylvander-benchmark-agent.md](module-sylvander-benchmark-agent.md) —
+  external Agent evaluation adapters, ATIF trajectories, and scoring ownership.
+- [agent-benchmark-program.md](agent-benchmark-program.md) — versioned Harbor,
+  Terminal-Bench, SWE-bench, and τ³-bench evaluation strategy.
 - [module-sylvander-server.md](module-sylvander-server.md) —
   process composition root, configuration handoff, and shutdown ownership.
 - [module-sylvander-channel-dingtalk.md](module-sylvander-channel-dingtalk.md) —

@@ -1,10 +1,15 @@
 //! Explicitly configured `OpenAI` HTTP client.
 
+use std::time::Duration;
+
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Response, Url};
 use serde::Serialize;
 
 use crate::api::OpenAiError;
+
+/// Default wall-clock deadline for one HTTP request and its response stream.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 
 #[derive(Clone)]
 pub struct OpenAiClient {
@@ -15,6 +20,14 @@ pub struct OpenAiClient {
 
 impl OpenAiClient {
     pub fn new(base_url: Url, api_key: &str) -> Result<Self, OpenAiError> {
+        Self::new_with_timeout(base_url, api_key, DEFAULT_TIMEOUT)
+    }
+
+    pub fn new_with_timeout(
+        base_url: Url,
+        api_key: &str,
+        timeout: Duration,
+    ) -> Result<Self, OpenAiError> {
         if api_key.is_empty() {
             return Err(OpenAiError::Protocol("provider credential is empty".into()));
         }
@@ -26,7 +39,7 @@ impl OpenAiClient {
         Ok(Self {
             base_url,
             headers,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder().timeout(timeout).build()?,
         })
     }
 

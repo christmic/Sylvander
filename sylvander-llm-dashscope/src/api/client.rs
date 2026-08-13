@@ -1,9 +1,15 @@
 //! Explicitly configured native `DashScope` HTTP client.
 
+use std::time::Duration;
+
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Response, Url};
+use serde::Serialize;
 
-use crate::api::{DashScopeError, GenerationRequest};
+use crate::api::DashScopeError;
+
+/// Default wall-clock deadline for one HTTP request and its response stream.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 
 #[derive(Clone)]
 pub struct DashScopeClient {
@@ -14,13 +20,35 @@ pub struct DashScopeClient {
 
 impl DashScopeClient {
     pub fn new(base_url: Url, api_key: &str) -> Result<Self, DashScopeError> {
+        Self::new_with_timeout(base_url, api_key, DEFAULT_TIMEOUT)
+    }
+
+    pub fn new_with_timeout(
+        base_url: Url,
+        api_key: &str,
+        timeout: Duration,
+    ) -> Result<Self, DashScopeError> {
+        Self::new_with_endpoint(
+            base_url,
+            api_key,
+            timeout,
+            "api/v1/services/aigc/text-generation/generation",
+        )
+    }
+
+    pub(crate) fn new_with_endpoint(
+        base_url: Url,
+        api_key: &str,
+        timeout: Duration,
+        endpoint_path: &str,
+    ) -> Result<Self, DashScopeError> {
         if api_key.is_empty() {
             return Err(DashScopeError::Protocol(
                 "provider credential is empty".into(),
             ));
         }
         let endpoint = base_url
-            .join("api/v1/services/aigc/text-generation/generation")
+            .join(endpoint_path)
             .map_err(|_| DashScopeError::Protocol("provider endpoint is invalid".into()))?;
         let mut headers = HeaderMap::new();
         let authorization = HeaderValue::from_str(&format!("Bearer {api_key}"))
@@ -32,13 +60,13 @@ impl DashScopeClient {
         Ok(Self {
             endpoint,
             headers,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder().timeout(timeout).build()?,
         })
     }
 
-    pub(crate) async fn post(
+    pub(crate) async fn post<T: Serialize + ?Sized>(
         &self,
-        request: &GenerationRequest,
+        request: &T,
     ) -> Result<Response, DashScopeError> {
         let response = self
             .http

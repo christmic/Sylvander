@@ -13,6 +13,8 @@ pub enum ProviderErrorKind {
     RateLimited,
     /// Provider credentials were missing or invalid.
     Authentication,
+    /// The account has no remaining paid quota or an unresolved billing requirement.
+    QuotaExceeded,
     /// Credentials were valid but lacked permission.
     PermissionDenied,
     /// The requested model does not exist for this provider.

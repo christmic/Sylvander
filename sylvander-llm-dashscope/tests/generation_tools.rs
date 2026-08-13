@@ -9,7 +9,9 @@ use sylvander_llm_core::{
     ContentBlock, ModelProvider, ModelRef, ModelRequest, ModelStreamEvent, StopReason,
     ToolDefinition,
 };
-use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
+use sylvander_llm_dashscope::{
+    DashScopeFeatures, DashScopeProtocol, DashScopeProvider, DashScopeProviderConfig,
+};
 use wiremock::matchers::body_partial_json;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -65,6 +67,7 @@ async fn qwen_tool_call_fragments_are_assembled_by_index() {
         provider_id: "dashscope".into(),
         base_url: Url::parse(&server.uri()).expect("mock URL"),
         api_key: "key".into(),
+        protocol: DashScopeProtocol::TextGeneration,
         features: DashScopeFeatures::new(["parallel_tool_calls"]),
     })
     .expect("provider");

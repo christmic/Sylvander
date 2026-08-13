@@ -88,6 +88,13 @@ reasoning token details. An absent optional field means the provider omitted it
 and is distinct from a reported zero. Adapter tests must assert both totals and
 details.
 
+All HTTP adapters enforce a bounded two-minute default request deadline and
+offer an explicit constructor deadline for Runtime and conformance tests.
+Deadline failures normalize to a retryable `Timeout` during the exact open or
+stream phase; provider adapters do not retry internally.
+HTTP 402 billing or exhausted-balance responses normalize to the non-retryable
+`QuotaExceeded` kind and remain distinct from malformed requests.
+
 OpenAI Chat Completions always requests the official streaming usage tail with
 `stream_options.include_usage=true`; a completed stream without that requested
 usage fails closed. OpenAI Responses treats both `response.completed` and
@@ -114,6 +121,11 @@ Each adapter has two test layers:
    servers and require no credentials.
 2. Sylvander-owned regression tests cover neutral conversion, feature gating,
    malformed streams, preserved token dimensions, and provider/model routing.
+
+Credential-gated connectivity, usage, cache, timeout, and recovery acceptance
+is specified separately in
+[`llm-live-conformance.md`](llm-live-conformance.md). A live run supplements but
+never replaces either deterministic layer above.
 
 The routing and serialization matrix must cover distinct model families rather
 than testing one model string repeatedly:

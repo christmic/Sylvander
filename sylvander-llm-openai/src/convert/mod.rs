@@ -16,6 +16,7 @@ pub(crate) fn error(error: OpenAiError, phase: ProviderErrorPhase) -> ProviderEr
         OpenAiError::Http(source) if source.is_timeout() => ProviderErrorKind::Timeout,
         OpenAiError::Http(_) => ProviderErrorKind::Transport,
         OpenAiError::Api { status: 401, .. } => ProviderErrorKind::Authentication,
+        OpenAiError::Api { status: 402, .. } => ProviderErrorKind::QuotaExceeded,
         OpenAiError::Api { status: 403, .. } => ProviderErrorKind::PermissionDenied,
         OpenAiError::Api { status: 404, .. } => ProviderErrorKind::ModelNotFound,
         OpenAiError::Api { status: 429, .. } => ProviderErrorKind::RateLimited,

@@ -1,0 +1,28 @@
+[package]
+name = "sylvander-benchmark-llm"
+description = "Credential-gated and fault-injected conformance benches for Sylvander LLM adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sylvander-agent = { path = "../sylvander-agent" }
+sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+sylvander-llm-core = { path = "../sylvander-llm-core" }
+sylvander-llm-dashscope = { path = "../sylvander-llm-dashscope" }
+sylvander-llm-openai = { path = "../sylvander-llm-openai" }
+sylvander-runtime = { path = "../sylvander-runtime" }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
+url = "2"
+
+[dev-dependencies]
+wiremock = "0.6"
+
+[lints]
+workspace = true
