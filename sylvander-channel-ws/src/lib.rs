@@ -1196,6 +1196,111 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 Err(error) => boundary_denied(tx, error),
             }
         }
+        ClientMsg::GetContext { session_id } => {
+            let (Some(host), Some(session_id)) = (&ctx.host, session_id) else {
+                operation_error(tx, "context", "context requires an authenticated session");
+                return;
+            };
+            match host
+                .context_report(&boundary, &SessionId::new(session_id))
+                .await
+            {
+                Ok(report) => {
+                    let _ = tx.send(ServerMsg::ContextReport { report });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
+        ClientMsg::Compact { session_id } => {
+            let Some(host) = &ctx.host else {
+                operation_error(tx, "compact", "UI service is unavailable");
+                return;
+            };
+            let _ = tx.send(ServerMsg::CompactionStarted {
+                session_id: session_id.clone(),
+                automatic: false,
+            });
+            match host
+                .compact_session(&boundary, &SessionId::new(session_id.clone()))
+                .await
+            {
+                Ok(report) => {
+                    let _ = tx.send(ServerMsg::CompactionCompleted { session_id, report });
+                }
+                Err(error) => {
+                    let _ = tx.send(ServerMsg::CompactionFailed {
+                        session_id,
+                        automatic: false,
+                        reason: error.message,
+                    });
+                }
+            }
+        }
+        ClientMsg::PreviewWorkspaceRollback { session_id } => {
+            let Some(host) = &ctx.host else {
+                let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                    session_id,
+                    reason: "UI service is unavailable".into(),
+                });
+                return;
+            };
+            match host
+                .preview_workspace_rollback(&boundary, &SessionId::new(session_id.clone()))
+                .await
+            {
+                Ok(preview) => {
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackPreview {
+                        session_id,
+                        preview,
+                    });
+                }
+                Err(error) => {
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                        session_id,
+                        reason: error.message,
+                    });
+                }
+            }
+        }
+        ClientMsg::RollbackWorkspace {
+            session_id,
+            expected_turn_id,
+        } => {
+            let Some(host) = &ctx.host else {
+                let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                    session_id,
+                    reason: "UI service is unavailable".into(),
+                });
+                return;
+            };
+            match host
+                .rollback_workspace(
+                    &boundary,
+                    &SessionId::new(session_id.clone()),
+                    &expected_turn_id,
+                )
+                .await
+            {
+                Ok(report) => {
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackCompleted { session_id, report });
+                }
+                Err(error) => {
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                        session_id,
+                        reason: error.message,
+                    });
+                }
+            }
+        }
+        ClientMsg::InspectCodingSession { session_id } => {
+            dispatch_coding_session(&boundary, ctx, tx, session_id, "inspect").await;
+        }
+        ClientMsg::AcceptCodingSession { session_id } => {
+            dispatch_coding_session(&boundary, ctx, tx, session_id, "accept").await;
+        }
+        ClientMsg::DiscardCodingSession { session_id } => {
+            dispatch_coding_session(&boundary, ctx, tx, session_id, "discard").await;
+        }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
         }
@@ -1203,6 +1308,48 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             let _ = tx.send(ServerMsg::OperationError {
                 operation: "websocket".into(),
                 message: format!("operation is not supported by this transport: {unsupported:?}"),
+            });
+        }
+    }
+}
+
+async fn dispatch_coding_session(
+    boundary: &sylvander_api::BoundaryContext,
+    ctx: &ChannelContext,
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    session_id: String,
+    operation: &'static str,
+) {
+    let Some(host) = &ctx.host else {
+        let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
+            session_id,
+            operation: operation.into(),
+            reason: "UI service is unavailable".into(),
+        });
+        return;
+    };
+    let id = SessionId::new(session_id.clone());
+    let result = match operation {
+        "inspect" => match host.inspect_coding_session(boundary, &id).await {
+            Ok(diff) => return drop(tx.send(ServerMsg::CodingSessionDiff { session_id, diff })),
+            Err(error) => Err(error),
+        },
+        "accept" => host.accept_coding_session(boundary, &id).await,
+        "discard" => host.discard_coding_session(boundary, &id).await,
+        _ => unreachable!(),
+    };
+    match result {
+        Ok(()) if operation == "accept" => {
+            let _ = tx.send(ServerMsg::CodingSessionAccepted { session_id });
+        }
+        Ok(()) => {
+            let _ = tx.send(ServerMsg::CodingSessionDiscarded { session_id });
+        }
+        Err(error) => {
+            let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
+                session_id,
+                operation: operation.into(),
+                reason: error.message,
             });
         }
     }
