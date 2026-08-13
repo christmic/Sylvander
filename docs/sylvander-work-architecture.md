@@ -245,6 +245,11 @@ model identifiers paired, offers only each descriptor's advertised reasoning
 efforts, and omits `ask` when Runtime disables approvals. Submissions are typed
 requests; displayed settings change only after a later `RuntimeInfo` fact.
 
+The Changes inspector never reads Git directly. It requests Runtime's coding
+Session diff, keeps failure alongside the still-reviewable patch, and waits for
+accepted/discarded facts. Discard removes the Session projection because the
+Runtime operation deletes the isolated worktree and durable Session.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled

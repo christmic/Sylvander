@@ -28,7 +28,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `ListSessions`, `LoadSession` | complete | recovery metadata listed below |
 | `RenameSession`, `ArchiveSession`, `DeleteSession` | complete | restore archived Session |
 | `GetRuntimeInfo` | complete | model/permission selection commands |
-| `GetSessionConfig`, `UpdateSessionConfig` | missing | Session settings surface |
+| `GetSessionConfig`, `UpdateSessionConfig` | missing | replace semantics cannot preserve redacted write-only prompt; requires field patch contract |
 | `SubmitFeedback` | missing | terminal feedback surface |
 | `MemoryConfirmation` | missing | governed memory decision surface |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
@@ -36,7 +36,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `RestoreSession`, `ForkSession` | missing | archived/fork workflows |
 | `GetContext`, `Compact` | complete | Runtime-owned report and compaction lifecycle |
 | `PreviewWorkspaceRollback`, `RollbackWorkspace` | missing | reviewed rollback flow |
-| `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | missing | changes/review surface |
+| `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | complete | Runtime diff review and fact-driven accept/discard |
 | `SelectModel`, `SelectPermissions` | complete | provider-qualified catalog and typed permission profile |
 | `Ping` | missing | explicit liveness journey |
 
@@ -62,7 +62,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | feedback, memory, admin, profile, identity responses | missing | matching command surfaces |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
 | workspace rollback lifecycle | missing | reviewed rollback result |
-| coding Session lifecycle | missing | changes inspector |
+| coding Session lifecycle | complete | diff, accepted, discarded, and operation failure |
 | `OperationError`, `BoundaryDenied` | complete | safe operation-specific notice and bounded retry timing |
 | `Pong` | missing | liveness state |
 

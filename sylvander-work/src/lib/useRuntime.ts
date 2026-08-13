@@ -52,6 +52,12 @@ export interface RuntimeViewState {
     report?: RuntimeCompactionReport;
     reason?: string;
   };
+  codingReview?: {
+    status: string;
+    patch: string;
+    outcome?: "accepted" | "failed";
+    detail?: string;
+  };
   diagnostic?: string;
 }
 
@@ -219,6 +225,58 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           }));
         }
         break;
+      case "coding_session_diff":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({ ...current, codingReview: message.diff }));
+        }
+        break;
+      case "coding_session_accepted":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            codingReview: { status: "", patch: "", outcome: "accepted" },
+          }));
+        }
+        break;
+      case "coding_session_discarded":
+        localTurnStateRef.current.delete(message.session_id);
+        interruptingSessionsRef.current.delete(message.session_id);
+        if (selectedRef.current === message.session_id) {
+          selectedRef.current = undefined;
+          contextRequestSessionRef.current = undefined;
+        }
+        setState((current) => ({
+          ...current,
+          selectedId: current.selectedId === message.session_id ? undefined : current.selectedId,
+          sessions: current.sessions.filter((session) => session.id !== message.session_id),
+          transcript: current.selectedId === message.session_id ? [] : current.transcript,
+          plan: current.selectedId === message.session_id ? [] : current.plan,
+          activePlan: current.selectedId === message.session_id ? undefined : current.activePlan,
+          tasks: current.selectedId === message.session_id ? [] : current.tasks,
+          sessionStats: current.selectedId === message.session_id ? undefined : current.sessionStats,
+          contextReport: current.selectedId === message.session_id ? undefined : current.contextReport,
+          contextRequestPending: current.selectedId === message.session_id
+            ? false
+            : current.contextRequestPending,
+          compaction: current.selectedId === message.session_id ? undefined : current.compaction,
+          codingReview: current.selectedId === message.session_id ? undefined : current.codingReview,
+          approval: current.selectedId === message.session_id ? undefined : current.approval,
+          question: current.selectedId === message.session_id ? undefined : current.question,
+        }));
+        break;
+      case "coding_session_operation_failed":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            codingReview: {
+              status: current.codingReview?.status ?? "",
+              patch: current.codingReview?.patch ?? "",
+              outcome: "failed",
+              detail: `${message.operation}: ${message.reason}`,
+            },
+          }));
+        }
+        break;
       case "sessions_list": {
         const sessions = message.sessions.map((session) => ({
           id: session.id,
@@ -275,6 +333,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           contextReport: undefined,
           contextRequestPending: false,
           compaction: undefined,
+          codingReview: undefined,
         }));
         void submit({ type: "list_sessions" });
         void submit({ type: "load_session", session_id: message.session_id });
@@ -298,6 +357,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
               ? false
               : current.contextRequestPending,
             compaction: current.selectedId === message.session_id ? undefined : current.compaction,
+            codingReview: current.selectedId === message.session_id ? undefined : current.codingReview,
           }));
         } else {
           setState((current) => ({
@@ -326,6 +386,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             ? false
             : current.contextRequestPending,
           compaction: current.selectedId === message.session_id ? undefined : current.compaction,
+          codingReview: current.selectedId === message.session_id ? undefined : current.codingReview,
         }));
         break;
       case "operation_error":
@@ -673,6 +734,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       contextReport: undefined,
       contextRequestPending: false,
       compaction: undefined,
+      codingReview: undefined,
       approval: undefined,
       question: undefined,
     }));

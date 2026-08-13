@@ -24,7 +24,10 @@ export type RuntimeCommand =
   | { type: "get_context"; session_id?: string }
   | { type: "compact"; session_id: string }
   | { type: "select_model"; session_id?: string; model: { provider_id: string; model_id: string }; reasoning_effort: ReasoningEffort }
-  | { type: "select_permissions"; session_id?: string; profile: RuntimePermissionProfile };
+  | { type: "select_permissions"; session_id?: string; profile: RuntimePermissionProfile }
+  | { type: "inspect_coding_session"; session_id: string }
+  | { type: "accept_coding_session"; session_id: string }
+  | { type: "discard_coding_session"; session_id: string };
 
 export type PlanDecision =
   | { decision: "approved" }
@@ -154,6 +157,10 @@ export type RuntimeMessage =
   | { type: "compaction_started"; session_id: string; automatic: boolean }
   | { type: "compaction_completed"; session_id: string; report: RuntimeCompactionReport }
   | { type: "compaction_failed"; session_id: string; automatic: boolean; reason: string }
+  | { type: "coding_session_diff"; session_id: string; diff: { status: string; patch: string } }
+  | { type: "coding_session_accepted"; session_id: string }
+  | { type: "coding_session_discarded"; session_id: string }
+  | { type: "coding_session_operation_failed"; session_id: string; operation: string; reason: string }
   | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: ApprovalScope[] }
   | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }
   | { type: "ask_user"; session_id: string; call_id: string; question: string; options: string[]; multi_select: boolean }

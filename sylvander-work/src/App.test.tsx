@@ -442,6 +442,62 @@ describe("Sylvander Work", () => {
     }));
   });
 
+  it("reviews, accepts, and discards Runtime coding Sessions", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Coding", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    act(() => screen.getByRole("button", { name: /^Plan / }).click());
+    act(() => screen.getByRole("tab", { name: "changes" }).click());
+    act(() => screen.getByRole("button", { name: "Load changes" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "inspect_coding_session", session_id: "session-1",
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "coding_session_diff",
+      session_id: "session-1",
+      diff: { status: " M src/lib.rs", patch: "diff --git a/src/lib.rs b/src/lib.rs\n+verified" },
+    } }));
+    expect(await screen.findByText(/git status --short/)).toBeTruthy();
+    expect(screen.getByText(/\+verified/)).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Accept" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "accept_coding_session", session_id: "session-1",
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "coding_session_accepted", session_id: "session-1",
+    } }));
+    expect(await screen.findByText("Reviewed changes merged by Runtime.")).toBeTruthy();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "coding_session_diff",
+      session_id: "session-1",
+      diff: { status: "?? scratch.txt", patch: "" },
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "coding_session_operation_failed",
+      session_id: "session-1",
+      operation: "accept",
+      reason: "target changed",
+    } }));
+    expect(await screen.findByText("Coding Session operation failed · accept: target changed")).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Discard Session" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "discard_coding_session", session_id: "session-1",
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "coding_session_discarded", session_id: "session-1",
+    } }));
+    expect(await screen.findByRole("heading", { name: "No Session selected" })).toBeTruthy();
+  });
+
   it("rolls back the local turn lock when native chat submission fails", async () => {
     const gateway = new TestGateway();
     gateway.rejectChat = true;
