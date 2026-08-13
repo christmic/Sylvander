@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "repetitions": 1,
+  "request_timeout_ms": 60000,
+  "max_output_tokens": 16,
+  "max_retries": 0,
+  "scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"],
+  "bindings": [
+    {
+      "provider_id": "anthropic-primary",
+      "protocol": "anthropic_messages",
+      "base_url": "https://replace-anthropic-endpoint.example",
+      "credential_env": "SYLVANDER_BENCH_ANTHROPIC_API_KEY",
+      "supported_scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"],
+      "models": [
+        {
+          "model_id": "REPLACE_ANTHROPIC_GENERAL_MODEL",
+          "advertised_scenarios": ["connectivity", "usage", "remote_token_count"]
+        },
+        {
+          "model_id": "REPLACE_ANTHROPIC_CACHE_MODEL",
+          "advertised_scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"]
+        }
+      ]
+    },
+    {
+      "provider_id": "openai-primary",
+      "protocol": "openai_responses",
+      "base_url": "https://replace-openai-endpoint.example/v1",
+      "credential_env": "SYLVANDER_BENCH_OPENAI_API_KEY",
+      "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
+      "models": [
+        {
+          "model_id": "REPLACE_OPENAI_RESPONSES_GENERAL_MODEL",
+          "advertised_scenarios": ["connectivity", "usage"]
+        },
+        {
+          "model_id": "REPLACE_OPENAI_RESPONSES_CACHE_MODEL",
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
+        }
+      ]
+    },
+    {
+      "provider_id": "openai-primary",
+      "protocol": "openai_chat_completions",
+      "base_url": "https://replace-openai-endpoint.example/v1",
+      "credential_env": "SYLVANDER_BENCH_OPENAI_API_KEY",
+      "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
+      "models": [
+        {
+          "model_id": "REPLACE_OPENAI_CHAT_GENERAL_MODEL",
+          "advertised_scenarios": ["connectivity", "usage"]
+        },
+        {
+          "model_id": "REPLACE_OPENAI_CHAT_CACHE_MODEL",
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
+        }
+      ]
+    },
+    {
+      "provider_id": "qwen-openai-compatible",
+      "protocol": "openai_chat_completions",
+      "base_url": "https://replace-qwen-openai-endpoint.example/v1",
+      "credential_env": "SYLVANDER_BENCH_QWEN_OPENAI_API_KEY",
+      "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
+      "models": [
+        {
+          "model_id": "REPLACE_QWEN_OPENAI_GENERAL_MODEL",
+          "advertised_scenarios": ["connectivity", "usage"]
+        },
+        {
+          "model_id": "REPLACE_QWEN_OPENAI_CACHE_MODEL",
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
+        }
+      ]
+    },
+    {
+      "provider_id": "qwen-dashscope-native",
+      "protocol": "dashscope_generation",
+      "base_url": "https://replace-dashscope-endpoint.example/api/v1",
+      "credential_env": "SYLVANDER_BENCH_DASHSCOPE_API_KEY",
+      "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
+      "models": [
+        {
+          "model_id": "REPLACE_DASHSCOPE_GENERAL_MODEL",
+          "advertised_scenarios": ["connectivity", "usage"]
+        },
+        {
+          "model_id": "REPLACE_DASHSCOPE_CACHE_MODEL",
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
+        }
+      ]
+    }
+  ]
+}

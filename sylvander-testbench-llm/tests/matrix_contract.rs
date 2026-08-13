@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::fs::File;
+use std::path::PathBuf;
 
 use sylvander_testbench_llm::{
     Applicability, BenchMatrix, BenchScenario, ModelBinding, ProtocolBinding,
@@ -106,4 +108,21 @@ fn rejects_duplicate_provider_protocol_model_coordinates() {
         matrix.validate(),
         Err("provider, protocol, and model coordinates must be unique")
     );
+}
+
+#[test]
+fn repository_templates_are_valid_multimodel_matrices() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for name in ["live.example.json", "fault.example.json"] {
+        let matrix: BenchMatrix =
+            serde_json::from_reader(File::open(root.join("matrices").join(name)).unwrap()).unwrap();
+        let cells = matrix.expand().unwrap();
+        assert!(cells.len() > matrix.bindings.len());
+        assert!(
+            matrix
+                .bindings
+                .iter()
+                .all(|binding| binding.models.len() >= 2)
+        );
+    }
 }

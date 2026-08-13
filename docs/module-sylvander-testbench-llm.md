@@ -57,6 +57,25 @@ The runner separates review from execution. `plan` expands and emits only
 content-safe coordinates without resolving credentials or dispatching network
 requests. `run` is the explicit, potentially billable operation.
 
+Repository-tracked templates live under `sylvander-testbench-llm/matrices`:
+
+- `live.example.json` demonstrates multiple providers per protocol, multiple
+  protocols per provider, multiple models per binding, and explicit model
+  applicability;
+- `fault.example.json` targets disposable controlled endpoints. Production
+  provider endpoints must never be used to provoke rate limits, timeouts, or
+  server failures.
+
+Review a completed matrix before executing it:
+
+```sh
+cargo run -p sylvander-testbench-llm --bin sylvander-llm-bench -- plan path/to/matrix.json
+cargo run -p sylvander-testbench-llm --bin sylvander-llm-bench -- run path/to/matrix.json
+```
+
+`run` is serial and exits non-zero for `failed`, `not_run`, or
+`infrastructure_error`. It never treats a missing credential as a skip-pass.
+
 ## Dependency boundary
 
 The crate may depend on `sylvander-llm-core`, current provider adapters, and the

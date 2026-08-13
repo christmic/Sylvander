@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "repetitions": 1,
+  "request_timeout_ms": 20,
+  "max_output_tokens": 8,
+  "max_retries": 2,
+  "scenarios": ["open_timeout", "transient_retry", "truncated_stream", "process_interruption"],
+  "bindings": [
+    {
+      "provider_id": "controlled-openai",
+      "protocol": "openai_responses",
+      "base_url": "http://127.0.0.1:REPLACE_FAULT_PROXY_PORT",
+      "credential_env": "SYLVANDER_BENCH_CONTROLLED_OPENAI_KEY",
+      "supported_scenarios": ["open_timeout", "transient_retry", "truncated_stream", "process_interruption"],
+      "models": [
+        {
+          "model_id": "controlled-responses-model-a",
+          "advertised_scenarios": ["open_timeout", "transient_retry", "truncated_stream", "process_interruption"]
+        },
+        {
+          "model_id": "controlled-responses-model-b",
+          "advertised_scenarios": ["open_timeout", "transient_retry", "truncated_stream", "process_interruption"]
+        }
+      ]
+    },
+    {
+      "provider_id": "controlled-compatible",
+      "protocol": "openai_chat_completions",
+      "base_url": "http://127.0.0.1:REPLACE_COMPATIBLE_PROXY_PORT",
+      "credential_env": "SYLVANDER_BENCH_CONTROLLED_COMPATIBLE_KEY",
+      "supported_scenarios": ["open_timeout", "transient_retry", "truncated_stream", "process_interruption"],
+      "models": [
+        {
+          "model_id": "controlled-compatible-model-a",
+          "advertised_scenarios": ["open_timeout", "transient_retry", "truncated_stream", "process_interruption"]
+        },
+        {
+          "model_id": "controlled-compatible-model-b",
+          "advertised_scenarios": ["open_timeout", "transient_retry", "truncated_stream", "process_interruption"]
+        }
+      ]
+    }
+  ]
+}
