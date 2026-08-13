@@ -4,6 +4,7 @@ use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
 use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::memory::store::InMemoryMemoryStore;
+use sylvander_agent::tool::DynamicToolSource;
 use sylvander_agent::tool::ToolExecutor as _;
 use sylvander_api::Recipient;
 use sylvander_channel::{BusDiagnostics, BusError, InProcessMessageBus, MessageBus};
@@ -33,6 +34,40 @@ impl sylvander_agent::tool::ToolExecutor for SessionTestTool {
     ) -> Result<sylvander_agent::tool::ToolOutput, sylvander_agent::tool::ToolError> {
         Ok(sylvander_agent::tool::ToolOutput::ok("ok"))
     }
+}
+
+#[derive(Clone)]
+struct MutableSessionToolSource {
+    tools: Arc<std::sync::RwLock<Vec<Arc<dyn RegisteredTool>>>>,
+}
+
+impl MutableSessionToolSource {
+    fn new(name: &'static str) -> Self {
+        Self {
+            tools: Arc::new(std::sync::RwLock::new(vec![Arc::new(SessionTestTool(
+                name,
+            ))])),
+        }
+    }
+
+    fn replace(&self, name: &'static str) {
+        *self.tools.write().expect("dynamic source write lock") =
+            vec![Arc::new(SessionTestTool(name))];
+    }
+}
+
+impl DynamicToolSource for MutableSessionToolSource {
+    fn snapshot(&self) -> Vec<Arc<dyn RegisteredTool>> {
+        self.tools.read().expect("dynamic source read lock").clone()
+    }
+}
+
+fn registry_gateway_factory() -> SessionInvocationGatewayFactory {
+    Arc::new(|descriptors| {
+        let gateway: Arc<dyn ToolInvocationGateway> =
+            sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(descriptors);
+        Ok(gateway)
+    })
 }
 
 struct TerminalOrderBus {
@@ -157,15 +192,9 @@ async fn session_tool_surface_is_exact_and_removed_on_leave() {
         .build()
         .expect("build run");
     let extensions = ToolRegistry::new().register(SessionTestTool("mcp__search__query"));
-    let tools = run
-        .compose_session_tools(&extensions)
-        .expect("compose Session tools");
-    let gateway = sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(
-        tools.invocation_descriptors(),
-    );
     let session_id = SessionId::new("session-tools");
 
-    run.install_session_tool_surface(session_id.clone(), tools, gateway)
+    run.install_session_tool_extensions(session_id.clone(), extensions, registry_gateway_factory())
         .await
         .expect("install exact surface");
     let installed = run
@@ -176,8 +205,11 @@ async fn session_tool_surface_is_exact_and_removed_on_leave() {
         .get(&session_id)
         .cloned()
         .expect("installed surface");
-    assert!(installed.tools.get("read").is_some());
-    assert!(installed.tools.get("mcp__search__query").is_some());
+    let tools = run
+        .compose_session_tools(&installed.extensions)
+        .expect("compose installed Session tools");
+    assert!(tools.get("read").is_some());
+    assert!(tools.get("mcp__search__query").is_some());
 
     run.leave_session(&session_id).await;
     assert!(
@@ -197,11 +229,14 @@ async fn session_tool_surface_rejects_gateway_drift() {
         .build()
         .expect("build run");
     let tools = ToolRegistry::new().register(SessionTestTool("mcp__search__query"));
-    let empty_gateway =
-        sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(Vec::new());
+    let empty_gateway_factory: SessionInvocationGatewayFactory = Arc::new(|_| {
+        let gateway: Arc<dyn ToolInvocationGateway> =
+            sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(Vec::new());
+        Ok(gateway)
+    });
 
     let error = run
-        .install_session_tool_surface(SessionId::new("drift"), tools, empty_gateway)
+        .install_session_tool_extensions(SessionId::new("drift"), tools, empty_gateway_factory)
         .await
         .expect_err("mismatched gateway must fail");
     assert!(error.to_string().contains("authorization gateway differ"));
@@ -227,13 +262,8 @@ async fn admitted_turn_uses_only_its_session_tool_snapshot() {
         .expect("build run");
     let first = run.join_session(test_metadata()).await;
     let second = run.join_session(test_metadata()).await;
-    let tools = run
-        .compose_session_tools(&ToolRegistry::new().register(SessionTestTool("mcp__search__query")))
-        .expect("compose first Session tools");
-    let gateway = sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(
-        tools.invocation_descriptors(),
-    );
-    run.install_session_tool_surface(first.clone(), tools, gateway)
+    let extensions = ToolRegistry::new().register(SessionTestTool("mcp__search__query"));
+    run.install_session_tool_extensions(first.clone(), extensions, registry_gateway_factory())
         .await
         .expect("install first Session tools");
 
@@ -257,6 +287,70 @@ async fn admitted_turn_uses_only_its_session_tool_snapshot() {
         .collect::<Vec<_>>();
     assert!(first_names.contains(&"mcp__search__query"));
     assert!(!second_names.contains(&"mcp__search__query"));
+}
+
+#[tokio::test]
+async fn next_turn_uses_refreshed_session_tool_catalog() {
+    let (spec, _) = test_spec_and_client();
+    let provider = Arc::new(RecordingProvider::default());
+    let model = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new(
+            spec.model.provider.clone(),
+            spec.model.model_name.clone(),
+        ),
+        context_window: 100_000,
+        max_output_tokens: 4_096,
+        capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE,
+    };
+    let run = AgentRun::qualified_router_builder(spec, provider.clone(), model)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .override_tools(ToolRegistry::new().register(SessionTestTool("read")))
+        .build()
+        .expect("build run");
+    let session_id = run.join_session(test_metadata()).await;
+    let source = MutableSessionToolSource::new("mcp__search__v1");
+    let extensions = ToolRegistry::new().register_dynamic_source(source.clone());
+    run.install_session_tool_extensions(session_id.clone(), extensions, registry_gateway_factory())
+        .await
+        .expect("install dynamic Session tools");
+
+    run.handle_message(BusMessage::user_chat(
+        session_id.clone(),
+        "user-1",
+        "first turn",
+    ))
+    .await
+    .expect("first turn");
+    source.replace("mcp__search__v2");
+    run.handle_message(BusMessage::user_chat(session_id, "user-1", "second turn"))
+        .await
+        .expect("second turn");
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "mcp__search__v1")
+    );
+    assert!(
+        !requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "mcp__search__v2")
+    );
+    assert!(
+        requests[1]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "mcp__search__v2")
+    );
+    assert!(
+        !requests[1]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "mcp__search__v1")
+    );
 }
 
 #[test]

@@ -25,11 +25,13 @@ pub mod ssh;
 
 pub use container::{ContainerExecutor, ContainerResourcePolicy};
 pub(crate) use local::LocalExecutor;
+#[cfg(test)]
+pub(crate) use persistent::PersistentProcessIsolation;
 pub(crate) use persistent::{
     PersistentFilesystemAuthority, PersistentNetworkAuthority, PersistentProcess,
     PersistentProcessAuthority, PersistentProcessEnvironment, PersistentProcessError,
-    PersistentProcessIsolation, PersistentProcessOwner, PersistentProcessSpec,
-    PersistentResourceLimits, UnavailablePersistentProcessEnvironment,
+    PersistentProcessOwner, PersistentProcessSpec, PersistentResourceLimits,
+    UnavailablePersistentProcessEnvironment,
 };
 pub(crate) use persistent_container::ContainerPersistentProcessEnvironment;
 pub use ssh::SshExecutor;

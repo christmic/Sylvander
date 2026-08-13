@@ -130,8 +130,10 @@ Kill-on-drop remains only the last orphan-prevention boundary.
 ## Per-turn tool snapshot
 
 The base ordinary-tool registry belongs to the Agent revision. MCP tools do
-not. At turn admission Runtime asks the Session MCP runtime for a
-`SessionToolSnapshot` and merges it into that turn's effective registry.
+not. Runtime retains the Session's provider-neutral dynamic extension source.
+At turn admission it reads that source once, merges it into the Agent-revision
+registry, freezes the result, and builds the authorization gateway from the
+same descriptor list.
 
 The snapshot contains only:
 
@@ -274,10 +276,11 @@ awaits graceful close or complete process-tree termination.
 
 Discovered catalogs are now composed with the Agent-revision registry through
 Agent's provider-neutral Session-extension boundary. Route collisions and
-gateway drift fail closed. Runtime installs the combined registry and exact
-audited invocation gateway under one Session identity; Agent freezes that pair
-once at turn admission. A prepared MCP executor records its connection
-generation and refuses to route through a replacement generation.
+gateway drift fail closed. Runtime stores the dynamic extension and its audited
+gateway factory under one Session identity. Every turn composes and freezes one
+catalog, then builds and validates the exact gateway for that catalog. A
+prepared MCP executor records its connection generation and refuses to route
+through a replacement generation.
 
 Native sandbox, fixed MCP-specific observability events, and Streamable HTTP
 remain pending. OCI stdio MCP now has the required Session ownership,

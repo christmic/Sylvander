@@ -12,6 +12,7 @@ use sylvander_agent::memory::curated::MemoryCandidateSink;
 use sylvander_agent::memory::store::MemoryStore;
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::tool::ToolRegistry;
+use sylvander_agent::tool::invocation::{RegistryBoundToolGateway, ToolInvocationGateway};
 use sylvander_agent::tools::{
     AskUserTool, CommandTool, EditTool, GitTool, ListTool, MemoryReadTool, PresentPlanTool,
     ReadTool, SearchTool, StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
@@ -32,7 +33,10 @@ use sylvander_llm_core::{
     ModelRef,
 };
 
-use crate::agent_run::{AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession};
+use crate::agent_run::{
+    AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession,
+    SessionInvocationGatewayFactory,
+};
 use crate::config::{AgentDefinitionConfig, ExecutionTransportConfig, ServerConfig};
 #[cfg(test)]
 use crate::config::{ModelDefinitionConfig, ModelProviderConfig, SecretResolver};
@@ -449,36 +453,41 @@ impl ConfiguredAgent {
             self.run.leave_session(&session_id).await;
             return Err(AgentRunError::Configuration(error.to_string()));
         }
-        let surface = self
-            .mcp_sessions
-            .tool_registry(&session_id)
-            .ok_or_else(|| {
-                AgentRunError::Configuration("MCP Session catalog is unavailable".into())
-            })
-            .and_then(|extensions| self.run.compose_session_tools(&extensions))
-            .and_then(|tools| {
-                let descriptors = tools.invocation_descriptors();
-                let gateway = match &self.tool_gateway_factory {
-                    Some(factory) => factory
-                        .build(self.spec.id.clone(), descriptors)
-                        .map_err(|error| AgentRunError::Configuration(error.to_string()))?,
-                    None => sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(
-                        descriptors,
-                    ),
-                };
-                Ok((tools, gateway))
-            });
-        let (tools, invocation_gateway) = match surface {
-            Ok(surface) => surface,
+        let extensions = self.mcp_sessions.tool_registry(&session_id).ok_or_else(|| {
+            AgentRunError::Configuration("MCP Session catalog is unavailable".into())
+        });
+        let extensions = match extensions {
+            Ok(extensions) => extensions,
             Err(error) => {
                 self.mcp_sessions.detach(&session_id).await;
                 self.run.leave_session(&session_id).await;
                 return Err(error);
             }
         };
+        let agent_id = self.spec.id.clone();
+        let invocation_gateway_factory: SessionInvocationGatewayFactory =
+            match &self.tool_gateway_factory {
+                Some(factory) => {
+                    let factory = factory.clone();
+                    Arc::new(move |descriptors| {
+                        factory
+                            .build(agent_id.clone(), descriptors)
+                            .map_err(|error| AgentRunError::Configuration(error.to_string()))
+                    })
+                }
+                None => Arc::new(move |descriptors| {
+                    let gateway: Arc<dyn ToolInvocationGateway> =
+                        RegistryBoundToolGateway::new(descriptors);
+                    Ok(gateway)
+                }),
+            };
         if let Err(error) = self
             .run
-            .install_session_tool_surface(session_id.clone(), tools, invocation_gateway)
+            .install_session_tool_extensions(
+                session_id.clone(),
+                extensions,
+                invocation_gateway_factory,
+            )
             .await
         {
             self.mcp_sessions.detach(&session_id).await;

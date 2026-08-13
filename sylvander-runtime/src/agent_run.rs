@@ -78,6 +78,9 @@ use sylvander_agent::memory::store::{
 use sylvander_agent::plan_gate::{PlanDecision, PlanGate};
 use sylvander_agent::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
 use sylvander_agent::task_gate::TaskGate;
+use sylvander_agent::tool::invocation::{
+    CapabilityFeatureKind, ToolInvocationDescriptor, ToolInvocationGateway,
+};
 use sylvander_agent::tool::{
     RegisteredTool, ToolRegistry, ToolSourceFeature, ToolSourceKind, ToolSourceStatus,
 };
@@ -191,9 +194,9 @@ pub(crate) struct AgentRunInner {
     tools: ToolRegistry,
     /// Runtime-owned tool authorization and audit boundary.
     invocation_gateway: Arc<dyn sylvander_agent::tool::invocation::ToolInvocationGateway>,
-    /// Runtime-installed, provider-neutral Session extensions. Each entry
-    /// binds one immutable registry to the exact authorization gateway built
-    /// from the same executable surface.
+    /// Runtime-installed, provider-neutral Session extensions. Dynamic
+    /// sources remain live for the Session; turn admission freezes one exact
+    /// catalog and builds its matching authorization gateway.
     session_tool_surfaces: RwLock<HashMap<SessionId, SessionToolSurface>>,
     /// Mutable selection read once at the start of every turn. Active turns
     /// keep their cloned `AgentLoop` and are never mutated underneath.
@@ -260,8 +263,36 @@ pub(crate) struct AgentRunInner {
 
 #[derive(Clone)]
 struct SessionToolSurface {
-    tools: ToolRegistry,
-    invocation_gateway: Arc<dyn sylvander_agent::tool::invocation::ToolInvocationGateway>,
+    extensions: ToolRegistry,
+    invocation_gateway_factory: SessionInvocationGatewayFactory,
+}
+
+pub(crate) type SessionInvocationGatewayFactory = Arc<
+    dyn Fn(Vec<ToolInvocationDescriptor>) -> Result<Arc<dyn ToolInvocationGateway>, AgentRunError>
+        + Send
+        + Sync,
+>;
+
+fn validate_tool_gateway_surface(
+    expected: &[ToolInvocationDescriptor],
+    invocation_gateway: &dyn ToolInvocationGateway,
+) -> Result<(), AgentRunError> {
+    let actual = invocation_gateway.snapshot();
+    if expected
+        .iter()
+        .any(|descriptor| !actual.authorizes(&descriptor.name, descriptor.class))
+        || actual
+            .features()
+            .iter()
+            .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(_)))
+            .count()
+            != expected.len()
+    {
+        return Err(AgentRunError::Configuration(
+            "Session tool registry and authorization gateway differ".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -982,10 +1013,7 @@ impl AgentRun {
             .remove_session(session_id);
     }
 
-    /// Compose a neutral Session extension with the Agent revision's base
-    /// tools. Runtime calls this before it builds the matching authorization
-    /// gateway; protocol-specific types never cross this boundary.
-    pub(crate) fn compose_session_tools(
+    fn compose_session_tools(
         &self,
         extensions: &ToolRegistry,
     ) -> Result<ToolRegistry, AgentRunError> {
@@ -995,40 +1023,24 @@ impl AgentRun {
             .map_err(|error| AgentRunError::Configuration(error.to_string()))
     }
 
-    /// Atomically publish one Session tool registry and its exact gateway.
-    pub(crate) async fn install_session_tool_surface(
+    /// Publish a Session's neutral extensions and Runtime authorization
+    /// factory. The current catalog is validated now, then every turn repeats
+    /// composition and validation against one newly frozen catalog snapshot.
+    pub(crate) async fn install_session_tool_extensions(
         &self,
         session_id: SessionId,
-        tools: ToolRegistry,
-        invocation_gateway: Arc<dyn sylvander_agent::tool::invocation::ToolInvocationGateway>,
+        extensions: ToolRegistry,
+        invocation_gateway_factory: SessionInvocationGatewayFactory,
     ) -> Result<(), AgentRunError> {
-        let tool_snapshot = tools.freeze_for_turn().0;
+        let tool_snapshot = self.compose_session_tools(&extensions)?;
         let expected = tool_snapshot.invocation_descriptors();
-        let actual = invocation_gateway.snapshot();
-        if expected
-            .iter()
-            .any(|descriptor| !actual.authorizes(&descriptor.name, descriptor.class))
-            || actual
-                .features()
-                .iter()
-                .filter(|feature| {
-                    matches!(
-                        feature.kind,
-                        sylvander_agent::tool::invocation::CapabilityFeatureKind::Executable(_)
-                    )
-                })
-                .count()
-                != expected.len()
-        {
-            return Err(AgentRunError::Configuration(
-                "Session tool registry and authorization gateway differ".into(),
-            ));
-        }
+        let invocation_gateway = invocation_gateway_factory(expected.clone())?;
+        validate_tool_gateway_surface(&expected, invocation_gateway.as_ref())?;
         self.inner.session_tool_surfaces.write().await.insert(
             session_id,
             SessionToolSurface {
-                tools: tool_snapshot,
-                invocation_gateway,
+                extensions,
+                invocation_gateway_factory,
             },
         );
         Ok(())
@@ -2746,11 +2758,21 @@ impl AgentRunInner {
             .await
             .get(&session_id)
             .cloned();
-        let (turn_tools, invocation_gateway) = session_tool_surface.map_or_else(
-            || (self.tools.clone(), self.invocation_gateway.clone()),
-            |surface| (surface.tools, surface.invocation_gateway),
-        );
-        let (turn_tools, tool_surface_revision) = turn_tools.freeze_for_turn();
+        let (turn_tools, tool_surface_revision, invocation_gateway) =
+            if let Some(surface) = session_tool_surface {
+                let (tools, revision) = self
+                    .tools
+                    .compose_session_extensions(&surface.extensions)
+                    .map_err(|error| AgentRunError::Configuration(error.to_string()))?
+                    .freeze_for_turn();
+                let descriptors = tools.invocation_descriptors();
+                let gateway = (surface.invocation_gateway_factory)(descriptors.clone())?;
+                validate_tool_gateway_surface(&descriptors, gateway.as_ref())?;
+                (tools, revision, gateway)
+            } else {
+                let (tools, revision) = self.tools.freeze_for_turn();
+                (tools, revision, self.invocation_gateway.clone())
+            };
         let prompt_context_features = self
             .skill_features
             .read()
