@@ -7,6 +7,7 @@
 //! transaction. Compaction marks retired messages with `is_summarized`; they
 //! remain auditable on disk while the active loop view excludes them.
 
+mod cognition_ledger;
 mod execution_ledger;
 mod model_ledger;
 mod perception_ledger;
@@ -50,6 +51,83 @@ use sylvander_api::session::{SessionConfigOverrides, SessionEffectiveConfig};
 use sylvander_api::{AgentInstanceId, CoordinationMessageId, HandoffId, TaskId, UserId};
 
 use crate::storage::agent_instance::AgentInstanceStore;
+
+#[derive(Debug, Clone)]
+pub struct CognitionInvocationStart {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub agent_instance_id: AgentInstanceId,
+    pub invocation_id: CognitionInvocationId,
+    pub role: CognitiveRole,
+    pub provider_id: String,
+    pub model_id: String,
+    pub recovery_policy: CognitionRecoveryPolicy,
+    pub capability_revision: String,
+    pub input_digest: String,
+    pub input_bytes: u64,
+    pub max_turn_calls: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct CognitionAdvance {
+    pub invocation_id: CognitionInvocationId,
+    pub expected_revision: u64,
+    pub expected_position: CognitionExecutionPosition,
+    pub next_position: CognitionExecutionPosition,
+}
+
+#[derive(Debug, Clone)]
+pub struct CognitionPromptPersistence {
+    pub invocation_id: CognitionInvocationId,
+    pub expected_revision: u64,
+    pub artifact_locator: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CognitionReceiptPersistence {
+    pub invocation_id: CognitionInvocationId,
+    pub expected_revision: u64,
+    pub artifact_locator: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CognitionOutputPersistence {
+    pub invocation_id: CognitionInvocationId,
+    pub expected_revision: u64,
+    pub artifact_locator: String,
+    pub output_digest: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CognitionFailurePersistence {
+    pub invocation_id: CognitionInvocationId,
+    pub expected_revision: u64,
+    pub failure_kind: CognitionFailureKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CognitionInvocationSnapshot {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub agent_instance_id: AgentInstanceId,
+    pub invocation_id: CognitionInvocationId,
+    pub role: CognitiveRole,
+    pub provider_id: String,
+    pub model_id: String,
+    pub recovery_policy: CognitionRecoveryPolicy,
+    pub capability_revision: String,
+    pub input_digest: String,
+    pub input_bytes: u64,
+    pub position: CognitionExecutionPosition,
+    pub ledger_revision: u64,
+    pub prompt_artifact_locator: Option<String>,
+    pub receipt_locator: Option<String>,
+    pub output_artifact_locator: Option<String>,
+    pub output_digest: Option<String>,
+    pub failure_kind: Option<CognitionFailureKind>,
+    pub started_at: i64,
+    pub updated_at: i64,
+}
 
 // ---------------------------------------------------------------------------
 // SessionLifetime
@@ -723,6 +801,88 @@ pub trait SessionStore: AgentInstanceStore + Send + Sync {
         write: ModelRecoveryWrite,
     ) -> Result<u64, SessionStoreError>;
 
+    async fn begin_cognition(
+        &self,
+        _start: CognitionInvocationStart,
+    ) -> Result<(), SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
+    async fn persist_cognition_prompt(
+        &self,
+        _write: CognitionPromptPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
+    async fn advance_cognition(
+        &self,
+        _advance: CognitionAdvance,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
+    async fn persist_cognition_receipt(
+        &self,
+        _write: CognitionReceiptPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
+    async fn persist_cognition_output(
+        &self,
+        _write: CognitionOutputPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
+    async fn complete_cognition(
+        &self,
+        _invocation_id: &CognitionInvocationId,
+        _expected_revision: u64,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
+    async fn fail_cognition(
+        &self,
+        _write: CognitionFailurePersistence,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
+    async fn cognition_invocations(
+        &self,
+        _session_id: &SessionId,
+        _turn_id: &str,
+    ) -> Result<Vec<CognitionInvocationSnapshot>, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
+    async fn interrupted_cognition_invocations(
+        &self,
+    ) -> Result<Vec<CognitionInvocationSnapshot>, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition is unavailable".into(),
+        ))
+    }
+
     /// Persist the exact perception route before retaining media or invoking
     /// a specialist model.
     async fn begin_perception(
@@ -1062,3 +1222,7 @@ impl From<rusqlite::Error> for SessionStoreError {
         SessionStoreError::Store(e.to_string())
     }
 }
+pub use cognition_ledger::{
+    CognitionExecutionPosition, CognitionFailureKind, CognitionInvocationId,
+    CognitionRecoveryClassification, CognitionRecoveryDecision, CognitionRecoveryPolicy,
+};
