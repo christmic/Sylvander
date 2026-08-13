@@ -947,6 +947,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         &self,
         boundary: &sylvander_api::BoundaryContext,
         agent_id: &AgentId,
+        session_id: Option<&SessionId>,
     ) -> Result<sylvander_api::RuntimeUiSnapshot, sylvander_api::BoundaryError> {
         require_principal(boundary, "runtime_snapshot")?;
         if !self
@@ -970,7 +971,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                     && model.id == runtime.current.model_id
             })
             .map_or(0, |model| model.capabilities);
-        Ok(sylvander_api::RuntimeUiSnapshot {
+        let mut snapshot = sylvander_api::RuntimeUiSnapshot {
             agent_id: agent_id.clone(),
             model: runtime.current,
             reasoning_effort: runtime.reasoning_effort,
@@ -980,7 +981,37 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             approval_enabled: agent.approval_enabled,
             max_request_bytes: self.boundary.max_request_bytes(),
             platform: agent.run.platform_snapshot(),
-        })
+        };
+        if let Some(session_id) = session_id {
+            let session = self
+                .owned_session(boundary, session_id, "runtime_snapshot")
+                .await?;
+            let effective = session.effective_config.ok_or_else(|| {
+                boundary_failure(
+                    boundary,
+                    "runtime_snapshot",
+                    "session configuration is unresolved",
+                )
+            })?;
+            if effective.agent_id != *agent_id {
+                return Err(sylvander_api::BoundaryError::forbidden(
+                    boundary,
+                    "runtime_snapshot",
+                ));
+            }
+            snapshot.model = effective.model_selection();
+            snapshot.reasoning_effort = effective.reasoning_effort;
+            snapshot.permissions = effective.permissions;
+            snapshot.capabilities = snapshot
+                .models
+                .iter()
+                .find(|model| {
+                    model.provider == snapshot.model.provider_id
+                        && model.id == snapshot.model.model_id
+                })
+                .map_or(0, |model| model.capabilities);
+        }
+        Ok(snapshot)
     }
 
     async fn load_session(

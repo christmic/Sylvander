@@ -1043,16 +1043,35 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 Err(error) => boundary_denied(tx, error),
             }
         }
-        ClientMsg::ListSessions => {
+        ClientMsg::ListSessions { include_archived } => {
             if let Some(host) = &ctx.host {
-                match host.list_sessions(&boundary).await {
+                match host.list_sessions(&boundary, include_archived).await {
                     Ok(sessions) => {
-                        let _ = tx.send(ServerMsg::SessionsList { sessions });
+                        let _ = tx.send(ServerMsg::SessionsList {
+                            include_archived,
+                            sessions,
+                        });
                     }
                     Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "list_sessions", "UI service is unavailable");
+            }
+        }
+        ClientMsg::GetRuntimeInfo { agent_id } => {
+            let Some(host) = &ctx.host else {
+                operation_error(
+                    tx,
+                    "get_runtime_info",
+                    "Runtime channel host is unavailable",
+                );
+                return;
+            };
+            match host.runtime_snapshot(&boundary, &agent_id, None).await {
+                Ok(snapshot) => {
+                    let _ = tx.send(ServerMsg::RuntimeInfo { snapshot });
+                }
+                Err(error) => boundary_denied(tx, error),
             }
         }
         request @ (ClientMsg::LoadSession { .. } | ClientMsg::ReattachSession { .. }) => {
@@ -1303,12 +1322,6 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
-        }
-        unsupported => {
-            let _ = tx.send(ServerMsg::OperationError {
-                operation: "websocket".into(),
-                message: format!("operation is not supported by this transport: {unsupported:?}"),
-            });
         }
     }
 }
