@@ -37,9 +37,12 @@ When `server.observability.debug_log` is enabled, a governance task subscribes
 to that bus and writes one JSON object per line to a unique file under
 `<data_dir>/debug`. The file is capped at 16 MiB, contains no prompts, tool
 arguments, tool output, credentials, or user content, and is flushed when
-Runtime shuts down. `debug_observation_log_path` returns the exact file for the
-current process. This diagnostic projection is not authoritative storage and
-does not participate in Agent success or failure.
+Runtime shuts down. Startup retains at most four recognized per-run files and
+64 MiB across that UUID-named log namespace; oldest managed files are removed
+before a new one is created, while unrelated debug files are untouched.
+`debug_observation_log_path` returns the exact file for the current process.
+This diagnostic projection is not authoritative storage and does not
+participate in Agent success or failure.
 
 The public event protocol deliberately exposes the coarser product lifecycle,
 not every Agent-machine phase. Runtime emits `TurnStarted` only after required

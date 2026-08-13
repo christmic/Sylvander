@@ -3,9 +3,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::observability::{
-    RuntimeClock, RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind,
-    RuntimeObservability, RuntimeObservabilitySnapshot, RuntimeObservationDebugLog,
-    RuntimePersistenceOperation, RuntimeToolFailureKind,
+    DEBUG_OBSERVATION_LOG_MAX_FILES, DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES, RuntimeClock,
+    RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind, RuntimeObservability,
+    RuntimeObservabilitySnapshot, RuntimeObservationDebugLog, RuntimePersistenceOperation,
+    RuntimeToolFailureKind,
 };
 use sylvander_api::MessageId;
 
@@ -123,6 +124,57 @@ async fn debug_projection_writes_bounded_typed_jsonl_without_agent_content() {
     assert!(record.get("recorded_at_unix_ms").is_some());
     assert!(!content.contains("prompt"));
     assert!(!content.contains("output"));
+}
+
+#[tokio::test]
+async fn debug_projection_prunes_only_its_oldest_managed_files_across_restarts() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let debug_directory = directory.path().join("debug");
+    tokio::fs::create_dir_all(&debug_directory).await.unwrap();
+    let mut old_paths = Vec::new();
+    for sequence in 1..=DEBUG_OBSERVATION_LOG_MAX_FILES + 2 {
+        let path = debug_directory.join(format!(
+            "runtime-observations-00000000-0000-0000-0000-{sequence:012}.jsonl"
+        ));
+        tokio::fs::write(&path, b"old\n").await.unwrap();
+        old_paths.push(path);
+    }
+    let unrelated = debug_directory.join("runtime-observations-manual-notes.jsonl");
+    tokio::fs::write(&unrelated, b"keep\n").await.unwrap();
+
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let debug_log = RuntimeObservationDebugLog::start(directory.path(), recorder.subscribe())
+        .await
+        .unwrap();
+    let current = debug_log.path().to_path_buf();
+    debug_log.shutdown().await;
+
+    let retained_old = old_paths.iter().filter(|path| path.exists()).count();
+    assert!(retained_old < DEBUG_OBSERVATION_LOG_MAX_FILES);
+    assert!(retained_old + usize::from(current.exists()) <= DEBUG_OBSERVATION_LOG_MAX_FILES);
+    assert!(unrelated.exists());
+}
+
+#[tokio::test]
+async fn debug_projection_removes_oversized_managed_history_before_start() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let debug_directory = directory.path().join("debug");
+    tokio::fs::create_dir_all(&debug_directory).await.unwrap();
+    let oversized =
+        debug_directory.join("runtime-observations-00000000-0000-0000-0000-000000000001.jsonl");
+    let file = tokio::fs::File::create(&oversized).await.unwrap();
+    file.set_len(DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES)
+        .await
+        .unwrap();
+    drop(file);
+
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let debug_log = RuntimeObservationDebugLog::start(directory.path(), recorder.subscribe())
+        .await
+        .unwrap();
+    debug_log.shutdown().await;
+
+    assert!(!oversized.exists());
 }
 
 #[test]

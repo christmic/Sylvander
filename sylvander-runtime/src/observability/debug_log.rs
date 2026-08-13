@@ -1,3 +1,9 @@
+//! Bounded, content-free Runtime lifecycle projection for local governance.
+//!
+//! Each process owns one capped file. Startup also removes the oldest files
+//! from this module's UUID namespace so repeated restarts cannot grow the debug
+//! directory without bound. Unrecognized files are never touched.
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,6 +16,9 @@ use uuid::Uuid;
 use super::{RuntimeEvent, RuntimeToolFailureKind};
 
 pub(crate) const DEBUG_OBSERVATION_LOG_MAX_BYTES: u64 = 16 * 1_024 * 1_024;
+pub(crate) const DEBUG_OBSERVATION_LOG_MAX_FILES: usize = 4;
+pub(crate) const DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES: u64 =
+    DEBUG_OBSERVATION_LOG_MAX_BYTES * DEBUG_OBSERVATION_LOG_MAX_FILES as u64;
 const DEBUG_DIRECTORY: &str = "debug";
 const DEBUG_FILE_PREFIX: &str = "runtime-observations";
 const EVENT_OBSERVATIONS_LAGGED: &str = "observations_lagged";
@@ -28,6 +37,7 @@ impl RuntimeObservationDebugLog {
     ) -> std::io::Result<Self> {
         let directory = data_dir.join(DEBUG_DIRECTORY);
         tokio::fs::create_dir_all(&directory).await?;
+        prune_managed_logs(&directory).await?;
         let path = directory.join(format!("{DEBUG_FILE_PREFIX}-{}.jsonl", Uuid::new_v4()));
         let file = tokio::fs::OpenOptions::new()
             .create_new(true)
@@ -60,6 +70,53 @@ impl RuntimeObservationDebugLog {
             let _ = task.await;
         }
     }
+}
+
+struct ManagedLog {
+    path: PathBuf,
+    modified: SystemTime,
+    bytes: u64,
+}
+
+async fn prune_managed_logs(directory: &Path) -> std::io::Result<()> {
+    let mut reader = tokio::fs::read_dir(directory).await?;
+    let mut logs = Vec::new();
+    while let Some(entry) = reader.next_entry().await? {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !managed_log_name(name) {
+            continue;
+        }
+        let metadata = tokio::fs::symlink_metadata(entry.path()).await?;
+        logs.push(ManagedLog {
+            path: entry.path(),
+            modified: metadata.modified()?,
+            bytes: metadata.len(),
+        });
+    }
+    logs.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let mut total = logs.iter().map(|log| log.bytes).sum::<u64>();
+    let retained_bytes =
+        DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES.saturating_sub(DEBUG_OBSERVATION_LOG_MAX_BYTES);
+    while logs.len() >= DEBUG_OBSERVATION_LOG_MAX_FILES || total > retained_bytes {
+        let oldest = logs.remove(0);
+        tokio::fs::remove_file(&oldest.path).await?;
+        total = total.saturating_sub(oldest.bytes);
+    }
+    Ok(())
+}
+
+fn managed_log_name(name: &str) -> bool {
+    name.strip_prefix(DEBUG_FILE_PREFIX)
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .and_then(|suffix| suffix.strip_suffix(".jsonl"))
+        .is_some_and(|id| Uuid::parse_str(id).is_ok())
 }
 
 async fn run(

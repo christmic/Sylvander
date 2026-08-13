@@ -8,6 +8,10 @@
 mod debug_log;
 
 pub(crate) use debug_log::RuntimeObservationDebugLog;
+#[cfg(test)]
+pub(crate) use debug_log::{
+    DEBUG_OBSERVATION_LOG_MAX_FILES, DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES,
+};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
