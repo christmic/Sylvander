@@ -405,13 +405,11 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
         .expect("configured runtime");
     let initial = runtime.operational_snapshot().await.unwrap();
     assert!(initial.ready);
-    assert!(
-        initial
-            .storage
-            .components
-            .iter()
-            .all(|component| { component.status == crate::storage::RuntimeStorageStatus::Ready })
-    );
+    assert!(initial.storage.components.iter().all(|component| {
+        component.status == crate::storage::RuntimeStorageStatus::Ready
+            || (component.component == crate::storage::RuntimeStorageComponent::Artifacts
+                && component.status == crate::storage::RuntimeStorageStatus::Unverified)
+    }));
     assert_eq!(
         initial
             .storage
@@ -425,6 +423,7 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
             crate::storage::RuntimeStorageComponent::AgentRegistry,
             crate::storage::RuntimeStorageComponent::UserProfiles,
             crate::storage::RuntimeStorageComponent::Evidence,
+            crate::storage::RuntimeStorageComponent::Artifacts,
             crate::storage::RuntimeStorageComponent::CredentialAudit,
             crate::storage::RuntimeStorageComponent::GuardianCuration,
             crate::storage::RuntimeStorageComponent::GuardianCanonical,

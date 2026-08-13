@@ -207,6 +207,7 @@ async fn versioned_builder_preserves_the_full_qualified_catalog() {
         ),
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -311,6 +312,7 @@ async fn versioned_builder_preflights_every_model_before_router_construction() {
             .await
             .unwrap(),
         ),
+        None,
         None,
         None,
     )

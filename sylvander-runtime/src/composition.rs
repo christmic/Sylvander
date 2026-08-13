@@ -54,6 +54,7 @@ use crate::request_scoped_provider::{
     AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
     RegistryCredentialSource, RenewableExternalSecretProvider,
 };
+use crate::storage::artifact::RuntimeArtifactService;
 use crate::storage::session::SessionStore;
 
 /// A configured run plus the metadata needed by protocol adapters.
@@ -263,6 +264,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     external_secret_provider: Option<Arc<dyn RenewableExternalSecretProvider>>,
     credential_audit: Arc<CredentialOperationAuditLedger>,
     result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
+    artifact_service: Option<RuntimeArtifactService>,
     tool_gateway_factory: Option<WorkerToolGatewayFactory>,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let VersionedRegistryCompositionSnapshot {
@@ -373,6 +375,9 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         .qualified_model_lifecycles(lifecycles)
         .qualified_model_pricing(pricing)
         .prompt_resolver(prompt_resolver.clone());
+    if let Some(service) = artifact_service {
+        builder = builder.artifact_service(service);
+    }
     if let Some(provider) = user_profiles {
         builder = builder.user_profile_provider(provider);
     }

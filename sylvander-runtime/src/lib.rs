@@ -218,6 +218,7 @@ use crate::memory_maintenance::{
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use crate::session::SessionMetadata;
+use crate::storage::artifact::RuntimeArtifactService;
 use crate::storage::memory::{
     HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, MemoryIntegrityConfig,
     SqliteMemoryStore,
@@ -539,6 +540,7 @@ struct RuntimeRevisionProvider {
     external_secret_provider: Option<Arc<dyn RenewableExternalSecretProvider>>,
     credential_audit: Arc<CredentialOperationAuditLedger>,
     result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
+    artifact_service: Option<RuntimeArtifactService>,
     tool_gateway_factory: WorkerToolGatewayFactory,
     configured: RwLock<HashMap<(AgentId, u64), ConfiguredAgent>>,
 }
@@ -568,6 +570,7 @@ impl RuntimeRevisionProvider {
             self.external_secret_provider.clone(),
             self.credential_audit.clone(),
             self.result_artifacts.clone(),
+            self.artifact_service.clone(),
             Some(self.tool_gateway_factory.clone()),
         )
         .await
@@ -4238,6 +4241,11 @@ impl Runtime {
             } else {
                 None
             };
+        let artifact_service = security_audit
+            .governance_enabled()
+            .then(|| RuntimeArtifactService::new(security_audit.clone()))
+            .transpose()
+            .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
         let identity_bindings = open_identity_binding_service(&config).await?;
         let evidence = Some(
             EvidenceRecorder::start(
@@ -4289,6 +4297,7 @@ impl Runtime {
                     external_secret_provider.clone(),
                     credential_audit.clone(),
                     result_artifacts.clone(),
+                    artifact_service.clone(),
                     Some(tool_gateway_factory.clone()),
                 )
                 .await
@@ -4312,6 +4321,7 @@ impl Runtime {
             external_secret_provider,
             credential_audit: credential_audit.clone(),
             result_artifacts,
+            artifact_service,
             tool_gateway_factory,
             configured: RwLock::new(
                 configured_agents

@@ -17,6 +17,9 @@ use crate::user_profile_store::UserProfileStore;
 use self::session::SessionStore;
 use self::session::SqliteSessionStore;
 
+/// Encrypted, turn-bound artifact retention outside model context.
+pub(crate) mod artifact;
+
 /// Runtime-owned durable component represented in an operational snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeStorageComponent {
@@ -25,6 +28,7 @@ pub enum RuntimeStorageComponent {
     AgentRegistry,
     UserProfiles,
     Evidence,
+    Artifacts,
     CredentialAudit,
     GuardianCuration,
     GuardianCanonical,
@@ -71,6 +75,7 @@ pub(crate) struct RuntimeStorage {
     agent_registry_probe: Option<AgentRegistry>,
     user_profile_probe: Option<UserProfileStore>,
     evidence_probe: Option<EvidenceStore>,
+    artifact_probe: Option<EvidenceStore>,
     credential_audit_probe: Option<Arc<CredentialOperationAuditLedger>>,
     guardian_probe: Option<GuardianStorageProbe>,
 }
@@ -86,6 +91,7 @@ impl RuntimeStorage {
             agent_registry_probe: None,
             user_profile_probe: None,
             evidence_probe: None,
+            artifact_probe: None,
             credential_audit_probe: None,
             guardian_probe: None,
         }
@@ -107,6 +113,7 @@ impl RuntimeStorage {
         self.memory_probe = Some(memory);
         self.agent_registry_probe = Some(agent_registry);
         self.user_profile_probe = Some(user_profiles);
+        self.artifact_probe = evidence.governance_enabled().then(|| evidence.clone());
         self.evidence_probe = Some(evidence);
         self.credential_audit_probe = Some(credential_audit);
         self
@@ -130,6 +137,7 @@ impl RuntimeStorage {
         let agent_registry_probe = self.agent_registry_probe.clone();
         let user_profile_probe = self.user_profile_probe.clone();
         let evidence_probe = self.evidence_probe.clone();
+        let artifact_probe = self.artifact_probe.clone();
         let credential_audit_probe = self.credential_audit_probe.clone();
         let guardian_curation_probe = self.guardian_probe.clone();
         let guardian_canonical_probe = self.guardian_probe.clone();
@@ -166,6 +174,13 @@ impl RuntimeStorage {
                 None => RuntimeStorageStatus::Unverified,
             }
         };
+        let artifact_health = async move {
+            match artifact_probe {
+                Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
+                Some(_) => RuntimeStorageStatus::Degraded,
+                None => RuntimeStorageStatus::Unverified,
+            }
+        };
         let credential_audit_health = async move {
             match credential_audit_probe {
                 Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
@@ -195,6 +210,7 @@ impl RuntimeStorage {
             agent_registry,
             user_profiles,
             evidence,
+            artifacts,
             credential_audit,
             guardian_curation,
             guardian_canonical,
@@ -204,6 +220,7 @@ impl RuntimeStorage {
             agent_registry_health,
             user_profile_health,
             evidence_health,
+            artifact_health,
             credential_audit_health,
             guardian_curation_health,
             guardian_canonical_health
@@ -230,6 +247,10 @@ impl RuntimeStorage {
                 RuntimeStorageHealth {
                     component: RuntimeStorageComponent::Evidence,
                     status: evidence,
+                },
+                RuntimeStorageHealth {
+                    component: RuntimeStorageComponent::Artifacts,
+                    status: artifacts,
                 },
                 RuntimeStorageHealth {
                     component: RuntimeStorageComponent::CredentialAudit,

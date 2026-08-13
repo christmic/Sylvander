@@ -55,6 +55,7 @@ use crate::observability::{
 };
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionContext, SessionMetadata, now_secs};
+use crate::storage::artifact::{ArtifactTurnBinding, RuntimeArtifactService};
 use crate::storage::session::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
     SessionStoreError, StoredSession, TurnCompletion, TurnFailureKind, TurnStart, TurnState,
@@ -205,6 +206,8 @@ pub(crate) struct AgentRunInner {
     workspace_journal: Option<Arc<WorkspaceJournal>>,
     /// Immutable Runtime-owned execution environment registry.
     execution_service: RuntimeExecutionService,
+    /// Governed artifact factory; concrete storage remains outside Agent.
+    artifact_service: Option<RuntimeArtifactService>,
     skill_features: std::sync::RwLock<Vec<sylvander_api::PlatformFeature>>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
@@ -2731,6 +2734,20 @@ impl AgentRunInner {
             self.workspace_journal.clone(),
             Some(turn_id),
         );
+        let artifact_store = self
+            .artifact_service
+            .as_ref()
+            .map(|service| {
+                service.bind(ArtifactTurnBinding {
+                    user_id: session_metadata.user_id.clone(),
+                    agent_id: self.id.0.clone(),
+                    session_id: session_id.0.clone(),
+                    turn_id: turn_id.to_owned(),
+                    created_at: tool_context.execution.started_at_unix_secs,
+                })
+            })
+            .transpose()
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
         let ask_user_gate: Arc<dyn AskUserGate> = Arc::new(BusAskUserGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
@@ -2776,12 +2793,15 @@ impl AgentRunInner {
         background_request.tools = background_request
             .tools
             .retain_named(&["read", "memory_read"]);
-        let background_ports = AgentExecutionPorts::new(
+        let mut background_ports = AgentExecutionPorts::new(
             self.model_provider.clone(),
             tool_context.clone(),
             self.invocation_gateway.clone(),
             invocation_snapshot.clone(),
         );
+        if let Some(store) = &artifact_store {
+            background_ports = background_ports.with_artifact_store(store.clone());
+        }
         let task_gate: Arc<dyn TaskGate> = Arc::new(BusTaskGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
@@ -2802,6 +2822,9 @@ impl AgentRunInner {
         .with_task_gate(task_gate);
         if let Some(gate) = approval_gate {
             ports = ports.with_approval_gate(gate);
+        }
+        if let Some(store) = artifact_store {
+            ports = ports.with_artifact_store(store);
         }
 
         // 3. Run loop with streaming
@@ -3672,6 +3695,7 @@ pub struct AgentRunBuilder {
     approval_store_path: Option<PathBuf>,
     workspace_journal_path: Option<PathBuf>,
     execution_service: Option<RuntimeExecutionService>,
+    artifact_service: Option<RuntimeArtifactService>,
     invocation_gateway: Option<Arc<dyn sylvander_agent::tool_invocation::ToolInvocationGateway>>,
 }
 
@@ -3703,6 +3727,7 @@ impl AgentRunBuilder {
             approval_store_path: None,
             workspace_journal_path: None,
             execution_service: Some(RuntimeExecutionService::standalone_local()),
+            artifact_service: None,
             invocation_gateway: None,
         }
     }
@@ -3729,6 +3754,13 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
         self.session_store = Some(store);
+        self
+    }
+
+    /// Attach Runtime's encrypted artifact service for every admitted turn.
+    #[must_use]
+    pub(crate) fn artifact_service(mut self, service: RuntimeArtifactService) -> Self {
+        self.artifact_service = Some(service);
         self
     }
 
@@ -3981,6 +4013,7 @@ impl AgentRunBuilder {
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
                 execution_service,
+                artifact_service: self.artifact_service,
                 skill_features: std::sync::RwLock::new(Vec::new()),
                 bus,
                 observability: self.observability,
