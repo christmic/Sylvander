@@ -206,13 +206,11 @@ async fn coordination_service_persists_moderator_case_before_blocking_dispatch()
     };
 
     assert!(assessment.has_hard_stop());
-    assert_eq!(
-        case.case_id.0,
-        "message:blocked-message:membership:0:topology:0"
-    );
+    assert!(case.case_id.0.starts_with("message:"));
+    assert_eq!(case.case_id.0.len(), 72);
     assert_eq!(
         store.arbitration_case(&case.case_id).await.unwrap(),
-        Some(case)
+        Some(case.clone())
     );
     assert!(
         store
@@ -221,6 +219,23 @@ async fn coordination_service_persists_moderator_case_before_blocking_dispatch()
             .unwrap()
             .is_none()
     );
+    let notification = store
+        .message(&CoordinationMessageId::new(format!(
+            "arbitration:{}",
+            case.case_id.0
+        )))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(notification.recipient_instance_id.0, "moderator-1");
+    assert_eq!(notification.kind, CoordinationMessageKind::Control);
+    assert!(matches!(
+        service
+            .dispatch_message(dispatch_request("blocked-message"), 22)
+            .await
+            .unwrap(),
+        DispatchMessageOutcome::RequiresArbitration { .. }
+    ));
 }
 
 #[tokio::test]

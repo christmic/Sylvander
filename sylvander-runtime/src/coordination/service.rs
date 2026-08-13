@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use sylvander_api::HandoffId;
 use sylvander_api::{AgentInstanceId, CoordinationMessageId, GovernanceCaseId, SessionId, TaskId};
 
@@ -23,7 +25,7 @@ use crate::storage::session::SessionStoreError;
 pub const DEFAULT_ARBITRATION_TTL_SECONDS: u64 = 300;
 
 /// Stable caller intent. Runtime derives every governance fact and route.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DispatchMessageRequest {
     pub message_id: CoordinationMessageId,
     pub session_id: SessionId,
@@ -170,20 +172,21 @@ where
             },
         );
         if !assessment.permits_automatic_progress() {
-            let case_id = GovernanceCaseId::new(format!(
-                "message:{}:membership:{}:topology:{}",
-                request.message_id.0,
+            let case_id = arbitration_case_id(
+                &request,
                 membership.governance.membership_revision,
-                topology.topology_revision
-            ));
+                topology.topology_revision,
+            )?;
             if let Some(case) = self.store.arbitration_case(&case_id).await? {
+                self.ensure_arbitration_notification(&request, &case, &membership, &topology)
+                    .await?;
                 return Ok(DispatchMessageOutcome::RequiresArbitration { case, assessment });
             }
             let ttl = i64::try_from(self.arbitration_ttl_seconds)
                 .map_err(|_| CoordinationServiceError::InvalidConfiguration)?;
             let case = ArbitrationCase {
                 case_id,
-                session_id: request.session_id,
+                session_id: request.session_id.clone(),
                 moderator_instance_id: membership.governance.moderator_instance_id.clone(),
                 membership_revision: membership.governance.membership_revision,
                 topology_revision: topology.topology_revision,
@@ -200,6 +203,8 @@ where
             };
             self.store
                 .create_arbitration_case(&case, &membership, &topology, now)
+                .await?;
+            self.ensure_arbitration_notification(&request, &case, &membership, &topology)
                 .await?;
             return Ok(DispatchMessageOutcome::RequiresArbitration { case, assessment });
         }
@@ -482,6 +487,66 @@ where
             .await?;
         Ok(observation)
     }
+
+    async fn ensure_arbitration_notification(
+        &self,
+        request: &DispatchMessageRequest,
+        case: &ArbitrationCase,
+        membership: &crate::session::membership::SessionMembership,
+        topology: &crate::coordination::topology::SessionTopology,
+    ) -> Result<(), CoordinationServiceError> {
+        let route = topology
+            .route_between(&request.sender_instance_id, &case.moderator_instance_id)
+            .ok_or(CoordinationServiceError::Unroutable)?;
+        let hops = u16::try_from(route.len().saturating_sub(1))
+            .map_err(|_| CoordinationServiceError::InvalidConfiguration)?;
+        let message = CoordinationMessage {
+            message_id: CoordinationMessageId::new(format!("arbitration:{}", case.case_id.0)),
+            session_id: request.session_id.clone(),
+            sender_instance_id: request.sender_instance_id.clone(),
+            recipient_instance_id: case.moderator_instance_id.clone(),
+            task_id: request.task_id.clone(),
+            kind: CoordinationMessageKind::Control,
+            payload: format!("governance_case:{}", case.case_id.0),
+            topology_revision: topology.topology_revision,
+            route,
+            max_hops: hops.max(1),
+            state: MessageDeliveryState::Pending,
+            delivery_attempts: 0,
+            revision: 0,
+            expires_at: case.expires_at,
+            created_at: case.created_at,
+            updated_at: case.created_at,
+        };
+        if let Some(existing) = self.store.message(&message.message_id).await? {
+            return if same_dispatch_intent(&existing, &message) {
+                Ok(())
+            } else {
+                Err(CoordinationServiceError::IdempotencyConflict)
+            };
+        }
+        self.store
+            .enqueue_message(&message, membership, topology, case.created_at)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+fn arbitration_case_id(
+    request: &DispatchMessageRequest,
+    membership_revision: u64,
+    topology_revision: u64,
+) -> Result<GovernanceCaseId, CoordinationServiceError> {
+    let encoded = serde_json::to_vec(request)
+        .map_err(|error| CoordinationServiceError::InvalidDispatch(error.to_string()))?;
+    let mut digest = Sha256::new();
+    digest.update(encoded);
+    digest.update(membership_revision.to_be_bytes());
+    digest.update(topology_revision.to_be_bytes());
+    Ok(GovernanceCaseId::new(format!(
+        "message:{:x}",
+        digest.finalize()
+    )))
 }
 
 fn ensure_available(
