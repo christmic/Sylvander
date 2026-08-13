@@ -479,8 +479,7 @@ impl AppState {
             DomainEvent::Connected => {
                 self.connected = true;
                 self.status = "Connected".into();
-                self.pending_actions.push(Action::DiscoverAgents);
-                return Some(Action::RequestRuntimeInfo);
+                return Some(Action::DiscoverAgents);
             }
             DomainEvent::ProtocolNegotiated {
                 version,
@@ -490,14 +489,13 @@ impl AppState {
                 self.connected = true;
                 self.protocol_version = Some(version);
                 self.protocol_capabilities = capabilities;
-                self.pending_actions.push(Action::DiscoverAgents);
                 self.status = format!("Connected to {server_name} · protocol v{version}");
                 if let Some(session_id) = self.session_id.clone() {
-                    self.pending_actions.push(Action::RequestRuntimeInfo);
+                    self.pending_actions.push(Action::DiscoverAgents);
                     self.status = format!("Reattaching session · protocol v{version}");
                     return Some(Action::ReconcileSession { session_id });
                 }
-                return Some(Action::RequestRuntimeInfo);
+                return Some(Action::DiscoverAgents);
             }
             DomainEvent::ProtocolDiagnostic { message } => {
                 self.status = "Protocol diagnostic".into();
@@ -513,11 +511,11 @@ impl AppState {
                 permissions,
                 capabilities,
                 approval_enabled,
-                max_attachment_bytes,
+                max_request_bytes,
                 platform,
             } => {
-                let first_runtime_info = self.metadata.model == "—";
-                let changed = self.metadata.model != "—"
+                let first_runtime_info = self.metadata.model.model_id == "—";
+                let changed = self.metadata.model.model_id != "—"
                     && (self.metadata.model != model
                         || self.metadata.reasoning_effort != reasoning_effort);
                 let permissions_changed = self.metadata.permissions != permissions;
@@ -527,13 +525,16 @@ impl AppState {
                 self.metadata.permissions = permissions;
                 self.metadata.capabilities = capabilities;
                 self.metadata.approval_enabled = approval_enabled;
-                self.metadata.max_attachment_bytes = max_attachment_bytes;
+                self.metadata.max_request_bytes = max_request_bytes;
                 self.platform = platform;
                 let migration = self
                     .metadata
                     .models
                     .iter()
-                    .find(|entry| entry.id == self.metadata.model)
+                    .find(|entry| {
+                        entry.provider == self.metadata.model.provider_id
+                            && entry.id == self.metadata.model.model_id
+                    })
                     .and_then(model_migration_label);
                 if (first_runtime_info || changed)
                     && let Some(migration) = migration
@@ -543,7 +544,7 @@ impl AppState {
                 } else if changed {
                     self.status = format!(
                         "Model selected · {} · {} · next turn",
-                        self.metadata.model,
+                        self.metadata.model_label_without_reasoning(),
                         reasoning_label(self.metadata.reasoning_effort)
                     );
                 } else if permissions_changed {
@@ -655,10 +656,16 @@ impl AppState {
                     0 => "No Agents available".into(),
                     count => format!("{count} Agent{} available", if count == 1 { "" } else { "s" }),
                 };
+                if let Some(agent_id) = self.selected_agent_id.clone() {
+                    return Some(Action::RequestRuntimeInfo { agent_id });
+                }
             }
             DomainEvent::SessionConfigLoaded { state } => {
                 self.selected_agent_id = Some(state.effective.agent_id.clone());
-                self.metadata.model.clone_from(&state.effective.model_id);
+                self.metadata.model = sylvander_api::ModelSelection {
+                    provider_id: state.effective.provider_id.clone(),
+                    model_id: state.effective.model_id.clone(),
+                };
                 self.metadata.reasoning_effort = state.effective.reasoning_effort;
                 self.session_config = Some(state);
             }
@@ -689,7 +696,10 @@ impl AppState {
                 self.session_id = Some(session_id);
                 if let Some(config) = config {
                     self.selected_agent_id = Some(config.effective.agent_id.clone());
-                    self.metadata.model.clone_from(&config.effective.model_id);
+                    self.metadata.model = sylvander_api::ModelSelection {
+                        provider_id: config.effective.provider_id.clone(),
+                        model_id: config.effective.model_id.clone(),
+                    };
                     self.metadata.reasoning_effort = config.effective.reasoning_effort;
                     self.session_config = Some(config);
                 }
@@ -1062,11 +1072,11 @@ impl AppState {
             DomainEvent::WorkspaceReviewLoaded { scope, diff } => {
                 if diff.is_empty() {
                     self.status = format!("No {} to review", scope.label());
-                } else if diff.len() > self.metadata.max_attachment_bytes {
+                } else if diff.len() > self.metadata.max_request_bytes {
                     self.status = format!(
                         "Review diff is too large · {} bytes exceeds model limit {}",
                         diff.len(),
-                        self.metadata.max_attachment_bytes
+                        self.metadata.max_request_bytes
                     );
                     self.messages.push(ChatMessage::Info(self.status.clone()));
                 } else {
@@ -1688,7 +1698,7 @@ impl AppState {
             self.modals
                 .push(Box::new(crate::modal::FileMentionModal::new(
                     self.metadata.workspace.clone(),
-                    self.metadata.max_attachment_bytes,
+                    self.metadata.max_request_bytes,
                     self.metadata.supports_vision(),
                 )));
             self.dirty.mark();
@@ -1723,7 +1733,7 @@ impl AppState {
         }
         if is_submit
             && let Err(error) = self.composer.validate_attachments(
-                self.metadata.max_attachment_bytes,
+                self.metadata.max_request_bytes,
                 self.metadata.supports_vision(),
             )
         {

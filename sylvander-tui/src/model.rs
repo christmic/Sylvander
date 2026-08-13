@@ -9,7 +9,7 @@ pub const CAPABILITY_VISION: u8 = 1 << 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeMetadata {
-    pub model: String,
+    pub model: sylvander_api::ModelSelection,
     pub reasoning_effort: sylvander_api::ReasoningEffort,
     pub models: Vec<sylvander_api::ModelDescriptor>,
     pub permissions: sylvander_api::PermissionProfile,
@@ -17,13 +17,17 @@ pub struct RuntimeMetadata {
     pub branch: String,
     pub capabilities: u8,
     pub approval_enabled: bool,
-    pub max_attachment_bytes: usize,
+    /// Runtime's enforced ceiling for the complete serialized UI request.
+    pub max_request_bytes: usize,
 }
 
 impl Default for RuntimeMetadata {
     fn default() -> Self {
         Self {
-            model: "—".into(),
+            model: sylvander_api::ModelSelection {
+                provider_id: "—".into(),
+                model_id: "—".into(),
+            },
             reasoning_effort: sylvander_api::ReasoningEffort::Off,
             models: Vec::new(),
             permissions: sylvander_api::PermissionProfile::default(),
@@ -31,7 +35,7 @@ impl Default for RuntimeMetadata {
             branch: "—".into(),
             capabilities: 0,
             approval_enabled: false,
-            max_attachment_bytes: 512 * 1024,
+            max_request_bytes: 512 * 1024,
         }
     }
 }
@@ -43,9 +47,20 @@ impl RuntimeMetadata {
 
     pub fn model_label(&self) -> String {
         match self.reasoning_effort {
-            sylvander_api::ReasoningEffort::Off => self.model.clone(),
-            effort => format!("{} / {}", self.model, crate::app::reasoning_label(effort)),
+            sylvander_api::ReasoningEffort::Off => self.model_label_without_reasoning(),
+            effort => format!(
+                "{} / {}",
+                self.model_label_without_reasoning(),
+                crate::app::reasoning_label(effort)
+            ),
         }
+    }
+
+    pub fn model_label_without_reasoning(&self) -> String {
+        if self.model.provider_id == "—" {
+            return self.model.model_id.clone();
+        }
+        format!("{}/{}", self.model.provider_id, self.model.model_id)
     }
 }
 

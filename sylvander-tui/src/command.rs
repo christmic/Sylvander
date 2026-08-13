@@ -835,7 +835,10 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                     let changed = state.selected_agent_id.as_ref() != Some(&agent.id);
                     state.selected_agent_id = Some(agent.id);
                     state.metadata.models = agent.models;
-                    state.metadata.model = agent.default_model_id;
+                    state.metadata.model = sylvander_api::ModelSelection {
+                        provider_id: agent.provider_id,
+                        model_id: agent.default_model_id,
+                    };
                     state.session_model_override = None;
                     if changed && state.session_id.is_some() {
                         state.session_id = None;
@@ -1190,7 +1193,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             state.modals.push(Box::new(FileMentionModal::new(
                 state.metadata.workspace.clone(),
-                state.metadata.max_attachment_bytes,
+                state.metadata.max_request_bytes,
                 state.metadata.supports_vision(),
             )));
         }
@@ -1381,9 +1384,13 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
         CommandId::Model => match invocation.args.as_slice() {
             [] => {
                 if state.metadata.models.is_empty() {
+                    let agent_id = state
+                        .selected_agent_id
+                        .clone()
+                        .ok_or_else(|| "Select an Agent before loading models".to_string())?;
                     state
                         .pending_actions
-                        .push(crate::event::Action::RequestRuntimeInfo);
+                        .push(crate::event::Action::RequestRuntimeInfo { agent_id });
                     return Err("Model catalog is still loading".into());
                 }
                 state.modals.push(Box::new(ModelPicker::new(state)));
@@ -1438,7 +1445,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                         });
                     state.status = "Selecting model…".into();
                 } else {
-                    state.metadata.model.clone_from(&selection.model_id);
+                    state.metadata.model.clone_from(&selection);
                     state.metadata.reasoning_effort = effort;
                     state.session_model_override = Some((selection, effort));
                     state.status = "Model override ready · applies when the session starts".into();

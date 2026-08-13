@@ -12,7 +12,7 @@ pub fn report(config: &TuiConfig, state: &AppState) -> String {
         .as_deref()
         .map_or_else(|| "new".into(), |id| id.chars().take(8).collect());
     format!(
-        "Sylvander TUI diagnostic (redacted)\n\nversion      {}\nconnected    {}\nprotocol     {}\nprotocol caps {}\ntheme        {}\nsocket       {}\nhistory      {}\nworkspace    {}\nbranch       {}\nmodel        {}\nreasoning    {}\nsession      {}\npermissions  {:?}/{:?}/{:?}\ncapabilities 0x{:02x}\nattachments  {} bytes\nrender       {} ms\nreconnect    {} ms\nmessages     {}\nqueued       {}\nturn active  {}\ntokens       {} input / {} output\ncost         {}",
+        "Sylvander TUI diagnostic (redacted)\n\nversion      {}\nconnected    {}\nprotocol     {}\nprotocol caps {}\ntheme        {}\nsocket       {}\nhistory      {}\nworkspace    {}\nbranch       {}\nmodel        {}\nreasoning    {}\nsession      {}\npermissions  {:?}/{:?}/{:?}\ncapabilities 0x{:02x}\nrequest max  {} bytes\nrender       {} ms\nreconnect    {} ms\nmessages     {}\nqueued       {}\nturn active  {}\ntokens       {} input / {} output\ncost         {}",
         env!("CARGO_PKG_VERSION"),
         state.connected,
         state
@@ -34,7 +34,7 @@ pub fn report(config: &TuiConfig, state: &AppState) -> String {
         state.metadata.permissions.network_access,
         state.metadata.permissions.approval_policy,
         state.metadata.capabilities,
-        state.metadata.max_attachment_bytes,
+        state.metadata.max_request_bytes,
         config.render_interval.as_millis(),
         config.reconnect_interval.as_millis(),
         state.messages.len(),

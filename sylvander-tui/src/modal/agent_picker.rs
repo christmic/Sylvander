@@ -110,7 +110,10 @@ impl Modal for AgentPicker {
                 let changed = state.selected_agent_id.as_ref() != Some(&agent.id);
                 state.selected_agent_id = Some(agent.id.clone());
                 state.metadata.models.clone_from(&agent.models);
-                state.metadata.model.clone_from(&agent.default_model_id);
+                state.metadata.model = sylvander_api::ModelSelection {
+                    provider_id: agent.provider_id.clone(),
+                    model_id: agent.default_model_id.clone(),
+                };
                 state.session_model_override = None;
                 if changed && state.session_id.is_some() {
                     state.session_id = None;
