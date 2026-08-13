@@ -1,9 +1,9 @@
 //! Agent-driven, governed lifecycle for durable work graph nodes.
 
 use super::{
-    ClaimTaskRequest, CoordinationService, CoordinationServiceError, CoordinationTask,
-    CoordinationTaskState, CreateTaskRequest, FinishClaimedTaskRequest, GovernanceSnapshot,
-    SessionTaskGraph, TransitionTaskRequest, assess, ensure_available,
+    CancelTaskRequest, ClaimTaskRequest, CoordinationService, CoordinationServiceError,
+    CoordinationTask, CoordinationTaskState, CreateTaskRequest, FinishClaimedTaskRequest,
+    GovernanceSnapshot, SessionTaskGraph, TransitionTaskRequest, assess, ensure_available,
 };
 use crate::coordination::governance::FindingSeverity;
 use crate::coordination::topology::AgentRelationKind;
@@ -54,6 +54,14 @@ where
             })
         {
             return Err(CoordinationServiceError::UnauthorizedActor);
+        }
+
+        if let Some(existing) = self.store.task(&request.task_id).await? {
+            return if same_task_intent(&existing, &request) {
+                Ok(existing)
+            } else {
+                Err(CoordinationServiceError::IdempotencyConflict)
+            };
         }
 
         let mut graph = self
@@ -255,4 +263,47 @@ where
             .await
             .map_err(Into::into)
     }
+
+    /// Fence any active executor and durably cancel unfinished work.
+    pub async fn cancel_task(
+        &self,
+        request: CancelTaskRequest,
+        now: i64,
+    ) -> Result<CoordinationTask, CoordinationServiceError> {
+        let membership = self
+            .store
+            .session_membership(&request.session_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::MissingMembership(request.session_id.clone())
+            })?;
+        ensure_available(&membership, &request.actor)?;
+        let task = self
+            .store
+            .task(&request.task_id)
+            .await?
+            .ok_or(CoordinationServiceError::UnknownTask)?;
+        if task.session_id != request.session_id
+            || (request.actor != membership.governance.moderator_instance_id
+                && task.assigned_to.as_ref() != Some(&request.actor)
+                && task.created_by != request.actor)
+        {
+            return Err(CoordinationServiceError::UnauthorizedActor);
+        }
+        self.store
+            .cancel_task(&request.task_id, now)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+fn same_task_intent(task: &CoordinationTask, request: &CreateTaskRequest) -> bool {
+    task.task_id == request.task_id
+        && task.session_id == request.session_id
+        && task.parent_task_id == request.parent_task_id
+        && task.created_by == request.created_by
+        && task.assigned_to.as_ref() == Some(&request.assigned_to)
+        && task.objective == request.objective
+        && task.token_budget == request.token_budget
+        && task.max_handoffs == request.max_handoffs
 }

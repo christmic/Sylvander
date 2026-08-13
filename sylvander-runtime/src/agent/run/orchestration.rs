@@ -19,7 +19,6 @@ use sylvander_agent::task_gate::TaskGate;
 use sylvander_agent::tool::ToolFailureKind as AgentToolFailureKind;
 use sylvander_agent::tool::invocation::prepared_input_digest;
 use sylvander_agent::tool_context::{Cap, NetworkPolicy, ToolContext};
-use sylvander_agent::tools::{MemoryReadTool, ReadTool};
 use sylvander_agent::turn::conversation::ConversationSnapshot;
 use sylvander_agent::turn::error::AgentLoopError;
 use sylvander_agent::turn::execution_context::{AgentExecutionContext, ExecutionWorkspace};
@@ -1110,33 +1109,13 @@ impl AgentRunInner {
             tools: turn_tools,
             execution: tool_context.execution.as_ref().clone(),
         };
-        let mut background_request = request.clone();
-        background_request.conversation = ConversationSnapshot::default();
-        background_request.tools = background_request
-            .tools
-            .retain_named(&[ReadTool::NAME, MemoryReadTool::NAME]);
-        background_request.system_instructions = turn_system_instructions(
-            &system_prompt,
-            &background_request.model,
-            &background_request.tools,
-        );
-        let mut background_ports = AgentExecutionPorts::new(
-            self.model_provider.clone(),
-            tool_context.clone(),
-            invocation_gateway.clone(),
-            invocation_snapshot.clone(),
-        );
-        if let Some(store) = &artifact_store {
-            background_ports = background_ports.with_artifact_store(store.clone());
-        }
         let task_gate: Arc<dyn TaskGate> = Arc::new(BusTaskGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
+            agent_instance_id: agent_instance_id.clone(),
             session_id: session_id.clone(),
-            kernel: loop_config.clone(),
-            request: background_request,
-            ports: background_ports,
-            tasks: self.background_tasks.clone(),
+            store: self.workflow_store.clone(),
+            observability: self.observability.clone(),
         });
         let mut ports = AgentExecutionPorts::new(
             self.model_provider.clone(),

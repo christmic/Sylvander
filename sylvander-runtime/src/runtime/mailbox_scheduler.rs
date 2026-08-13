@@ -2,6 +2,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use sylvander_api::{
@@ -22,6 +23,7 @@ use crate::storage::session::{SessionStore, SqliteSessionStore, TurnState};
 
 const MAILBOX_LEASE_SECONDS: u64 = 30;
 const MAX_CONCURRENT_RECIPIENTS: usize = 16;
+const DURABLE_MAILBOX_SCAN_SECONDS: u64 = 1;
 
 pub(super) struct AgentMailboxScheduler {
     wake: mpsc::UnboundedSender<AgentInstanceId>,
@@ -61,6 +63,8 @@ async fn run_scheduler(
     let mut rerun = HashSet::new();
     let mut active = JoinSet::new();
     let mut receiver_open = true;
+    let mut durable_scan = tokio::time::interval(Duration::from_secs(DURABLE_MAILBOX_SCAN_SECONDS));
+    durable_scan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         while active.len() < MAX_CONCURRENT_RECIPIENTS
             && let Some(recipient) = queued.pop_front()
@@ -87,6 +91,20 @@ async fn run_scheduler(
             });
         }
         tokio::select! {
+            _ = durable_scan.tick() => {
+                match store.recoverable_message_recipients(crate::session::now_secs()).await {
+                    Ok(recipients) => {
+                        for recipient in recipients {
+                            if known.insert(recipient.clone()) {
+                                queued.push_back(recipient);
+                            } else {
+                                rerun.insert(recipient);
+                            }
+                        }
+                    }
+                    Err(error) => warn!(%error, "durable Agent mailbox scan failed"),
+                }
+            }
             wake = receiver.recv(), if receiver_open => match wake {
                 Some(recipient) if known.insert(recipient.clone()) => queued.push_back(recipient),
                 Some(recipient) => {

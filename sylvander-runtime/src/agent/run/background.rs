@@ -1,171 +1,157 @@
-//! Runtime-owned lifecycle for isolated, read-only background Agent work.
+//! Durable background work submitted to the governed Agent mailbox.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use futures_util::StreamExt;
-use tokio::sync::{Mutex, oneshot};
-
-use sylvander_agent::execution_ports::AgentExecutionPorts;
-use sylvander_agent::kernel::agent_loop::{self, AgentLoop};
+use sha2::{Digest, Sha256};
 use sylvander_agent::task_gate::{BackgroundTaskRequest, TaskGate};
-use sylvander_agent::turn::conversation::ConversationSnapshot;
-use sylvander_agent::turn::request::AgentTurnRequest;
-use sylvander_api::{AgentId, BusMessage, SessionId, StreamEvent};
+use sylvander_api::{
+    AgentId, AgentInstanceId, BusMessage, CoordinationMessageId, SessionId, StreamEvent, TaskId,
+};
 use sylvander_channel::MessageBus;
-use sylvander_llm_core::ChatMessage;
 
-use super::interaction::publish_interaction_timeout;
+use crate::coordination::governance::GovernancePolicy;
+use crate::coordination::mailbox::CoordinationMessageKind;
+use crate::coordination::service::{
+    CoordinationService, CreateTaskRequest, DEFAULT_ARBITRATION_TTL_SECONDS,
+    DispatchMessageOutcome, DispatchMessageRequest,
+};
+use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability};
+use crate::session::now_secs;
+use crate::storage::session::SqliteSessionStore;
 
-const BACKGROUND_TASK_TIMEOUT_SECS: u64 = 10 * 60;
-
-pub(super) struct ActiveBackgroundTask {
-    pub(super) session_id: SessionId,
-    pub(super) cancel: oneshot::Sender<()>,
-}
+const BACKGROUND_TASK_TIMEOUT_SECS: i64 = 10 * 60;
+const BACKGROUND_TASK_TOKEN_BUDGET: u64 = 20_000;
 
 pub(super) struct BusTaskGate {
     pub(super) bus: Arc<dyn MessageBus>,
     pub(super) agent_id: AgentId,
+    pub(super) agent_instance_id: AgentInstanceId,
     pub(super) session_id: SessionId,
-    pub(super) kernel: AgentLoop,
-    pub(super) request: AgentTurnRequest,
-    pub(super) ports: AgentExecutionPorts,
-    pub(super) tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
+    pub(super) store: Option<Arc<SqliteSessionStore>>,
+    pub(super) observability: RuntimeObservability,
 }
 
 #[async_trait::async_trait]
 impl TaskGate for BusTaskGate {
     async fn start(&self, request: BackgroundTaskRequest) -> Result<String, String> {
-        let BackgroundTaskRequest {
-            invocation_id: _,
-            purpose,
-            prompt,
-        } = request;
-        if prompt.trim().is_empty() {
+        if request.prompt.trim().is_empty() {
             return Err("background task prompt cannot be empty".into());
         }
-        let task_id = uuid::Uuid::new_v4().to_string();
-        let (cancel, mut cancelled) = oneshot::channel();
-        self.tasks.lock().await.insert(
-            task_id.clone(),
-            ActiveBackgroundTask {
-                session_id: self.session_id.clone(),
-                cancel,
-            },
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| "durable background task runtime is unavailable".to_owned())?;
+        let task_id = TaskId::new(stable_id(
+            "background-task",
+            &self.session_id,
+            &self.agent_instance_id,
+            &request.invocation_id,
+        ));
+        let message_id = CoordinationMessageId::new(stable_id(
+            "background-message",
+            &self.session_id,
+            &self.agent_instance_id,
+            &request.invocation_id,
+        ));
+        let service = CoordinationService::new(
+            store.clone(),
+            GovernancePolicy::default(),
+            DEFAULT_ARBITRATION_TTL_SECONDS,
         );
+        let now = now_secs();
+        let prompt = format!(
+            "[durable background task; task_id={}]\nPurpose: {}\n\n{}\n\nUse manage_workflow to claim this task before work and commit its final state.",
+            task_id.0, request.purpose, request.prompt
+        );
+        service
+            .create_task(
+                CreateTaskRequest {
+                    task_id: task_id.clone(),
+                    session_id: self.session_id.clone(),
+                    parent_task_id: None,
+                    created_by: self.agent_instance_id.clone(),
+                    assigned_to: self.agent_instance_id.clone(),
+                    objective: prompt.clone(),
+                    token_budget: BACKGROUND_TASK_TOKEN_BUDGET,
+                    max_handoffs: 0,
+                },
+                now,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let expires_at = now
+            .checked_add(BACKGROUND_TASK_TIMEOUT_SECS)
+            .ok_or_else(|| "background task deadline overflow".to_owned())?;
+        let outcome = service
+            .dispatch_message(
+                DispatchMessageRequest {
+                    message_id,
+                    session_id: self.session_id.clone(),
+                    sender_instance_id: self.agent_instance_id.clone(),
+                    recipient_instance_id: self.agent_instance_id.clone(),
+                    task_id: Some(task_id.clone()),
+                    kind: CoordinationMessageKind::Task,
+                    payload: prompt,
+                    max_hops: 1,
+                    expires_at,
+                },
+                now,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let coordination_outcome = match outcome {
+            DispatchMessageOutcome::Enqueued(_) => RuntimeCoordinationOutcome::Enqueued,
+            DispatchMessageOutcome::EnqueuedByModerator { .. } => {
+                RuntimeCoordinationOutcome::ModeratorAuthorized
+            }
+            DispatchMessageOutcome::RequiresArbitration { .. } => {
+                RuntimeCoordinationOutcome::ArbitrationRequired
+            }
+            DispatchMessageOutcome::RejectedByModerator { .. } => {
+                return Err("background task was rejected by the moderator".into());
+            }
+        };
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id: self.session_id.clone(),
+                outcome: RuntimeCoordinationOutcome::TaskCreated,
+            });
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id: self.session_id.clone(),
+                outcome: coordination_outcome,
+            });
         let _ = self
             .bus
             .publish(BusMessage::stream_event(
                 self.session_id.clone(),
                 self.agent_id.clone(),
                 StreamEvent::TaskStarted {
-                    task_id: task_id.clone(),
-                    owner: self.agent_id.0.clone(),
-                    purpose,
+                    task_id: task_id.0.clone(),
+                    owner: self.agent_instance_id.0.clone(),
+                    purpose: request.purpose,
                 },
             ))
             .await;
-
-        let bus = self.bus.clone();
-        let agent_id = self.agent_id.clone();
-        let session_id = self.session_id.clone();
-        let kernel = self.kernel.clone();
-        let mut request = self.request.clone();
-        let ports = self.ports.clone();
-        let tasks = self.tasks.clone();
-        let running_id = task_id.clone();
-        tokio::spawn(async move {
-            request.conversation = ConversationSnapshot::new(vec![ChatMessage::user(prompt)]);
-            let mut stream = Box::pin(agent_loop::run_stream(&kernel, request, ports));
-            let deadline = tokio::time::sleep(Duration::from_secs(BACKGROUND_TASK_TIMEOUT_SECS));
-            tokio::pin!(deadline);
-            loop {
-                let event = tokio::select! {
-                    biased;
-                    _ = &mut cancelled => {
-                        let _ = bus.publish(BusMessage::stream_event(
-                            session_id.clone(),
-                            agent_id.clone(),
-                            StreamEvent::TaskCancelled {
-                                task_id: running_id.clone(),
-                                reason: "cancelled by user".into(),
-                            },
-                        )).await;
-                        break;
-                    }
-                    () = &mut deadline => {
-                        publish_interaction_timeout(
-                            &bus,
-                            &session_id,
-                            &agent_id,
-                            sylvander_api::InteractionTimeoutKind::Task,
-                            &running_id,
-                            BACKGROUND_TASK_TIMEOUT_SECS,
-                            sylvander_api::TimeoutRecovery::NarrowScope,
-                        ).await;
-                        let _ = bus.publish(BusMessage::stream_event(
-                            session_id.clone(),
-                            agent_id.clone(),
-                            StreamEvent::TaskFailed {
-                                task_id: running_id.clone(),
-                                error: format!(
-                                    "background task timed out after {BACKGROUND_TASK_TIMEOUT_SECS}s"
-                                ),
-                            },
-                        )).await;
-                        break;
-                    }
-                    event = stream.next() => event,
-                };
-                let Some(event) = event else { break };
-                let public = match event {
-                    sylvander_agent::turn::event::AgentEvent::IterationStart { iteration } => {
-                        Some(StreamEvent::TaskProgress {
-                            task_id: running_id.clone(),
-                            message: format!("iteration {iteration}"),
-                        })
-                    }
-                    sylvander_agent::turn::event::AgentEvent::ToolCallStart { name, .. } => {
-                        Some(StreamEvent::TaskProgress {
-                            task_id: running_id.clone(),
-                            message: format!("running {name}"),
-                        })
-                    }
-                    sylvander_agent::turn::event::AgentEvent::Done(outcome) => {
-                        Some(StreamEvent::TaskCompleted {
-                            task_id: running_id.clone(),
-                            summary: outcome.final_response.text(),
-                        })
-                    }
-                    sylvander_agent::turn::event::AgentEvent::Error(error) => {
-                        Some(StreamEvent::TaskFailed {
-                            task_id: running_id.clone(),
-                            error: error.to_string(),
-                        })
-                    }
-                    _ => None,
-                };
-                let terminal = matches!(
-                    public,
-                    Some(StreamEvent::TaskCompleted { .. } | StreamEvent::TaskFailed { .. })
-                );
-                if let Some(event) = public {
-                    let _ = bus
-                        .publish(BusMessage::stream_event(
-                            session_id.clone(),
-                            agent_id.clone(),
-                            event,
-                        ))
-                        .await;
-                }
-                if terminal {
-                    break;
-                }
-            }
-            tasks.lock().await.remove(&running_id);
-        });
-        Ok(task_id)
+        Ok(task_id.0)
     }
+}
+
+fn stable_id(
+    domain: &str,
+    session_id: &SessionId,
+    instance_id: &AgentInstanceId,
+    invocation_id: &str,
+) -> String {
+    format!(
+        "{domain}:{:x}",
+        Sha256::digest(
+            [
+                session_id.0.as_bytes(),
+                instance_id.0.as_bytes(),
+                invocation_id.as_bytes(),
+            ]
+            .concat()
+        )
+    )
 }

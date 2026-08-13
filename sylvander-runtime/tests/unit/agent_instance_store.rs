@@ -318,6 +318,10 @@ async fn coordination_service_derives_route_from_durable_topology() {
         store.message(&message.message_id).await.unwrap(),
         Some(message.clone())
     );
+    assert_eq!(
+        store.recoverable_message_recipients(20).await.unwrap(),
+        vec![AgentInstanceId::new("coordinator-1")]
+    );
     let repeated = service
         .dispatch_message(dispatch_request("governed-message"), 21)
         .await
@@ -337,7 +341,7 @@ async fn coordination_service_derives_route_from_durable_topology() {
 }
 
 #[tokio::test]
-async fn agents_drive_durable_tasks_with_runtime_owned_revision_fences() {
+async fn cancelling_running_work_fences_its_executor() {
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     store.save(&stored_session()).await.unwrap();
     let membership = membership();
@@ -353,20 +357,86 @@ async fn agents_drive_durable_tasks_with_runtime_owned_revision_fences() {
     let task = service
         .create_task(
             CreateTaskRequest {
-                task_id: TaskId::new("agent-owned-task"),
+                task_id: TaskId::new("cancel-fences-task"),
                 session_id: membership.session_id.clone(),
                 parent_task_id: None,
-                created_by: AgentInstanceId::new("moderator-1"),
+                created_by: AgentInstanceId::new("worker-1"),
                 assigned_to: AgentInstanceId::new("worker-1"),
-                objective: "Produce independently verifiable evidence".into(),
+                objective: "Stop without allowing a late commit".into(),
                 token_budget: 1_000,
-                max_handoffs: 2,
+                max_handoffs: 0,
             },
             20,
         )
         .await
         .unwrap();
+    let lease = service
+        .claim_task(
+            ClaimTaskRequest {
+                task_id: task.task_id.clone(),
+                session_id: membership.session_id.clone(),
+                actor: AgentInstanceId::new("worker-1"),
+                claim_owner_id: "turn-before-cancel".into(),
+                lease_seconds: 30,
+            },
+            21,
+        )
+        .await
+        .unwrap();
+    let cancelled = service
+        .cancel_task(
+            crate::coordination::service::CancelTaskRequest {
+                task_id: task.task_id,
+                session_id: membership.session_id,
+                actor: AgentInstanceId::new("worker-1"),
+            },
+            22,
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancelled.state, CoordinationTaskState::Cancelled);
+    assert!(
+        service
+            .finish_claimed_task(
+                FinishClaimedTaskRequest {
+                    lease,
+                    next_state: CoordinationTaskState::Completed,
+                    consumed_tokens: 100,
+                },
+                23,
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn agents_drive_durable_tasks_with_runtime_owned_revision_fences() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    let create = CreateTaskRequest {
+        task_id: TaskId::new("agent-owned-task"),
+        session_id: membership.session_id.clone(),
+        parent_task_id: None,
+        created_by: AgentInstanceId::new("moderator-1"),
+        assigned_to: AgentInstanceId::new("worker-1"),
+        objective: "Produce independently verifiable evidence".into(),
+        token_budget: 1_000,
+        max_handoffs: 2,
+    };
+    let task = service.create_task(create.clone(), 20).await.unwrap();
     assert_eq!(task.state, CoordinationTaskState::Ready);
+    assert_eq!(service.create_task(create, 21).await.unwrap(), task);
 
     let lease = service
         .claim_task(
@@ -377,7 +447,7 @@ async fn agents_drive_durable_tasks_with_runtime_owned_revision_fences() {
                 claim_owner_id: "turn-agent-owned".into(),
                 lease_seconds: 30,
             },
-            21,
+            22,
         )
         .await
         .unwrap();
@@ -390,7 +460,7 @@ async fn agents_drive_durable_tasks_with_runtime_owned_revision_fences() {
                 next_state: CoordinationTaskState::Completed,
                 consumed_tokens: 240,
             },
-            22,
+            23,
         )
         .await
         .unwrap();

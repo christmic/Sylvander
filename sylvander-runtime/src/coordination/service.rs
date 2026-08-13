@@ -224,6 +224,13 @@ pub struct FinishClaimedTaskRequest {
     pub consumed_tokens: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelTaskRequest {
+    pub task_id: TaskId,
+    pub session_id: SessionId,
+    pub actor: AgentInstanceId,
+}
+
 /// Single policy-enforcing entry point above coordination repositories.
 pub struct CoordinationService<S> {
     store: Arc<S>,

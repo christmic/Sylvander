@@ -394,7 +394,6 @@ impl AgentRunBuilder {
                 approval_memory: Arc::new(Mutex::new(approval_memory)),
                 pending_answers: Arc::new(Mutex::new(HashMap::new())),
                 pending_plans: Arc::new(Mutex::new(HashMap::new())),
-                background_tasks: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
                 active_turns: Mutex::new(HashMap::new()),
                 turn_snapshots: RwLock::new(HashMap::new()),

@@ -78,6 +78,12 @@ pub trait CoordinationStore: Send + Sync {
         now: i64,
     ) -> Result<CoordinationTask, SessionStoreError>;
 
+    async fn cancel_task(
+        &self,
+        task_id: &TaskId,
+        now: i64,
+    ) -> Result<CoordinationTask, SessionStoreError>;
+
     async fn add_task_dependency(
         &self,
         dependency: &TaskDependency,
@@ -220,6 +226,12 @@ pub trait CoordinationStore: Send + Sync {
         &self,
         recipient: &AgentInstanceId,
     ) -> Result<Vec<(CoordinationMessage, AgentMessageTurn)>, SessionStoreError>;
+
+    /// Discover mailboxes with durable work even when an in-memory wake was lost.
+    async fn recoverable_message_recipients(
+        &self,
+        now: i64,
+    ) -> Result<Vec<AgentInstanceId>, SessionStoreError>;
 
     async fn acknowledge_message(
         &self,
@@ -771,6 +783,63 @@ impl CoordinationStore for SqliteSessionStore {
             )?;
             task.state = next_state;
             task.consumed_tokens = consumed_tokens;
+            task.revision = next_revision;
+            task.updated_at = now;
+            transaction.commit()?;
+            Ok(task)
+        })
+        .await
+    }
+
+    async fn cancel_task(
+        &self,
+        task_id: &TaskId,
+        now: i64,
+    ) -> Result<CoordinationTask, SessionStoreError> {
+        let task_id = task_id.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let mut task = load_task(&transaction, &task_id)?.ok_or_else(|| {
+                SessionStoreError::Invalid("cannot cancel an unknown task".into())
+            })?;
+            if task.state == CoordinationTaskState::Cancelled {
+                transaction.commit()?;
+                return Ok(task);
+            }
+            if !task
+                .state
+                .can_transition_to(CoordinationTaskState::Cancelled)
+            {
+                return Err(SessionStoreError::Invalid(
+                    "task is already terminal and cannot be cancelled".into(),
+                ));
+            }
+            let next_revision = task
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("task revision overflow".into()))?;
+            let changed = transaction.execute(
+                "UPDATE coordination_tasks SET state='cancelled',revision=?2,updated_at=?3 \
+                 WHERE task_id=?1 AND revision=?4",
+                params![
+                    task.task_id.0,
+                    checked_i64(next_revision, "task revision")?,
+                    now,
+                    checked_i64(task.revision, "task revision")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::TaskConflict {
+                    task_id,
+                    expected: Some(task.revision),
+                    actual: None,
+                });
+            }
+            transaction.execute(
+                "DELETE FROM coordination_task_leases WHERE task_id=?1",
+                [&task.task_id.0],
+            )?;
+            task.state = CoordinationTaskState::Cancelled;
             task.revision = next_revision;
             task.updated_at = now;
             transaction.commit()?;
@@ -1936,6 +2005,25 @@ impl CoordinationStore for SqliteSessionStore {
                     })?;
                     Ok((message, receipt))
                 })
+                .collect()
+        })
+        .await
+    }
+
+    async fn recoverable_message_recipients(
+        &self,
+        now: i64,
+    ) -> Result<Vec<AgentInstanceId>, SessionStoreError> {
+        self.run(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT recipient_instance_id FROM coordination_messages \
+                 WHERE expires_at>?1 AND (state='pending' OR state='delivered' \
+                 OR (state='claimed' AND lease_expires_at<=?1)) \
+                 ORDER BY recipient_instance_id",
+            )?;
+            statement
+                .query_map([now], |row| row.get::<_, String>(0))?
+                .map(|row| row.map(AgentInstanceId::new).map_err(Into::into))
                 .collect()
         })
         .await

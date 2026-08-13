@@ -108,7 +108,6 @@ mod workflow;
 #[path = "workspace_context.rs"]
 mod workspace_context;
 
-use background::ActiveBackgroundTask;
 pub use builder::AgentRunBuilder;
 use error::prompt_integrity_error;
 pub use error::{AgentRunError, SessionPersistenceOperation};
@@ -244,7 +243,6 @@ pub(crate) struct AgentRunInner {
     /// Pending typed plan decisions (shared with `BusPlanGate`).
     pending_plans: Arc<Mutex<HashMap<InteractionKey, PendingPlan>>>,
     /// Independently cancellable read-only background runs.
-    background_tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
     /// Per-session concurrency locks (M12).
     session_locks: Mutex<HashMap<AgentSessionKey, Arc<Mutex<()>>>>,
     /// One cancellation sender per session that currently owns its execution
@@ -1245,10 +1243,6 @@ impl AgentRun {
                     match sys_msg {
                         SystemMessage::Stop => {
                             info!(agent_id = %self.inner.id, "received stop");
-                            let mut tasks = self.inner.background_tasks.lock().await;
-                            for (_, task) in tasks.drain() {
-                                let _ = task.cancel.send(());
-                            }
                             break;
                         }
                         SystemMessage::JoinSession {
@@ -1318,17 +1312,6 @@ impl AgentRun {
                                 .lock()
                                 .await
                                 .remove_session(session_id);
-                            let mut tasks = self.inner.background_tasks.lock().await;
-                            let task_ids = tasks
-                                .iter()
-                                .filter(|(_, task)| &task.session_id == session_id)
-                                .map(|(task_id, _)| task_id.clone())
-                                .collect::<Vec<_>>();
-                            for task_id in task_ids {
-                                if let Some(task) = tasks.remove(&task_id) {
-                                    let _ = task.cancel.send(());
-                                }
-                            }
                             info!(agent_id = %self.inner.id, %session_id, "left session");
                         }
                         SystemMessage::StatusUpdate { .. } => {}
@@ -1413,13 +1396,48 @@ impl AgentRun {
                             session_id,
                             task_id,
                         } => {
-                            let mut tasks = self.inner.background_tasks.lock().await;
-                            if tasks
-                                .get(task_id)
-                                .is_some_and(|task| &task.session_id == session_id)
-                                && let Some(task) = tasks.remove(task_id)
+                            let Some(store) = &self.inner.workflow_store else {
+                                warn!(%session_id, %task_id, "durable task cancellation unavailable");
+                                continue;
+                            };
+                            let Recipient::AgentInstance { instance_id, .. } = &msg.recipient
+                            else {
+                                warn!(%session_id, %task_id, "task cancellation has no Agent actor");
+                                continue;
+                            };
+                            let service = crate::coordination::service::CoordinationService::new(
+                                store.clone(),
+                                crate::coordination::governance::GovernancePolicy::default(),
+                                crate::coordination::service::DEFAULT_ARBITRATION_TTL_SECONDS,
+                            );
+                            match service
+                                .cancel_task(
+                                    crate::coordination::service::CancelTaskRequest {
+                                        task_id: sylvander_api::TaskId::new(task_id),
+                                        session_id: session_id.clone(),
+                                        actor: instance_id.clone(),
+                                    },
+                                    now_secs(),
+                                )
+                                .await
                             {
-                                let _ = task.cancel.send(());
+                                Ok(_) => {
+                                    let _ = self
+                                        .inner
+                                        .bus
+                                        .publish(BusMessage::stream_event(
+                                            session_id.clone(),
+                                            self.inner.id.clone(),
+                                            sylvander_api::StreamEvent::TaskCancelled {
+                                                task_id: task_id.clone(),
+                                                reason: "cancelled by user".into(),
+                                            },
+                                        ))
+                                        .await;
+                                }
+                                Err(error) => {
+                                    warn!(%session_id, %task_id, %error, "durable task cancellation rejected");
+                                }
                             }
                         }
                     }
