@@ -453,12 +453,11 @@ async fn single_iteration_end_turn_returns_final_message() {
     let events = events.lock().unwrap();
     let event_kinds: Vec<&'static str> = events
         .iter()
-        .map(|e| match e {
-            AgentEvent::IterationStart { .. } => "IterationStart",
-            AgentEvent::TextChunk(_) => "TextChunk",
-            AgentEvent::IterationEnd { .. } => "IterationEnd",
-            AgentEvent::Done(_) => "Done",
-            _ => "Other",
+        .filter_map(|e| match e {
+            AgentEvent::IterationStart { .. } => Some("IterationStart"),
+            AgentEvent::TextChunk(_) => Some("TextChunk"),
+            AgentEvent::IterationEnd { .. } => Some("IterationEnd"),
+            _ => None,
         })
         .collect();
     assert_eq!(
@@ -809,13 +808,12 @@ async fn event_order_iteration_start_chunks_end() {
     let events = events.lock().unwrap();
     let kinds: Vec<&'static str> = events
         .iter()
-        .map(|e| match e {
-            AgentEvent::IterationStart { .. } => "IterationStart",
-            AgentEvent::ThinkingChunk(_) => "ThinkingChunk",
-            AgentEvent::TextChunk(_) => "TextChunk",
-            AgentEvent::IterationEnd { .. } => "IterationEnd",
-            AgentEvent::Done(_) => "Done",
-            _ => "Other",
+        .filter_map(|e| match e {
+            AgentEvent::IterationStart { .. } => Some("IterationStart"),
+            AgentEvent::ThinkingChunk(_) => Some("ThinkingChunk"),
+            AgentEvent::TextChunk(_) => Some("TextChunk"),
+            AgentEvent::IterationEnd { .. } => Some("IterationEnd"),
+            _ => None,
         })
         .collect();
     assert_eq!(
