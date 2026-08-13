@@ -10,10 +10,15 @@
 use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use sylvander_api::UserProfileResponse;
+
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
 use crate::input::Composer;
 use crate::keymap::{KeyAction, KeyMap};
+use crate::modal::approval::ApprovalModal;
+use crate::modal::ask_user::AskUserModal;
+use crate::modal::palette::CommandPalette;
 use crate::modal::{
     ModalStack, ProfileDeleteModal, ProfileEditMode, ProfileEditor, SessionEntry, SessionStatus,
     SessionsOverlay, ToolInspector, WorkspaceRollbackModal,
@@ -505,6 +510,10 @@ impl AppState {
                     "protocol · {}",
                     compact_runtime_reason(&message)
                 )));
+            }
+            DomainEvent::TurnStarted { turn_id } => {
+                self.turn_active = true;
+                self.status = format!("Turn active · {}", compact_runtime_reason(&turn_id));
             }
             DomainEvent::RuntimeInfo {
                 model,
@@ -1378,7 +1387,6 @@ impl AppState {
                     ));
                     return None;
                 }
-                use crate::modal::approval::ApprovalModal;
                 let mut modal =
                     ApprovalModal::new(batch_id, tools).with_allowed_scopes(allowed_scopes);
                 modal.stack_position = self.modals.len();
@@ -1403,7 +1411,6 @@ impl AppState {
                     ));
                     return None;
                 }
-                use crate::modal::ask_user::AskUserModal;
                 let modal = AskUserModal::new(call_id, question, options, multi_select);
                 self.modals.push(Box::new(modal));
                 self.mode = AppMode::AskPending;
@@ -1645,7 +1652,6 @@ impl AppState {
             && key.modifiers == crossterm::event::KeyModifiers::NONE)
             || self.keymap.matches(KeyAction::Commands, key);
         if opens_commands && self.composer.is_empty() && self.modals.is_empty() {
-            use crate::modal::palette::CommandPalette;
             self.composer.replace_text("/");
             let palette = CommandPalette::new(self);
             self.modals.push(Box::new(palette));
@@ -1753,7 +1759,6 @@ impl AppState {
 
 impl AppState {
     fn apply_user_profile_response(&mut self, response: sylvander_api::UserProfileResponse) {
-        use sylvander_api::UserProfileResponse;
         match response {
             UserProfileResponse::Created { profile, .. } => {
                 self.user_profile = Some(profile);

@@ -30,6 +30,9 @@ pub enum DomainEvent {
     ProtocolDiagnostic {
         message: String,
     },
+    TurnStarted {
+        turn_id: String,
+    },
     RuntimeInfo {
         model: String,
         reasoning_effort: sylvander_api::ReasoningEffort,
@@ -307,6 +310,7 @@ impl DomainEvent {
             Self::Connected
             | Self::ProtocolNegotiated { .. }
             | Self::ProtocolDiagnostic { .. }
+            | Self::TurnStarted { .. }
             | Self::Disconnected { .. } => DomainEventSource::Transport,
             Self::WorkspaceDiffLoaded { .. }
             | Self::WorkspaceDiffFailed { .. }

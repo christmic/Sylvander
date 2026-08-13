@@ -1103,6 +1103,7 @@ async fn persistent_tool_lifecycle(
 ) -> (
     Result<(), AgentRunError>,
     crate::RuntimeObservabilitySnapshot,
+    Vec<StreamEvent>,
 ) {
     persistent_tool_lifecycle_with_failure(approval_policy, None).await
 }
@@ -1113,6 +1114,7 @@ async fn persistent_tool_lifecycle_with_failure(
 ) -> (
     Result<(), AgentRunError>,
     crate::RuntimeObservabilitySnapshot,
+    Vec<StreamEvent>,
 ) {
     let inner: Arc<dyn SessionStore> = Arc::new(
         crate::storage::session::SqliteSessionStore::open_in_memory()
@@ -1170,6 +1172,12 @@ async fn persistent_tool_lifecycle_with_failure(
     inner.save(&stored).await.unwrap();
     let lease = issuer.issue(session_id.clone(), metadata.clone()).unwrap();
     run.attach_authenticated_session(lease).await.unwrap();
+    let mut receiver = run
+        .inner
+        .bus
+        .subscribe(SubscriptionFilter::all())
+        .await
+        .unwrap();
 
     let result = run
         .handle_message(BusMessage::user_chat(
@@ -1178,8 +1186,14 @@ async fn persistent_tool_lifecycle_with_failure(
             "use the tool",
         ))
         .await;
+    let mut events = Vec::new();
+    while let Ok(message) = receiver.try_recv() {
+        if let MessageKind::Stream(event) = message.kind {
+            events.push(event);
+        }
+    }
 
-    (result, run.inner.observability.snapshot())
+    (result, run.inner.observability.snapshot(), events)
 }
 
 #[tokio::test]
@@ -1188,8 +1202,13 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
         (sylvander_api::ApprovalPolicy::Allow, 1, 0),
         (sylvander_api::ApprovalPolicy::Deny, 0, 1),
     ] {
-        let (result, snapshot) = persistent_tool_lifecycle(policy).await;
+        let (result, snapshot, events) = persistent_tool_lifecycle(policy).await;
         result.unwrap();
+        assert!(matches!(
+            events.first(),
+            Some(StreamEvent::TurnStarted { .. })
+        ));
+        assert!(matches!(events.last(), Some(StreamEvent::Done { .. })));
         assert_eq!(snapshot.turns_completed, 1);
         assert_eq!(snapshot.tools_started, 1);
         assert_eq!(snapshot.tools_succeeded, succeeded);
@@ -1214,12 +1233,17 @@ async fn durable_tool_persistence_failures_fail_the_turn_and_clear_active_work()
             1,
         ),
     ] {
-        let (result, snapshot) = persistent_tool_lifecycle_with_failure(
+        let (result, snapshot, events) = persistent_tool_lifecycle_with_failure(
             sylvander_api::ApprovalPolicy::Allow,
             Some(fail),
         )
         .await;
         assert_persistence_failure(result.unwrap_err(), operation);
+        assert!(matches!(
+            events.first(),
+            Some(StreamEvent::TurnStarted { .. })
+        ));
+        assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
         assert_eq!(snapshot.turns_completed, 0);
         assert_eq!(snapshot.turns_failed, 1);
         assert_eq!(snapshot.tools_started, started);
@@ -2976,6 +3000,12 @@ async fn persistent_user_write_failure_stops_before_provider_work() {
     run.attach_authenticated_session(authenticated)
         .await
         .expect("attach");
+    let mut events = run
+        .inner
+        .bus
+        .subscribe(SubscriptionFilter::all())
+        .await
+        .unwrap();
 
     let error = run
         .handle_message(BusMessage::user_chat(
@@ -2992,6 +3022,12 @@ async fn persistent_user_write_failure_stops_before_provider_work() {
     assert_eq!(snapshot.persistence_failed, 1);
     assert_eq!(snapshot.active_turns, 0);
     assert_eq!(snapshot.turn_latency.count, 1);
+    while let Ok(message) = events.try_recv() {
+        assert!(!matches!(
+            message.kind,
+            MessageKind::Stream(StreamEvent::TurnStarted { .. })
+        ));
+    }
     assert!(provider.requests.lock().unwrap().is_empty());
     assert_eq!(run.get_session(&session_id).await.unwrap().len(), 0);
     let caller =

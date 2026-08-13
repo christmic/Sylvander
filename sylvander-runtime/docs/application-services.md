@@ -27,6 +27,19 @@ transition facts remain available to observability for post-mortem analysis.
 Agent state completion and Runtime product completion remain separate: only
 Runtime may declare success after durable Session commit and publication.
 
+The public event protocol deliberately exposes the coarser product lifecycle,
+not every Agent-machine phase. Runtime emits `TurnStarted` only after required
+turn admission persistence and executable composition have succeeded. Existing
+iteration, tool, and interaction events describe work inside that turn;
+`Done`, `Error`, and `TurnInterrupted` remain its public terminals, with
+`Done` emitted only after the durable assistant message and completed turn are
+committed. This follows the separation visible in local Codex app-server
+protocol (`TurnStarted`/`TurnCompleted` plus item events, commit
+`16fbfe557446a1af94da81e1144029ccc1311ad0`) and Kimi agent-core
+(`TurnStarted`/`TurnEnded`, step, and tool events, commit
+`93928066dc308052de8c4a48e9c10b2f3dba361b`) without copying either wire
+format.
+
 ## Execution service
 
 The execution service maps Agent logical workspace and target identifiers to

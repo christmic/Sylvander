@@ -514,6 +514,10 @@ async fn handle_client_msg(
                     if let MessageKind::Stream(ev) = msg.kind {
                         let s = &msg.session_id;
                         let out = match ev {
+                            StreamEvent::TurnStarted { turn_id } => Some(ServerMsg::TurnStarted {
+                                session_id: s.0.clone(),
+                                turn_id,
+                            }),
                             StreamEvent::TextDelta { delta } => Some(ServerMsg::TextDelta {
                                 session_id: s.0.clone(),
                                 delta,

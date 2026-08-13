@@ -162,6 +162,10 @@ pub enum UiServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<crate::SessionConfigState>,
     },
+    TurnStarted {
+        session_id: String,
+        turn_id: String,
+    },
     TextDelta {
         session_id: String,
         delta: String,

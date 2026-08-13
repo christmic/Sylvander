@@ -218,6 +218,7 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
         .iter()
         .filter_map(|m| match &m.kind {
             MessageKind::Stream(ev) => Some(match ev {
+                StreamEvent::TurnStarted { .. } => "TurnStarted",
                 StreamEvent::TextDelta { .. } => "TextDelta",
                 StreamEvent::ThinkingDelta { .. } => "ThinkingDelta",
                 StreamEvent::ModelRetry { .. } => "ModelRetry",

@@ -2975,6 +2975,14 @@ impl AgentRunInner {
             ports = ports.with_artifact_store(store);
         }
 
+        self.publish_stream(
+            &session_id,
+            sylvander_api::StreamEvent::TurnStarted {
+                turn_id: turn_id.to_owned(),
+            },
+        )
+        .await;
+
         // 3. Run loop with streaming
         let mut stream = Box::pin(agent_loop::run_stream(&loop_config, request, ports));
         tokio::pin!(interrupted);

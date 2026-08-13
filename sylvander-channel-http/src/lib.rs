@@ -339,6 +339,8 @@ async fn chat(
         while let Some(msg) = event_rx.recv().await {
             if let MessageKind::Stream(ev) = &msg.kind {
                 let event = match ev {
+                    StreamEvent::TurnStarted { turn_id } =>
+                        Event::default().data(turn_id.as_str()).event("turn_started"),
                     StreamEvent::TextDelta { delta } =>
                         Event::default().data(delta.as_str()).event("text"),
                     StreamEvent::ToolCall { tool_name, .. } =>
