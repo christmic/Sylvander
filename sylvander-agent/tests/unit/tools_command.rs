@@ -11,6 +11,14 @@ fn context(root: &std::path::Path) -> ToolContext {
     .with_capability(Cap::Spawn)
 }
 
+#[test]
+fn command_guidance_requires_bounded_samples_and_linear_work() {
+    let guidelines = CommandTool::new().spec().prompt_guidelines.join("\n");
+    assert!(guidelines.contains("genuinely bounded sample"));
+    assert!(guidelines.contains("copying the full input does not create a sample"));
+    assert!(guidelines.contains("Never put a whole-input scan inside a per-record loop"));
+}
+
 #[tokio::test]
 async fn runs_in_effective_workspace_and_reports_status() {
     let dir = tempfile::tempdir().unwrap();

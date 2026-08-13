@@ -85,15 +85,22 @@ pub async fn run_harbor_task(
             ..ExecutionBudget::default()
         });
     let gateway = RegistryBoundToolGateway::new(tools.invocation_descriptors());
+    let mut system_instructions = vec![SystemInstruction {
+        text: "Complete the task in the current workspace. Use the Command tool to inspect, edit, and verify your work. Do not stop until the task verifier should pass.".into(),
+        cache_hint: None,
+    }];
+    if let Some(tool_guidelines) = tools.prompt_guidelines() {
+        system_instructions.push(SystemInstruction {
+            text: tool_guidelines,
+            cache_hint: None,
+        });
+    }
     let request = AgentTurnRequest {
         conversation: sylvander_agent::conversation::ConversationSnapshot::new(vec![
             ChatMessage::user(&config.instruction),
         ]),
         model,
-        system_instructions: vec![SystemInstruction {
-            text: "Complete the task in the current workspace. Use the Command tool to inspect, edit, and verify your work. Do not stop until the task verifier should pass.".into(),
-            cache_hint: None,
-        }],
+        system_instructions,
         reasoning: None,
         tools,
         execution,

@@ -116,7 +116,12 @@ async fn executes_a_command_in_the_harness_workspace_and_records_trajectory() {
         std::fs::read_to_string(workspace.path().join("answer.txt")).unwrap(),
         "solved"
     );
-    assert_eq!(trajectory.steps.len(), 4);
+    assert_eq!(trajectory.steps.len(), 5);
+    assert!(
+        trajectory.steps[1]
+            .message
+            .contains("genuinely bounded sample")
+    );
     assert_eq!(trajectory.final_metrics.unwrap().total_prompt_tokens, 20);
 }
 

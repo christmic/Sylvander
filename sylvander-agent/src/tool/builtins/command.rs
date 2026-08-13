@@ -21,6 +21,7 @@ use crate::tool::{
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
+const COMMAND_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 // Tool results enter both the model context and the TUI transcript. Keep the
 // final structured payload compact; the executor retains a larger bounded
 // head/tail capture for diagnostics.
@@ -65,6 +66,8 @@ impl ToolDefinition for CommandTool {
         )
         .with_prompt_guidelines([
             "Use the dedicated Read, List, Search, Edit, Write, and Git tools instead of shell equivalents when available.",
+            "Before processing large inputs, measure their size and prove the approach on a genuinely bounded sample (for example, head or a limited range); copying the full input does not create a sample.",
+            "Estimate full-input complexity before execution. Never put a whole-input scan inside a per-record loop; prefer a bounded number of linear passes and verify the sample before scaling up.",
         ])
     }
 
@@ -142,6 +145,9 @@ impl CommandTool {
         let timeout = ctx.budget.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let started = Instant::now();
         let progress_state = progress.map(CommandProgress::new);
+        let _heartbeat = progress_state
+            .as_ref()
+            .map(|state| state.start_heartbeat(started));
         let result = if let Some(state) = &progress_state {
             ctx.executor
                 .run_command_streaming_with_environment(
@@ -258,6 +264,29 @@ impl CommandProgress {
         if !delta.is_empty() {
             self.sink.emit(delta);
         }
+    }
+
+    fn start_heartbeat(&self, started: Instant) -> CommandHeartbeat {
+        let sink = self.sink.clone();
+        CommandHeartbeat(tokio::spawn(async move {
+            let first = tokio::time::Instant::now() + COMMAND_HEARTBEAT_INTERVAL;
+            let mut interval = tokio::time::interval_at(first, COMMAND_HEARTBEAT_INTERVAL);
+            loop {
+                interval.tick().await;
+                sink.emit(format!(
+                    "[command still running: {}s elapsed]\n",
+                    started.elapsed().as_secs()
+                ));
+            }
+        }))
+    }
+}
+
+struct CommandHeartbeat(tokio::task::JoinHandle<()>);
+
+impl Drop for CommandHeartbeat {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
