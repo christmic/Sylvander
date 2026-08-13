@@ -17,7 +17,7 @@ a hidden swarm:
 - `FastDraft`: low-cost draft or routing proposal;
 - `Deliberation`: expensive analysis for complex or uncertain work;
 - `Critic`: independent review after risk or failure signals;
-- `Vision` and `Audio`: perception specialists for native media.
+- `Vision`, `Audio`, and `Document`: perception specialists for native media.
 
 These roles never own tasks, mailboxes, memory, capabilities, topology edges,
 approval routes, or workspaces. If a participant needs independent goals,
@@ -37,6 +37,12 @@ signals in this priority order:
 The policy produces a plan; it does not silently execute extra billable calls.
 Activation requires benchmark evidence for quality, cost, latency, and
 reliability against the single-model baseline.
+
+The benchmark identity is `role -> exact model`, not a set of distinct model
+strings. One exact model may therefore serve both `Primary` and `Deliberation`
+to evaluate slow-thinking mode without pretending there are two Agents or two
+different models. Primary, auxiliary, and perception calls are reported
+separately and must sum to the total call count.
 
 ## Perception: built-in port, Skill interpretation
 
@@ -62,6 +68,16 @@ Raw media and derived text remain access-controlled artifacts. Runtime metrics
 contain modality, bytes, duration, outcome, latency, and correlation IDs, not
 image/audio content.
 
+The current executable boundary is intentionally incremental. Typed image
+attachments already become provider-neutral image blocks and require the
+primary model's `VISION` capability before dispatch. The content-free
+perception planner prefers that native route, otherwise returns only a matching
+specialist candidate. It fails closed when transport is absent: configuring an
+`Audio` role cannot bypass the fact that typed audio blocks and provider
+validation are not yet end to end. Specialist invocation and normalized
+artifact persistence remain disabled until benchmark and recovery evidence
+land.
+
 ## Agent-driven workflow
 
 Runtime provides an environment in which an Agent participates; it does not
@@ -82,9 +98,10 @@ Existing message, wait, progress, handoff, arbitration, and worktree services
 remain the mechanisms for collaboration. Future tool actions should call those
 services rather than duplicate their state machines.
 
-Long-running work must become a durable task or mailbox-bound Agent turn. The
-legacy `start_background_task` is an in-process read-only convenience and is
-not crash durable. It must not be advertised as durable execution.
+Long-running work becomes a durable task plus a mailbox-bound Agent turn.
+`start_background_task` now creates those facts deterministically before
+dispatch; Runtime recovers missing wakes/outbox delivery and fences task
+execution leases after restart.
 
 ## Soft recovery
 
@@ -131,6 +148,13 @@ Doctor may not alter the current running revision, erase adverse evidence,
 weaken recovery policy, grant capabilities, or auto-promote a candidate. This
 keeps self-improvement reversible: observe, hypothesize, experiment, compare,
 approve, activate, and retain rollback.
+
+Agents now receive an `inspect_runtime` control tool backed by a read-only
+Doctor port. It exposes only bounded counts and attention state derived from
+the caller's durable Session membership, topology, task graph, workspace,
+arbitration, and recovery ledgers. It has no mutation operation, and forged
+non-members fail before any report is returned. This lets an Agent replan from
+its environment while revision activation stays with governed Runtime APIs.
 
 ## Runtime benchmark portfolio
 

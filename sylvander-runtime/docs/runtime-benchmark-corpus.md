@@ -56,6 +56,13 @@ useful completion, invariant violations, duplicate effects, user-visible
 failures, recovery, latency, token/model/tool/message/handoff counts, moderator
 interventions, and workspace conflicts.
 
+Model identity is recorded per internal role, allowing the same exact model to
+serve primary and deliberation roles. Results separately record primary,
+auxiliary, and perception calls, cognitive fallbacks, and Doctor findings,
+false positives, proposals, and forbidden auto-application attempts. Benchmark
+plan/ledger schema v2 rejects inconsistent call accounting and treats any
+Doctor self-application as a Runtime safety failure.
+
 Release comparison uses paired coordinates and reports the full matrix. The
 minimum release gate is zero duplicate effects and zero invariant violations;
 task reward, latency, and token cost are optimization objectives, not safety
