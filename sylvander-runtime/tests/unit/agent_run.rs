@@ -19,7 +19,7 @@ use sylvander_agent::tool::invocation::{
 };
 use sylvander_agent::tool::{ToolExecutionMode, ToolExecutionPolicy};
 use sylvander_agent::tools::{ReadTool, WriteTool};
-use sylvander_api::{Recipient, StreamEvent};
+use sylvander_api::{AgentInstanceId, Recipient, StreamEvent};
 use sylvander_channel::{BusDiagnostics, BusError, InProcessMessageBus, MessageBus};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_core::ModelInfo as ProviderModelInfo;
@@ -2396,6 +2396,7 @@ async fn approval_timeout_rejects_and_clears_the_pending_request() {
     let gate = Arc::new(BusApprovalGate {
         bus,
         agent_id: AgentId::new("agent"),
+        agent_instance_id: AgentInstanceId::new("instance"),
         session_id: SessionId::new("session"),
         grant_context: ApprovalGrantContext::new(
             "user",
@@ -2452,6 +2453,7 @@ async fn question_timeout_returns_empty_and_clears_the_pending_answer() {
     let gate = Arc::new(BusAskUserGate {
         bus,
         agent_id: AgentId::new("agent"),
+        agent_instance_id: AgentInstanceId::new("instance"),
         session_id: SessionId::new("session"),
         pending_answers: pending.clone(),
     });
@@ -2486,6 +2488,7 @@ async fn plan_timeout_rejects_and_clears_the_pending_review() {
     let gate = Arc::new(BusPlanGate {
         bus,
         agent_id: AgentId::new("agent"),
+        agent_instance_id: AgentInstanceId::new("instance"),
         session_id: SessionId::new("session"),
         pending_plans: pending.clone(),
     });
@@ -3116,15 +3119,16 @@ async fn interrupt_is_scoped_to_the_selected_session() {
 }
 
 #[tokio::test]
-async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
+async fn interactive_decisions_are_scoped_when_ids_collide_across_agent_instances() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
     let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus.clone())
         .build()
         .expect("build");
-    let session_a = SessionId::new("session-a");
-    let session_b = SessionId::new("session-b");
+    let session = SessionId::new("session");
+    let instance_a = AgentInstanceId::new("instance-a");
+    let instance_b = AgentInstanceId::new("instance-b");
     let (approval_a_tx, approval_a_rx) = oneshot::channel();
     let (approval_b_tx, mut approval_b_rx) = oneshot::channel();
     let (answer_a_tx, answer_a_rx) = oneshot::channel();
@@ -3132,9 +3136,9 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
     let (plan_a_tx, plan_a_rx) = oneshot::channel();
     let (plan_b_tx, mut plan_b_rx) = oneshot::channel();
 
-    for (session, approval, answer, plan) in [
-        (&session_a, approval_a_tx, answer_a_tx, plan_a_tx),
-        (&session_b, approval_b_tx, answer_b_tx, plan_b_tx),
+    for (instance, approval, answer, plan) in [
+        (&instance_a, approval_a_tx, answer_a_tx, plan_a_tx),
+        (&instance_b, approval_b_tx, answer_b_tx, plan_b_tx),
     ] {
         let grant = ApprovalGrantContext::new(
             "user",
@@ -3154,7 +3158,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
             ),
         });
         run.inner.pending_approvals.lock().await.insert(
-            (session.clone(), "shared-id".into()),
+            InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
             PendingApproval {
                 session_id: session.clone(),
                 grant,
@@ -3164,14 +3168,14 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
             },
         );
         run.inner.pending_answers.lock().await.insert(
-            (session.clone(), "shared-id".into()),
+            InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
             PendingAnswer {
                 session_id: session.clone(),
                 sender: answer,
             },
         );
         run.inner.pending_plans.lock().await.insert(
-            (session.clone(), "shared-id".into()),
+            InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
             PendingPlan {
                 session_id: session.clone(),
                 sender: plan,
@@ -3198,9 +3202,12 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
         },
     ] {
         bus.publish(BusMessage {
-            session_id: session_a.clone(),
+            session_id: session.clone(),
             sender: sylvander_api::Sender::System,
-            recipient: sylvander_api::Recipient::Agent(AgentId::new("test-agent")),
+            recipient: sylvander_api::Recipient::AgentInstance {
+                instance_id: instance_a.clone(),
+                agent_id: AgentId::new("test-agent"),
+            },
             kind: MessageKind::System(kind),
             payload: String::new(),
             attachments: Vec::new(),

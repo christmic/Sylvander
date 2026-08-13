@@ -91,7 +91,9 @@ use sylvander_agent::user_profile_prompt::{UserProfilePromptLayer, compose_user_
 use sylvander_agent::user_profile_provider::{UserProfileProvider, UserProfileSubject};
 #[cfg(test)]
 use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
-use sylvander_api::{AgentStatus as BusAgentStatus, BusMessage, MessageKind, SystemMessage};
+use sylvander_api::{
+    AgentStatus as BusAgentStatus, BusMessage, MessageKind, Recipient, SystemMessage,
+};
 use sylvander_channel::{MessageBus, SubscriptionFilter};
 
 mod background;
@@ -110,7 +112,20 @@ use error::prompt_integrity_error;
 pub use error::{AgentRunError, SessionPersistenceOperation};
 #[cfg(test)]
 use interaction::{BusApprovalGate, BusAskUserGate, BusPlanGate};
-use interaction::{PendingAnswer, PendingApproval, PendingPlan, normalize_rejection_reason};
+use interaction::{
+    InteractionKey, PendingAnswer, PendingApproval, PendingPlan, normalize_rejection_reason,
+};
+
+fn interaction_key(message: &BusMessage, subject_id: &str) -> Option<InteractionKey> {
+    if let Recipient::AgentInstance { instance_id, .. } = &message.recipient {
+        return Some(InteractionKey::new(
+            instance_id.clone(),
+            message.session_id.clone(),
+            subject_id,
+        ));
+    }
+    None
+}
 #[cfg(test)]
 use orchestration::{
     ToolSessionExecution, TurnCorrelation, select_workspace_binding, tool_context_for_permissions,
@@ -216,14 +231,14 @@ pub(crate) struct AgentRunInner {
     /// Static approval rules (auto-approve/auto-reject).
     approval_rules: Vec<sylvander_agent::approval::ApprovalRule>,
     /// Pending approval requests (shared with `BusApprovalGate`).
-    pending_approvals: Arc<Mutex<HashMap<(SessionId, String), PendingApproval>>>,
+    pending_approvals: Arc<Mutex<HashMap<InteractionKey, PendingApproval>>>,
     /// Agent-owned approval memory. Session grants are isolated by session;
     /// persistent grants exist only when the operator configured a store.
     approval_memory: Arc<Mutex<ApprovalMemory>>,
     /// Pending `AskUser` answers (shared with `BusAskUserGate`).
-    pending_answers: Arc<Mutex<HashMap<(SessionId, String), PendingAnswer>>>,
+    pending_answers: Arc<Mutex<HashMap<InteractionKey, PendingAnswer>>>,
     /// Pending typed plan decisions (shared with `BusPlanGate`).
-    pending_plans: Arc<Mutex<HashMap<(SessionId, String), PendingPlan>>>,
+    pending_plans: Arc<Mutex<HashMap<InteractionKey, PendingPlan>>>,
     /// Independently cancellable read-only background runs.
     background_tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
     /// Per-session concurrency locks (M12).
@@ -1147,12 +1162,17 @@ impl AgentRun {
                             scope,
                             reason,
                         } => {
-                            let request = self
-                                .inner
-                                .pending_approvals
-                                .lock()
-                                .await
-                                .remove(&(msg.session_id.clone(), call_id.clone()));
+                            let request = if let Some(key) = interaction_key(&msg, call_id) {
+                                self.inner.pending_approvals.lock().await.remove(&key)
+                            } else {
+                                warn!(
+                                    agent_id = %self.inner.id,
+                                    session_id = %msg.session_id,
+                                    %call_id,
+                                    "ignored approval response without agent instance recipient"
+                                );
+                                None
+                            };
                             if let Some(request) = request {
                                 let decision = if *approved {
                                     if request.allowed_scopes.contains(scope) {
@@ -1194,7 +1214,7 @@ impl AgentRun {
                         SystemMessage::AnswerQuestion { call_id, answer } => {
                             let mut pending = self.inner.pending_answers.lock().await;
                             if let Some(request) =
-                                pending.remove(&(msg.session_id.clone(), call_id.clone()))
+                                interaction_key(&msg, call_id).and_then(|key| pending.remove(&key))
                             {
                                 let _ = request.sender.send(vec![answer.clone()]);
                             }
@@ -1206,7 +1226,7 @@ impl AgentRun {
                         SystemMessage::ResolvePlan { plan_id, decision } => {
                             let mut pending = self.inner.pending_plans.lock().await;
                             if let Some(request) =
-                                pending.remove(&(msg.session_id.clone(), plan_id.clone()))
+                                interaction_key(&msg, plan_id).and_then(|key| pending.remove(&key))
                             {
                                 let _ = request.sender.send(agent_plan_decision(decision));
                             }

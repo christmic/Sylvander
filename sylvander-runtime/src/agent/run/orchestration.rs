@@ -561,6 +561,7 @@ impl AgentRunInner {
         F: std::future::Future,
     {
         let session_id = msg.session_id.clone();
+        let agent_instance_id = turn_agent_instance_id(&msg, &session_id)?;
         let user_message = Self::message_to_param(&msg);
         let stored_session = if let Some(store) = &self.session_store {
             store.get(&session_id).await.map_err(|source| {
@@ -837,7 +838,6 @@ impl AgentRunInner {
         if let (Some(store), Some(stored), Some(effective)) =
             (&self.session_store, &stored_session, &effective_config)
         {
-            let agent_instance_id = turn_agent_instance_id(&msg, &session_id)?;
             let user_id = match &msg.sender {
                 Sender::User(user_id) => user_id.as_str(),
                 _ => "unix-client",
@@ -856,7 +856,7 @@ impl AgentRunInner {
                     TurnStart {
                         session_id: session_id.clone(),
                         turn_id: turn_id.into(),
-                        agent_instance_id,
+                        agent_instance_id: agent_instance_id.clone(),
                         config_revision: stored.config_revision,
                         effective_config: effective.clone(),
                         user_content,
@@ -942,6 +942,7 @@ impl AgentRunInner {
             let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
                 bus: self.bus.clone(),
                 agent_id: self.id.clone(),
+                agent_instance_id: agent_instance_id.clone(),
                 session_id: session_id.clone(),
                 grant_context,
                 persistent_identity_authorized: identity_authorized,
@@ -991,12 +992,14 @@ impl AgentRunInner {
         let ask_user_gate: Arc<dyn AskUserGate> = Arc::new(BusAskUserGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
+            agent_instance_id: agent_instance_id.clone(),
             session_id: session_id.clone(),
             pending_answers: self.pending_answers.clone(),
         });
         let plan_gate: Arc<dyn PlanGate> = Arc::new(BusPlanGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
+            agent_instance_id,
             session_id: session_id.clone(),
             pending_plans: self.pending_plans.clone(),
         });

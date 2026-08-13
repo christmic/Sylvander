@@ -11,13 +11,50 @@ use sylvander_agent::approval::{
 };
 use sylvander_agent::ask_user_gate::AskUserGate;
 use sylvander_agent::plan_gate::{PlanDecision, PlanGate};
-use sylvander_api::{AgentId, BusMessage, SessionId, StreamEvent, ToolCallInfo};
+use sylvander_api::{
+    AgentId, AgentInstanceId, BusMessage, Recipient, SessionId, StreamEvent, ToolCallInfo,
+};
 use sylvander_channel::MessageBus;
 
 use crate::agent::approval::{ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory};
 
 const APPROVAL_TIMEOUT_SECS: u64 = 2 * 60;
 const USER_RESPONSE_TIMEOUT_SECS: u64 = 5 * 60;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct InteractionKey {
+    instance: AgentInstanceId,
+    session: SessionId,
+    subject: String,
+}
+
+impl InteractionKey {
+    pub(super) fn new(
+        agent_instance_id: AgentInstanceId,
+        session_id: SessionId,
+        subject_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            instance: agent_instance_id,
+            session: session_id,
+            subject: subject_id.into(),
+        }
+    }
+}
+
+fn instance_stream_event(
+    session_id: SessionId,
+    agent_id: AgentId,
+    agent_instance_id: AgentInstanceId,
+    event: StreamEvent,
+) -> BusMessage {
+    let mut message = BusMessage::stream_event(session_id, agent_id.clone(), event);
+    message.recipient = Recipient::AgentInstance {
+        instance_id: agent_instance_id,
+        agent_id,
+    };
+    message
+}
 
 pub(super) struct PendingApproval {
     pub(super) session_id: SessionId,
@@ -41,10 +78,11 @@ pub(super) struct PendingPlan {
 pub(super) struct BusApprovalGate {
     pub(super) bus: Arc<dyn MessageBus>,
     pub(super) agent_id: AgentId,
+    pub(super) agent_instance_id: AgentInstanceId,
     pub(super) session_id: SessionId,
     pub(super) grant_context: ApprovalGrantContext,
     pub(super) persistent_identity_authorized: bool,
-    pub(super) pending_approvals: Arc<Mutex<HashMap<(SessionId, String), PendingApproval>>>,
+    pub(super) pending_approvals: Arc<Mutex<HashMap<InteractionKey, PendingApproval>>>,
     pub(super) approval_memory: Arc<Mutex<ApprovalMemory>>,
 }
 
@@ -91,7 +129,11 @@ impl ApprovalGate for BusApprovalGate {
             }
             let (tx, rx) = oneshot::channel();
             self.pending_approvals.lock().await.insert(
-                (self.session_id.clone(), tool.call_id.clone()),
+                InteractionKey::new(
+                    self.agent_instance_id.clone(),
+                    self.session_id.clone(),
+                    tool.call_id.clone(),
+                ),
                 PendingApproval {
                     session_id: self.session_id.clone(),
                     grant,
@@ -107,9 +149,10 @@ impl ApprovalGate for BusApprovalGate {
         if !requested_tools.is_empty() {
             let _ = self
                 .bus
-                .publish(BusMessage::stream_event(
+                .publish(instance_stream_event(
                     self.session_id.clone(),
                     self.agent_id.clone(),
+                    self.agent_instance_id.clone(),
                     StreamEvent::ToolApprovalRequired {
                         batch_id,
                         tools: requested_tools
@@ -150,7 +193,11 @@ impl ApprovalGate for BusApprovalGate {
             self.pending_approvals
                 .lock()
                 .await
-                .remove(&(self.session_id.clone(), call_id));
+                .remove(&InteractionKey::new(
+                    self.agent_instance_id.clone(),
+                    self.session_id.clone(),
+                    call_id,
+                ));
         }
         ApprovalBatchResult {
             decisions: decisions
@@ -164,8 +211,9 @@ impl ApprovalGate for BusApprovalGate {
 pub(super) struct BusAskUserGate {
     pub(super) bus: Arc<dyn MessageBus>,
     pub(super) agent_id: AgentId,
+    pub(super) agent_instance_id: AgentInstanceId,
     pub(super) session_id: SessionId,
-    pub(super) pending_answers: Arc<Mutex<HashMap<(SessionId, String), PendingAnswer>>>,
+    pub(super) pending_answers: Arc<Mutex<HashMap<InteractionKey, PendingAnswer>>>,
 }
 
 #[async_trait::async_trait]
@@ -179,7 +227,11 @@ impl AskUserGate for BusAskUserGate {
     ) -> Vec<String> {
         let (tx, rx) = oneshot::channel();
         self.pending_answers.lock().await.insert(
-            (self.session_id.clone(), call_id.to_string()),
+            InteractionKey::new(
+                self.agent_instance_id.clone(),
+                self.session_id.clone(),
+                call_id,
+            ),
             PendingAnswer {
                 session_id: self.session_id.clone(),
                 sender: tx,
@@ -187,9 +239,10 @@ impl AskUserGate for BusAskUserGate {
         );
         let _ = self
             .bus
-            .publish(BusMessage::stream_event(
+            .publish(instance_stream_event(
                 self.session_id.clone(),
                 self.agent_id.clone(),
+                self.agent_instance_id.clone(),
                 StreamEvent::AskUser {
                     call_id: call_id.into(),
                     question: question.into(),
@@ -219,7 +272,11 @@ impl AskUserGate for BusAskUserGate {
         self.pending_answers
             .lock()
             .await
-            .remove(&(self.session_id.clone(), call_id.to_string()));
+            .remove(&InteractionKey::new(
+                self.agent_instance_id.clone(),
+                self.session_id.clone(),
+                call_id,
+            ));
         answer
     }
 }
@@ -227,8 +284,9 @@ impl AskUserGate for BusAskUserGate {
 pub(super) struct BusPlanGate {
     pub(super) bus: Arc<dyn MessageBus>,
     pub(super) agent_id: AgentId,
+    pub(super) agent_instance_id: AgentInstanceId,
     pub(super) session_id: SessionId,
-    pub(super) pending_plans: Arc<Mutex<HashMap<(SessionId, String), PendingPlan>>>,
+    pub(super) pending_plans: Arc<Mutex<HashMap<InteractionKey, PendingPlan>>>,
 }
 
 #[async_trait::async_trait]
@@ -236,7 +294,11 @@ impl PlanGate for BusPlanGate {
     async fn review(&self, plan_id: &str, steps: Vec<String>) -> PlanDecision {
         let (tx, rx) = oneshot::channel();
         self.pending_plans.lock().await.insert(
-            (self.session_id.clone(), plan_id.to_string()),
+            InteractionKey::new(
+                self.agent_instance_id.clone(),
+                self.session_id.clone(),
+                plan_id,
+            ),
             PendingPlan {
                 session_id: self.session_id.clone(),
                 sender: tx,
@@ -244,9 +306,10 @@ impl PlanGate for BusPlanGate {
         );
         let _ = self
             .bus
-            .publish(BusMessage::stream_event(
+            .publish(instance_stream_event(
                 self.session_id.clone(),
                 self.agent_id.clone(),
+                self.agent_instance_id.clone(),
                 StreamEvent::PlanProposed {
                     plan_id: plan_id.into(),
                     steps,
@@ -274,10 +337,11 @@ impl PlanGate for BusPlanGate {
                 reason: "plan review timed out".into(),
             }
         };
-        self.pending_plans
-            .lock()
-            .await
-            .remove(&(self.session_id.clone(), plan_id.to_string()));
+        self.pending_plans.lock().await.remove(&InteractionKey::new(
+            self.agent_instance_id.clone(),
+            self.session_id.clone(),
+            plan_id,
+        ));
         decision
     }
 
