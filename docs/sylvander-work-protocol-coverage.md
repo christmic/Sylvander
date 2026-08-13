@@ -57,7 +57,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | task lifecycle | complete | none |
 | `RuntimeInfo` | partial | catalog/platform details and selectors |
 | `ModelRetry`, `InteractionTimeout` | complete | typed cause/kind/recovery projection and matching decision dismissal |
-| `IterationStart`, `IterationEnd` | missing | usage/cost projection |
+| `IterationStart`, `IterationEnd` | complete | active state and cumulative usage/cost projection |
 | `SessionConfig` | missing | settings revision/provenance |
 | feedback, memory, admin, profile, identity responses | missing | matching command surfaces |
 | `ContextReport`, compaction lifecycle | missing | context inspector |

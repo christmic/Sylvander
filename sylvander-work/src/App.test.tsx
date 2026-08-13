@@ -289,6 +289,43 @@ describe("Sylvander Work", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
   });
 
+  it("projects Runtime iteration lifecycle and cumulative usage", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Usage", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_history",
+      session: { id: "session-1", label: "Usage", workspace: "/workspace", last_seen_secs: 1 },
+      messages: [],
+      iterations: 4,
+      input_tokens: 400,
+      output_tokens: 100,
+      cost_nano_usd: 5_000_000,
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "iteration_start", session_id: "session-1", iteration: 1,
+    } }));
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "iteration_end",
+      session_id: "session-1",
+      iteration: 1,
+      input_tokens: 460,
+      output_tokens: 120,
+      cost_nano_usd: 6_500_000,
+    } }));
+    act(() => screen.getByRole("button", { name: /^Plan / }).click());
+    expect(screen.getByText(/5 iterations · 580 tokens · \$0\.006500/)).toBeTruthy();
+  });
+
   it("rolls back the local turn lock when native chat submission fails", async () => {
     const gateway = new TestGateway();
     gateway.rejectChat = true;

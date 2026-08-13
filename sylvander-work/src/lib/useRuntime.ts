@@ -146,6 +146,23 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           },
         }));
         break;
+      case "iteration_start":
+        markSessionActive(message.session_id);
+        break;
+      case "iteration_end":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            sessionStats: {
+              ...current.sessionStats,
+              iterations: (current.sessionStats?.iterations ?? 0) + 1,
+              inputTokens: message.input_tokens,
+              outputTokens: message.output_tokens,
+              costNanoUsd: message.cost_nano_usd,
+            },
+          }));
+        }
+        break;
       case "sessions_list": {
         const sessions = message.sessions.map((session) => ({
           id: session.id,

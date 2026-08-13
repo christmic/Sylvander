@@ -225,6 +225,9 @@ Session history also projects Runtime's iteration count, input/output tokens,
 optional nano-USD cost, and source Session identity. These are read-only run
 artifacts: the inspector formats them for display, clears them on selection
 change/removal, and never recomputes provider usage or price locally.
+`IterationStart` activates the Session, while each `IterationEnd` advances the
+completed iteration count and replaces token/cost fields with Runtime's
+persisted cumulative values.
 
 An active or locally admitted turn replaces Send with Stop. Stop emits the
 public `Interrupt` command exactly once and remains pending until Runtime emits
