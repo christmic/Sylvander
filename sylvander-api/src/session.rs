@@ -435,7 +435,7 @@ pub struct SessionCreateRequest {
 pub struct SessionConfigUpdateRequest {
     pub session_id: SessionId,
     pub expected_revision: u64,
-    pub overrides: SessionConfigOverrides,
+    pub patch: SessionConfigPatch,
 }
 
 /// Complete session configuration state returned after create, read, or update.

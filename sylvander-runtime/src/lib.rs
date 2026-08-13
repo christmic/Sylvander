@@ -1268,7 +1268,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         let session = self
             .owned_session(boundary, &request.session_id, "update_session_config")
             .await?;
-        ensure_workspace_update_is_static(&session, &request.overrides)
+        let mut overrides = session.config_overrides.clone();
+        request.patch.apply_to(&mut overrides);
+        ensure_workspace_update_is_static(&session, &overrides)
             .map_err(|error| boundary_failure(boundary, "update_session_config", error))?;
         let agent = session
             .agents
@@ -1285,7 +1287,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         let agent = self
             .bind_session_revision(boundary, &session, agent, "update_session_config")
             .await?;
-        let mut effective = resolve_session_config(&agent, &request.overrides, None, None)
+        let mut effective = resolve_session_config(&agent, &overrides, None, None)
             .map_err(|error| {
                 boundary_failure(boundary, "update_session_config", error.to_string())
             })?;
@@ -1295,7 +1297,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             .update_config(
                 &request.session_id,
                 request.expected_revision,
-                request.overrides.clone(),
+                overrides.clone(),
                 effective.clone(),
             )
             .await
@@ -1305,7 +1307,7 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         Ok(SessionConfigState {
             session_id: request.session_id,
             revision,
-            overrides: request.overrides,
+            overrides,
             effective,
         })
     }

@@ -166,16 +166,20 @@ fn session_config_update_contract_preserves_optimistic_revision() {
     let request = SessionConfigUpdateRequest {
         session_id: SessionId::new("session-1"),
         expected_revision: 7,
-        overrides: SessionConfigOverrides {
-            model: Some(model("provider-b", "model-b")),
-            reasoning_effort: Some(ReasoningEffort::High),
-            ..SessionConfigOverrides::default()
+        patch: SessionConfigPatch {
+            model: Some(SessionConfigFieldPatch::Set {
+                value: model("provider-b", "model-b"),
+            }),
+            reasoning_effort: Some(SessionConfigFieldPatch::Set {
+                value: ReasoningEffort::High,
+            }),
+            ..SessionConfigPatch::default()
         },
     };
     let json = serde_json::to_value(&request).unwrap();
     assert_eq!(json["expected_revision"], 7);
-    assert_eq!(json["overrides"]["model"]["provider_id"], "provider-b");
-    assert_eq!(json["overrides"]["model"]["model_id"], "model-b");
+    assert_eq!(json["patch"]["model"]["value"]["provider_id"], "provider-b");
+    assert_eq!(json["patch"]["model"]["value"]["model_id"], "model-b");
     assert_eq!(
         serde_json::from_value::<SessionConfigUpdateRequest>(json).unwrap(),
         request
