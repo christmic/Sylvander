@@ -9,7 +9,7 @@ export interface AppProps {
 }
 
 export default function App({ gateway }: AppProps) {
-  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask } = useRuntime(gateway);
+  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, sendChat } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [inspector, setInspector] = useState<"plan" | "tasks" | "changes">("plan");
@@ -61,8 +61,7 @@ export default function App({ gateway }: AppProps) {
   async function send(event?: FormEvent) {
     event?.preventDefault();
     if (!state.selectedId || state.connection !== "live" || !draft.trim()) return;
-    await submit({ type: "chat", text: draft.trim(), attachments: [], session_id: state.selectedId });
-    updateDraft("");
+    if (await sendChat(state.selectedId, draft.trim())) updateDraft("");
   }
 
   function handleComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -248,10 +247,10 @@ export default function App({ gateway }: AppProps) {
         </section>}
         <form className="composer" onSubmit={(event) => void send(event)}>
           <label htmlFor="composer-input" className="sr-only">Message Sylvander</label>
-          <textarea id="composer-input" value={draft} onChange={(event) => updateDraft(event.target.value)} rows={2} placeholder="What should we work through?" onKeyDown={handleComposerKey} disabled={!selected || state.connection !== "live"} />
+          <textarea id="composer-input" value={draft} onChange={(event) => updateDraft(event.target.value)} rows={2} placeholder="What should we work through?" onKeyDown={handleComposerKey} disabled={!selected || state.connection !== "live" || selected.state === "active" || selected.state === "waiting"} />
           <div className="composer-footer">
             <div className="composer-tools"><button type="button" aria-label="Attach context">＋</button><button type="button">{reasoningLabel(state.runtimeInfo?.reasoningEffort)} <span>⌄</span></button><button type="button">{state.runtimeInfo ? `${state.runtimeInfo.providerId}/${state.runtimeInfo.modelId}` : "Runtime model"} <span>⌄</span></button></div>
-            <div className="send-group"><span><kbd>↵</kbd> send · <kbd>⇧↵</kbd> line</span><button className="send-button" disabled={!draft.trim() || !selected || state.connection !== "live"} aria-label="Send">↑</button></div>
+            <div className="send-group"><span><kbd>↵</kbd> send · <kbd>⇧↵</kbd> line</span><button className="send-button" disabled={!draft.trim() || !selected || state.connection !== "live" || selected.state === "active" || selected.state === "waiting"} aria-label="Send">↑</button></div>
           </div>
         </form>
       </div>

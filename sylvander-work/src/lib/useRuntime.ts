@@ -63,6 +63,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const pendingDeltasRef = useRef(new Map<string, PendingDelta[]>());
   const frameRef = useRef<number | undefined>(undefined);
   const terminalSequenceRef = useRef(0);
+  const localTurnStateRef = useRef(new Map<string, "waiting" | "active">());
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
 
@@ -74,6 +75,17 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     setState((current) => ({
       ...current,
       transcript: combined.reduce(applyPendingDelta, current.transcript),
+    }));
+  }, []);
+
+  const markSessionActive = useCallback((sessionId: string) => {
+    if (localTurnStateRef.current.get(sessionId) === "active") return;
+    localTurnStateRef.current.set(sessionId, "active");
+    setState((current) => ({
+      ...current,
+      sessions: current.sessions.map((session) => session.id === sessionId
+        ? { ...session, state: "active" }
+        : session),
     }));
   }, []);
 
@@ -195,12 +207,15 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }));
         break;
       case "text_delta":
+        markSessionActive(message.session_id);
         enqueueDelta(message.session_id, { kind: "assistant", delta: message.delta });
         break;
       case "thinking_delta":
+        markSessionActive(message.session_id);
         enqueueDelta(message.session_id, { kind: "thinking", delta: message.delta });
         break;
       case "tool_output_delta":
+        markSessionActive(message.session_id);
         enqueueDelta(message.session_id, {
           kind: "tool",
           callId: message.call_id,
@@ -209,6 +224,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "tool_call":
         if (message.session_id === selectedRef.current) {
+          markSessionActive(message.session_id);
           flushPendingDeltas(message.session_id);
           setState((current) => ({
             ...current,
@@ -237,6 +253,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "approval_request":
         if (message.session_id === selectedRef.current && message.tools.length > 0) {
+          markSessionActive(message.session_id);
           setState((current) => ({ ...current, approval: {
             sessionId: message.session_id,
             batchId: message.batch_id,
@@ -254,6 +271,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "ask_user":
         if (message.session_id === selectedRef.current) {
+          markSessionActive(message.session_id);
           setState((current) => ({ ...current, question: {
             sessionId: message.session_id,
             callId: message.call_id,
@@ -266,6 +284,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "plan_proposed":
       case "plan_updated":
         if (message.session_id === selectedRef.current) {
+          markSessionActive(message.session_id);
           setState((current) => ({
             ...current,
             activePlan: { sessionId: message.session_id, planId: message.plan_id },
@@ -278,6 +297,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "task_started":
         if (message.session_id === selectedRef.current) {
+          markSessionActive(message.session_id);
           setState((current) => ({ ...current, tasks: upsertTask(current.tasks, {
             id: message.task_id,
             owner: message.owner,
@@ -321,6 +341,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "done":
       case "error":
       case "turn_interrupted":
+        localTurnStateRef.current.delete(message.session_id);
         if (message.session_id === selectedRef.current) {
           flushPendingDeltas(message.session_id);
           terminalSequenceRef.current += 1;
@@ -344,12 +365,19 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
               ? { ...session, state: message.type === "error" ? "failed" : "idle" }
               : session),
           }));
+        } else {
+          setState((current) => ({
+            ...current,
+            sessions: current.sessions.map((session) => session.id === message.session_id
+              ? { ...session, state: message.type === "error" ? "failed" : "idle" }
+              : session),
+          }));
         }
         break;
       default:
         break;
     }
-  }, [enqueueDelta, flushPendingDeltas, submit]);
+  }, [enqueueDelta, flushPendingDeltas, markSessionActive, submit]);
 
   useEffect(() => {
     let stopped = false;
@@ -479,7 +507,47 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     return submit({ type: "cancel_task", session_id: sessionId, task_id: taskId });
   }, [state.tasks, submit]);
 
-  return { state, submit, selectSession, answerQuestion, resolvePlan, cancelTask };
+  const sendChat = useCallback(async (sessionId: string, text: string) => {
+    if (localTurnStateRef.current.has(sessionId)) return false;
+    localTurnStateRef.current.set(sessionId, "waiting");
+    setState((current) => ({
+      ...current,
+      sessions: current.sessions.map((session) => session.id === sessionId
+        ? { ...session, state: "waiting" }
+        : session),
+    }));
+    try {
+      await submit({ type: "chat", text, attachments: [], session_id: sessionId });
+      return true;
+    } catch (error) {
+      localTurnStateRef.current.delete(sessionId);
+      terminalSequenceRef.current += 1;
+      const noticeId = `notice-submit-${terminalSequenceRef.current}`;
+      setState((current) => ({
+        ...current,
+        sessions: current.sessions.map((session) => session.id === sessionId
+          ? { ...session, state: "idle" }
+          : session),
+        transcript: [...current.transcript, {
+          id: noticeId,
+          kind: "notice",
+          body: safeDiagnostic(error),
+          status: "failed",
+        }],
+      }));
+      return false;
+    }
+  }, [submit]);
+
+  return {
+    state,
+    submit,
+    selectSession,
+    answerQuestion,
+    resolvePlan,
+    cancelTask,
+    sendChat,
+  };
 }
 
 function sameDeltaTarget(left: PendingDelta, right: PendingDelta): boolean {

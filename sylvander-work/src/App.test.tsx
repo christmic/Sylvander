@@ -9,6 +9,7 @@ afterEach(cleanup);
 class TestGateway implements RuntimeGatewayPort {
   commands: RuntimeCommand[] = [];
   connects = 0;
+  rejectChat = false;
   listener?: (event: DesktopEvent) => void;
 
   async connect(listener: (event: DesktopEvent) => void) {
@@ -17,6 +18,7 @@ class TestGateway implements RuntimeGatewayPort {
   }
 
   async submit(message: RuntimeCommand) {
+    if (this.rejectChat && message.type === "chat") throw "Runtime command queue is unavailable";
     this.commands.push(message);
   }
 
@@ -223,6 +225,58 @@ describe("Sylvander Work", () => {
       type: "session_deleted", session_id: "session-2",
     } }));
     await screen.findByRole("heading", { name: "No Session selected" });
+  });
+
+  it("locks duplicate chat submission until a Runtime terminal arrives", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Chat", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    const composer = await screen.findByRole("textbox", { name: "Message Sylvander" });
+    fireEvent.change(composer, { target: { value: "Run once" } });
+    const sendButton = screen.getByRole("button", { name: "Send" });
+    act(() => {
+      sendButton.click();
+      sendButton.click();
+    });
+    await waitFor(() => expect(gateway.commands.filter((command) => command.type === "chat")).toEqual([
+      { type: "chat", text: "Run once", attachments: [], session_id: "session-1" },
+    ]));
+    expect(composer.hasAttribute("disabled")).toBe(true);
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "done", session_id: "session-1", text: "Complete",
+    } }));
+    await waitFor(() => expect(composer.hasAttribute("disabled")).toBe(false));
+  });
+
+  it("rolls back the local turn lock when native chat submission fails", async () => {
+    const gateway = new TestGateway();
+    gateway.rejectChat = true;
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Chat", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    const composer = await screen.findByRole("textbox", { name: "Message Sylvander" });
+    fireEvent.change(composer, { target: { value: "Keep this draft" } });
+    act(() => screen.getByRole("button", { name: "Send" }).click());
+
+    expect(await screen.findByText("Runtime command queue is unavailable")).toBeTruthy();
+    await waitFor(() => expect(composer.hasAttribute("disabled")).toBe(false));
+    expect((composer as HTMLTextAreaElement).value).toBe("Keep this draft");
   });
 
   it("reconnects with the native gateway after an established link drops", async () => {
