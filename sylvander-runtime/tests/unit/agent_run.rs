@@ -811,7 +811,8 @@ enum SessionStoreFailPoint {
     PersistToolResult,
     FinishToolCall,
     RecordUsage,
-    AppendMessage,
+    PersistModelResponse,
+    CompletePersistedTurn,
     ReplaceHistory,
 }
 
@@ -897,10 +898,18 @@ impl SessionStore for FailingSessionStore {
         completion: crate::storage::session::TurnCompletion,
     ) -> Result<crate::storage::session::StoredMessage, crate::storage::session::SessionStoreError>
     {
-        if self.fail == SessionStoreFailPoint::AppendMessage {
+        self.inner.complete_turn(context, completion).await
+    }
+
+    async fn complete_persisted_turn(
+        &self,
+        completion: crate::storage::session::PersistedTurnCompletion,
+    ) -> Result<crate::storage::session::StoredMessage, crate::storage::session::SessionStoreError>
+    {
+        if self.fail == SessionStoreFailPoint::CompletePersistedTurn {
             return Err(Self::injected());
         }
-        self.inner.complete_turn(context, completion).await
+        self.inner.complete_persisted_turn(completion).await
     }
 
     async fn finish_turn(
@@ -930,6 +939,9 @@ impl SessionStore for FailingSessionStore {
         crate::storage::session::ModelResponseCommit,
         crate::storage::session::SessionStoreError,
     > {
+        if self.fail == SessionStoreFailPoint::PersistModelResponse {
+            return Err(Self::injected());
+        }
         self.inner.persist_model_response(context, response).await
     }
 
@@ -1118,9 +1130,6 @@ impl SessionStore for FailingSessionStore {
         parent_msg_id: Option<i64>,
     ) -> Result<crate::storage::session::StoredMessage, crate::storage::session::SessionStoreError>
     {
-        if self.fail == SessionStoreFailPoint::AppendMessage {
-            return Err(Self::injected());
-        }
         self.inner
             .append_message(
                 context,
@@ -1298,7 +1307,7 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
         assert_eq!(snapshot.tools_started, 1);
         assert_eq!(snapshot.tools_succeeded, succeeded);
         assert_eq!(snapshot.tools_failed, failed);
-        assert_eq!(snapshot.persistence_succeeded, 7 + succeeded);
+        assert_eq!(snapshot.persistence_succeeded, 11 + succeeded);
         assert_eq!(snapshot.persistence_failed, 0);
         assert_eq!(snapshot.active_tools, 0);
     }
@@ -1308,8 +1317,8 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
 async fn durable_tool_persistence_failures_fail_the_turn_and_clear_active_work() {
     for (fail, operation, started, policy) in [
         (
-            SessionStoreFailPoint::AppendMessage,
-            SessionPersistenceOperation::PersistModelToolResponse,
+            SessionStoreFailPoint::PersistModelResponse,
+            SessionPersistenceOperation::PersistModelResponse,
             0,
             sylvander_api::ApprovalPolicy::Allow,
         ),
@@ -1436,7 +1445,7 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
     let snapshot = observability.snapshot();
     assert_eq!(snapshot.turns_started, 1);
     assert_eq!(snapshot.turns_completed, 1);
-    assert_eq!(snapshot.persistence_succeeded, 3);
+    assert_eq!(snapshot.persistence_succeeded, 5);
     assert_eq!(snapshot.active_turns, 0);
     assert_eq!(snapshot.turn_latency.count, 1);
 
@@ -3157,7 +3166,7 @@ async fn persistent_terminal_write_failures_never_publish_done() {
             SessionPersistenceOperation::RecordUsage,
         ),
         (
-            SessionStoreFailPoint::AppendMessage,
+            SessionStoreFailPoint::CompletePersistedTurn,
             SessionPersistenceOperation::CompleteTurn,
         ),
     ] {
@@ -3196,8 +3205,9 @@ async fn persistent_terminal_write_failures_never_publish_done() {
             .read_history(&caller, &session_id, false, None)
             .await
             .unwrap();
-        assert_eq!(history.len(), 1);
+        assert_eq!(history.len(), 2);
         assert_eq!(history[0].role, StoredMessageRole::User);
+        assert_eq!(history[1].role, StoredMessageRole::Assistant);
 
         let mut saw_error = false;
         while let Ok(message) = events.try_recv() {

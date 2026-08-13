@@ -36,12 +36,12 @@ use crate::session::SessionMetadata;
 use super::{
     MessageRole, ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance,
     ModelIterationSnapshot, ModelIterationStart, ModelResponseCommit, ModelResponsePersistence,
-    ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch, SessionStore,
-    SessionStoreError, SessionUsage, StoredMessage, StoredSession, ToolCallAdvance,
-    ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState,
-    ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason,
-    ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot,
-    TurnStart, TurnState,
+    PersistedTurnCompletion, ReplacementMessage, SessionFilter, SessionLifetime,
+    SessionMetadataPatch, SessionStore, SessionStoreError, SessionUsage, StoredMessage,
+    StoredSession, ToolCallAdvance, ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot,
+    ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
+    ToolRecoveryReason, ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind,
+    TurnSnapshot, TurnStart, TurnState,
 };
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1054,6 +1054,78 @@ impl SessionStore for SqliteSessionStore {
                 is_summarized: false,
                 created_at: now,
             })
+        })
+        .await
+    }
+
+    async fn complete_persisted_turn(
+        &self,
+        completion: PersistedTurnCompletion,
+    ) -> Result<StoredMessage, SessionStoreError> {
+        let expected = i64::try_from(completion.expected_revision).map_err(|_| {
+            SessionStoreError::Invalid("model ledger revision exceeds SQLite range".into())
+        })?;
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let message = transaction
+                .query_row(
+                    "SELECT m.id,m.session_id,m.seq,m.role,m.content_json,m.user_id,m.agent_id,\
+                            m.trace_id,m.priority,m.model_id,m.tool_name,m.parent_msg_id,\
+                            m.is_summarized,m.created_at \
+                     FROM session_turn_iterations i \
+                     JOIN session_turns t ON t.session_id=i.session_id AND t.turn_id=i.turn_id \
+                     JOIN session_messages m ON m.id=i.response_message_id \
+                     WHERE i.invocation_id=?1 AND i.position='response_persisted' \
+                       AND i.ledger_revision=?2 AND i.response_terminal=1 AND t.state='running' \
+                       AND NOT EXISTS (SELECT 1 FROM session_tool_calls c \
+                         WHERE c.session_id=i.session_id AND c.turn_id=i.turn_id \
+                           AND c.state='running')",
+                    params![completion.invocation_id.as_str(), expected],
+                    row_to_message,
+                )
+                .optional()
+                .map_err(sqlite_err)?
+                .ok_or_else(|| {
+                    SessionStoreError::Invalid(
+                        "terminal response facts are missing, stale, or unresolved".into(),
+                    )
+                })?;
+            let now = crate::session::now_secs();
+            let changed = transaction
+                .execute(
+                    "UPDATE session_turn_iterations SET position='tools_resolved', \
+                            ledger_revision=ledger_revision+1, updated_at=?2 \
+                     WHERE invocation_id=?1 AND position='response_persisted' \
+                       AND ledger_revision=?3 AND response_terminal=1",
+                    params![completion.invocation_id.as_str(), now, expected],
+                )
+                .map_err(sqlite_err)?;
+            if changed != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "terminal model iteration CAS conflict".into(),
+                ));
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE session_turns SET state='completed', ended_at=?3 \
+                     WHERE session_id=?1 AND turn_id=(SELECT turn_id FROM session_turn_iterations \
+                       WHERE invocation_id=?2) AND state='running'",
+                    params![message.session_id.0, completion.invocation_id.as_str(), now],
+                )
+                .map_err(sqlite_err)?;
+            if changed != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "turn completion CAS conflict".into(),
+                ));
+            }
+            transaction
+                .execute(
+                    "UPDATE sessions SET updated_at=?1 WHERE id=?2",
+                    params![now, message.session_id.0],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)?;
+            Ok(message)
         })
         .await
     }

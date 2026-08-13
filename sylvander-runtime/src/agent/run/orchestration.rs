@@ -64,9 +64,10 @@ use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionMetadata, now_secs};
 use crate::storage::artifact::ArtifactTurnBinding;
 use crate::storage::session::{
-    SessionStoreError, ToolCallAdvance, ToolCallCompletion,
-    ToolCallFailureKind as StoredToolCallFailureKind, ToolCallStart, ToolCallState,
-    ToolExecutionPosition, ToolInvocationId, ToolResultPersistence, TurnCompletion, TurnStart,
+    ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance, ModelIterationStart,
+    ModelResponsePersistence, PersistedTurnCompletion, SessionStoreError, ToolCallAdvance,
+    ToolCallCompletion, ToolCallFailureKind as StoredToolCallFailureKind, ToolCallStart,
+    ToolCallState, ToolExecutionPosition, ToolInvocationId, ToolResultPersistence, TurnStart,
     TurnState,
 };
 use crate::storage::workspace_journal::WorkspaceJournal;
@@ -627,7 +628,7 @@ impl AgentRunInner {
                 session_metadata.user_id.clone(),
                 self.id.clone(),
                 approval_policy_revision(&permissions, &self.approval_rules),
-                capability_revision,
+                capability_revision.clone(),
             );
             let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
                 bus: self.bus.clone(),
@@ -770,6 +771,7 @@ impl AgentRunInner {
         let mut stream = Box::pin(agent_loop::run_stream(&loop_config, request, ports));
         tokio::pin!(interrupted);
         let mut final_message: Option<ModelResponse> = None;
+        let mut model_invocation: Option<(ModelInvocationId, u64, bool)> = None;
 
         loop {
             let event = tokio::select! {
@@ -869,11 +871,70 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::turn::event::AgentEvent::ModelToolResponsePrepared {
-                    iteration: _,
-                    message,
+                sylvander_agent::turn::event::AgentEvent::ModelInvocationPrepared {
+                    iteration,
+                    invocation_id,
+                    request_digest,
                 } => {
                     if let Some(store) = &self.session_store {
+                        if model_invocation.is_some() {
+                            return Err(AgentRunError::session_persistence(
+                                SessionPersistenceOperation::BeginModelIteration,
+                                SessionStoreError::Invalid(
+                                    "previous model iteration has not resolved".into(),
+                                ),
+                            ));
+                        }
+                        let invocation_id =
+                            ModelInvocationId::parse(invocation_id).map_err(|_| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::BeginModelIteration,
+                                    SessionStoreError::Invalid(
+                                        "model invocation identity is not a UUID".into(),
+                                    ),
+                                )
+                            })?;
+                        store
+                            .begin_model_iteration(ModelIterationStart {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.to_owned(),
+                                iteration,
+                                invocation_id: invocation_id.clone(),
+                                model_id: selected_model_id.clone(),
+                                capability_revision: capability_revision.clone(),
+                                request_digest,
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::BeginModelIteration,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::PersistModelToolResponse,
+                                succeeded: true,
+                            });
+                        model_invocation = Some((invocation_id, 0, false));
+                    }
+                }
+                sylvander_agent::turn::event::AgentEvent::ModelResponsePrepared {
+                    iteration: _,
+                    message,
+                    terminal,
+                } => {
+                    if let Some(store) = &self.session_store {
+                        let Some((invocation_id, revision, _)) = model_invocation.as_ref() else {
+                            return Err(AgentRunError::session_persistence(
+                                SessionPersistenceOperation::PersistModelResponse,
+                                SessionStoreError::Invalid(
+                                    "model response has no admitted invocation".into(),
+                                ),
+                            ));
+                        };
                         let caller = sylvander_api::SessionContext::new(
                             session_metadata.user_id.clone(),
                             self.id.clone(),
@@ -882,29 +943,31 @@ impl AgentRunInner {
                         .with_trace_id(turn_id);
                         let content = serde_json::to_value(message).map_err(|_| {
                             AgentRunError::session_persistence(
-                                SessionPersistenceOperation::PersistModelToolResponse,
+                                SessionPersistenceOperation::PersistModelResponse,
                                 SessionStoreError::Invalid(
                                     "model tool response serialization failed".into(),
                                 ),
                             )
                         })?;
                         store
-                            .append_message(
+                            .persist_model_response(
                                 &caller,
-                                &session_id,
-                                crate::storage::session::MessageRole::Assistant,
-                                content,
-                                Some(&selected_model_id),
-                                None,
-                                None,
+                                ModelResponsePersistence {
+                                    invocation_id: invocation_id.clone(),
+                                    expected_revision: *revision,
+                                    assistant_content: content,
+                                    model_id: selected_model_id.clone(),
+                                    terminal,
+                                },
                             )
                             .await
                             .map_err(|source| {
                                 AgentRunError::session_persistence(
-                                    SessionPersistenceOperation::PersistModelToolResponse,
+                                    SessionPersistenceOperation::PersistModelResponse,
                                     source,
                                 )
                             })?;
+                        model_invocation = Some((invocation_id.clone(), revision + 1, terminal));
                         self.observability
                             .record(RuntimeEvent::PersistenceFinished {
                                 turn_id: turn_id.to_owned(),
@@ -1267,6 +1330,32 @@ impl AgentRunInner {
                     usage,
                     provider_usage,
                 } => {
+                    if let (Some(store), Some((invocation_id, revision, false))) =
+                        (&self.session_store, model_invocation.as_ref())
+                    {
+                        store
+                            .advance_model_iteration(ModelIterationAdvance {
+                                invocation_id: invocation_id.clone(),
+                                expected_revision: *revision,
+                                expected_position: ModelExecutionPosition::ResponsePersisted,
+                                next_position: ModelExecutionPosition::ToolsResolved,
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::AdvanceModelIteration,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::PersistModelToolResponse,
+                                succeeded: true,
+                            });
+                        model_invocation = None;
+                    }
                     self.context_usage.write().await.insert(
                         session_id.clone(),
                         ContextUsage {
@@ -1410,25 +1499,21 @@ impl AgentRunInner {
                 || "unix-client".into(),
                 |context| context.metadata.user_id.clone(),
             );
-            let caller =
+            let _caller =
                 sylvander_api::SessionContext::new(user_id, self.id.clone(), session_id.clone());
-            let message = ChatMessage::assistant(msg.content.clone());
-            let content = serde_json::to_value(message).map_err(|_| {
-                AgentRunError::session_persistence(
+            let Some((invocation_id, revision, true)) = model_invocation.take() else {
+                return Err(AgentRunError::session_persistence(
                     SessionPersistenceOperation::CompleteTurn,
-                    SessionStoreError::Invalid("assistant message serialization failed".into()),
-                )
-            })?;
+                    SessionStoreError::Invalid(
+                        "terminal response is not durably linked to its model iteration".into(),
+                    ),
+                ));
+            };
             store
-                .complete_turn(
-                    &caller,
-                    TurnCompletion {
-                        session_id: session_id.clone(),
-                        turn_id: turn_id.to_owned(),
-                        assistant_content: content,
-                        model_id: msg.model.model.clone(),
-                    },
-                )
+                .complete_persisted_turn(PersistedTurnCompletion {
+                    invocation_id,
+                    expected_revision: revision,
+                })
                 .await
                 .map_err(|source| {
                     AgentRunError::session_persistence(

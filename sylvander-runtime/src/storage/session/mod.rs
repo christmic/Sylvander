@@ -266,6 +266,14 @@ pub struct TurnCompletion {
     pub model_id: String,
 }
 
+/// Complete a turn from an assistant response already durably linked to its
+/// model iteration; no message is appended by this operation.
+#[derive(Debug, Clone)]
+pub struct PersistedTurnCompletion {
+    pub invocation_id: ModelInvocationId,
+    pub expected_revision: u64,
+}
+
 /// Immutable facts written before one provider request may begin.
 #[derive(Debug, Clone)]
 pub struct ModelIterationStart {
@@ -509,6 +517,12 @@ pub trait SessionStore: Send + Sync {
         &self,
         ctx: &sylvander_api::SessionContext,
         completion: TurnCompletion,
+    ) -> Result<StoredMessage, SessionStoreError>;
+
+    /// Atomically resolve a terminal model iteration and its parent turn.
+    async fn complete_persisted_turn(
+        &self,
+        completion: PersistedTurnCompletion,
     ) -> Result<StoredMessage, SessionStoreError>;
 
     /// Mark a running turn unsuccessful before publishing its public terminal.
