@@ -69,6 +69,13 @@ every command to Podman. Its only translation is Compose's
 `--project-directory`: the wrapper removes that unsupported `podman-compose`
 flag and uses its value as the Compose process working directory.
 
+On Apple Silicon, benchmark containers prefer an equivalent `linux/arm64`
+image. An upstream-pinned task image takes precedence over host architecture:
+when the official task supplies only `linux/amd64`, Harbor keeps that image and
+Podman uses QEMU rather than rebuilding or substituting the verifier. The run
+record must retain both host and image architectures so emulation overhead is
+visible and is never confused with Agent capability reward.
+
 The reference environment uses Podman client 6.1.0, Podman server 6.0.2, the
 `quay.io/podman/machine-os:6.0` AppleHV machine image, and podman-compose 1.6.0.
 Isolation checks cover no-network execution, a read-only filesystem, zero Linux

@@ -147,6 +147,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-benchmark-agent --no-deps --lo
 External live runs additionally validate exported trajectories with Harbor's
 reference validator and retain the exact harness/dataset revision.
 
+On arm64 hosts, execution selects a semantically equivalent `linux/arm64`
+benchmark image first. A benchmark-pinned image is immutable evidence, however:
+if upstream publishes only `linux/amd64`, the run uses emulation and records the
+host/image architecture pair instead of rebuilding the verifier and losing
+score comparability.
+
 The Podman/Harbor installation gate is separate from a scored benchmark. The
 effective pinned Terminal-Bench 2.0 gate uses an architecture-matched static
 musl runner and executes its self-check after upload. Environment startup,
