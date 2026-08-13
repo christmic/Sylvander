@@ -1216,6 +1216,7 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     let directory = tempfile::tempdir().unwrap();
     let mut config = configured_memory_test_config(&directory, &["assistant"]);
     config.agents[0].access.allow_authenticated = true;
+    config.server.boundary.max_request_bytes = 8192;
     let runtime = Runtime::boot_config(config).await.unwrap();
     let boundary = sylvander_api::BoundaryContext::authenticated(
         sylvander_api::AuthenticatedPrincipal::user(
@@ -1241,7 +1242,7 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     let initial_store = runtime
         .storage
         .sessions()
-        .list_persistent()
+        .list_persistent(false)
         .await
         .unwrap()
         .len();
@@ -1266,7 +1267,7 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
         runtime
             .storage
             .sessions()
-            .list_persistent()
+            .list_persistent(false)
             .await
             .unwrap()
             .len(),
@@ -1288,7 +1289,7 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
             runtime
                 .storage
                 .sessions()
-                .list_persistent()
+                .list_persistent(false)
                 .await
                 .unwrap()
                 .len(),
@@ -1319,6 +1320,17 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     )
     .await
     .unwrap();
+    let snapshot = sylvander_channel::ChannelHost::runtime_snapshot(
+        runtime.channel_host.as_ref(),
+        &boundary,
+        &AgentId::new("assistant"),
+    )
+    .await
+    .expect("visible Agent has one Runtime-owned snapshot");
+    assert_eq!(snapshot.agent_id, AgentId::new("assistant"));
+    assert_eq!(snapshot.model.provider_id, "primary");
+    assert_eq!(snapshot.model.model_id, "model-a");
+    assert_eq!(snapshot.max_request_bytes, 8192);
     let failing_bus = Arc::new(InstrumentedBus::new(false, true));
     let failing_service = channel_host_with_bus(&runtime, failing_bus);
     sylvander_channel::ChannelHost::submit_chat(
@@ -1506,6 +1518,22 @@ async fn runtime_controls_reject_foreign_session_ownership_before_agent_access()
     )
     .await
     .expect("archive must pass through the Runtime lifecycle");
+    assert!(
+        sylvander_channel::ChannelHost::list_sessions(
+            runtime.channel_host.as_ref(),
+            &owner,
+            false,
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    );
+    let archived =
+        sylvander_channel::ChannelHost::list_sessions(runtime.channel_host.as_ref(), &owner, true)
+            .await
+            .unwrap();
+    assert_eq!(archived.len(), 1);
+    assert!(archived[0].archived);
     assert!(
         runtime
             .storage
@@ -2951,7 +2979,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     let before_invalid_create = runtime
         .storage
         .sessions()
-        .list_persistent()
+        .list_persistent(false)
         .await
         .unwrap()
         .len();
@@ -2979,7 +3007,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         runtime
             .storage
             .sessions()
-            .list_persistent()
+            .list_persistent(false)
             .await
             .unwrap()
             .len(),
