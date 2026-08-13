@@ -18,7 +18,7 @@ JSON-over-WebSocket. Each frame is a tagged enum value:
   `list_sessions`, `discover_agents`, `select_model`, `submit_feedback`,
   `ping`, ...
 - **Server → Client** examples: `session_created`, `text_delta`,
-  `thinking_delta`, `tool_call`, `tool_result`, `iteration_start`,
+  `turn_started`, `thinking_delta`, `tool_call`, `tool_result`, `iteration_start`,
   `iteration_end`, `done`, `approval_request`, `error`, `pong`, ...
 
 The complete enum list lives in `sylvander-api/src/ui.rs`
@@ -60,7 +60,7 @@ re-authenticating individual frames.
    the server replies with `Welcome` carrying the negotiated protocol version
    and capabilities. One socket may carry multiple explicitly tagged sessions.
 5. **Stream** — chat turns stream `text_delta`, `thinking_delta`,
-   `tool_call`, `tool_result`, and `iteration_start`, then finish with `done`
+   `turn_started`, `tool_call`, `tool_result`, and `iteration_start`, then finish with `done`
    or `error`.
 6. **Session discovery** — `list_sessions` dispatches through Runtime
    `ChannelHost`, preserving stable-user visibility rules, and returns one typed

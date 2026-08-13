@@ -2,9 +2,8 @@
 
 > Status: active implementation ledger
 >
-> Verified against `sylvander-api/src/ui.rs` and Desktop source after
-> `128a1cbca`
-> on 2026-08-13.
+> Verified against `sylvander-api/src/ui.rs` and the current Desktop source on
+> 2026-08-13.
 
 ## Purpose
 
@@ -18,7 +17,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | Contract | Status | Remaining product work |
 |---|---|---|
 | `Hello` | complete, native-owned | none |
-| `Chat` | text complete | attachments and authoritative `TurnStarted` integration |
+| `Chat` | text and authoritative turn admission complete | attachments |
 | `Approve` | complete | renders only Runtime `allowed_scopes`, defaulting to protocol `Once` |
 | `Answer` | complete | none |
 | `Interrupt` | complete | stop remains pending until a Runtime terminal event |
@@ -50,6 +49,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `ProtocolError` | complete, native-owned | public code/message/version range; transport details remain generic |
 | `SessionCreated`, `SessionsList`, `SessionUpdated`, `SessionDeleted` | complete | restore/fork events use existing shapes |
 | `SessionHistory` | complete | messages, usage, cost, source, recovery notice, and truncation |
+| `TurnStarted` | complete | Runtime turn identity is the sole active-state authority |
 | `TextDelta`, `ThinkingDelta`, `ToolOutputDelta` | complete | visual progressive disclosure |
 | `ToolCall`, `ToolResult`, `ToolRejected` | complete | bounded expandable tool input/details |
 | `Done`, `Error`, `TurnInterrupted` | complete | feedback target |
@@ -59,7 +59,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | task lifecycle | complete | none |
 | `RuntimeInfo` | complete | qualified model, catalog, permissions, capabilities, request limit, and platform remain Runtime-owned |
 | `ModelRetry`, `InteractionTimeout` | complete | typed cause/kind/recovery projection and matching decision dismissal |
-| `IterationStart`, `IterationEnd` | complete | active state and cumulative usage/cost projection |
+| `IterationStart`, `IterationEnd` | complete | cumulative usage/cost projection; never implies turn admission |
 | `SessionConfig` | complete | sparse overrides, effective values, revision, and provenance |
 | feedback, memory, admin, profile, identity responses | missing | matching command surfaces |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
@@ -70,9 +70,7 @@ execution, persistence, or policy ownership moved into Desktop.
 
 ## Ordered implementation gates
 
-1. Integrate the authoritative Runtime lifecycle chain, including
-   `TurnStarted`; do not infer it from local submission.
-2. Complete feedback, memory, identity, administration, attachments, and
+1. Complete feedback, memory, identity, administration, attachments, and
    liveness surfaces with protocol and accessibility tests.
 
 Every row moves to complete only with a typed command/event test and a product

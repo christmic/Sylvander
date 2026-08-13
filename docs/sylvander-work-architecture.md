@@ -152,12 +152,13 @@ profile. No protocol version, model, or capability is inferred from a model
 name or hard-coded in the view; missing information renders an explicit
 placeholder until `Welcome` or `RuntimeInfo` arrives.
 
-Before the admitted-turn protocol chain is integrated into this branch, chat
-submission uses a deliberately local `waiting` lock to prevent duplicate sends.
-The first Runtime activity promotes it to `active`; only `Done`, `Error`, or
-`TurnInterrupted` releases it, while a failed native submission rolls it back.
-This is a concurrency guard, not an authoritative turn-start claim. The newer
-Runtime `TurnStarted` fact remains the required integration authority.
+Chat submission uses a deliberately local `waiting` lock to prevent duplicate
+sends while native admission is pending. Only Runtime's public `TurnStarted`
+fact promotes that state to `active`; deltas, iterations, tools, approvals,
+plans, and tasks never infer the transition. `Done`, `Error`, or
+`TurnInterrupted` releases the lock, while a failed native submission rolls it
+back. The distinction keeps transport latency control local while Runtime owns
+the durable turn identity and lifecycle truth.
 
 Retry and timeout events are rendered from their typed cause, kind, duration,
 and recovery fields; Desktop does not classify reason text. A timeout dismisses
