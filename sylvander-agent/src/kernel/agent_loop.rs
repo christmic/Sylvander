@@ -378,8 +378,12 @@ pub fn run_stream(
 
             if !tool_blocks.is_empty() {
                 let tool_timeout = ports.tool_context.budget.timeout;
+                let prepared_calls = tool_blocks
+                    .iter()
+                    .map(|tool| request.tools.prepare(&tool.name, tool.input.clone()))
+                    .collect::<Vec<_>>();
 
-                // Check approval gate before executing tools.
+                // Validate and freeze each call before asking for approval.
                 // The loop PAUSES here if the gate waits for external input.
                 let decisions: Vec<ApprovalDecision> =
                     if let Some(gate) = &ports.approval_gate {
@@ -388,52 +392,53 @@ pub fn run_stream(
                         // consecutive prompts for one decision.
                         let requests: Vec<ToolUseRequest> = tool_blocks
                             .iter()
-                            .filter(|t| {
-                                t.name != "present_plan" && t.name != "start_background_task"
-                                    && t.name != "update_plan"
-                            })
-                            .map(|t| ToolUseRequest {
-                                call_id: t.id.clone(),
-                                tool_name: t.name.clone(),
-                                input: t.input.clone(),
+                            .zip(prepared_calls.iter())
+                            .filter_map(|(tool, prepared)| {
+                                (!is_control_tool(&tool.name))
+                                    .then(|| prepared.as_ref().ok())
+                                    .flatten()
+                                    .map(|call| ToolUseRequest::from_prepared(&tool.id, call))
                             })
                             .collect();
                         let mut gated = gate.check_batch(&requests).await.decisions.into_iter();
                         tool_blocks
                             .iter()
-                            .map(|tool| {
-                                if tool.name == "present_plan"
-                                    || tool.name == "start_background_task"
-                                    || tool.name == "update_plan"
-                                {
-                                    ApprovalDecision::Approved
-                                } else {
-                                    gated.next().unwrap_or_else(|| {
+                            .zip(prepared_calls.iter())
+                            .map(|(tool, prepared)| match prepared {
+                                Err(error) => ApprovalDecision::Rejected {
+                                    reason: error.to_string(),
+                                },
+                                Ok(_) if is_control_tool(&tool.name) => ApprovalDecision::Approved,
+                                Ok(_) => gated.next().unwrap_or_else(|| {
                                         ApprovalDecision::Rejected {
                                             reason: "approval gate returned no decision".into(),
                                         }
-                                    })
-                                }
+                                    }),
                             })
                             .collect()
                     } else {
-                        // No gate → auto-approve all (backward compatible)
-                        vec![
-                            ApprovalDecision::Approved;
-                            tool_blocks.len()
-                        ]
+                        prepared_calls
+                            .iter()
+                            .map(|prepared| match prepared {
+                                Ok(_) => ApprovalDecision::Approved,
+                                Err(error) => ApprovalDecision::Rejected {
+                                    reason: error.to_string(),
+                                },
+                            })
+                            .collect()
                     };
 
-                let has_control_tool = tool_blocks.iter().any(|tool| {
-                    matches!(
-                        tool.name.as_str(),
-                        "ask_user" | "present_plan" | "start_background_task" | "update_plan"
-                    )
-                });
+                let has_control_tool = tool_blocks
+                    .iter()
+                    .any(|tool| is_control_tool(&tool.name));
                 if has_control_tool {
                 // Control tools own interactive gates and remain ordered.
                 let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
-                for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
+                for ((tool_use, decision), prepared_call) in tool_blocks
+                    .iter()
+                    .zip(decisions.iter())
+                    .zip(prepared_calls.iter())
+                {
                     match decision {
                         ApprovalDecision::Approved => {
                             yield AgentEvent::ToolCallStart {
@@ -623,9 +628,7 @@ pub fn run_stream(
                                 continue;
                             }
 
-                            let input = tool_use.input.clone();
                             let name = tool_use.name.clone();
-                            let prepared_call = request.tools.prepare(&name, input);
                             let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
                                 crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
                             );
@@ -637,7 +640,7 @@ pub fn run_stream(
                                 });
                             let execution = execute_registered_tool(
                                 RegisteredToolExecutionRequest {
-                                    prepared_call,
+                                    prepared_call: prepared_call.clone(),
                                     invocation_gateway: ports.invocation_gateway.clone(),
                                     invocation_snapshot: ports.invocation_snapshot.clone(),
                                     tool_context: ports.tool_context.clone(),
@@ -730,12 +733,15 @@ pub fn run_stream(
                         crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
                     );
                     let execution_coordination = Arc::new(tokio::sync::RwLock::new(()));
-                    let executions = tool_blocks.iter().zip(decisions.iter()).map(|(tool_use, decision)| {
+                    let executions = tool_blocks
+                        .iter()
+                        .zip(decisions.iter())
+                        .zip(prepared_calls.iter())
+                        .map(|((tool_use, decision), prepared_call)| {
                         let id = tool_use.id.clone();
                         let name = tool_use.name.clone();
-                        let input = tool_use.input.clone();
                         let decision = decision.clone();
-                        let prepared_call = request.tools.prepare(&name, input);
+                        let prepared_call = prepared_call.clone();
                         let execution_mode = prepared_call.as_ref().map_or(
                             crate::tool::ToolExecutionMode::Exclusive,
                             crate::tool::PreparedToolCall::execution_mode,
@@ -998,6 +1004,13 @@ struct PendingToolCall {
     id: String,
     name: String,
     input: serde_json::Value,
+}
+
+fn is_control_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "ask_user" | "present_plan" | "start_background_task" | "update_plan"
+    )
 }
 
 struct ToolExecutionOutcome {

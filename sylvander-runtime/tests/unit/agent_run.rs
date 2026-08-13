@@ -2,10 +2,13 @@ use super::*;
 use crate::execution::LocalExecutor;
 use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
+use sylvander_agent::approval::ToolApprovalFacts;
 use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::memory::store::InMemoryMemoryStore;
 use sylvander_agent::tool::DynamicToolSource;
 use sylvander_agent::tool::ToolExecutor as _;
+use sylvander_agent::tool::invocation::ToolInvocationClass;
+use sylvander_agent::tool::{ToolExecutionMode, ToolExecutionPolicy};
 use sylvander_agent::tools::{ReadTool, WriteTool};
 use sylvander_api::Recipient;
 use sylvander_channel::{BusDiagnostics, BusError, InProcessMessageBus, MessageBus};
@@ -1851,6 +1854,11 @@ async fn approval_timeout_rejects_and_clears_the_pending_request() {
         call_id: "tool-1".into(),
         tool_name: "write".into(),
         input: serde_json::json!({"path": "notes.md"}),
+        facts: ToolApprovalFacts::new(
+            ToolInvocationClass::FilesystemMutation,
+            ToolExecutionMode::Exclusive,
+            ToolExecutionPolicy::workspace_write(),
+        ),
     };
     let task = tokio::spawn(async move { gate.check_batch(&[request]).await });
 
@@ -2528,6 +2536,11 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
             call_id: "shared-id".into(),
             tool_name: "write".into(),
             input: serde_json::json!({"path": "shared"}),
+            facts: ToolApprovalFacts::new(
+                ToolInvocationClass::FilesystemMutation,
+                ToolExecutionMode::Exclusive,
+                ToolExecutionPolicy::workspace_write(),
+            ),
         });
         run.inner.pending_approvals.lock().await.insert(
             (session.clone(), "shared-id".into()),

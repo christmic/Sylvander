@@ -1,4 +1,5 @@
 use super::*;
+use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::test_support::MockTool;
 use crate::tool_invocation::ToolInvocationGateway as _;
 use serde_json::json;
@@ -16,6 +17,21 @@ type ProviderOpen = Result<Vec<Result<ModelStreamEvent, ProviderError>>, Provide
 struct ScriptedProvider {
     opens: std::sync::Mutex<std::collections::VecDeque<ProviderOpen>>,
     requests: std::sync::Mutex<Vec<ModelRequest>>,
+}
+
+#[derive(Default)]
+struct RecordingApprovalGate {
+    requests: std::sync::Mutex<Vec<ToolUseRequest>>,
+}
+
+#[async_trait::async_trait]
+impl ApprovalGate for RecordingApprovalGate {
+    async fn check_batch(&self, tools: &[ToolUseRequest]) -> ApprovalBatchResult {
+        self.requests.lock().unwrap().extend_from_slice(tools);
+        ApprovalBatchResult {
+            decisions: vec![ApprovalDecision::Approved; tools.len()],
+        }
+    }
 }
 
 impl ScriptedProvider {
@@ -422,6 +438,85 @@ async fn provider_backend_runs_tool_then_text_with_qualified_requests() {
         message.content.iter().any(|block|
             matches!(block, ProviderBlock::ToolResult { call_id, .. } if call_id == "call-1")
         )
+    }));
+}
+
+#[tokio::test]
+async fn approval_receives_facts_from_the_exact_prepared_call() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "git-1".into(),
+                name: "Git".into(),
+                arguments: json!({"operation": "status"}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let gate = Arc::new(RecordingApprovalGate::default());
+    let tools = crate::tool::ToolRegistry::new().register(crate::tools::GitTool::new());
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("inspect")]);
+    let ports = turn_ports(provider, &request).with_approval_gate(gate.clone());
+
+    run(&kernel(), request, ports).await.unwrap();
+
+    let requests = gate.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].tool_name, "Git");
+    assert_eq!(
+        requests[0].facts.execution_mode,
+        crate::tool::ToolExecutionMode::Parallel
+    );
+    assert_eq!(
+        requests[0].facts.execution_policy,
+        crate::tool::ToolExecutionPolicy::read_only_process()
+    );
+}
+
+#[tokio::test]
+async fn invalid_tool_input_is_rejected_before_approval() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "command-1".into(),
+                name: "Command".into(),
+                arguments: json!({"command": "  "}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let gate = Arc::new(RecordingApprovalGate::default());
+    let tools = crate::tool::ToolRegistry::new().register(crate::tools::CommandTool::new());
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("run")]);
+    let ports = turn_ports(provider, &request).with_approval_gate(gate.clone());
+
+    let outcome = run(&kernel(), request, ports).await.unwrap();
+
+    assert!(gate.requests.lock().unwrap().is_empty());
+    assert_eq!(outcome.iterations, 2);
+    assert!(outcome.conversation.messages().iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ProviderBlock::ToolResult {
+                    call_id,
+                    is_error: true,
+                    ..
+                } if call_id == "command-1"
+            )
+        })
     }));
 }
 

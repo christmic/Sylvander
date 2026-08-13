@@ -56,6 +56,10 @@ running a hook.
 - `tool` and `execution::tool_context` define the invocation boundary. Tools receive
   Runtime-derived identity, workspace, capability, and execution-budget data;
   model arguments are never authority.
+- The kernel prepares every ordinary call exactly once before approval. That
+  immutable call carries tool-derived concurrency and environment policy
+  through approval, scheduling, authorization, environment validation, and
+  execution; invalid input never opens an approval interaction.
 - `ToolSpec::prompt_guidelines` lets a tool carry concise usage rules beside
   its neutral JSON Schema. The frozen registry emits guidelines only for
   immediately visible tools, sorted by stable tool name. Guidelines are part

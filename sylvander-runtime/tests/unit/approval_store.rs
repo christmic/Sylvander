@@ -1,5 +1,9 @@
 use super::*;
 
+use sylvander_agent::approval::ToolApprovalFacts;
+use sylvander_agent::tool::invocation::ToolInvocationClass;
+use sylvander_agent::tool::{ToolExecutionMode, ToolExecutionPolicy};
+
 fn digest(character: char) -> String {
     format!("sha256:{}", character.to_string().repeat(64))
 }
@@ -18,6 +22,11 @@ fn request(operation: &str, input: serde_json::Value) -> ToolUseRequest {
         call_id: "call".into(),
         tool_name: operation.into(),
         input,
+        facts: ToolApprovalFacts::new(
+            ToolInvocationClass::FilesystemMutation,
+            ToolExecutionMode::Exclusive,
+            ToolExecutionPolicy::workspace_write(),
+        ),
     }
 }
 
@@ -33,6 +42,22 @@ fn grant_key_is_stable_across_json_object_order() {
         serde_json::json!({"file_path": "a.rs", "content": "x"}),
     ));
     assert_eq!(first, second);
+}
+
+#[test]
+fn input_specific_execution_facts_invalidate_a_grant() {
+    let scope = context("user-1", "agent-1", '1', '2');
+    let mut changed = request("write", serde_json::json!({"file_path": "a.rs"}));
+    changed.facts = ToolApprovalFacts::new(
+        ToolInvocationClass::Read,
+        ToolExecutionMode::Parallel,
+        ToolExecutionPolicy::workspace_read(),
+    );
+
+    assert_ne!(
+        scope.key_for(&request("write", serde_json::json!({"file_path": "a.rs"}))),
+        scope.key_for(&changed)
+    );
 }
 
 #[test]
