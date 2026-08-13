@@ -10,7 +10,7 @@ use sylvander_api::{
 use sylvander_channel::MessageBus;
 
 use crate::coordination::governance::GovernancePolicy;
-use crate::coordination::mailbox::CoordinationMessageKind;
+use crate::coordination::mailbox::{BACKGROUND_TASK_TTL_SECONDS, CoordinationMessageKind};
 use crate::coordination::service::{
     CoordinationService, CreateTaskRequest, DEFAULT_ARBITRATION_TTL_SECONDS,
     DispatchMessageOutcome, DispatchMessageRequest,
@@ -19,7 +19,6 @@ use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObse
 use crate::session::now_secs;
 use crate::storage::session::SqliteSessionStore;
 
-const BACKGROUND_TASK_TIMEOUT_SECS: i64 = 10 * 60;
 const BACKGROUND_TASK_TOKEN_BUDGET: u64 = 20_000;
 
 pub(super) struct BusTaskGate {
@@ -63,7 +62,7 @@ impl TaskGate for BusTaskGate {
             "[durable background task; task_id={}]\nPurpose: {}\n\n{}\n\nUse manage_workflow to claim this task before work and commit its final state.",
             task_id.0, request.purpose, request.prompt
         );
-        service
+        let task = service
             .create_task(
                 CreateTaskRequest {
                     task_id: task_id.clone(),
@@ -79,8 +78,9 @@ impl TaskGate for BusTaskGate {
             )
             .await
             .map_err(|error| error.to_string())?;
-        let expires_at = now
-            .checked_add(BACKGROUND_TASK_TIMEOUT_SECS)
+        let expires_at = task
+            .created_at
+            .checked_add(BACKGROUND_TASK_TTL_SECONDS)
             .ok_or_else(|| "background task deadline overflow".to_owned())?;
         let outcome = service
             .dispatch_message(

@@ -411,6 +411,42 @@ async fn cancelling_running_work_fences_its_executor() {
 }
 
 #[tokio::test]
+async fn interrupted_background_outbox_is_discoverable_from_durable_task_facts() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    let task = service
+        .create_task(
+            CreateTaskRequest {
+                task_id: TaskId::new("background-task:recovery-digest"),
+                session_id: membership.session_id,
+                parent_task_id: None,
+                created_by: AgentInstanceId::new("worker-1"),
+                assigned_to: AgentInstanceId::new("worker-1"),
+                objective: "Recover the interrupted mailbox outbox".into(),
+                token_budget: 1_000,
+                max_handoffs: 0,
+            },
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.undispatched_background_tasks().await.unwrap(),
+        vec![task]
+    );
+}
+
+#[tokio::test]
 async fn agents_drive_durable_tasks_with_runtime_owned_revision_fences() {
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     store.save(&stored_session()).await.unwrap();

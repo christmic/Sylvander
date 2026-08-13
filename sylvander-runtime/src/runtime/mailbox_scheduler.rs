@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use sylvander_api::{
-    AgentInstanceId, BusMessage, MessageId, MessageKind, Recipient, Sender, SessionId,
+    AgentInstanceId, BusMessage, CoordinationMessageId, MessageId, MessageKind, Recipient, Sender,
+    SessionId,
 };
 use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
@@ -14,8 +15,13 @@ use tracing::warn;
 
 use super::{RuntimeError, RuntimeRevisionProvider};
 use crate::coordination::governance::GovernancePolicy;
-use crate::coordination::mailbox::{AgentMessageTurn, CoordinationMessage};
-use crate::coordination::service::{CoordinationService, DEFAULT_ARBITRATION_TTL_SECONDS};
+use crate::coordination::mailbox::{
+    AgentMessageTurn, BACKGROUND_TASK_TTL_SECONDS, CoordinationMessage, CoordinationMessageKind,
+};
+use crate::coordination::service::{
+    CancelTaskRequest, CoordinationService, DEFAULT_ARBITRATION_TTL_SECONDS,
+    DispatchMessageOutcome, DispatchMessageRequest,
+};
 use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability};
 use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::coordination::CoordinationStore;
@@ -92,6 +98,10 @@ async fn run_scheduler(
         }
         tokio::select! {
             _ = durable_scan.tick() => {
+                let recovered = recover_background_dispatches(&store, &observability).await;
+                if let Err(error) = recovered {
+                    warn!(%error, "durable background outbox recovery failed");
+                }
                 match store.recoverable_message_recipients(crate::session::now_secs()).await {
                     Ok(recipients) => {
                         for recipient in recipients {
@@ -133,6 +143,84 @@ async fn run_scheduler(
             break;
         }
     }
+}
+
+async fn recover_background_dispatches(
+    store: &Arc<SqliteSessionStore>,
+    observability: &RuntimeObservability,
+) -> Result<(), RuntimeError> {
+    let now = crate::session::now_secs();
+    let service = CoordinationService::new(
+        store.clone(),
+        GovernancePolicy::default(),
+        DEFAULT_ARBITRATION_TTL_SECONDS,
+    );
+    for task in store
+        .undispatched_background_tasks()
+        .await
+        .map_err(|error| RuntimeError::Store(error.to_string()))?
+    {
+        let Some(recipient) = task.assigned_to.clone() else {
+            continue;
+        };
+        let expires_at = task
+            .created_at
+            .checked_add(BACKGROUND_TASK_TTL_SECONDS)
+            .ok_or_else(|| RuntimeError::Coordination("background deadline overflow".into()))?;
+        if expires_at <= now {
+            service
+                .cancel_task(
+                    CancelTaskRequest {
+                        task_id: task.task_id,
+                        session_id: task.session_id,
+                        actor: task.created_by,
+                    },
+                    now,
+                )
+                .await
+                .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+            continue;
+        }
+        let digest = task
+            .task_id
+            .0
+            .strip_prefix("background-task:")
+            .ok_or_else(|| RuntimeError::Coordination("invalid background task id".into()))?;
+        let outcome = service
+            .dispatch_message(
+                DispatchMessageRequest {
+                    message_id: CoordinationMessageId::new(format!("background-message:{digest}")),
+                    session_id: task.session_id.clone(),
+                    sender_instance_id: task.created_by,
+                    recipient_instance_id: recipient,
+                    task_id: Some(task.task_id),
+                    kind: CoordinationMessageKind::Task,
+                    payload: task.objective,
+                    max_hops: 1,
+                    expires_at,
+                },
+                now,
+            )
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        let outcome = match outcome {
+            DispatchMessageOutcome::Enqueued(_) => RuntimeCoordinationOutcome::Enqueued,
+            DispatchMessageOutcome::EnqueuedByModerator { .. } => {
+                RuntimeCoordinationOutcome::ModeratorAuthorized
+            }
+            DispatchMessageOutcome::RequiresArbitration { .. } => {
+                RuntimeCoordinationOutcome::ArbitrationRequired
+            }
+            DispatchMessageOutcome::RejectedByModerator { .. } => {
+                RuntimeCoordinationOutcome::ModeratorRejected
+            }
+        };
+        observability.record(RuntimeEvent::CoordinationTransition {
+            session_id: task.session_id,
+            outcome,
+        });
+    }
+    Ok(())
 }
 
 async fn drain_recipient(

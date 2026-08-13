@@ -233,6 +233,11 @@ pub trait CoordinationStore: Send + Sync {
         now: i64,
     ) -> Result<Vec<AgentInstanceId>, SessionStoreError>;
 
+    /// List durable background intents whose mailbox outbox write was interrupted.
+    async fn undispatched_background_tasks(
+        &self,
+    ) -> Result<Vec<CoordinationTask>, SessionStoreError>;
+
     async fn acknowledge_message(
         &self,
         message_id: &CoordinationMessageId,
@@ -2024,6 +2029,31 @@ impl CoordinationStore for SqliteSessionStore {
             statement
                 .query_map([now], |row| row.get::<_, String>(0))?
                 .map(|row| row.map(AgentInstanceId::new).map_err(Into::into))
+                .collect()
+        })
+        .await
+    }
+
+    async fn undispatched_background_tasks(
+        &self,
+    ) -> Result<Vec<CoordinationTask>, SessionStoreError> {
+        self.run(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT task_id FROM coordination_tasks t \
+                 WHERE t.task_id LIKE 'background-task:%' AND t.state='ready' \
+                 AND NOT EXISTS (SELECT 1 FROM coordination_messages m \
+                     WHERE m.task_id=t.task_id AND m.message_kind='task') \
+                 ORDER BY t.created_at,t.task_id",
+            )?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids.into_iter()
+                .map(|id| {
+                    load_task(connection, &TaskId::new(id))?.ok_or_else(|| {
+                        SessionStoreError::Store("background task disappeared during scan".into())
+                    })
+                })
                 .collect()
         })
         .await

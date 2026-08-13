@@ -93,6 +93,7 @@ pub struct AgentMessageTurn {
 }
 
 pub const MAX_MESSAGE_LEASE_SECONDS: u64 = 60;
+pub(crate) const BACKGROUND_TASK_TTL_SECONDS: i64 = 10 * 60;
 
 impl CoordinationMessage {
     pub fn validate_new(
