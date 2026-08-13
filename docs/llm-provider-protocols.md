@@ -78,6 +78,32 @@ guess a protocol from a provider name, model name, or URL. `sylvander-agent`
 receives only the provider-neutral `ModelProvider` contract and its normal
 dependency graph contains only `sylvander-llm-core` among LLM crates.
 
+## Audio input boundary
+
+Provider-neutral audio is an explicit `AudioContent` block containing base64
+bytes and the closed `wav | mp3` format vocabulary. `audio_input` is independent
+from vision, document input, tools, and reasoning; Runtime validates attachment
+kind, MIME type, base64 encoding, non-empty bytes, and exact declared size
+before a model request can be opened.
+
+Only `openai_chat_completions` currently implements this capability. Its wire
+shape is derived from pinned OpenAI SDK type
+`src/openai/types/chat/chat_completion_content_part_input_audio_param.py`:
+`{"type":"input_audio","input_audio":{"data":"...","format":"wav|mp3"}}`.
+The current official model documentation also identifies the GPT Audio family
+as accepting audio through Chat Completions:
+<https://developers.openai.com/api/docs/models/gpt-audio> (verified
+2026-08-14).
+
+OpenAI Responses remains fail-closed. Although the pinned SDK exports a
+`ResponseInputAudioParam` type, it is absent from both
+`ResponseInputMessageContentListParam` and `ResponseInputItemParam`; therefore
+the current request union does not establish a dispatchable audio input path.
+Anthropic Messages and DashScope Generation likewise reject `audio_input`
+during registry preflight. A type exported by an SDK, a permissive JSON field,
+or a configured specialist name is not sufficient evidence of protocol
+support.
+
 ## Usage preservation
 
 `TokenUsage` keeps normalized input, output, cache-write, and cache-read counts.
@@ -134,7 +160,7 @@ than testing one model string repeatedly:
 | --- | --- |
 | Anthropic Messages | current Claude model, Claude model with extended/adaptive thinking |
 | OpenAI Responses | current GPT model, current reasoning model |
-| OpenAI Chat Completions | OpenAI GPT model, Qwen OpenAI-compatible model, DeepSeek OpenAI-compatible model |
+| OpenAI Chat Completions | OpenAI GPT model, GPT Audio input model, Qwen OpenAI-compatible model, DeepSeek OpenAI-compatible model |
 | DashScope Generation | Qwen non-thinking model, Qwen thinking model, Qwen tool-calling model |
 
 These are wire-level model profiles, not live conformance claims. A model is
