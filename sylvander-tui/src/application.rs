@@ -76,7 +76,7 @@ fn transcript_input_signature(state: &AppState) -> TranscriptInputSignature {
         welcomed: state.welcomed,
         tool_details_expanded: state.tool_details_expanded,
         session_id: state.session_id.clone(),
-        model: state.metadata.model.clone(),
+        model: state.metadata.model_label_without_reasoning(),
         workspace: state.metadata.workspace.clone(),
         branch: state.metadata.branch.clone(),
         theme: crate::theme::active_name(),

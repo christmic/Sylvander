@@ -92,7 +92,7 @@ impl TuiConfig {
             no_italic,
             keymap,
             metadata: RuntimeMetadata {
-                model: std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into()),
+                model: configured_model_selection(std::env::var("SYLVANDER_MODEL").ok()),
                 reasoning_effort: sylvander_api::ReasoningEffort::Off,
                 models: Vec::new(),
                 permissions: sylvander_api::PermissionProfile::default(),
@@ -102,14 +102,14 @@ impl TuiConfig {
                 branch: git_branch(),
                 capabilities: 0,
                 approval_enabled: false,
-                max_attachment_bytes: 512 * 1024,
+                max_request_bytes: 512 * 1024,
             },
         })
     }
 
     pub fn report(&self, metadata: &RuntimeMetadata) -> String {
         format!(
-            "theme       {}\nforeground  {}\naccent      {}\ncolors      {}\nediting     {}\nsocket      {}\nsession     {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
+            "theme       {}\nforeground  {}\naccent      {}\ncolors      {}\nediting     {}\nsocket      {}\nsession     {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nrequest max {} bytes",
             self.theme,
             self.theme_overrides.describe_foreground(),
             self.theme_overrides.describe_accent(),
@@ -136,9 +136,28 @@ impl TuiConfig {
             self.reconnect_interval.as_millis(),
             self.mouse_scroll_lines,
             self.keymap.summary(),
-            metadata.max_attachment_bytes,
+            metadata.max_request_bytes,
         )
     }
+}
+
+fn configured_model_selection(value: Option<String>) -> sylvander_api::ModelSelection {
+    let Some(value) = value else {
+        return sylvander_api::ModelSelection {
+            provider_id: "—".into(),
+            model_id: "—".into(),
+        };
+    };
+    value.split_once('/').map_or_else(
+        || sylvander_api::ModelSelection {
+            provider_id: "environment".into(),
+            model_id: value.clone(),
+        },
+        |(provider_id, model_id)| sylvander_api::ModelSelection {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+        },
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

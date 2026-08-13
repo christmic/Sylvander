@@ -34,13 +34,13 @@ pub enum DomainEvent {
         turn_id: String,
     },
     RuntimeInfo {
-        model: String,
+        model: sylvander_api::ModelSelection,
         reasoning_effort: sylvander_api::ReasoningEffort,
         models: Vec<sylvander_api::ModelDescriptor>,
         permissions: sylvander_api::PermissionProfile,
         capabilities: u8,
         approval_enabled: bool,
-        max_attachment_bytes: usize,
+        max_request_bytes: usize,
         platform: sylvander_api::PlatformSnapshot,
     },
     ContextReported {
@@ -417,7 +417,9 @@ pub enum Action {
         task_id: String,
     },
     RequestSessions,
-    RequestRuntimeInfo,
+    RequestRuntimeInfo {
+        agent_id: sylvander_api::AgentId,
+    },
     DiscoverAgents,
     CreateSession {
         request: Box<sylvander_api::SessionCreateRequest>,

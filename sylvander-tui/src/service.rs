@@ -131,8 +131,10 @@ impl AgentService {
                 session_id,
                 task_id,
             },
-            Action::RequestSessions => ClientMsg::ListSessions,
-            Action::RequestRuntimeInfo => ClientMsg::GetRuntimeInfo,
+            Action::RequestSessions => ClientMsg::ListSessions {
+                include_archived: false,
+            },
+            Action::RequestRuntimeInfo { agent_id } => ClientMsg::GetRuntimeInfo { agent_id },
             Action::DiscoverAgents => ClientMsg::DiscoverAgents,
             Action::CreateSession { request } => ClientMsg::CreateSession { request: *request },
             Action::RequestContext { session_id } => ClientMsg::GetContext { session_id },

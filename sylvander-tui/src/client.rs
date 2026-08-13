@@ -354,25 +354,15 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
                 }
             }
         }
-        ServerMsg::RuntimeInfo {
-            model,
-            reasoning_effort,
-            models,
-            permissions,
-            capabilities,
-            approval_enabled,
-            max_attachment_bytes,
-            platform,
-            ..
-        } => DomainEvent::RuntimeInfo {
-            model: model.model_id,
-            reasoning_effort,
-            models,
-            permissions,
-            capabilities,
-            approval_enabled,
-            max_attachment_bytes,
-            platform,
+        ServerMsg::RuntimeInfo { snapshot } => DomainEvent::RuntimeInfo {
+            model: snapshot.model,
+            reasoning_effort: snapshot.reasoning_effort,
+            models: snapshot.models,
+            permissions: snapshot.permissions,
+            capabilities: snapshot.capabilities,
+            approval_enabled: snapshot.approval_enabled,
+            max_request_bytes: snapshot.max_request_bytes,
+            platform: snapshot.platform,
         },
         ServerMsg::ContextReport { report } => DomainEvent::ContextReported { report },
         ServerMsg::CompactionStarted { automatic, .. } => {
@@ -555,7 +545,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::ToolRejected {
             tool_name, reason, ..
         } => DomainEvent::ToolRejected { tool_name, reason },
-        ServerMsg::SessionsList { sessions } => DomainEvent::SessionsLoaded {
+        ServerMsg::SessionsList { sessions, .. } => DomainEvent::SessionsLoaded {
             sessions: sessions
                 .into_iter()
                 .map(|session| crate::model::SessionSummary {
