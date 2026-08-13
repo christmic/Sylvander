@@ -317,6 +317,99 @@ async fn metadata_patch_cannot_roll_back_a_prompt_config_update() {
 }
 
 #[tokio::test]
+async fn tool_lifecycle_is_bound_to_one_running_turn_and_one_terminal() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-tools".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "inspect"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let start = ToolCallStart {
+        session_id: session.id.clone(),
+        turn_id: "turn-tools".into(),
+        call_id: "call-1".into(),
+        tool_name: "Read".into(),
+    };
+    store.begin_tool_call(start.clone()).await.unwrap();
+    assert!(store.begin_tool_call(start).await.is_err());
+    assert!(
+        store
+            .complete_turn(
+                &ctx(),
+                TurnCompletion {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-tools".into(),
+                    assistant_content: serde_json::json!({"role": "assistant", "content": "early"}),
+                    model_id: "model-a".into(),
+                },
+            )
+            .await
+            .is_err()
+    );
+    store
+        .finish_tool_call(ToolCallCompletion {
+            session_id: session.id.clone(),
+            turn_id: "turn-tools".into(),
+            call_id: "call-1".into(),
+            state: ToolCallState::Failed,
+            failure_kind: Some(ToolCallFailureKind::FilesystemBoundaryPolicyViolation),
+        })
+        .await
+        .unwrap();
+    assert!(
+        store
+            .finish_tool_call(ToolCallCompletion {
+                session_id: session.id.clone(),
+                turn_id: "turn-tools".into(),
+                call_id: "call-1".into(),
+                state: ToolCallState::Succeeded,
+                failure_kind: None,
+            })
+            .await
+            .is_err()
+    );
+
+    let calls = store.tool_calls(&session.id, "turn-tools").await.unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].state, ToolCallState::Failed);
+    assert_eq!(
+        calls[0].failure_kind,
+        Some(ToolCallFailureKind::FilesystemBoundaryPolicyViolation)
+    );
+    assert!(calls[0].ended_at.is_some());
+
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-tools".into(),
+            call_id: "call-2".into(),
+            tool_name: "Command".into(),
+        })
+        .await
+        .unwrap();
+    store
+        .finish_turn(&session.id, "turn-tools", TurnState::Interrupted, None)
+        .await
+        .unwrap();
+    let calls = store.tool_calls(&session.id, "turn-tools").await.unwrap();
+    assert_eq!(calls[1].state, ToolCallState::Abandoned);
+    assert!(calls[1].ended_at.is_some());
+}
+
+#[tokio::test]
 async fn save_is_upsert() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     store

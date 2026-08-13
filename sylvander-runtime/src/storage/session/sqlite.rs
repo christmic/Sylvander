@@ -34,8 +34,9 @@ use crate::session::SessionMetadata;
 
 use super::{
     MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch,
-    SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession, TurnCompletion,
-    TurnFailureKind, TurnSnapshot, TurnStart, TurnState,
+    SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession,
+    ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState,
+    TurnCompletion, TurnFailureKind, TurnSnapshot, TurnStart, TurnState,
 };
 
 /// SQLite-backed session store.
@@ -227,7 +228,7 @@ impl SqliteSessionStore {
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 2;
+const SESSION_SCHEMA_VERSION: i64 = 3;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -240,6 +241,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_messages",
     "session_usage",
     "session_turns",
+    "session_tool_calls",
     "idx_messages_user",
     "idx_messages_agent",
     "idx_messages_trace",
@@ -249,6 +251,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_session_agents_agent",
     "idx_messages_session",
     "idx_messages_unsummarized",
+    "idx_tool_calls_turn",
 ];
 
 const SCHEMA_SQL: &str = r"
@@ -320,10 +323,28 @@ CREATE TABLE session_turns (
     config_revision INTEGER NOT NULL,
     effective_config TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
-    state           TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK(state IN ('running','completed','failed','interrupted')),
     ended_at        INTEGER,
     failure_kind    TEXT,
+    CHECK((state = 'running' AND ended_at IS NULL) OR (state != 'running' AND ended_at IS NOT NULL)),
+    CHECK(failure_kind IS NULL OR state = 'failed'),
     PRIMARY KEY (session_id, turn_id)
+);
+
+CREATE TABLE session_tool_calls (
+    session_id      TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    call_id         TEXT NOT NULL,
+    tool_name       TEXT NOT NULL,
+    started_at      INTEGER NOT NULL,
+    state           TEXT NOT NULL CHECK(state IN ('running','succeeded','failed','rejected','abandoned')),
+    ended_at        INTEGER,
+    failure_kind    TEXT,
+    CHECK((state = 'running' AND ended_at IS NULL) OR (state != 'running' AND ended_at IS NOT NULL)),
+    CHECK(failure_kind IS NULL OR state = 'failed'),
+    PRIMARY KEY (session_id, turn_id, call_id),
+    FOREIGN KEY (session_id, turn_id)
+        REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_messages_user
@@ -346,7 +367,9 @@ CREATE INDEX idx_messages_session
     ON session_messages(session_id, seq);
 CREATE INDEX idx_messages_unsummarized
     ON session_messages(session_id, is_summarized);
-PRAGMA user_version=2;
+CREATE INDEX idx_tool_calls_turn
+    ON session_tool_calls(session_id, turn_id, started_at, call_id);
+PRAGMA user_version=3;
 COMMIT;
 ";
 
@@ -867,6 +890,19 @@ impl SessionStore for SqliteSessionStore {
                     "only a running turn can be completed".into(),
                 ));
             }
+            let active_tools: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM session_tool_calls \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running'",
+                    params![completion.session_id.0, completion.turn_id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_err)?;
+            if active_tools != 0 {
+                return Err(SessionStoreError::Invalid(
+                    "turn cannot complete while a durable tool call is running".into(),
+                ));
+            }
             let now = crate::session::now_secs();
             let next_seq: i64 = transaction
                 .query_row(
@@ -950,13 +986,105 @@ impl SessionStore for SqliteSessionStore {
         let session_id = session_id.clone();
         let turn_id = turn_id.to_string();
         self.run(move |connection| {
-            let changed = connection
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let now = crate::session::now_secs();
+            let changed = transaction
                 .execute(
                     "UPDATE session_turns SET state = ?3, ended_at = ?4, failure_kind = ?5 \
                      WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running'",
+                    params![session_id.0, turn_id, state, now, failure_kind],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 0 {
+                return Err(SessionStoreError::Invalid(
+                    "durable turn is missing or already terminal".into(),
+                ));
+            }
+            transaction
+                .execute(
+                    "UPDATE session_tool_calls SET state = 'abandoned', ended_at = ?3 \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running'",
+                    params![session_id.0, turn_id, now],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn begin_tool_call(&self, start: ToolCallStart) -> Result<(), SessionStoreError> {
+        if start.turn_id.trim().is_empty()
+            || start.call_id.trim().is_empty()
+            || start.tool_name.trim().is_empty()
+        {
+            return Err(SessionStoreError::Invalid(
+                "tool turn, call, and name identities cannot be empty".into(),
+            ));
+        }
+        self.run(move |connection| {
+            let turn_state = connection
+                .query_row(
+                    "SELECT state FROM session_turns WHERE session_id = ?1 AND turn_id = ?2",
+                    params![start.session_id.0, start.turn_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            if turn_state.as_deref() != Some("running") {
+                return Err(SessionStoreError::Invalid(
+                    "tool call requires a running durable turn".into(),
+                ));
+            }
+            connection
+                .execute(
+                    "INSERT INTO session_tool_calls \
+                     (session_id, turn_id, call_id, tool_name, started_at, state) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
                     params![
-                        session_id.0,
-                        turn_id,
+                        start.session_id.0,
+                        start.turn_id,
+                        start.call_id,
+                        start.tool_name,
+                        crate::session::now_secs()
+                    ],
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::SqliteFailure(ref inner, _)
+                        if inner.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        SessionStoreError::Invalid("duplicate durable tool call identity".into())
+                    }
+                    error => sqlite_err(error),
+                })?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn finish_tool_call(
+        &self,
+        completion: ToolCallCompletion,
+    ) -> Result<(), SessionStoreError> {
+        let (state, failure_kind) = match (completion.state, completion.failure_kind) {
+            (ToolCallState::Succeeded, None) => ("succeeded", None),
+            (ToolCallState::Failed, kind) => ("failed", kind.map(tool_call_failure_kind_str)),
+            (ToolCallState::Rejected, None) => ("rejected", None),
+            _ => {
+                return Err(SessionStoreError::Invalid(
+                    "tool terminal state and failure kind are inconsistent".into(),
+                ));
+            }
+        };
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE session_tool_calls SET state = ?4, ended_at = ?5, failure_kind = ?6 \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND call_id = ?3 AND state = 'running'",
+                    params![
+                        completion.session_id.0,
+                        completion.turn_id,
+                        completion.call_id,
                         state,
                         crate::session::now_secs(),
                         failure_kind
@@ -965,10 +1093,49 @@ impl SessionStore for SqliteSessionStore {
                 .map_err(sqlite_err)?;
             if changed == 0 {
                 return Err(SessionStoreError::Invalid(
-                    "durable turn is missing or already terminal".into(),
+                    "durable tool call is missing or already terminal".into(),
                 ));
             }
             Ok(())
+        })
+        .await
+    }
+
+    async fn tool_calls(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<ToolCallSnapshot>, SessionStoreError> {
+        let session_id = session_id.clone();
+        let turn_id = turn_id.to_owned();
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT call_id, tool_name, started_at, state, ended_at, failure_kind \
+                     FROM session_tool_calls WHERE session_id = ?1 AND turn_id = ?2 \
+                     ORDER BY started_at, call_id",
+                )
+                .map_err(sqlite_err)?;
+            statement
+                .query_map(params![session_id.0, turn_id], |row| {
+                    let failure_kind = row
+                        .get::<_, Option<String>>(5)?
+                        .map(|value| decode_tool_call_failure_kind(&value))
+                        .transpose()?;
+                    Ok(ToolCallSnapshot {
+                        session_id: session_id.clone(),
+                        turn_id: turn_id.clone(),
+                        call_id: row.get(0)?,
+                        tool_name: row.get(1)?,
+                        started_at: row.get(2)?,
+                        state: decode_tool_call_state(&row.get::<_, String>(3)?)?,
+                        ended_at: row.get(4)?,
+                        failure_kind,
+                    })
+                })
+                .map_err(sqlite_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_err)
         })
         .await
     }
@@ -1713,6 +1880,34 @@ fn decode_turn_failure_kind(value: &str) -> rusqlite::Result<TurnFailureKind> {
         "agent_loop" => Ok(TurnFailureKind::AgentLoop),
         "configuration" => Ok(TurnFailureKind::Configuration),
         "persistence" => Ok(TurnFailureKind::Persistence),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn tool_call_failure_kind_str(kind: ToolCallFailureKind) -> &'static str {
+    match kind {
+        ToolCallFailureKind::FilesystemBoundaryPolicyViolation => {
+            "filesystem_boundary_policy_violation"
+        }
+    }
+}
+
+fn decode_tool_call_state(value: &str) -> rusqlite::Result<ToolCallState> {
+    match value {
+        "running" => Ok(ToolCallState::Running),
+        "succeeded" => Ok(ToolCallState::Succeeded),
+        "failed" => Ok(ToolCallState::Failed),
+        "rejected" => Ok(ToolCallState::Rejected),
+        "abandoned" => Ok(ToolCallState::Abandoned),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn decode_tool_call_failure_kind(value: &str) -> rusqlite::Result<ToolCallFailureKind> {
+    match value {
+        "filesystem_boundary_policy_violation" => {
+            Ok(ToolCallFailureKind::FilesystemBoundaryPolicyViolation)
+        }
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }

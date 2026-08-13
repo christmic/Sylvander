@@ -175,7 +175,10 @@ crate without retaining a second production path.
   production stores. Session schema v2 makes turn lifecycle
   authoritative: admission commits user input, configuration, and `running`;
   successful completion commits assistant output and `completed` in one
-  transaction. Turn-bound artifacts use the encrypted governed store, an
+  transaction. The latest-only v3 schema adds content-free tool lifecycle:
+  one start and one terminal per call, no successful turn with a running call,
+  and atomic abandonment with failed/interrupted turns. Turn-bound artifacts
+  use the encrypted governed store, an
   independent health component, and opaque locators. Retrieval,
   cross-domain transactions, and unified backup remain incomplete; see
   [`application-services.md`](application-services.md) for exact status.

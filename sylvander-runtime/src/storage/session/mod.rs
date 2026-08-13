@@ -255,6 +255,56 @@ pub struct TurnCompletion {
     pub model_id: String,
 }
 
+/// Durable lifecycle state of one tool call inside a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallState {
+    Running,
+    Succeeded,
+    Failed,
+    Rejected,
+    Abandoned,
+}
+
+/// Content-safe failure evidence supplied by the execution adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallFailureKind {
+    FilesystemBoundaryPolicyViolation,
+}
+
+/// Immutable identity persisted before a tool is executed or rejected.
+#[derive(Debug, Clone)]
+pub struct ToolCallStart {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub tool_name: String,
+}
+
+/// Terminal facts committed for one previously started tool call.
+#[derive(Debug, Clone)]
+pub struct ToolCallCompletion {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub state: ToolCallState,
+    pub failure_kind: Option<ToolCallFailureKind>,
+}
+
+/// Content-free durable tool record used for recovery and diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallSnapshot {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub tool_name: String,
+    pub started_at: i64,
+    pub state: ToolCallState,
+    pub ended_at: Option<i64>,
+    pub failure_kind: Option<ToolCallFailureKind>,
+}
+
 // ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
@@ -343,6 +393,23 @@ pub trait SessionStore: Send + Sync {
         state: TurnState,
         failure_kind: Option<TurnFailureKind>,
     ) -> Result<(), SessionStoreError>;
+
+    /// Persist tool identity before approval or execution can produce a
+    /// terminal. The addressed turn must currently be running.
+    async fn begin_tool_call(&self, start: ToolCallStart) -> Result<(), SessionStoreError>;
+
+    /// Atomically replace a running tool call with exactly one terminal.
+    async fn finish_tool_call(
+        &self,
+        completion: ToolCallCompletion,
+    ) -> Result<(), SessionStoreError>;
+
+    /// Read durable tool lifecycle facts in start order for one turn.
+    async fn tool_calls(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<ToolCallSnapshot>, SessionStoreError>;
 
     /// Soft-delete (sets `is_archived=1`). The row and its messages
     /// remain on disk for audit / undo; `get` returns `None`.

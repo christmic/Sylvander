@@ -866,6 +866,31 @@ impl SessionStore for FailingSessionStore {
             .await
     }
 
+    async fn begin_tool_call(
+        &self,
+        start: crate::storage::session::ToolCallStart,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
+        self.inner.begin_tool_call(start).await
+    }
+
+    async fn finish_tool_call(
+        &self,
+        completion: crate::storage::session::ToolCallCompletion,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
+        self.inner.finish_tool_call(completion).await
+    }
+
+    async fn tool_calls(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<
+        Vec<crate::storage::session::ToolCallSnapshot>,
+        crate::storage::session::SessionStoreError,
+    > {
+        self.inner.tool_calls(session_id, turn_id).await
+    }
+
     async fn archive(
         &self,
         id: &SessionId,
