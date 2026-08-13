@@ -2192,6 +2192,37 @@ async fn agent_run_is_cloneable() {
 }
 
 #[tokio::test]
+async fn active_turn_snapshot_is_typed_and_session_scoped() {
+    let (spec, client) = test_spec_and_client();
+    let run = qualified_anthropic_run_builder(spec, client)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .build()
+        .expect("build");
+    let session_id = SessionId::new("active-session");
+    let expected = RuntimeTurnSnapshot {
+        turn_id: "turn-1".into(),
+        state: sylvander_agent::turn::machine::TurnSnapshot {
+            sequence: 4,
+            iteration: 1,
+            phase: sylvander_agent::turn::machine::TurnPhase::CallingModel,
+            continuation: None,
+        },
+    };
+    run.inner
+        .turn_snapshots
+        .write()
+        .await
+        .insert(session_id.clone(), expected.clone());
+
+    assert_eq!(run.active_turn_snapshot(&session_id).await, Some(expected));
+    assert_eq!(
+        run.active_turn_snapshot(&SessionId::new("other-session"))
+            .await,
+        None
+    );
+}
+
+#[tokio::test]
 async fn agent_run_previews_and_rolls_back_journaled_write() {
     let workspace = tempfile::TempDir::new().unwrap();
     let journal = tempfile::TempDir::new().unwrap();
