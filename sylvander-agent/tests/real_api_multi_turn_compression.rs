@@ -11,8 +11,7 @@ use std::sync::Arc;
 
 mod support;
 
-use support::{InMemoryToolResultDisk, qualified_anthropic_loop_builder, workspace_tool_context};
-use sylvander_agent::compress::disk::ToolResultDisk;
+use support::{InMemoryArtifactStore, qualified_anthropic_loop_builder, workspace_tool_context};
 use sylvander_agent::compress::layers::tool_result_budget::ToolResultBudgetLayer;
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -61,10 +60,9 @@ async fn real_api_natural_multi_turn_with_compression() {
     let read_tool = ReadTool::new();
 
     // L0 with tight budget so the 8k file body triggers it.
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let disk_dyn: Arc<dyn ToolResultDisk> = disk.clone();
+    let artifact_store = Arc::new(InMemoryArtifactStore::new());
     let pipeline = CompressionPipeline::builder()
-        .layer(ToolResultBudgetLayer::new(disk_dyn).with_max_inline_chars(500))
+        .layer(ToolResultBudgetLayer::new().with_max_inline_chars(500))
         .build();
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -76,6 +74,7 @@ async fn real_api_natural_multi_turn_with_compression() {
             tmp.path(),
             [sylvander_agent::tool_context::Cap::Read],
         ))
+        .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)
         .max_iterations(4)
         .system_prompt(
@@ -132,8 +131,8 @@ async fn real_api_natural_multi_turn_with_compression() {
     println!("=== real_api_natural_multi_turn_with_compression ===");
     println!("Run result: {run_result:?}");
     println!("Tool calls: {tool_calls:?}");
-    println!("Disk writes: {}", disk.write_count());
-    println!("Disk ids: {:?}", disk.ids());
+    println!("Artifact writes: {}", artifact_store.write_count());
+    println!("Artifact ids: {:?}", artifact_store.ids());
     println!("Compressed events: {compressed_events:?}");
     println!("Event trace:");
     for (i, k) in all_kinds.iter().enumerate() {
@@ -162,8 +161,8 @@ async fn real_api_natural_multi_turn_with_compression() {
     // 3. L0 must have offloaded the big body (Read returned 8k chars
     //    and max_inline_chars=500→ L0 triggered).
     assert!(
-        disk.write_count() >= 1,
-        "L0 should have offloaded the Read result to disk; got 0 writes"
+        artifact_store.write_count() >= 1,
+        "L0 should have retained the Read result; got 0 writes"
     );
 
     // 4. A Compressed event with L0's report must exist.

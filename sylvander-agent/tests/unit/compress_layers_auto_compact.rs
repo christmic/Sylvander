@@ -30,6 +30,7 @@ async fn no_op_when_below_threshold() {
         last_usage: &usage,
         model_info: &model_info(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -49,6 +50,7 @@ async fn records_failure_when_llm_not_configured() {
         last_usage: &usage,
         model_info: &model_info(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -83,6 +85,7 @@ async fn summarizes_and_replaces_when_above_threshold() {
         last_usage: &usage,
         model_info: &model_info(),
         auto_compact_llm: Some(&mock),
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;

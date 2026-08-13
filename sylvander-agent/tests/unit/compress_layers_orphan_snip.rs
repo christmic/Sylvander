@@ -41,6 +41,7 @@ async fn removes_tool_result_with_no_matching_tool_use() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -61,6 +62,7 @@ async fn keeps_tool_result_with_matching_tool_use() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -82,6 +84,7 @@ async fn removes_multiple_orphans_in_one_pass() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -99,6 +102,7 @@ async fn empty_conversation_is_noop() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;

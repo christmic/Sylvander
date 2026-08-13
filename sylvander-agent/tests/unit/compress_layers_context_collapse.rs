@@ -50,6 +50,7 @@ async fn trims_old_thinking_blocks() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -78,6 +79,7 @@ async fn preserves_short_thinking() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -100,6 +102,7 @@ async fn preserves_signature_field() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     layer.apply(&mut ctx).await;
@@ -122,6 +125,7 @@ async fn empty_conversation_is_noop() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -150,6 +154,7 @@ async fn user_messages_with_other_content_untouched() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;

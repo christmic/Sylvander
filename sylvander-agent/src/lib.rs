@@ -88,6 +88,8 @@
 
 /// Approval policy evaluation and user decisions inside one execution.
 pub mod approval;
+/// Turn-bound, location-neutral artifact retention port.
+pub mod artifact;
 /// One-shot AskUser prompt/answer gate for an Agent run.
 pub mod ask_user_gate;
 /// Context-window compaction contracts and pipeline implementations.
@@ -150,6 +152,9 @@ pub(crate) mod test_workspace;
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
+    pub use crate::artifact::{
+        ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore,
+    };
     pub use crate::compress::{
         AutoCompactLlm, CompressContext, DEFAULT_SUMMARY_PROMPT,
         layer::{

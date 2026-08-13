@@ -37,6 +37,7 @@ async fn trait_is_object_safe_and_dispatchable() {
         last_usage: &usage,
         model_info: &model,
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;

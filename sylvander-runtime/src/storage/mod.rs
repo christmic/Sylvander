@@ -266,9 +266,5 @@ pub(crate) mod memory;
 /// this module. The separate Evidence recorder is an asynchronous governance
 /// projection and must never be used as the Session commit authority.
 pub mod session;
-/// Filesystem adapter for oversized tool-result artifacts.
-#[allow(dead_code)]
-// wired when Runtime compression policy gains an explicit artifact root
-pub(crate) mod tool_result_disk;
 /// Filesystem-backed workspace mutation journal and rollback recovery.
 pub(crate) mod workspace_journal;

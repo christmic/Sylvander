@@ -9,8 +9,7 @@ use std::sync::Arc;
 use serde_json::json;
 mod support;
 
-use support::{InMemoryToolResultDisk, qualified_anthropic_loop_builder, workspace_tool_context};
-use sylvander_agent::compress::disk::ToolResultDisk;
+use support::{InMemoryArtifactStore, qualified_anthropic_loop_builder, workspace_tool_context};
 use sylvander_agent::compress::layers::{
     auto_compact::AutoCompactLayer, context_collapse::ContextCollapseLayer,
     micro_compact::MicroCompactLayer, orphan_snip::OrphanSnipLayer,
@@ -215,9 +214,9 @@ async fn l0_offloads_oversized_tool_result() {
 
     let read_tool = ReadTool::new();
 
-    let disk = Arc::new(InMemoryToolResultDisk::new());
+    let artifact_store = Arc::new(InMemoryArtifactStore::new());
     let pipeline = CompressionPipeline::builder()
-        .layer(ToolResultBudgetLayer::new(disk.clone()).with_max_inline_chars(500))
+        .layer(ToolResultBudgetLayer::new().with_max_inline_chars(500))
         .build();
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -230,6 +229,7 @@ async fn l0_offloads_oversized_tool_result() {
                 .with_fs_root(tmp.path())
                 .with_capability(sylvander_agent::tool_context::Cap::Read),
         )
+        .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)
         .max_iterations(3)
         .build()
@@ -242,10 +242,10 @@ async fn l0_offloads_oversized_tool_result() {
         .await
         .expect("run");
 
-    // L0 must have offloaded the big body to disk.
+    // L0 must have retained the big body outside model context.
     assert!(
-        disk.write_count() >= 1,
-        "expected L0 to write at least one tool result to disk, got 0"
+        artifact_store.write_count() >= 1,
+        "expected L0 to retain at least one tool result, got 0"
     );
 
     let events = events.lock().unwrap();
@@ -461,10 +461,9 @@ async fn full_pipeline_l1_l2_l3_l4_handles_tool_calling() {
         .mount(&server)
         .await;
 
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let disk_dyn: Arc<dyn ToolResultDisk> = disk.clone();
+    let artifact_store = Arc::new(InMemoryArtifactStore::new());
     let pipeline = CompressionPipeline::builder()
-        .layer(ToolResultBudgetLayer::new(disk_dyn))
+        .layer(ToolResultBudgetLayer::new())
         .layer(OrphanSnipLayer::new())
         .layer(MicroCompactLayer::new())
         .layer(ContextCollapseLayer::new())
@@ -472,6 +471,7 @@ async fn full_pipeline_l1_l2_l3_l4_handles_tool_calling() {
         .build();
 
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
+        .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -483,5 +483,5 @@ async fn full_pipeline_l1_l2_l3_l4_handles_tool_calling() {
     assert_eq!(run.iterations, 1);
     // L0 should not have written anything (no oversized tool
     // results in this scenario).
-    assert_eq!(disk.write_count(), 0);
+    assert_eq!(artifact_store.write_count(), 0);
 }

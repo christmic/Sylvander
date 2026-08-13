@@ -1,149 +1,159 @@
-use super::*;
-use crate::test_support::InMemoryToolResultDisk;
+use async_trait::async_trait;
 use sylvander_llm_core::{
     ChatMessage, ContentBlock, ModelCapabilities, ModelInfo, ModelRef, TokenUsage,
     ToolResultContent,
 };
 
-fn model() -> ModelInfo {
+use super::*;
+use crate::artifact::{ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore};
+use crate::test_support::InMemoryArtifactStore;
+
+struct UnavailableStore;
+
+#[async_trait]
+impl TurnArtifactStore for UnavailableStore {
+    async fn persist(
+        &self,
+        _artifact: ArtifactWrite,
+    ) -> Result<ArtifactReference, ArtifactStoreError> {
+        Err(ArtifactStoreError::Unavailable)
+    }
+}
+
+fn model(provider: &str, name: &str) -> ModelInfo {
     ModelInfo {
-        reference: ModelRef::new("test", "test"),
+        reference: ModelRef::new(provider, name),
         context_window: 200_000,
-        max_output_tokens: 8192,
+        max_output_tokens: 8_192,
         capabilities: ModelCapabilities::empty(),
     }
 }
 
-fn usage() -> TokenUsage {
-    TokenUsage::default()
+fn user_result(call_id: &str, body: &str) -> ChatMessage {
+    ChatMessage::user_blocks(vec![ContentBlock::tool_result_text(call_id, body, false)])
 }
 
-fn user_msg_with_tool_result(tool_use_id: &str, body: &str) -> ChatMessage {
-    ChatMessage::user_blocks(vec![ContentBlock::tool_result_text(
-        tool_use_id,
-        body,
-        false,
-    )])
-}
-
-fn extract_string_body(msg: &ChatMessage) -> Option<String> {
-    let ContentBlock::ToolResult { content, .. } = msg.content.first()? else {
-        return None;
+fn text_body(message: &ChatMessage) -> &str {
+    let ContentBlock::ToolResult { content, .. } = &message.content[0] else {
+        panic!("expected tool result");
     };
-    match content.first()? {
-        ToolResultContent::Text { text } => Some(text.clone()),
-        _ => None,
-    }
+    let ToolResultContent::Text { text } = &content[0] else {
+        panic!("expected text result");
+    };
+    text
 }
 
 #[tokio::test]
-async fn no_op_when_all_under_budget() {
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let layer = ToolResultBudgetLayer::new(disk.clone());
+async fn missing_store_is_noop_and_preserves_only_copy() {
+    let layer = ToolResultBudgetLayer::new().with_max_inline_chars(5);
+    let original = "oversized";
+    let mut messages = vec![user_result("call", original)];
+    let usage = TokenUsage::default();
+    let model = model("test", "test");
+    let mut context = CompressContext::new(&mut messages, &usage, &model);
 
-    let mut messages = vec![
-        user_msg_with_tool_result("a", "short"),
-        user_msg_with_tool_result("b", "also short"),
-    ];
-    let mut ctx = CompressContext {
-        messages: &mut messages,
-        last_usage: &usage(),
-        model_info: &model(),
-        auto_compact_llm: None,
-    };
+    let report = layer.apply(&mut context).await;
 
-    let report = layer.apply(&mut ctx).await;
-    assert_eq!(report.condensed_count, 0);
-    assert_eq!(disk.write_count(), 0);
+    assert_eq!(report, LayerReport::noop("tool_result_budget"));
+    assert_eq!(text_body(&messages[0]), original);
 }
 
 #[tokio::test]
-async fn writes_to_disk_and_replaces_with_preview() {
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let layer = ToolResultBudgetLayer::new(disk.clone())
+async fn retains_content_and_exposes_only_opaque_locator() {
+    let store = InMemoryArtifactStore::new();
+    let layer = ToolResultBudgetLayer::new()
         .with_max_inline_chars(50)
         .with_preview_chars(20);
+    let original = "x".repeat(200);
+    let mut messages = vec![user_result("call-1", &original)];
+    let usage = TokenUsage::default();
+    let model = model("anthropic", "claude-sonnet");
+    let mut context =
+        CompressContext::new(&mut messages, &usage, &model).with_artifact_store(&store);
 
-    let big = "x".repeat(200);
-    let mut messages = vec![user_msg_with_tool_result("toolu_big", &big)];
-    let mut ctx = CompressContext {
-        messages: &mut messages,
-        last_usage: &usage(),
-        model_info: &model(),
-        auto_compact_llm: None,
-    };
+    let report = layer.apply(&mut context).await;
 
-    let report = layer.apply(&mut ctx).await;
     assert_eq!(report.condensed_count, 1);
-    assert_eq!(report.removed_count, 0);
     assert!(report.freed_tokens > 0);
-    assert_eq!(disk.write_count(), 1);
-    assert_eq!(disk.get("toolu_big").as_deref(), Some(big.as_str()));
-
-    let rewritten = extract_string_body(&messages[0]).unwrap();
-    assert!(rewritten.starts_with("[Output saved to "));
-    assert!(rewritten.contains("first 20 chars shown"));
-    // The original 200 x's were reduced; preview should be <= 20 chars.
-    assert!(rewritten.len() < 200);
+    assert_eq!(store.get("call-1").as_deref(), Some(original.as_str()));
+    let rewritten = text_body(&messages[0]);
+    assert!(rewritten.contains("artifact:call-1"));
+    assert!(!rewritten.contains('/') && !rewritten.contains("in-memory"));
+    assert_eq!(
+        report.details,
+        Some(serde_json::json!({"artifact_locators": ["artifact:call-1"]}))
+    );
 }
 
 #[tokio::test]
-async fn mixed_sizes_only_rewrites_oversized() {
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let layer = ToolResultBudgetLayer::new(disk.clone())
-        .with_max_inline_chars(100)
-        .with_preview_chars(30);
+async fn persistence_failure_keeps_original_and_reports_stable_class() {
+    let store = UnavailableStore;
+    let layer = ToolResultBudgetLayer::new().with_max_inline_chars(5);
+    let original = "must remain available";
+    let mut messages = vec![user_result("call", original)];
+    let usage = TokenUsage::default();
+    let model = model("openai", "gpt-5");
+    let mut context =
+        CompressContext::new(&mut messages, &usage, &model).with_artifact_store(&store);
 
-    let big = "B".repeat(200);
-    let mut messages = vec![
-        user_msg_with_tool_result("small", "tiny"),
-        user_msg_with_tool_result("big", &big),
-        user_msg_with_tool_result("medium", "medium-sized body here, well under limit"),
-    ];
-    let mut ctx = CompressContext {
-        messages: &mut messages,
-        last_usage: &usage(),
-        model_info: &model(),
-        auto_compact_llm: None,
-    };
+    let report = layer.apply(&mut context).await;
 
-    let report = layer.apply(&mut ctx).await;
-    assert_eq!(report.condensed_count, 1);
-    assert_eq!(disk.write_count(), 1);
-    assert_eq!(disk.ids(), vec!["big".to_string()]);
+    assert_eq!(text_body(&messages[0]), original);
+    assert_eq!(report.condensed_count, 0);
+    assert_eq!(
+        report.failure_code,
+        Some(CompactionFailureCode::Persistence)
+    );
 }
 
 #[tokio::test]
-async fn preserves_is_error_and_tool_use_id() {
-    // We don't directly test the disk-error path here (would need
-    // a fault-injecting disk) — but we verify that the rewrite
-    // keeps the tool_use_id and is_error flags intact.
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let layer = ToolResultBudgetLayer::new(disk.clone())
-        .with_max_inline_chars(50)
-        .with_preview_chars(20);
-
-    let big = "y".repeat(200);
+async fn preview_respects_utf8_boundary_and_preserves_error_flag() {
+    let store = InMemoryArtifactStore::new();
+    let layer = ToolResultBudgetLayer::new()
+        .with_max_inline_chars(3)
+        .with_preview_chars(5);
     let mut messages = vec![ChatMessage::user_blocks(vec![
-        ContentBlock::tool_result_text("toolu_err", &big, true),
+        ContentBlock::tool_result_text("unicode", "你好世界", true),
     ])];
-    let mut ctx = CompressContext {
-        messages: &mut messages,
-        last_usage: &usage(),
-        model_info: &model(),
-        auto_compact_llm: None,
-    };
+    let usage = TokenUsage::default();
+    let model = model("dashscope", "qwen3-max");
+    let mut context =
+        CompressContext::new(&mut messages, &usage, &model).with_artifact_store(&store);
 
-    let report = layer.apply(&mut ctx).await;
+    let report = layer.apply(&mut context).await;
+
     assert_eq!(report.condensed_count, 1);
-
-    // Pull out the block and check its flags.
+    assert!(text_body(&messages[0]).ends_with('你'));
     let ContentBlock::ToolResult {
         call_id, is_error, ..
     } = &messages[0].content[0]
     else {
-        panic!("expected tool_result");
+        panic!("expected tool result");
     };
-    assert_eq!(call_id, "toolu_err");
-    assert!(*is_error, "is_error must be preserved");
+    assert_eq!(call_id, "unicode");
+    assert!(*is_error);
+}
+
+#[tokio::test]
+async fn policy_is_provider_and_model_independent() {
+    let cases = [
+        ("anthropic", "claude-opus"),
+        ("openai", "gpt-5"),
+        ("dashscope", "qwen3-max"),
+    ];
+
+    for (provider, name) in cases {
+        let store = InMemoryArtifactStore::new();
+        let layer = ToolResultBudgetLayer::new().with_max_inline_chars(4);
+        let mut messages = vec![user_result("same-call", "same-result")];
+        let usage = TokenUsage::default();
+        let model = model(provider, name);
+        let mut context =
+            CompressContext::new(&mut messages, &usage, &model).with_artifact_store(&store);
+
+        let report = layer.apply(&mut context).await;
+
+        assert_eq!(report.condensed_count, 1, "{provider}/{name}");
+        assert_eq!(store.get("same-call").as_deref(), Some("same-result"));
+    }
 }

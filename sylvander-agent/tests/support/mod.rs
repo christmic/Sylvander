@@ -1,16 +1,16 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::io;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures_util::Stream;
 use serde_json::Value as JsonValue;
 use sylvander_agent::approval::ApprovalGate;
+use sylvander_agent::artifact::{
+    ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore,
+};
 use sylvander_agent::ask_user_gate::AskUserGate;
-use sylvander_agent::compress::disk::{DiskHandle, ToolResultDisk};
 use sylvander_agent::compress::pipeline::CompressionPipeline;
 use sylvander_agent::conversation::ConversationSnapshot;
 use sylvander_agent::error::AgentLoopError;
@@ -52,6 +52,7 @@ pub(crate) struct TestAgentBuilder {
     ask_user_gate: Option<Arc<dyn AskUserGate>>,
     plan_gate: Option<Arc<dyn PlanGate>>,
     task_gate: Option<Arc<dyn TaskGate>>,
+    artifact_store: Option<Arc<dyn TurnArtifactStore>>,
     invocation_gateway: Option<Arc<dyn ToolInvocationGateway>>,
 }
 
@@ -66,6 +67,7 @@ pub(crate) struct TestAgent {
     ask_user_gate: Option<Arc<dyn AskUserGate>>,
     plan_gate: Option<Arc<dyn PlanGate>>,
     task_gate: Option<Arc<dyn TaskGate>>,
+    artifact_store: Option<Arc<dyn TurnArtifactStore>>,
     invocation_gateway: Arc<dyn ToolInvocationGateway>,
     invocation_snapshot: ToolInvocationSnapshot,
 }
@@ -126,6 +128,11 @@ impl TestAgentBuilder {
         self
     }
 
+    pub(crate) fn artifact_store(mut self, store: Arc<dyn TurnArtifactStore>) -> Self {
+        self.artifact_store = Some(store);
+        self
+    }
+
     pub(crate) fn invocation_gateway(mut self, gateway: Arc<dyn ToolInvocationGateway>) -> Self {
         self.invocation_gateway = Some(gateway);
         self
@@ -147,6 +154,7 @@ impl TestAgentBuilder {
             ask_user_gate: self.ask_user_gate,
             plan_gate: self.plan_gate,
             task_gate: self.task_gate,
+            artifact_store: self.artifact_store,
             invocation_gateway,
             invocation_snapshot,
         };
@@ -195,6 +203,9 @@ impl TestAgent {
         }
         if let Some(gate) = &self.task_gate {
             ports = ports.with_task_gate(gate.clone());
+        }
+        if let Some(store) = &self.artifact_store {
+            ports = ports.with_artifact_store(store.clone());
         }
         (request, ports)
     }
@@ -288,6 +299,7 @@ pub(crate) fn qualified_anthropic_loop_builder(
         ask_user_gate: None,
         plan_gate: None,
         task_gate: None,
+        artifact_store: None,
         invocation_gateway: None,
     }
 }
@@ -389,12 +401,12 @@ impl ToolExecutor for MockTool {
 
 /// In-memory oversized-result sink for public-contract integration tests.
 #[derive(Default, Clone)]
-pub(crate) struct InMemoryToolResultDisk {
+pub(crate) struct InMemoryArtifactStore {
     inner: Arc<Mutex<HashMap<String, String>>>,
     write_count: Arc<Mutex<usize>>,
 }
 
-impl InMemoryToolResultDisk {
+impl InMemoryArtifactStore {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -421,16 +433,23 @@ impl InMemoryToolResultDisk {
     }
 }
 
-impl ToolResultDisk for InMemoryToolResultDisk {
-    fn persist(&self, tool_use_id: &str, body: &str) -> io::Result<DiskHandle> {
+#[async_trait]
+impl TurnArtifactStore for InMemoryArtifactStore {
+    async fn persist(
+        &self,
+        artifact: ArtifactWrite,
+    ) -> Result<ArtifactReference, ArtifactStoreError> {
+        let original_bytes = artifact.payload.len();
+        let body =
+            String::from_utf8(artifact.payload).map_err(|_| ArtifactStoreError::InvalidRequest)?;
         self.inner
             .lock()
             .unwrap()
-            .insert(tool_use_id.to_owned(), body.to_owned());
+            .insert(artifact.call_id.clone(), body);
         *self.write_count.lock().unwrap() += 1;
-        Ok(DiskHandle {
-            path: PathBuf::from(format!("<in-memory>/{tool_use_id}")),
-            original_bytes: body.len(),
+        Ok(ArtifactReference {
+            locator: format!("artifact:{}", artifact.call_id),
+            original_bytes,
         })
     }
 }

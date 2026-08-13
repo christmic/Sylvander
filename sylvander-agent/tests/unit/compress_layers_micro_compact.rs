@@ -53,6 +53,7 @@ async fn keeps_last_n_user_messages_intact() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -77,6 +78,7 @@ async fn does_not_affect_user_text_messages() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -100,6 +102,7 @@ async fn zero_keep_condenses_all_tool_results() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -116,6 +119,7 @@ async fn empty_conversation_is_noop() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;
@@ -133,6 +137,7 @@ async fn short_tool_results_not_rewritten() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let report = layer.apply(&mut ctx).await;

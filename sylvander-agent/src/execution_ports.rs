@@ -11,6 +11,7 @@ use std::sync::Arc;
 use sylvander_llm_core::ModelProvider;
 
 use crate::approval::ApprovalGate;
+use crate::artifact::TurnArtifactStore;
 use crate::ask_user_gate::AskUserGate;
 use crate::error::AgentLoopError;
 use crate::plan_gate::PlanGate;
@@ -42,6 +43,8 @@ pub struct AgentExecutionPorts {
     pub(crate) plan_gate: Option<Arc<dyn PlanGate>>,
     /// Optional background-investigation port.
     pub(crate) task_gate: Option<Arc<dyn TaskGate>>,
+    /// Optional immutable artifact authority bound to this exact turn.
+    pub(crate) artifact_store: Option<Arc<dyn TurnArtifactStore>>,
 }
 
 impl AgentExecutionPorts {
@@ -62,6 +65,7 @@ impl AgentExecutionPorts {
             ask_user_gate: None,
             plan_gate: None,
             task_gate: None,
+            artifact_store: None,
         }
     }
 
@@ -97,6 +101,19 @@ impl AgentExecutionPorts {
     pub fn with_task_gate(mut self, gate: Arc<dyn TaskGate>) -> Self {
         self.task_gate = Some(gate);
         self
+    }
+
+    /// Attach Runtime's turn-bound artifact retention authority.
+    #[must_use]
+    pub fn with_artifact_store(mut self, store: Arc<dyn TurnArtifactStore>) -> Self {
+        self.artifact_store = Some(store);
+        self
+    }
+
+    /// Borrow the optional turn-bound artifact authority.
+    #[must_use]
+    pub fn artifact_store(&self) -> Option<&dyn TurnArtifactStore> {
+        self.artifact_store.as_deref()
     }
 
     /// Verify that data and executable authority describe the same turn.
@@ -138,6 +155,7 @@ impl std::fmt::Debug for AgentExecutionPorts {
             .field("ask_user_gate", &self.ask_user_gate.is_some())
             .field("plan_gate", &self.plan_gate.is_some())
             .field("task_gate", &self.task_gate.is_some())
+            .field("artifact_store", &self.artifact_store.is_some())
             .finish_non_exhaustive()
     }
 }

@@ -42,8 +42,7 @@ use std::sync::Arc;
 use serde_json::json;
 mod support;
 
-use support::{InMemoryToolResultDisk, qualified_anthropic_loop_builder};
-use sylvander_agent::compress::disk::ToolResultDisk;
+use support::{InMemoryArtifactStore, qualified_anthropic_loop_builder};
 use sylvander_agent::compress::layers::{
     context_collapse::ContextCollapseLayer, micro_compact::MicroCompactLayer,
     orphan_snip::OrphanSnipLayer, tool_result_budget::ToolResultBudgetLayer,
@@ -221,16 +220,16 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
         ChatMessage::user("now summarize"),
     ];
 
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let disk_dyn: Arc<dyn ToolResultDisk> = disk.clone();
+    let artifact_store = Arc::new(InMemoryArtifactStore::new());
     let pipeline = CompressionPipeline::builder()
-        .layer(ToolResultBudgetLayer::new(disk_dyn).with_max_inline_chars(1000))
+        .layer(ToolResultBudgetLayer::new().with_max_inline_chars(1000))
         .build();
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
     let loop_ = qualified_anthropic_loop_builder(client, model)
+        .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -256,12 +255,12 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
 
     println!("=== real_api_l0_offloads_prepopulated_big_tool_result ===");
     println!("L0 active events: {l0_active:?}");
-    println!("Disk write count: {}", disk.write_count());
+    println!("Artifact write count: {}", artifact_store.write_count());
     println!("============================================================");
 
     assert!(
-        disk.write_count() >= 1,
-        "L0 should offload the 10k tool_result to disk"
+        artifact_store.write_count() >= 1,
+        "L0 should retain the 10k tool_result"
     );
     assert!(
         l0_active.iter().any(|&(c, _)| c >= 1),

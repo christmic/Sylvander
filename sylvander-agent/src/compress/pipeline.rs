@@ -13,7 +13,7 @@
 //! use sylvander_agent::compress::layers::*;
 //!
 //! let pipeline = CompressionPipeline::builder()
-//!     .layer(ToolResultBudgetLayer::new(disk.clone()))
+//!     .layer(ToolResultBudgetLayer::new())
 //!     .layer(OrphanSnipLayer::new())
 //!     .layer(MicroCompactLayer::new())
 //!     .layer(ContextCollapseLayer::new())
@@ -69,13 +69,12 @@ impl CompressionPipeline {
         Self { layers }
     }
 
-    /// A sensible default pipeline for the given model: L1 + L2 + L3
-    /// + L4. No L0 (disk dependency, opt-in).
+    /// A sensible default pipeline for the given model: L0 through L4.
     ///
     /// L4 is included because it has zero cost below the trigger
-    /// threshold (returns no-op). When context fills up, it kicks
-    /// in automatically using the `AgentLoop`'s client. L0 requires
-    /// a `ToolResultDisk` so it's opt-in via custom pipeline.
+    /// threshold (returns no-op). When context fills up, it kicks in
+    /// automatically using the `AgentLoop`'s client. L0 is also a no-op when
+    /// Runtime did not attach a turn-bound artifact store.
     ///
     /// Order matters: L1 runs before L2 so orphan removal happens
     /// before in-place condensation; L3 runs last among the cheap
@@ -84,6 +83,7 @@ impl CompressionPipeline {
     #[must_use]
     pub fn default_for_model(_model: &ModelInfo) -> Self {
         Self::builder()
+            .layer(crate::compress::layers::tool_result_budget::ToolResultBudgetLayer::new())
             .layer(crate::compress::layers::orphan_snip::OrphanSnipLayer::new())
             .layer(crate::compress::layers::micro_compact::MicroCompactLayer::new())
             .layer(crate::compress::layers::context_collapse::ContextCollapseLayer::new())

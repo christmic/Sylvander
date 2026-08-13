@@ -813,6 +813,7 @@ impl AgentRun {
             last_usage: &usage,
             model_info: &model.shadow,
             auto_compact_llm: Some(&summarizer),
+            artifact_store: None,
         };
         let report = sylvander_agent::compress::layers::auto_compact::AutoCompactLayer::new()
             .with_trigger_ratio(0.0)

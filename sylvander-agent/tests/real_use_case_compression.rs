@@ -17,8 +17,7 @@ use std::sync::Arc;
 use serde_json::json;
 mod support;
 
-use support::{InMemoryToolResultDisk, qualified_anthropic_loop_builder};
-use sylvander_agent::compress::disk::ToolResultDisk;
+use support::{InMemoryArtifactStore, qualified_anthropic_loop_builder};
 use sylvander_agent::compress::layers::{
     auto_compact::AutoCompactLayer, context_collapse::ContextCollapseLayer,
     micro_compact::MicroCompactLayer, orphan_snip::OrphanSnipLayer,
@@ -121,11 +120,10 @@ async fn real_use_case_l0_offloads_huge_read_result() {
 
     let read_tool = ReadTool::new();
 
-    // === L0 with tight budget: anything > 1000 chars goes to disk ===
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let disk_dyn: Arc<dyn ToolResultDisk> = disk.clone();
+    // === L0 with tight budget: anything > 1000 chars is retained ===
+    let artifact_store = Arc::new(InMemoryArtifactStore::new());
     let pipeline = CompressionPipeline::builder()
-        .layer(ToolResultBudgetLayer::new(disk_dyn).with_max_inline_chars(1000))
+        .layer(ToolResultBudgetLayer::new().with_max_inline_chars(1000))
         .layer(OrphanSnipLayer::new())
         .layer(MicroCompactLayer::new())
         .layer(ContextCollapseLayer::new())
@@ -137,6 +135,7 @@ async fn real_use_case_l0_offloads_huge_read_result() {
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .tool_context(read_context(tmp.path()))
+        .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)
         .max_iterations(3)
         .build()
@@ -154,16 +153,16 @@ async fn real_use_case_l0_offloads_huge_read_result() {
     assert_eq!(run.iterations, 2, "expected tool_use + end_turn");
     assert!(!run.final_response.text().is_empty());
 
-    // === Verify L0 actually offloaded the big body ===
+    // === Verify L0 actually retained the big body ===
     assert!(
-        disk.write_count() >= 1,
-        "L0 should have offloaded the 10k Read body to disk; got {} writes",
-        disk.write_count()
+        artifact_store.write_count() >= 1,
+        "L0 should have retained the 10k Read body; got {} writes",
+        artifact_store.write_count()
     );
-    let ids = disk.ids();
+    let ids = artifact_store.ids();
     assert!(
         ids.iter().any(|id| id == "toolu_read_x"),
-        "L0 should have written the toolu_read_x body; got {ids:?}"
+        "L0 should have retained the toolu_read_x body; got {ids:?}"
     );
 
     // === Verify Compressed event was emitted with L0's report ===
@@ -223,8 +222,8 @@ async fn real_use_case_l0_offloads_huge_read_result() {
     println!("=== real_use_case_l0_offloads_huge_read_result ===");
     println!("Iterations: {}", run.iterations);
     println!(
-        "L0 disk writes: {} ({} chars saved per block)",
-        disk.write_count(),
+        "L0 artifact writes: {} ({} chars saved per block)",
+        artifact_store.write_count(),
         l0_freed * 4
     );
     println!("Events:");
@@ -293,11 +292,10 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
 
     let read_tool = ReadTool::new();
 
-    let disk = Arc::new(InMemoryToolResultDisk::new());
-    let disk_dyn: Arc<dyn ToolResultDisk> = disk.clone();
+    let artifact_store = Arc::new(InMemoryArtifactStore::new());
     // keep_last_n=1 so older tool_results get condensed by L2
     let pipeline = CompressionPipeline::builder()
-        .layer(ToolResultBudgetLayer::new(disk_dyn).with_max_inline_chars(500))
+        .layer(ToolResultBudgetLayer::new().with_max_inline_chars(500))
         .layer(OrphanSnipLayer::new())
         .layer(MicroCompactLayer::new().with_keep_last_n(1))
         .layer(ContextCollapseLayer::new().with_max_thinking_chars(100))
@@ -309,6 +307,7 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .tool_context(read_context(tmp.path()))
+        .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)
         .max_iterations(2) // 2 iterations: tool_use + end_turn
         .build()
@@ -330,7 +329,7 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
 
     println!("=== real_use_case_full_pipeline ===");
     println!("Iterations: {}", run.iterations);
-    println!("L0 disk writes: {}", disk.write_count());
+    println!("L0 artifact writes: {}", artifact_store.write_count());
     println!("L0 active events: {l0_count}");
     let event_kinds: Vec<&str> = events
         .iter()
@@ -355,10 +354,13 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
 
     // With max_iterations=2 we expect exactly 2 iterations:
     // iter 1: tool_use Read → tool returns body → re-feed → iter ends
-    // iter 2: L0 sees the tool_result, offloads, then LLM returns end_turn
+    // iter 2: L0 retains the tool_result, then LLM returns end_turn
     assert_eq!(run.iterations, 2, "expected 2 iterations");
-    // L0 must have offloaded the big body once.
-    assert!(disk.write_count() >= 1, "L0 should offload the big body");
+    // L0 must have retained the big body once.
+    assert!(
+        artifact_store.write_count() >= 1,
+        "L0 should retain the big body"
+    );
     assert!(l0_count >= 1, "expected at least one L0 Compressed event");
 }
 

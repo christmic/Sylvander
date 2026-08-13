@@ -6,7 +6,7 @@
 //!
 //! Layers available:
 //! - L0: [`ToolResultBudgetLayer`](crate::compress::layers::tool_result_budget::ToolResultBudgetLayer)
-//!   — cap inline `tool_result` size via disk offload
+//!   — cap inline `tool_result` size via Runtime-owned artifact retention
 //! - L1: [`OrphanSnipLayer`](crate::compress::layers::orphan_snip::OrphanSnipLayer)
 //!   — drop `tool_result` blocks with no matching `tool_use`
 //! - L2: [`MicroCompactLayer`](crate::compress::layers::micro_compact::MicroCompactLayer)
@@ -17,7 +17,6 @@
 //!   — LLM-driven summarization when context budget is exhausted
 
 pub mod auto_compact_llm;
-pub mod disk;
 pub mod error;
 pub mod layer;
 pub mod layers;
@@ -27,6 +26,7 @@ pub use auto_compact_llm::{AutoCompactLlm, DEFAULT_SUMMARY_PROMPT};
 
 use sylvander_llm_core::{ChatMessage, ModelInfo, TokenUsage};
 
+use crate::artifact::TurnArtifactStore;
 use crate::compress::pipeline::CompressionPipeline;
 
 /// Context passed to each layer in a pipeline.
@@ -44,6 +44,9 @@ pub struct CompressContext<'a> {
     /// Optional LLM for L4 (auto-compact). Populated by
     /// `AgentLoop`; `None` in unit tests where L4 should be a no-op.
     pub auto_compact_llm: Option<&'a dyn AutoCompactLlm>,
+    /// Optional Runtime authority for retaining oversized content. A missing
+    /// port makes artifact-dependent layers fail open without discarding data.
+    pub artifact_store: Option<&'a dyn TurnArtifactStore>,
 }
 
 impl<'a> CompressContext<'a> {
@@ -61,6 +64,7 @@ impl<'a> CompressContext<'a> {
             last_usage,
             model_info,
             auto_compact_llm: None,
+            artifact_store: None,
         }
     }
 
@@ -68,6 +72,13 @@ impl<'a> CompressContext<'a> {
     #[must_use]
     pub fn with_auto_compact_llm(mut self, llm: &'a dyn AutoCompactLlm) -> Self {
         self.auto_compact_llm = Some(llm);
+        self
+    }
+
+    /// Attach the artifact authority already bound to this exact turn.
+    #[must_use]
+    pub fn with_artifact_store(mut self, store: &'a dyn TurnArtifactStore) -> Self {
+        self.artifact_store = Some(store);
         self
     }
 }

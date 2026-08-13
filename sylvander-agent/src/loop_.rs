@@ -235,6 +235,7 @@ pub fn run_stream(
                     last_usage: &last_provider_usage,
                     model_info: &request.model,
                     auto_compact_llm: Some(&auto_llm),
+                    artifact_store: ports.artifact_store(),
                 };
                 let reports = compression_pipeline.run_all(&mut compress_ctx).await;
                 // Filter out no-op reports (every layer runs every

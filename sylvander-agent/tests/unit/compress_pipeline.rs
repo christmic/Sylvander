@@ -68,6 +68,7 @@ async fn empty_pipeline_runs_no_layers() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
 
     let reports = pipeline.run_all(&mut ctx).await;
@@ -100,6 +101,7 @@ async fn layers_run_in_order() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
     let _ = pipeline.run_all(&mut ctx).await;
     assert_eq!(*log.lock().unwrap(), vec![0, 1, 2]);
@@ -126,6 +128,7 @@ async fn failure_in_one_layer_does_not_stop_others() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
     let reports = pipeline.run_all(&mut ctx).await;
 
@@ -136,13 +139,14 @@ async fn failure_in_one_layer_does_not_stop_others() {
 }
 
 #[tokio::test]
-async fn default_for_model_contains_l1_l2_l3_l4() {
+async fn default_for_model_contains_l0_through_l4() {
     let model = model();
     let pipeline = CompressionPipeline::default_for_model(&model);
     let names = pipeline.layer_names();
     assert_eq!(
         names,
         vec![
+            "tool_result_budget",
             "orphan_snip",
             "micro_compact",
             "context_collapse",
@@ -165,6 +169,7 @@ async fn default_for_model_actually_drops_orphans() {
         last_usage: &usage(),
         model_info: &model(),
         auto_compact_llm: None,
+        artifact_store: None,
     };
     let reports = pipeline.run_all(&mut ctx).await;
     // L1 dropped the orphan.
