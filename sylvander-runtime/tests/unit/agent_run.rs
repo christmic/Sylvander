@@ -805,6 +805,8 @@ enum SessionStoreFailPoint {
     Save,
     ReadHistory,
     BeginTurn,
+    BeginToolCall,
+    FinishToolCall,
     RecordUsage,
     AppendMessage,
     ReplaceHistory,
@@ -914,6 +916,9 @@ impl SessionStore for FailingSessionStore {
         &self,
         start: crate::storage::session::ToolCallStart,
     ) -> Result<(), crate::storage::session::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::BeginToolCall {
+            return Err(Self::injected());
+        }
         self.inner.begin_tool_call(start).await
     }
 
@@ -921,6 +926,9 @@ impl SessionStore for FailingSessionStore {
         &self,
         completion: crate::storage::session::ToolCallCompletion,
     ) -> Result<(), crate::storage::session::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::FinishToolCall {
+            return Err(Self::injected());
+        }
         self.inner.finish_tool_call(completion).await
     }
 
@@ -1092,11 +1100,28 @@ impl SessionStore for FailingSessionStore {
 
 async fn persistent_tool_lifecycle(
     approval_policy: sylvander_api::ApprovalPolicy,
-) -> crate::RuntimeObservabilitySnapshot {
-    let store: Arc<dyn SessionStore> = Arc::new(
+) -> (
+    Result<(), AgentRunError>,
+    crate::RuntimeObservabilitySnapshot,
+) {
+    persistent_tool_lifecycle_with_failure(approval_policy, None).await
+}
+
+async fn persistent_tool_lifecycle_with_failure(
+    approval_policy: sylvander_api::ApprovalPolicy,
+    fail: Option<SessionStoreFailPoint>,
+) -> (
+    Result<(), AgentRunError>,
+    crate::RuntimeObservabilitySnapshot,
+) {
+    let inner: Arc<dyn SessionStore> = Arc::new(
         crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
             .unwrap(),
+    );
+    let store: Arc<dyn SessionStore> = fail.map_or_else(
+        || inner.clone(),
+        |point| Arc::new(FailingSessionStore::new(inner.clone(), point)),
     );
     let (spec, _) = test_spec_and_client();
     let resolver = Arc::new(
@@ -1142,19 +1167,19 @@ async fn persistent_tool_lifecycle(
         .unwrap()
         .permissions
         .approval_policy = approval_policy;
-    store.save(&stored).await.unwrap();
+    inner.save(&stored).await.unwrap();
     let lease = issuer.issue(session_id.clone(), metadata.clone()).unwrap();
     run.attach_authenticated_session(lease).await.unwrap();
 
-    run.handle_message(BusMessage::user_chat(
-        session_id,
-        metadata.user_id,
-        "use the tool",
-    ))
-    .await
-    .unwrap();
+    let result = run
+        .handle_message(BusMessage::user_chat(
+            session_id,
+            metadata.user_id,
+            "use the tool",
+        ))
+        .await;
 
-    run.inner.observability.snapshot()
+    (result, run.inner.observability.snapshot())
 }
 
 #[tokio::test]
@@ -1163,13 +1188,42 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
         (sylvander_api::ApprovalPolicy::Allow, 1, 0),
         (sylvander_api::ApprovalPolicy::Deny, 0, 1),
     ] {
-        let snapshot = persistent_tool_lifecycle(policy).await;
+        let (result, snapshot) = persistent_tool_lifecycle(policy).await;
+        result.unwrap();
         assert_eq!(snapshot.turns_completed, 1);
         assert_eq!(snapshot.tools_started, 1);
         assert_eq!(snapshot.tools_succeeded, succeeded);
         assert_eq!(snapshot.tools_failed, failed);
         assert_eq!(snapshot.persistence_succeeded, 6);
         assert_eq!(snapshot.persistence_failed, 0);
+        assert_eq!(snapshot.active_tools, 0);
+    }
+}
+
+#[tokio::test]
+async fn durable_tool_persistence_failures_fail_the_turn_and_clear_active_work() {
+    for (fail, operation, started) in [
+        (
+            SessionStoreFailPoint::BeginToolCall,
+            SessionPersistenceOperation::BeginToolCall,
+            0,
+        ),
+        (
+            SessionStoreFailPoint::FinishToolCall,
+            SessionPersistenceOperation::FinishToolCall,
+            1,
+        ),
+    ] {
+        let (result, snapshot) = persistent_tool_lifecycle_with_failure(
+            sylvander_api::ApprovalPolicy::Allow,
+            Some(fail),
+        )
+        .await;
+        assert_persistence_failure(result.unwrap_err(), operation);
+        assert_eq!(snapshot.turns_completed, 0);
+        assert_eq!(snapshot.turns_failed, 1);
+        assert_eq!(snapshot.tools_started, started);
+        assert_eq!(snapshot.persistence_failed, 1);
         assert_eq!(snapshot.active_tools, 0);
     }
 }
@@ -1253,16 +1307,12 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
     .await
     .unwrap();
 
-    assert_eq!(
-        observability.snapshot(),
-        crate::RuntimeObservabilitySnapshot {
-            event_count: 5,
-            turns_started: 1,
-            turns_completed: 1,
-            persistence_succeeded: 3,
-            ..crate::RuntimeObservabilitySnapshot::default()
-        }
-    );
+    let snapshot = observability.snapshot();
+    assert_eq!(snapshot.turns_started, 1);
+    assert_eq!(snapshot.turns_completed, 1);
+    assert_eq!(snapshot.persistence_succeeded, 3);
+    assert_eq!(snapshot.active_turns, 0);
+    assert_eq!(snapshot.turn_latency.count, 1);
 
     let system = {
         let requests = provider.requests.lock().unwrap();
@@ -2905,16 +2955,12 @@ async fn persistent_user_write_failure_stops_before_provider_work() {
         .await
         .expect_err("begin-turn failure must terminate the turn");
     assert_persistence_failure(error, SessionPersistenceOperation::BeginTurn);
-    assert_eq!(
-        run.inner.observability.snapshot(),
-        crate::RuntimeObservabilitySnapshot {
-            event_count: 3,
-            turns_started: 1,
-            turns_failed: 1,
-            persistence_failed: 1,
-            ..crate::RuntimeObservabilitySnapshot::default()
-        }
-    );
+    let snapshot = run.inner.observability.snapshot();
+    assert_eq!(snapshot.turns_started, 1);
+    assert_eq!(snapshot.turns_failed, 1);
+    assert_eq!(snapshot.persistence_failed, 1);
+    assert_eq!(snapshot.active_turns, 0);
+    assert_eq!(snapshot.turn_latency.count, 1);
     assert!(provider.requests.lock().unwrap().is_empty());
     assert_eq!(run.get_session(&session_id).await.unwrap().len(), 0);
     let caller =

@@ -236,3 +236,31 @@ fn paired_lifecycles_report_active_work_and_bounded_latency() {
         [0, 0, 0, 0, 1, 0, 0, 0]
     );
 }
+
+#[test]
+fn failed_turn_clears_unfinished_tool_timing_state() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let session_id = SessionId::new("session-abandoned");
+    recorder.record(RuntimeEvent::TurnStarted {
+        request_id: "request-abandoned".into(),
+        trace_id: "trace-abandoned".into(),
+        turn_id: "turn-abandoned".into(),
+        session_id: session_id.clone(),
+        agent_id: AgentId::new("agent"),
+    });
+    recorder.record(RuntimeEvent::ToolStarted {
+        turn_id: "turn-abandoned".into(),
+        session_id: session_id.clone(),
+        tool_call_id: "call-abandoned".into(),
+        tool_name: "read".into(),
+    });
+    recorder.record(RuntimeEvent::TurnFailed {
+        turn_id: "turn-abandoned".into(),
+        session_id,
+        kind: RuntimeFailureKind::Persistence,
+    });
+
+    let snapshot = recorder.snapshot();
+    assert_eq!(snapshot.active_turns, 0);
+    assert_eq!(snapshot.active_tools, 0);
+}

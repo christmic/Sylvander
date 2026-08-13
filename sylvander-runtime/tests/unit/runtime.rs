@@ -771,18 +771,13 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         .await
         .unwrap();
     let operational = runtime.operational_snapshot().await.unwrap();
-    assert_eq!(
-        operational.observability,
-        RuntimeObservabilitySnapshot {
-            event_count: 8,
-            turns_started: 1,
-            turns_completed: 1,
-            tools_started: 1,
-            tools_succeeded: 1,
-            persistence_succeeded: 4,
-            ..RuntimeObservabilitySnapshot::default()
-        }
-    );
+    assert_eq!(operational.observability.turns_started, 1);
+    assert_eq!(operational.observability.turns_completed, 1);
+    assert_eq!(operational.observability.tools_started, 1);
+    assert_eq!(operational.observability.tools_succeeded, 1);
+    assert_eq!(operational.observability.persistence_succeeded, 6);
+    assert_eq!(operational.observability.active_turns, 0);
+    assert_eq!(operational.observability.active_tools, 0);
     assert_eq!(operational.execution_targets.len(), 1);
     assert_eq!(operational.execution_targets[0].target_id, "local");
     assert_eq!(
