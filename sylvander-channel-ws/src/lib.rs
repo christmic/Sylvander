@@ -46,7 +46,8 @@ use tracing::{info, warn};
 use sylvander_api::{AgentId, SessionId};
 use sylvander_api::{MessageKind, StreamEvent};
 use sylvander_api::{
-    UiClientMessage as ClientMsg, UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
+    SessionConfigFieldPatch, SessionConfigPatch, UiClientMessage as ClientMsg,
+    UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
 };
 use sylvander_channel::credential::{
     CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
@@ -798,7 +799,6 @@ async fn handle_client_msg(
                     return;
                 }
             };
-            let mut overrides = state.overrides;
             let agents = match host.discover_agents(&boundary).await {
                 Ok(agents) => agents,
                 Err(error) => {
@@ -818,15 +818,19 @@ async fn handle_client_msg(
                 );
                 return;
             }
-            overrides.model = Some(model);
-            overrides.reasoning_effort = Some(reasoning_effort);
             match host
                 .update_session_config(
                     &boundary,
                     sylvander_api::SessionConfigUpdateRequest {
                         session_id,
                         expected_revision: state.revision,
-                        overrides,
+                        patch: SessionConfigPatch {
+                            model: Some(SessionConfigFieldPatch::Set { value: model }),
+                            reasoning_effort: Some(SessionConfigFieldPatch::Set {
+                                value: reasoning_effort,
+                            }),
+                            ..SessionConfigPatch::default()
+                        },
                     },
                 )
                 .await
@@ -861,15 +865,16 @@ async fn handle_client_msg(
                     return;
                 }
             };
-            let mut overrides = state.overrides;
-            overrides.permissions = Some(profile);
             match host
                 .update_session_config(
                     &boundary,
                     sylvander_api::SessionConfigUpdateRequest {
                         session_id,
                         expected_revision: state.revision,
-                        overrides,
+                        patch: SessionConfigPatch {
+                            permissions: Some(SessionConfigFieldPatch::Set { value: profile }),
+                            ..SessionConfigPatch::default()
+                        },
                     },
                 )
                 .await
