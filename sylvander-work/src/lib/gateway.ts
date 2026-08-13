@@ -32,7 +32,8 @@ export type RuntimeMessage =
   | { type: "thinking_delta"; session_id: string; delta: string }
   | { type: "tool_call"; session_id: string; call_id: string; tool_name: string; input: unknown }
   | { type: "tool_result"; session_id: string; call_id: string; tool_name: string; output: string; is_error: boolean }
-  | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }> }
+  | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: string[] }
+  | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }
   | { type: "plan_proposed" | "plan_updated"; session_id: string; plan_id: string; steps: string[]; current: number }
   | { type: "task_started"; session_id: string; task_id: string; owner: string; purpose: string }
   | { type: "task_progress"; session_id: string; task_id: string; message: string }

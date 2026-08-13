@@ -10,7 +10,11 @@ export interface RuntimeViewState {
   transcript: TranscriptEntry[];
   plan: PlanStep[];
   tasks: TaskSummary[];
-  approval?: { sessionId: string; callId: string; toolName: string };
+  approval?: {
+    sessionId: string;
+    batchId: string;
+    tools: Array<{ callId: string; toolName: string }>;
+  };
   diagnostic?: string;
 }
 
@@ -88,28 +92,47 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "tool_call":
         if (message.session_id === selectedRef.current) {
-          setState((current) => ({ ...current, transcript: [...current.transcript, {
-            id: `tool-${message.call_id}`,
-            kind: "tool",
-            title: message.tool_name,
-            body: "Running through Runtime",
-            status: "running",
-          }] }));
+          setState((current) => ({
+            ...current,
+            approval: settleApproval(current.approval, message.call_id),
+            transcript: [...current.transcript, {
+              id: `tool-${message.call_id}`,
+              kind: "tool",
+              title: message.tool_name,
+              body: "Running through Runtime",
+              status: "running",
+            }],
+          }));
         }
         break;
       case "tool_result":
         if (message.session_id === selectedRef.current) {
-          setState((current) => ({ ...current, transcript: current.transcript.map((entry) =>
-            entry.id === `tool-${message.call_id}`
+          setState((current) => ({
+            ...current,
+            approval: settleApproval(current.approval, message.call_id),
+            transcript: current.transcript.map((entry) => entry.id === `tool-${message.call_id}`
               ? { ...entry, body: message.output, status: message.is_error ? "failed" : "verified" }
-              : entry) }));
+              : entry),
+          }));
         }
         break;
-      case "approval_request": {
-        const tool = message.tools[0];
-        if (tool) setState((current) => ({ ...current, approval: { sessionId: message.session_id, callId: tool.call_id, toolName: tool.tool_name } }));
+      case "approval_request":
+        if (message.session_id === selectedRef.current && message.tools.length > 0) {
+          setState((current) => ({ ...current, approval: {
+            sessionId: message.session_id,
+            batchId: message.batch_id,
+            tools: message.tools.map((tool) => ({ callId: tool.call_id, toolName: tool.tool_name })),
+          } }));
+        }
         break;
-      }
+      case "tool_rejected":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            approval: rejectApproval(current.approval, message.tool_name),
+          }));
+        }
+        break;
       case "plan_proposed":
       case "plan_updated":
         if (message.session_id === selectedRef.current) {
@@ -165,8 +188,13 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "error":
       case "turn_interrupted":
         if (message.session_id === selectedRef.current) {
-          setState((current) => ({ ...current, sessions: current.sessions.map((session) =>
-            session.id === message.session_id ? { ...session, state: message.type === "error" ? "failed" : "idle" } : session) }));
+          setState((current) => ({
+            ...current,
+            approval: undefined,
+            sessions: current.sessions.map((session) => session.id === message.session_id
+              ? { ...session, state: message.type === "error" ? "failed" : "idle" }
+              : session),
+          }));
         }
         break;
       default:
@@ -241,7 +269,14 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
 
   const selectSession = useCallback((sessionId: string) => {
     selectedRef.current = sessionId;
-    setState((current) => ({ ...current, selectedId: sessionId, transcript: [], plan: [], tasks: [] }));
+    setState((current) => ({
+      ...current,
+      selectedId: sessionId,
+      transcript: [],
+      plan: [],
+      tasks: [],
+      approval: undefined,
+    }));
     return submit({ type: "load_session", session_id: sessionId });
   }, [submit]);
 
@@ -275,6 +310,23 @@ function updateTask(
   update: Pick<TaskSummary, "detail" | "state">,
 ): TaskSummary[] {
   return tasks.map((task) => task.id === taskId ? { ...task, ...update } : task);
+}
+
+function settleApproval(
+  approval: RuntimeViewState["approval"],
+  callId: string,
+): RuntimeViewState["approval"] {
+  if (!approval?.tools.some((tool) => tool.callId === callId)) return approval;
+  const tools = approval.tools.filter((tool) => tool.callId !== callId);
+  return tools.length > 0 ? { ...approval, tools } : undefined;
+}
+
+function rejectApproval(
+  approval: RuntimeViewState["approval"],
+  toolName: string,
+): RuntimeViewState["approval"] {
+  const callId = approval?.tools.find((tool) => tool.toolName === toolName)?.callId;
+  return callId ? settleApproval(approval, callId) : approval;
 }
 
 function formatRecency(seconds: number): string {

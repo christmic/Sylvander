@@ -51,12 +51,12 @@ export default function App({ gateway }: AppProps) {
     }
   }
 
-  async function decide(approved: boolean) {
+  async function decide(callId: string, approved: boolean) {
     if (!state.approval) return;
     await submit({
       type: "approve",
       session_id: state.approval.sessionId,
-      call_id: state.approval.callId,
+      call_id: callId,
       approved,
       scope: "once",
     });
@@ -144,10 +144,10 @@ export default function App({ gateway }: AppProps) {
       </section>
 
       <div className="interaction-zone">
-        {state.approval && <section className="decision-dock" aria-labelledby="approval-title">
+        {state.approval && state.approval.tools[0] && <section className="decision-dock" aria-labelledby="approval-title">
           <div className="decision-icon" aria-hidden="true">◇</div>
-          <div className="decision-copy"><span className="eyebrow">Approval · this Session</span><h3 id="approval-title">Allow {state.approval.toolName}?</h3><p>Runtime is waiting for the least-authorizing decision.</p></div>
-          <div className="decision-actions"><button className="secondary-button" onClick={() => void decide(false)}>Reject</button><button className="primary-button" onClick={() => void decide(true)}>Allow once</button></div>
+          <div className="decision-copy"><span className="eyebrow">Approval · {state.approval.tools.length} pending</span><h3 id="approval-title">Allow {state.approval.tools[0].toolName}?</h3><p>Runtime is waiting for the least-authorizing decision.</p></div>
+          <div className="decision-actions"><button className="secondary-button" onClick={() => void decide(state.approval!.tools[0].callId, false)}>Reject</button><button className="primary-button" onClick={() => void decide(state.approval!.tools[0].callId, true)}>Allow once</button></div>
         </section>}
         <form className="composer" onSubmit={(event) => void send(event)}>
           <label htmlFor="composer-input" className="sr-only">Message Sylvander</label>

@@ -104,6 +104,12 @@ update that row idempotently, so reconnect replay cannot duplicate work. The
 projection may retain display text and status while the process is alive, but
 it is not a second task store and never synthesizes a terminal state.
 
+Approval batches follow the same rule. The desktop retains every Runtime
+`call_id`, presents one least-authorizing decision at a time, and removes an
+item only after Runtime publishes its tool start/result or rejection. A turn
+terminal clears any remaining presentation prompt; the client does not infer
+execution from a button click.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem

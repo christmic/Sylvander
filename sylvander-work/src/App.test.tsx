@@ -98,6 +98,62 @@ describe("Sylvander Work", () => {
     }
   });
 
+  it("retains an approval batch until Runtime settles each tool", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Approvals", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    await waitFor(() => expect(gateway.commands.at(-1)?.type).toBe("load_session"));
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "approval_request",
+      session_id: "another-session",
+      batch_id: "other-batch",
+      tools: [{ call_id: "other-call", tool_name: "Delete", input: {} }],
+    } }));
+    expect(screen.queryByRole("heading", { name: "Allow Delete?" })).toBeNull();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "approval_request",
+      session_id: "session-1",
+      batch_id: "batch-1",
+      tools: [
+        { call_id: "call-1", tool_name: "Read", input: {} },
+        { call_id: "call-2", tool_name: "Write", input: {} },
+      ],
+    } }));
+    expect(await screen.findByRole("heading", { name: "Allow Read?" })).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Allow once" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "approve",
+      session_id: "session-1",
+      call_id: "call-1",
+      approved: true,
+      scope: "once",
+    }));
+    expect(screen.getByRole("heading", { name: "Allow Read?" })).toBeTruthy();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "tool_call", session_id: "session-1", call_id: "call-1", tool_name: "Read", input: {},
+    } }));
+    expect(await screen.findByRole("heading", { name: "Allow Write?" })).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Reject" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toMatchObject({
+      type: "approve", call_id: "call-2", approved: false,
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "tool_rejected", session_id: "session-1", tool_name: "Write", reason: "Denied",
+    } }));
+    expect(screen.queryByRole("heading", { name: "Allow Write?" })).toBeNull();
+  });
+
   it("projects the complete Runtime task lifecycle by task identity", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);
