@@ -131,6 +131,8 @@ pub(crate) enum RuntimeToolFailureKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeCoordinationOutcome {
     Enqueued,
+    ParticipantActivated,
+    TopologyUpdated,
     ArbitrationRequired,
     ModeratorAuthorized,
     ModeratorRejected,
@@ -142,6 +144,8 @@ impl RuntimeCoordinationOutcome {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Enqueued => "enqueued",
+            Self::ParticipantActivated => "participant_activated",
+            Self::TopologyUpdated => "topology_updated",
             Self::ArbitrationRequired => "arbitration_required",
             Self::ModeratorAuthorized => "moderator_authorized",
             Self::ModeratorRejected => "moderator_rejected",
@@ -426,6 +430,8 @@ pub struct RuntimeObservabilitySnapshot {
     /// Required Session persistence operations that failed.
     pub persistence_failed: u64,
     pub coordination_enqueued: u64,
+    pub coordination_participant_activated: u64,
+    pub coordination_topology_updated: u64,
     pub coordination_arbitration_required: u64,
     pub coordination_moderator_authorized: u64,
     pub coordination_moderator_rejected: u64,
@@ -483,6 +489,8 @@ struct RuntimeObservabilityInner {
     persistence_succeeded: AtomicU64,
     persistence_failed: AtomicU64,
     coordination_enqueued: AtomicU64,
+    coordination_participant_activated: AtomicU64,
+    coordination_topology_updated: AtomicU64,
     coordination_arbitration_required: AtomicU64,
     coordination_moderator_authorized: AtomicU64,
     coordination_moderator_rejected: AtomicU64,
@@ -528,6 +536,8 @@ impl RuntimeObservability {
                 persistence_succeeded: AtomicU64::new(0),
                 persistence_failed: AtomicU64::new(0),
                 coordination_enqueued: AtomicU64::new(0),
+                coordination_participant_activated: AtomicU64::new(0),
+                coordination_topology_updated: AtomicU64::new(0),
                 coordination_arbitration_required: AtomicU64::new(0),
                 coordination_moderator_authorized: AtomicU64::new(0),
                 coordination_moderator_rejected: AtomicU64::new(0),
@@ -592,6 +602,12 @@ impl RuntimeObservability {
             } => {
                 match outcome {
                     RuntimeCoordinationOutcome::Enqueued => &self.inner.coordination_enqueued,
+                    RuntimeCoordinationOutcome::ParticipantActivated => {
+                        &self.inner.coordination_participant_activated
+                    }
+                    RuntimeCoordinationOutcome::TopologyUpdated => {
+                        &self.inner.coordination_topology_updated
+                    }
                     RuntimeCoordinationOutcome::ArbitrationRequired => {
                         &self.inner.coordination_arbitration_required
                     }
@@ -978,6 +994,14 @@ impl RuntimeObservability {
             persistence_succeeded: self.inner.persistence_succeeded.load(Ordering::Relaxed),
             persistence_failed: self.inner.persistence_failed.load(Ordering::Relaxed),
             coordination_enqueued: self.inner.coordination_enqueued.load(Ordering::Relaxed),
+            coordination_participant_activated: self
+                .inner
+                .coordination_participant_activated
+                .load(Ordering::Relaxed),
+            coordination_topology_updated: self
+                .inner
+                .coordination_topology_updated
+                .load(Ordering::Relaxed),
             coordination_arbitration_required: self
                 .inner
                 .coordination_arbitration_required

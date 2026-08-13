@@ -73,7 +73,8 @@ use crate::coordination::handoff::TaskHandoff;
 use crate::coordination::mailbox::{AgentMessageTurn, CoordinationMessage, MessageClaim};
 use crate::coordination::service::{
     DefineAgentOutcome, DefineAgentRequest, DispatchMessageOutcome, DispatchMessageRequest,
-    ForkAgentOutcome, ForkAgentRequest, ReportProgressRequest, ReportWaitRequest,
+    ForkAgentOutcome, ForkAgentRequest, RelateAgentsOutcome, RelateAgentsRequest,
+    ReportProgressRequest, ReportWaitRequest,
 };
 use crate::coordination::workspace::WorkspaceAccess;
 use crate::credential::audit::CredentialOperationAuditLedger;
@@ -5102,6 +5103,11 @@ impl Runtime {
             }
         };
         let ready = self.activate_agent_participant(&participant).await?;
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id: ready.session_id.clone(),
+                outcome: RuntimeCoordinationOutcome::ParticipantActivated,
+            });
         Ok(match moderator_authorization {
             Some(decision) => ForkAgentOutcome::CreatedByModerator {
                 participant: ready,
@@ -5178,6 +5184,11 @@ impl Runtime {
             outcome => return Ok(outcome),
         };
         let participant = self.activate_agent_participant(&participant).await?;
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id: participant.session_id.clone(),
+                outcome: RuntimeCoordinationOutcome::ParticipantActivated,
+            });
         Ok(match decision {
             Some(decision) => DefineAgentOutcome::CreatedByModerator {
                 participant,
@@ -5185,6 +5196,46 @@ impl Runtime {
             },
             None => DefineAgentOutcome::Created(participant),
         })
+    }
+
+    /// Add one governed non-ownership edge between active Agent instances.
+    pub async fn relate_agent_instances(
+        &self,
+        actor: &AuthenticatedSession,
+        request: RelateAgentsRequest,
+    ) -> Result<RelateAgentsOutcome, RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.requested_by)?;
+        let session_id = request.session_id.clone();
+        let outcome = self
+            .storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .relate_agents(request, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        let observed = match &outcome {
+            RelateAgentsOutcome::Applied(_) => RuntimeCoordinationOutcome::TopologyUpdated,
+            RelateAgentsOutcome::AppliedByModerator { .. } => {
+                RuntimeCoordinationOutcome::ModeratorAuthorized
+            }
+            RelateAgentsOutcome::RequiresArbitration { case, .. } => {
+                if let Some(scheduler) = &self.mailbox_scheduler {
+                    scheduler.wake(case.moderator_instance_id.clone());
+                }
+                RuntimeCoordinationOutcome::ArbitrationRequired
+            }
+            RelateAgentsOutcome::RejectedByModerator { .. } => {
+                RuntimeCoordinationOutcome::ModeratorRejected
+            }
+        };
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id,
+                outcome: observed,
+            });
+        Ok(outcome)
     }
 
     async fn configured_agent_revision(

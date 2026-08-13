@@ -1843,6 +1843,20 @@ async fn configured_runtime_executes_a_heterogeneous_defined_agent() {
         .unwrap()
         .unwrap();
     assert_eq!(binding.effective.agent_id, AgentId::new("reviewer"));
+    let relation = runtime
+        .relate_agent_instances(
+            &moderator,
+            RelateAgentsRequest {
+                session_id: session_id.clone(),
+                requested_by: moderator_id.clone(),
+                source: reviewer_id.clone(),
+                target: moderator_id.clone(),
+                kind: crate::coordination::topology::AgentRelationKind::Reviews,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(relation, RelateAgentsOutcome::Applied(_)));
 
     let message_id = CoordinationMessageId::new("defined-agent-message");
     let outcome = runtime
@@ -1896,6 +1910,9 @@ async fn configured_runtime_executes_a_heterogeneous_defined_agent() {
     }
     let requests = model_server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
+    let observed = runtime.operational_snapshot().await.unwrap().observability;
+    assert_eq!(observed.coordination_participant_activated, 1);
+    assert_eq!(observed.coordination_topology_updated, 1);
     runtime.shutdown().await.unwrap();
     drop(runtime);
 
