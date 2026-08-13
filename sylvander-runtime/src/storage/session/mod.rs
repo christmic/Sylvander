@@ -761,6 +761,16 @@ pub trait SessionStore: AgentInstanceStore + Send + Sync {
         ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
     ) -> Result<u64, SessionStoreError>;
+
+    /// Atomically materialize one parent history prefix for a forked participant.
+    async fn materialize_agent_fork_history(
+        &self,
+        session_id: &SessionId,
+        parent_instance_id: &AgentInstanceId,
+        child_instance_id: &AgentInstanceId,
+        base_sequence: u64,
+        now: i64,
+    ) -> Result<u64, SessionStoreError>;
 }
 
 // ---------------------------------------------------------------------------

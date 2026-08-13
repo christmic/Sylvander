@@ -4690,6 +4690,12 @@ impl Runtime {
                     .iter()
                     .filter(|participant| !participant.state.is_terminal())
                 {
+                    materialize_participant_history(
+                        &session_store,
+                        participant,
+                        recovery_observed_at,
+                    )
+                    .await?;
                     let configured = revision_provider
                         .configured_revision(
                             &participant.definition.agent_id,
@@ -4908,6 +4914,12 @@ impl Runtime {
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .ok_or_else(|| RuntimeError::Coordination("fork Session disappeared".into()))?;
+        materialize_participant_history(
+            self.storage.sessions(),
+            &participant,
+            crate::session::now_secs(),
+        )
+        .await?;
         let configured = if let Some(provider) = &self.revision_provider {
             provider
                 .configured_revision(
@@ -5649,6 +5661,33 @@ pub enum SessionBindingError {
     Snapshot,
     #[error(transparent)]
     InvalidPins(#[from] SessionRevisionPinError),
+}
+
+async fn materialize_participant_history(
+    sessions: &Arc<dyn SessionStore>,
+    participant: &AgentInstance,
+    now: i64,
+) -> Result<(), RuntimeError> {
+    let (
+        AgentInstanceOrigin::Forked {
+            parent_instance_id, ..
+        },
+        HistoryView::ForkSnapshot { base_sequence, .. },
+    ) = (&participant.origin, &participant.history_view)
+    else {
+        return Ok(());
+    };
+    sessions
+        .materialize_agent_fork_history(
+            &participant.session_id,
+            parent_instance_id,
+            &participant.instance_id,
+            *base_sequence,
+            now,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| RuntimeError::Store(error.to_string()))
 }
 
 fn validate_coordination_actor(

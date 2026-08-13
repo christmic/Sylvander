@@ -1302,6 +1302,25 @@ impl SessionStore for FailingSessionStore {
     ) -> Result<u64, crate::storage::session::SessionStoreError> {
         self.inner.count_active_messages(context, session_id).await
     }
+
+    async fn materialize_agent_fork_history(
+        &self,
+        session_id: &SessionId,
+        parent_instance_id: &AgentInstanceId,
+        child_instance_id: &AgentInstanceId,
+        base_sequence: u64,
+        now: i64,
+    ) -> Result<u64, crate::storage::session::SessionStoreError> {
+        self.inner
+            .materialize_agent_fork_history(
+                session_id,
+                parent_instance_id,
+                child_instance_id,
+                base_sequence,
+                now,
+            )
+            .await
+    }
 }
 
 async fn persistent_tool_lifecycle(

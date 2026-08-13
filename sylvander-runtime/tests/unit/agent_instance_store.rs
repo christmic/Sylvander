@@ -22,7 +22,7 @@ use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDep
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::SessionMetadata;
 use crate::storage::coordination::CoordinationStore;
-use crate::storage::session::{SessionLifetime, SessionStore, StoredSession};
+use crate::storage::session::{MessageRole, SessionLifetime, SessionStore, StoredSession};
 use sylvander_api::{
     AgentId, AgentInstanceId, CoordinationMessageId, GovernanceCaseId, HandoffId, SwarmId, TaskId,
 };
@@ -618,6 +618,105 @@ async fn governed_fork_is_idempotent_and_reconciles_task_membership_revision() {
             .membership_revision,
         1
     );
+}
+
+#[tokio::test]
+async fn fork_history_prefix_materializes_atomically_with_empty_safe_receipt() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let parent_context =
+        sylvander_api::SessionContext::new("user-1", "researcher", "multi-session")
+            .with_agent_instance("worker-1");
+    store
+        .append_message(
+            &parent_context,
+            &SessionId::new("multi-session"),
+            MessageRole::User,
+            serde_json::json!("first"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .append_message(
+            &parent_context,
+            &SessionId::new("multi-session"),
+            MessageRole::Assistant,
+            serde_json::json!("second"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let service =
+        CoordinationService::new(Arc::new(store.clone()), GovernancePolicy::default(), 30);
+    let ForkAgentOutcome::Created(child) = service
+        .fork_agent(
+            ForkAgentRequest {
+                instance_id: AgentInstanceId::new("history-child"),
+                session_id: SessionId::new("multi-session"),
+                parent_instance_id: AgentInstanceId::new("worker-1"),
+                base_sequence: 0,
+                branch_id: "history-child".into(),
+            },
+            20,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("history fork should be admitted");
+    };
+    assert_eq!(
+        store
+            .materialize_agent_fork_history(
+                &child.session_id,
+                &AgentInstanceId::new("worker-1"),
+                &child.instance_id,
+                0,
+                21,
+            )
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .materialize_agent_fork_history(
+                &child.session_id,
+                &AgentInstanceId::new("worker-1"),
+                &child.instance_id,
+                0,
+                22,
+            )
+            .await
+            .unwrap(),
+        1
+    );
+    let child_context = sylvander_api::SessionContext::new("user-1", "researcher", "multi-session")
+        .with_agent_instance("history-child");
+    let history = store
+        .read_history(
+            &child_context,
+            &SessionId::new("multi-session"),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].content, serde_json::json!("first"));
 }
 
 #[tokio::test]
