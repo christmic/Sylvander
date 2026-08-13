@@ -524,4 +524,50 @@ async fn mailbox_message_is_durable_and_deduplicated_before_delivery() {
             ..
         }
     ));
+
+    let first_claim = store
+        .claim_message(&AgentInstanceId::new("coordinator-1"), 50, 10)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_claim.lease_epoch, 1);
+    assert!(
+        store
+            .claim_message(&AgentInstanceId::new("coordinator-1"), 55, 10)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let recovered_claim = store
+        .claim_message(&AgentInstanceId::new("coordinator-1"), 60, 10)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered_claim.lease_epoch, 2);
+    assert!(matches!(
+        store
+            .finish_message_claim(
+                &message.message_id,
+                &AgentInstanceId::new("coordinator-1"),
+                first_claim.lease_epoch,
+                MessageDeliveryState::Delivered,
+                61,
+            )
+            .await
+            .unwrap_err(),
+        SessionStoreError::MessageConflict { .. }
+    ));
+    let delivered = store
+        .finish_message_claim(
+            &message.message_id,
+            &AgentInstanceId::new("coordinator-1"),
+            recovered_claim.lease_epoch,
+            MessageDeliveryState::Delivered,
+            61,
+        )
+        .await
+        .unwrap();
+    assert_eq!(delivered.state, MessageDeliveryState::Delivered);
+    assert_eq!(delivered.delivery_attempts, 2);
+    assert_eq!(delivered.revision, 3);
 }

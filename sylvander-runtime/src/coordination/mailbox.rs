@@ -74,6 +74,16 @@ pub struct CoordinationMessage {
     pub updated_at: i64,
 }
 
+/// One fenced right to deliver a message before `lease_expires_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageClaim {
+    pub message: CoordinationMessage,
+    pub lease_epoch: u64,
+    pub lease_expires_at: i64,
+}
+
+pub const MAX_MESSAGE_LEASE_SECONDS: u64 = 60;
+
 impl CoordinationMessage {
     pub fn validate_new(
         &self,

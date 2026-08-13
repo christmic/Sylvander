@@ -6,7 +6,8 @@ use sylvander_api::{AgentInstanceId, CoordinationMessageId, HandoffId, SessionId
 
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
-    CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
+    CoordinationMessage, CoordinationMessageKind, MAX_MESSAGE_LEASE_SECONDS, MessageClaim,
+    MessageDeliveryState,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -71,6 +72,22 @@ pub trait CoordinationStore: Send + Sync {
         &self,
         message_id: &CoordinationMessageId,
     ) -> Result<Option<CoordinationMessage>, SessionStoreError>;
+
+    async fn claim_message(
+        &self,
+        recipient: &AgentInstanceId,
+        now: i64,
+        lease_seconds: u64,
+    ) -> Result<Option<MessageClaim>, SessionStoreError>;
+
+    async fn finish_message_claim(
+        &self,
+        message_id: &CoordinationMessageId,
+        recipient: &AgentInstanceId,
+        lease_epoch: u64,
+        next_state: MessageDeliveryState,
+        now: i64,
+    ) -> Result<CoordinationMessage, SessionStoreError>;
 }
 
 #[async_trait]
@@ -709,6 +726,159 @@ impl CoordinationStore for SqliteSessionStore {
         self.run(move |connection| load_message(connection, &message_id))
             .await
     }
+
+    async fn claim_message(
+        &self,
+        recipient: &AgentInstanceId,
+        now: i64,
+        lease_seconds: u64,
+    ) -> Result<Option<MessageClaim>, SessionStoreError> {
+        if lease_seconds == 0 || lease_seconds > MAX_MESSAGE_LEASE_SECONDS {
+            return Err(SessionStoreError::Invalid(
+                "message lease duration is outside the bounded range".into(),
+            ));
+        }
+        let recipient = recipient.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let candidate = transaction
+                .query_row(
+                    "SELECT message_id,lease_epoch,revision,delivery_attempts \
+                     FROM coordination_messages \
+                     WHERE recipient_instance_id=?1 AND expires_at>?2 \
+                       AND (state='pending' OR (state='claimed' AND lease_expires_at<=?2)) \
+                     ORDER BY created_at,message_id LIMIT 1",
+                    params![recipient.0, now],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((id, epoch, revision, attempts)) = candidate else {
+                return Ok(None);
+            };
+            let message_id = CoordinationMessageId::new(id);
+            let next_epoch = checked_u64(epoch, "message lease epoch")?
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("message lease epoch overflow".into()))?;
+            let next_revision = checked_u64(revision, "message revision")?
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("message revision overflow".into()))?;
+            let next_attempts = checked_u32(attempts, "message delivery attempts")?
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("message attempts overflow".into()))?;
+            let lease_delta = i64::try_from(lease_seconds).map_err(|_| {
+                SessionStoreError::Invalid("message lease duration exceeds i64".into())
+            })?;
+            let lease_expires_at = now.checked_add(lease_delta).ok_or_else(|| {
+                SessionStoreError::Invalid("message lease deadline overflow".into())
+            })?;
+            let changed = transaction.execute(
+                "UPDATE coordination_messages SET state='claimed',delivery_attempts=?1,
+                 lease_owner_instance_id=?2,lease_epoch=?3,lease_expires_at=?4,
+                 revision=?5,updated_at=?6 WHERE message_id=?7 AND revision=?8 \
+                 AND (state='pending' OR (state='claimed' AND lease_expires_at<=?6))",
+                params![
+                    i64::from(next_attempts),
+                    recipient.0,
+                    checked_i64(next_epoch, "message lease epoch")?,
+                    lease_expires_at,
+                    checked_i64(next_revision, "message revision")?,
+                    now,
+                    message_id.0,
+                    revision,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::MessageConflict {
+                    message_id,
+                    expected: Some(checked_u64(revision, "message revision")?),
+                    actual: None,
+                });
+            }
+            let mut message = load_message(&transaction, &message_id)?
+                .ok_or_else(|| SessionStoreError::Store("claimed message disappeared".into()))?;
+            message.state = MessageDeliveryState::Claimed;
+            transaction.commit()?;
+            Ok(Some(MessageClaim {
+                message,
+                lease_epoch: next_epoch,
+                lease_expires_at,
+            }))
+        })
+        .await
+    }
+
+    async fn finish_message_claim(
+        &self,
+        message_id: &CoordinationMessageId,
+        recipient: &AgentInstanceId,
+        lease_epoch: u64,
+        next_state: MessageDeliveryState,
+        now: i64,
+    ) -> Result<CoordinationMessage, SessionStoreError> {
+        if !MessageDeliveryState::Claimed.can_transition_to(next_state) {
+            return Err(SessionStoreError::Invalid(
+                "invalid claimed-message terminal".into(),
+            ));
+        }
+        let message_id = message_id.clone();
+        let recipient = recipient.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let current_revision = transaction
+                .query_row(
+                    "SELECT revision FROM coordination_messages WHERE message_id=?1",
+                    [&message_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            let next_revision = current_revision
+                .map(|value| checked_u64(value, "message revision"))
+                .transpose()?
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| SessionStoreError::MessageConflict {
+                    message_id: message_id.clone(),
+                    expected: None,
+                    actual: None,
+                })?;
+            let changed = transaction.execute(
+                "UPDATE coordination_messages SET state=?1,lease_owner_instance_id=NULL,
+                 lease_expires_at=NULL,revision=?2,updated_at=?3 WHERE message_id=?4
+                 AND state='claimed' AND lease_owner_instance_id=?5 AND lease_epoch=?6
+                 AND lease_expires_at>?3",
+                params![
+                    encode_message_state(next_state),
+                    checked_i64(next_revision, "message revision")?,
+                    now,
+                    message_id.0,
+                    recipient.0,
+                    checked_i64(lease_epoch, "message lease epoch")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::MessageConflict {
+                    message_id,
+                    expected: current_revision
+                        .map(|value| checked_u64(value, "message revision"))
+                        .transpose()?,
+                    actual: current_revision
+                        .map(|value| checked_u64(value, "message revision"))
+                        .transpose()?,
+                });
+            }
+            let message = load_message(&transaction, &message_id)?
+                .ok_or_else(|| SessionStoreError::Store("finished message disappeared".into()))?;
+            transaction.commit()?;
+            Ok(message)
+        })
+        .await
+    }
 }
 
 fn load_message(
@@ -803,6 +973,17 @@ fn decode_message_state(state: &str) -> Result<MessageDeliveryState, SessionStor
         _ => Err(SessionStoreError::Store(
             "stored message state is invalid".into(),
         )),
+    }
+}
+
+const fn encode_message_state(state: MessageDeliveryState) -> &'static str {
+    match state {
+        MessageDeliveryState::Pending => "pending",
+        MessageDeliveryState::Claimed => "claimed",
+        MessageDeliveryState::Delivered => "delivered",
+        MessageDeliveryState::Acknowledged => "acknowledged",
+        MessageDeliveryState::Expired => "expired",
+        MessageDeliveryState::DeadLetter => "dead_letter",
     }
 }
 
