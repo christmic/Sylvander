@@ -4,13 +4,15 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::ipc::Channel;
+use tauri::{AppHandle, ipc::Channel};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, header};
 use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
 
 use sylvander_api::{UiClientMessage, UiProtocolHello, UiServerMessage};
+
+use crate::host;
 
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -63,6 +65,7 @@ impl Default for DesktopGateway {
 
 #[tauri::command]
 pub(crate) async fn connect_runtime(
+    app: AppHandle,
     events: Channel<DesktopEvent>,
     gateway: tauri::State<'_, DesktopGateway>,
 ) -> Result<(), String> {
@@ -128,8 +131,12 @@ pub(crate) async fn connect_runtime(
                     let Some(inbound) = inbound else { break "runtime_closed" };
                     match decode_message(inbound) {
                         Ok(Some(message)) => {
+                            let notification = host::terminal_notification_body(&message);
                             if events.send(DesktopEvent::Message { message: Box::new(message) }).is_err() {
                                 break "desktop_closed";
+                            }
+                            if let Some(body) = notification {
+                                host::notify_if_backgrounded(&app, body);
                             }
                         }
                         Ok(None) => {}
