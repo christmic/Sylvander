@@ -6,8 +6,8 @@ use crate::agent::run::AuthenticatedSession;
 use crate::storage::session::{
     ExecutionRecoveryAction, ExecutionRecoveryActionId, ExecutionRecoveryActionReceipt,
     ExecutionRecoveryActionTarget, ExecutionRecoveryActionWrite, ModelExecutionPosition,
-    ModelInvocationId, ModelRecoveryReason, ToolExecutionPosition, ToolInvocationId,
-    ToolRecoveryReason, TurnState,
+    ModelInvocationId, ModelRecoveryReason, RecoveryClassification, ToolExecutionPosition,
+    ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite, TurnState,
 };
 
 const RECOVERY_ACTION_LEASE_SECONDS: i64 = 30;
@@ -198,6 +198,8 @@ impl Runtime {
         );
         let mut replayed_tool_calls = 0;
         if receipt.action == ExecutionRecoveryAction::ConfirmNoEffectAndRetry {
+            self.renew_expired_operator_replay_lease(&receipt, now, lease_expires_at)
+                .await?;
             let turn = self
                 .storage
                 .sessions()
@@ -285,5 +287,54 @@ impl Runtime {
             actor.id(),
             &membership.governance.moderator_instance_id,
         )
+    }
+
+    async fn renew_expired_operator_replay_lease(
+        &self,
+        receipt: &ExecutionRecoveryActionReceipt,
+        observed_at: i64,
+        lease_expires_at: i64,
+    ) -> Result<(), RuntimeError> {
+        let ExecutionRecoveryActionTarget::Tool { invocation_id } = &receipt.target else {
+            return Err(RuntimeError::Coordination(
+                "retry recovery action does not target a tool".into(),
+            ));
+        };
+        let call = self
+            .storage
+            .sessions()
+            .interrupted_tool_calls()
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .into_iter()
+            .find(|call| call.invocation_id == *invocation_id);
+        let Some(call) = call else {
+            return Ok(());
+        };
+        if call.recovery_decision != Some(ToolRecoveryDecision::RetrySameInvocation)
+            || call.recovery_reason != Some(ToolRecoveryReason::OperatorConfirmedNoEffect)
+            || call
+                .recovery_lease_expires_at
+                .is_some_and(|expires_at| expires_at > observed_at)
+        {
+            return Ok(());
+        }
+        self.storage
+            .sessions()
+            .classify_tool_recovery(ToolRecoveryWrite {
+                invocation_id: call.invocation_id,
+                expected_revision: call.ledger_revision,
+                recovery_owner: receipt.action_id.as_str().to_owned(),
+                observed_at,
+                lease_expires_at,
+                classification: RecoveryClassification::reconciled(
+                    ToolRecoveryDecision::RetrySameInvocation,
+                    ToolRecoveryReason::OperatorConfirmedNoEffect,
+                    false,
+                ),
+            })
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        Ok(())
     }
 }
