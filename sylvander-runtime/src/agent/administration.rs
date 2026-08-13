@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::agent::cognition::CognitionConfig;
 use crate::agent_definition::{
     AgentSpec, BehaviorConfig, McpServerConfig, McpStreamableHttpConfig, MemoryStoreConfig,
     ModelConfig, PersonaConfig, ToolPresentationConfig, ToolRef, UiCommandConfig,
@@ -247,6 +248,7 @@ pub(crate) fn definition_from_draft(
                 temperature: draft.temperature,
                 max_tokens: draft.max_tokens,
             },
+            cognition: CognitionConfig::default(),
             tools,
             memory_stores: draft
                 .memory_stores

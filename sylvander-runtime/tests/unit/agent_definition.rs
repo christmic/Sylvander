@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::cognition::{CognitionConfig, CognitiveRole, CognitiveRoleBinding};
 
 // -- builder --
 
@@ -70,6 +71,36 @@ fn builder_defaults() {
     assert_eq!(spec.behavior.max_retries, 3);
     assert_eq!(spec.model.provider, "anthropic");
     assert!(spec.model.allowed_models.is_empty());
+    assert!(spec.cognition.roles.is_empty());
+}
+
+#[test]
+fn cognition_round_trips_without_creating_an_agent_identity() {
+    let auxiliary = ModelSelection {
+        provider_id: "secondary".into(),
+        model_id: "fast".into(),
+    };
+    let spec = AgentSpec::builder()
+        .id("cognitive")
+        .name("Cognitive Agent")
+        .model_name("primary")
+        .allowed_model("anthropic", "primary")
+        .allowed_model("secondary", "fast")
+        .cognition(CognitionConfig {
+            roles: vec![CognitiveRoleBinding {
+                role: CognitiveRole::FastDraft,
+                model: auxiliary.clone(),
+            }],
+            max_auxiliary_calls: 1,
+        })
+        .build()
+        .unwrap();
+
+    spec.cognition.validate(&spec.model.allowed_models).unwrap();
+    let encoded = toml::to_string_pretty(&spec).unwrap();
+    let restored: AgentSpec = toml::from_str(&encoded).unwrap();
+    assert_eq!(restored.cognition.roles[0].model, auxiliary);
+    assert_eq!(restored.id, AgentId::new("cognitive"));
 }
 
 // -- TOML --

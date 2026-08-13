@@ -17,6 +17,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use sylvander_llm_core::{ModelCapabilities, ModelInfo, ModelRef};
 
+use super::cognition::CognitionConfig;
+
 // ---------------------------------------------------------------------------
 // ID types
 // ---------------------------------------------------------------------------
@@ -215,6 +217,10 @@ pub struct AgentSpec {
     /// Model selection configuration.
     #[serde(default)]
     pub model: ModelConfig,
+    /// Optional bounded model roles inside this Agent. They do not create
+    /// additional Agent identities or coordination participants.
+    #[serde(default)]
+    pub cognition: CognitionConfig,
     /// Tool references (built-in + MCP).
     #[serde(default)]
     pub tools: Vec<ToolRef>,
@@ -275,6 +281,7 @@ pub struct AgentSpecBuilder {
     name: Option<String>,
     persona: PersonaConfig,
     model: ModelConfig,
+    cognition: CognitionConfig,
     tools: Vec<ToolRef>,
     memory_stores: Vec<MemoryStoreConfig>,
     ui_commands: Vec<UiCommandConfig>,
@@ -329,6 +336,13 @@ impl AgentSpecBuilder {
     #[must_use]
     pub fn model(mut self, model: ModelConfig) -> Self {
         self.model = model;
+        self
+    }
+
+    /// Set the internal cognition profile.
+    #[must_use]
+    pub fn cognition(mut self, cognition: CognitionConfig) -> Self {
+        self.cognition = cognition;
         self
     }
 
@@ -444,6 +458,7 @@ impl AgentSpecBuilder {
             name,
             persona: self.persona,
             model: self.model,
+            cognition: self.cognition,
             tools: self.tools,
             memory_stores: self.memory_stores,
             ui_commands: self.ui_commands,

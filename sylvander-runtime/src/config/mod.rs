@@ -1537,6 +1537,16 @@ fn validate_agent_model_catalog(
             ));
         }
     }
+    if let Err(error) = agent
+        .spec
+        .cognition
+        .validate(&agent.spec.model.allowed_models)
+    {
+        errors.push(format!(
+            "Agent {} cognition configuration is invalid: {error}",
+            agent.spec.id
+        ));
+    }
 }
 
 fn validate_channel(channel: &ChannelInstanceConfig, errors: &mut Vec<String>) {
