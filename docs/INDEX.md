@@ -46,6 +46,8 @@ Day-2 operator docs for keeping Sylvander production-ready.
   log inspection, and common triage.
 - [recovery-drills.md](recovery-drills.md) — restart, channel, worktree,
   memory, and release-recovery drills to run before each release.
+- [agent-execution-recovery.md](agent-execution-recovery.md) — normative
+  crash-safe tool replay, durable execution ledger, and Agent continuation.
 - [release-closure.md](release-closure.md) — current release scope,
   reproducible gates, and residual-risk non-claims.
 - [performance-verification.md](performance-verification.md) —
