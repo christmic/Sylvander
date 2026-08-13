@@ -825,6 +825,19 @@ fn esc_interrupts_active_turn_without_quitting() {
 }
 
 #[test]
+fn runtime_turn_started_confirms_authoritative_active_state() {
+    let mut state = AppState::new();
+    state.turn_active = false;
+
+    state.apply(DomainEvent::TurnStarted {
+        turn_id: "turn-1".into(),
+    });
+
+    assert!(state.turn_active);
+    assert!(state.status.contains("turn-1"));
+}
+
+#[test]
 fn interrupted_turn_settles_partial_output_and_pending_tools() {
     let mut state = AppState::new();
     state.turn_active = true;
