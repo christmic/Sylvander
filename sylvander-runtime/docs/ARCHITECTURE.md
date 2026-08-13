@@ -152,7 +152,8 @@ crate without retaining a second production path.
   sandbox selection, server lifecycles, and governed results. `mcp_stdio`
   implements JSON-RPC, discovery, cancellation, health, and reconnection over
   Runtime's persistent-process port; production code has no host-spawn path.
-  Immutable per-turn MCP tool snapshots remain the next integration boundary.
+  Discovered tools are composed through Agent's neutral Session-extension
+  boundary and frozen with their exact authorization gateway for each turn.
 - `self_change` runs evidence-backed, isolated experiments and requires a
   distinct human merge gate.
 

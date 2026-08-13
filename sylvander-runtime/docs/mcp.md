@@ -272,8 +272,14 @@ named environment's isolation truth, constructs read/write workspace
 authority, starts and initializes one client per Session, and Session detach
 awaits graceful close or complete process-tree termination.
 
-The remaining production gap is turn integration: discovered MCP tools are not
-yet merged as a generation-bound immutable `SessionToolSnapshot`. Native
-sandbox, fixed observability events, and Streamable HTTP also remain pending.
-Therefore the process boundary and Session ownership are implemented, while
-model-visible MCP exposure remains intentionally unavailable.
+Discovered catalogs are now composed with the Agent-revision registry through
+Agent's provider-neutral Session-extension boundary. Route collisions and
+gateway drift fail closed. Runtime installs the combined registry and exact
+audited invocation gateway under one Session identity; Agent freezes that pair
+once at turn admission. A prepared MCP executor records its connection
+generation and refuses to route through a replacement generation.
+
+Native sandbox, fixed MCP-specific observability events, and Streamable HTTP
+remain pending. OCI stdio MCP now has the required Session ownership,
+generation-bound per-turn exposure, and process isolation needed for production
+composition.
