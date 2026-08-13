@@ -55,6 +55,11 @@ async fn sessions_keep_distinct_ownership_before_servers_are_configured() {
     assert_eq!(first.server_count, 0);
     assert_eq!(second.server_count, 0);
     assert!(first.configured && second.configured);
+    assert!(
+        service
+            .tool_registry(&SessionId::new("session-a"))
+            .is_some_and(|tools| tools.is_empty())
+    );
 }
 
 #[tokio::test]
@@ -69,6 +74,7 @@ async fn detach_removes_the_session_before_drain() {
     service.detach(&session_id).await;
 
     assert!(service.inspect(&session_id).is_none());
+    assert!(service.tool_registry(&session_id).is_none());
 }
 
 #[tokio::test]

@@ -106,6 +106,12 @@ pub(crate) enum McpError {
         method: String,
         message: String,
     },
+    #[error("MCP server {server} connection generation changed from {expected} to {actual}")]
+    StaleGeneration {
+        server: String,
+        expected: u64,
+        actual: u64,
+    },
 }
 
 #[derive(Clone)]
@@ -596,6 +602,19 @@ impl McpStdioClient {
         }
     }
 
+    fn ensure_generation(&self, expected: u64) -> Result<(), McpError> {
+        let actual = self.inner.generation.load(Ordering::Acquire);
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(McpError::StaleGeneration {
+                server: self.inner.server_name.clone(),
+                expected,
+                actual,
+            })
+        }
+    }
+
     async fn reconnect_if_current(&self, observed_generation: u64) -> Result<(), McpError> {
         let _reconnect = self.inner.reconnect.lock().await;
         if self.inner.generation.load(Ordering::Acquire) != observed_generation {
@@ -954,6 +973,7 @@ pub(crate) struct McpTool {
     remote_name: String,
     description: String,
     input_schema: InputSchema,
+    generation: u64,
 }
 
 impl McpTool {
@@ -992,6 +1012,7 @@ impl McpTool {
             });
         }
         Ok(Self {
+            generation: client.inner.generation.load(Ordering::Acquire),
             client,
             name,
             remote_name,
@@ -1020,6 +1041,9 @@ impl ToolExecutor for McpTool {
         call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         self.client
+            .ensure_generation(self.generation)
+            .map_err(|error| ToolError::Other(error.to_string()))?;
+        self.client
             .call_tool(
                 &self.remote_name,
                 call.input().clone(),
@@ -1045,6 +1069,7 @@ struct McpResourceTool {
     client: McpStdioClient,
     name: String,
     operation: McpResourceOperation,
+    generation: u64,
 }
 
 impl McpResourceTool {
@@ -1055,6 +1080,7 @@ impl McpResourceTool {
         };
         let name = namespaced_tool_name(&client.inner.server_name, remote_name);
         Self {
+            generation: client.inner.generation.load(Ordering::Acquire),
             client,
             name,
             operation,
@@ -1104,6 +1130,9 @@ impl ToolExecutor for McpResourceTool {
         ctx: &ToolContext,
         call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
+        self.client
+            .ensure_generation(self.generation)
+            .map_err(|error| ToolError::Other(error.to_string()))?;
         match self.operation {
             McpResourceOperation::List => {
                 self.client

@@ -372,10 +372,17 @@ async fn transport_failure_reconnects_for_the_next_tool_call_without_replaying_i
         .await
         .expect_err("crashed process must fail the in-flight call");
     assert!(matches!(error, ToolError::Other(_)));
-    let recovered = tool
+    let stale = tool
         .execute(&context, json!({ "value": "after-reconnect" }))
         .await
-        .expect("the next call uses the replacement process");
+        .expect_err("prepared tool remains bound to its original generation");
+    assert!(stale.to_string().contains("generation changed"));
+    let recovered = client
+        .current_tools()
+        .remove(0)
+        .execute(&context, json!({ "value": "after-reconnect" }))
+        .await
+        .expect("fresh catalog tool uses replacement generation");
     assert_eq!(
         recovered.content.lines().next(),
         Some("echo:after-reconnect")
