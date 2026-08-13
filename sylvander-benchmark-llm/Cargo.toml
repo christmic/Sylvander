@@ -1,5 +1,5 @@
 [package]
-name = "sylvander-testbench-llm"
+name = "sylvander-benchmark-llm"
 description = "Credential-gated and fault-injected conformance benches for Sylvander LLM adapters"
 version.workspace = true
 edition.workspace = true

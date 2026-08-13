@@ -1,8 +1,8 @@
-# `sylvander-testbench-llm`
+# `sylvander-benchmark-llm`
 
 ## Ownership
 
-`sylvander-testbench-llm` is a non-production, high-dimensional acceptance and
+`sylvander-benchmark-llm` is a non-production, high-dimensional acceptance and
 comparison module. Its atomic coordinate is:
 
 ```text
@@ -31,13 +31,13 @@ Each `sylvander-llm-*` provider crate retains its own:
 3. narrowly scoped, ignored real-API tests proving that the adapter still
    speaks its declared protocol.
 
-The testbench consumes those already-tested public adapters and answers a
+The benchmark consumes those already-tested public adapters and answers a
 different question: how a declared set of models and providers behaves across
-the same scenario set. A passing testbench cell cannot compensate for a failed
+the same scenario set. A passing benchmark cell cannot compensate for a failed
 provider test, and a passing provider test is not a cross-model benchmark.
 
 Agent owns retry policy, while Runtime owns durable process recovery. The
-testbench may compose those public boundaries to measure retry and recovery,
+benchmark may compose those public boundaries to measure retry and recovery,
 but the implementation and focused tests stay in their owning crates.
 
 ## Matrix semantics
@@ -59,7 +59,7 @@ The runner separates review from execution. `plan` expands and emits only
 content-safe coordinates without resolving credentials or dispatching network
 requests. `run` is the explicit, potentially billable operation.
 
-Repository-tracked templates live under `sylvander-testbench-llm/matrices`:
+Repository-tracked templates live under `sylvander-benchmark-llm/matrices`:
 
 - `live.example.json` demonstrates multiple providers per protocol, multiple
   protocols per provider, multiple models per binding, and explicit model
@@ -76,8 +76,8 @@ Repository-tracked templates live under `sylvander-testbench-llm/matrices`:
 Review a completed matrix before executing it:
 
 ```sh
-cargo run -p sylvander-testbench-llm --bin sylvander-llm-bench -- plan path/to/matrix.json
-cargo run -p sylvander-testbench-llm --bin sylvander-llm-bench -- run path/to/matrix.json
+cargo run -p sylvander-benchmark-llm --bin sylvander-llm-bench -- plan path/to/matrix.json
+cargo run -p sylvander-benchmark-llm --bin sylvander-llm-bench -- run path/to/matrix.json
 ```
 
 `run` is serial and exits non-zero for `failed`, `not_run`, or
@@ -87,8 +87,8 @@ cargo run -p sylvander-testbench-llm --bin sylvander-llm-bench -- run path/to/ma
 
 The crate may depend on `sylvander-llm-core`, current provider adapters, and the
 public Agent/Runtime boundaries required by a measured scenario. No production
-crate may depend on `sylvander-testbench-llm`; dependency direction is always
-production to testbench consumer, never the reverse.
+crate may depend on `sylvander-benchmark-llm`; dependency direction is always
+production to benchmark consumer, never the reverse.
 
 Secrets enter only through an explicitly named environment-variable binding.
 The matrix stores that variable's name, never its value. Credentials are never
@@ -97,9 +97,9 @@ represented by the result schema.
 ## Verification
 
 ```sh
-cargo test -p sylvander-testbench-llm --locked
-cargo clippy -p sylvander-testbench-llm --all-targets --locked -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-testbench-llm --no-deps --locked
+cargo test -p sylvander-benchmark-llm --locked
+cargo clippy -p sylvander-benchmark-llm --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-benchmark-llm --no-deps --locked
 ```
 
 The complete case matrix and live configuration contract are documented in

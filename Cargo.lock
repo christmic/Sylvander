@@ -2865,6 +2865,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "sylvander-benchmark-agent"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sylvander-agent",
+ "sylvander-llm-core",
+ "sylvander-llm-openai",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "sylvander-benchmark-llm"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sylvander-agent",
+ "sylvander-llm-anthropic",
+ "sylvander-llm-core",
+ "sylvander-llm-dashscope",
+ "sylvander-llm-openai",
+ "sylvander-runtime",
+ "tempfile",
+ "tokio",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "sylvander-channel"
 version = "0.1.0"
 dependencies = [
@@ -3098,42 +3134,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "sylvander-testbench-agent"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures-util",
- "serde",
- "serde_json",
- "sylvander-agent",
- "sylvander-llm-core",
- "sylvander-llm-openai",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "sylvander-testbench-llm"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "serde",
- "serde_json",
- "sylvander-agent",
- "sylvander-llm-anthropic",
- "sylvander-llm-core",
- "sylvander-llm-dashscope",
- "sylvander-llm-openai",
- "sylvander-runtime",
- "tempfile",
- "tokio",
- "url",
- "wiremock",
 ]
 
 [[package]]

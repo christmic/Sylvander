@@ -131,9 +131,9 @@ and this index in the same change.
   latest wire schema, identifiers, negotiation, and generated contracts.
 - [module-sylvander-llm-core.md](module-sylvander-llm-core.md) —
   provider-neutral model requests, streaming, capabilities, and errors.
-- [module-sylvander-testbench-llm.md](module-sylvander-testbench-llm.md) —
+- [module-sylvander-benchmark-llm.md](module-sylvander-benchmark-llm.md) —
   live LLM conformance, fault injection, and machine-readable evidence.
-- [module-sylvander-testbench-agent.md](module-sylvander-testbench-agent.md) —
+- [module-sylvander-benchmark-agent.md](module-sylvander-benchmark-agent.md) —
   external Agent evaluation adapters, ATIF trajectories, and scoring ownership.
 - [agent-benchmark-program.md](agent-benchmark-program.md) — versioned Harbor,
   Terminal-Bench, SWE-bench, and τ³-bench evaluation strategy.

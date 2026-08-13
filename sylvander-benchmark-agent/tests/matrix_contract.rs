@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use sylvander_testbench_agent::matrix::{
+use sylvander_benchmark_agent::matrix::{
     AgentBenchMatrix, AgentCapability, Applicability, BenchmarkBinding, DeploymentBinding,
     TaskBinding,
 };

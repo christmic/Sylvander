@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{BufReader, Write as _};
 use std::path::Path;
 
-use sylvander_testbench_agent::matrix::AgentBenchMatrix;
+use sylvander_benchmark_agent::matrix::AgentBenchMatrix;
 
 fn main() {
     if let Err(error) = run(env::args().skip(1).collect()) {

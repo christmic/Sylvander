@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::path::PathBuf;
 
-use sylvander_testbench_llm::{
+use sylvander_benchmark_llm::{
     Applicability, BenchMatrix, BenchScenario, ModelBinding, ProtocolBinding,
 };
 

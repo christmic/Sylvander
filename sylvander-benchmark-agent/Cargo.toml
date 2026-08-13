@@ -1,5 +1,5 @@
 [package]
-name = "sylvander-testbench-agent"
+name = "sylvander-benchmark-agent"
 description = "Standards-compatible benchmark adapters and trajectory evidence for Sylvander Agent"
 version.workspace = true
 edition.workspace = true

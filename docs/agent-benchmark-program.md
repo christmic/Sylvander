@@ -44,7 +44,7 @@ benchmark
   × run ordinal
 ```
 
-Task rewards come only from the benchmark's verifier. The testbench may derive
+Task rewards come only from the benchmark's verifier. The benchmark may derive
 aggregate pass rate, mean reward, latency, iterations, tool calls, token usage,
 and failure taxonomy, but it must not replace or reinterpret the benchmark's
 primary metric. Repeated runs are retained individually before aggregation.
@@ -76,4 +76,4 @@ adapter would measure the provider rather than Sylvander and is forbidden.
 Closing this gap requires an Agent/Runtime feature with focused module tests:
 an externally executed tool boundary that preserves immutable turn authority,
 call correlation, authorization, durable suspension, and restart-safe resume.
-Only then may the testbench add the thin τ³ `HalfDuplexAgent` bridge.
+Only then may the benchmark add the thin τ³ `HalfDuplexAgent` bridge.

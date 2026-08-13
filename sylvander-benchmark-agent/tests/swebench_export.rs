@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use sylvander_testbench_agent::swebench::SweBenchPrediction;
+use sylvander_benchmark_agent::swebench::SweBenchPrediction;
 
 fn git(workspace: &std::path::Path, arguments: &[&str]) {
     let output = Command::new("git")

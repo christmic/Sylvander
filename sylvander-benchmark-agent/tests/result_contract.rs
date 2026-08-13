@@ -1,5 +1,5 @@
-use sylvander_testbench_agent::matrix::AgentMatrixCoordinate;
-use sylvander_testbench_agent::result::{AgentBenchResult, AgentBenchStatus, RepositoryState};
+use sylvander_benchmark_agent::matrix::AgentMatrixCoordinate;
+use sylvander_benchmark_agent::result::{AgentBenchResult, AgentBenchStatus, RepositoryState};
 
 fn coordinate() -> AgentMatrixCoordinate {
     AgentMatrixCoordinate {

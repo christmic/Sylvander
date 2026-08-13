@@ -1,5 +1,5 @@
 use serde_json::{Map, json};
-use sylvander_testbench_agent::{
+use sylvander_benchmark_agent::{
     Agent, Metrics, Observation, ObservationResult, Source, Step, ToolCall, Trajectory,
 };
 

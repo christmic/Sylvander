@@ -6,7 +6,7 @@ use std::io::{BufReader, Write as _};
 use std::path::Path;
 use std::time::Duration;
 
-use sylvander_testbench_llm::{
+use sylvander_benchmark_llm::{
     BenchMatrix, BenchStatus, LiveLimits, ProtocolBinding, RepositoryState, run_crash_fixture,
     run_live_cell, run_process_interruption_cell,
 };
@@ -42,7 +42,7 @@ async fn run(arguments: Vec<String>) -> Result<bool, String> {
     }
 }
 
-fn emit_plan(cells: &[sylvander_testbench_llm::MatrixCell]) -> Result<bool, String> {
+fn emit_plan(cells: &[sylvander_benchmark_llm::MatrixCell]) -> Result<bool, String> {
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
     for cell in cells {
@@ -58,7 +58,7 @@ fn emit_plan(cells: &[sylvander_testbench_llm::MatrixCell]) -> Result<bool, Stri
 
 async fn execute(
     matrix: &BenchMatrix,
-    cells: &[sylvander_testbench_llm::MatrixCell],
+    cells: &[sylvander_benchmark_llm::MatrixCell],
 ) -> Result<bool, String> {
     let repository = RepositoryState::discover();
     let limits = LiveLimits {
@@ -70,7 +70,7 @@ async fn execute(
     for cell in cells {
         let binding = binding_for(matrix, cell)?;
         let result = if cell.coordinate.scenario
-            == sylvander_testbench_llm::BenchScenario::ProcessInterruption
+            == sylvander_benchmark_llm::BenchScenario::ProcessInterruption
         {
             run_process_interruption_cell(binding, cell, repository.clone()).await
         } else {
@@ -91,7 +91,7 @@ async fn execute(
 
 fn binding_for<'a>(
     matrix: &'a BenchMatrix,
-    cell: &sylvander_testbench_llm::MatrixCell,
+    cell: &sylvander_benchmark_llm::MatrixCell,
 ) -> Result<&'a ProtocolBinding, String> {
     matrix
         .bindings

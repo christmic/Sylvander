@@ -15,11 +15,11 @@ explicitly configured provider adapter through the provider-neutral
 coordinates.
 
 Provider crates retain their unit, fixture integration, and narrow ignored
-real-API tests. The testbench neither moves nor replaces them. Runtime owns
+real-API tests. The benchmark neither moves nor replaces them. Runtime owns
 configuration, credential resolution, deadlines, durable turn state, and
 process recovery. Provider crates own request encoding, HTTP/SSE handling,
 error classification, and exact usage conversion. Agent owns the single retry
-budget for failures that occur before a stream opens. The testbench owns only
+budget for failures that occur before a stream opens. The benchmark owns only
 matrix orchestration, applicability, scoring, comparison, and evidence.
 
 This ownership creates two different recovery claims:

@@ -4,7 +4,7 @@ use std::env;
 use std::fs::File;
 use std::path::PathBuf;
 
-use sylvander_testbench_agent::swebench::SweBenchPrediction;
+use sylvander_benchmark_agent::swebench::SweBenchPrediction;
 
 fn main() {
     if let Err(error) = run(env::args().skip(1).collect()) {

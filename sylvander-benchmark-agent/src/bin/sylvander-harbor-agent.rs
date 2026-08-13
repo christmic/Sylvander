@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use sylvander_benchmark_agent::harbor::{HarborRunConfig, run_harbor_task};
 use sylvander_llm_openai::{
     OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
 };
-use sylvander_testbench_agent::harbor::{HarborRunConfig, run_harbor_task};
 use url::Url;
 
 #[tokio::main]
@@ -68,7 +68,7 @@ async fn run() -> Result<(), String> {
         .steps
         .iter()
         .rev()
-        .find(|step| step.source == sylvander_testbench_agent::Source::Agent)
+        .find(|step| step.source == sylvander_benchmark_agent::Source::Agent)
         .map_or("", |step| step.message.as_str());
     let encoded = serde_json::to_vec_pretty(&trajectory)
         .map_err(|error| format!("failed to encode trajectory: {error}"))?;

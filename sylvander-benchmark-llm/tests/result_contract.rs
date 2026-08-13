@@ -1,4 +1,4 @@
-use sylvander_testbench_llm::{
+use sylvander_benchmark_llm::{
     Applicability, BenchObservation, BenchResult, BenchScenario, BenchStatus, MatrixCell,
     MatrixCoordinate, PassMetrics, RepositoryState, endpoint_origin,
 };

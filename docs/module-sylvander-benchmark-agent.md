@@ -1,8 +1,8 @@
-# `sylvander-testbench-agent`
+# `sylvander-benchmark-agent`
 
 ## Ownership
 
-`sylvander-testbench-agent` is Sylvander's non-production Agent evaluation
+`sylvander-benchmark-agent` is Sylvander's non-production Agent evaluation
 module. Its atomic comparison coordinate is:
 
 ```text
@@ -14,7 +14,7 @@ export, verifier-result ingestion, normalized scoring, and regression evidence.
 It does not own Agent policy, Runtime Session admission, provider protocols,
 tool implementations, execution sandboxes, or benchmark task truth.
 
-No production crate may depend on this crate. The testbench consumes public
+No production crate may depend on this crate. The benchmark consumes public
 Agent/Runtime/provider boundaries and external benchmark contracts; dependency
 direction never points from production into evaluation code.
 
@@ -25,7 +25,7 @@ event order, tool authorization, iteration limits, and terminal outcomes.
 Agent/Runtime integration tests prove composed execution, durable Session
 commit, interruption, recovery, and concrete execution adapters.
 
-The Agent testbench asks a different question: whether an exact Sylvander
+The Agent benchmark asks a different question: whether an exact Sylvander
 revision can complete independently verified tasks under a named external
 harness and dataset version, with comparable cost, latency, steps, and
 trajectory evidence. A benchmark pass cannot compensate for a failed module
@@ -90,9 +90,9 @@ and billable model calls are never triggered by `cargo test`.
 ## Verification
 
 ```sh
-cargo test -p sylvander-testbench-agent --locked
-cargo clippy -p sylvander-testbench-agent --all-targets --locked -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-testbench-agent --no-deps --locked
+cargo test -p sylvander-benchmark-agent --locked
+cargo clippy -p sylvander-benchmark-agent --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-benchmark-agent --no-deps --locked
 ```
 
 External live runs additionally validate exported trajectories with Harbor's

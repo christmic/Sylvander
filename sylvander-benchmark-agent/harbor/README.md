@@ -18,7 +18,7 @@ harbor trials start \
   --agent-env SYLVANDER_HARBOR_BASE_URL=https://api.minimaxi.com/v1
 ```
 
-Add `sylvander-testbench-agent/harbor` to Python's import path. Credentials are
+Add `sylvander-benchmark-agent/harbor` to Python's import path. Credentials are
 passed through Harbor's Agent environment mechanism and never appear in the
 command, trajectory, final answer, or aggregate evidence.
 

@@ -2,10 +2,10 @@ use serde_json::json;
 use sylvander_agent::conversation::ConversationSnapshot;
 use sylvander_agent::event::AgentEvent;
 use sylvander_agent::outcome::AgentOutcome;
+use sylvander_benchmark_agent::TrajectoryRecorder;
 use sylvander_llm_core::{
     ContentBlock, ModelRef, ModelResponse, StopReason, TokenUsage, TokenUsageDetails,
 };
-use sylvander_testbench_agent::TrajectoryRecorder;
 
 fn usage() -> TokenUsage {
     TokenUsage {

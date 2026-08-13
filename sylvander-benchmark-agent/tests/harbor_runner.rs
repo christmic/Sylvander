@@ -2,11 +2,11 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use sylvander_benchmark_agent::harbor::{HarborRunConfig, run_harbor_task};
 use sylvander_llm_core::{
     ContentBlock, ModelEventStream, ModelProvider, ModelRef, ModelRequest, ModelResponse,
     ModelStreamEvent, ProviderError, ProviderFuture, StopReason, TokenUsage, TokenUsageDetails,
 };
-use sylvander_testbench_agent::harbor::{HarborRunConfig, run_harbor_task};
 
 struct ScriptedProvider {
     responses: Mutex<VecDeque<ModelResponse>>,
@@ -112,6 +112,6 @@ async fn rejects_execution_without_harness_isolation_attestation() {
 
     assert!(matches!(
         result,
-        Err(sylvander_testbench_agent::RecorderError::HarnessNotIsolated)
+        Err(sylvander_benchmark_agent::RecorderError::HarnessNotIsolated)
     ));
 }

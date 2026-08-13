@@ -1,4 +1,4 @@
-//! Testbench orchestration check; detailed wire assertions remain provider-owned.
+//! Benchmark orchestration check; detailed wire assertions remain provider-owned.
 
 use std::fs;
 use std::process::Command;
