@@ -117,7 +117,7 @@ pub enum ModelLifecycle {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RuntimeModelInfo {
-    pub current_model: String,
+    pub current: ModelSelection,
     pub reasoning_effort: ReasoningEffort,
     pub models: Vec<ModelDescriptor>,
 }

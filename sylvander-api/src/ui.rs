@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApprovalScope, MessageAttachment, PermissionProfile, PlanDecision, ReasoningEffort,
+    AgentId, ApprovalScope, MessageAttachment, PermissionProfile, PlanDecision, ReasoningEffort,
     UiProtocolHello,
 };
 
@@ -83,7 +83,10 @@ pub enum UiClientMessage {
     IdentityBinding {
         request: Arc<crate::IdentityBindingRequest>,
     },
-    ListSessions,
+    ListSessions {
+        #[serde(default)]
+        include_archived: bool,
+    },
     LoadSession {
         session_id: String,
     },
@@ -110,7 +113,9 @@ pub enum UiClientMessage {
         #[serde(default)]
         checkpoint: bool,
     },
-    GetRuntimeInfo,
+    GetRuntimeInfo {
+        agent_id: AgentId,
+    },
     GetContext {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -301,6 +306,7 @@ pub enum UiServerMessage {
         reason: String,
     },
     SessionsList {
+        include_archived: bool,
         sessions: Vec<UiSessionInfo>,
     },
     SessionHistory {
@@ -353,18 +359,7 @@ pub enum UiServerMessage {
         response: Arc<crate::IdentityBindingResponse>,
     },
     RuntimeInfo {
-        model: crate::ModelSelection,
-        #[serde(default)]
-        reasoning_effort: ReasoningEffort,
-        #[serde(default)]
-        models: Vec<crate::ModelDescriptor>,
-        #[serde(default)]
-        permissions: PermissionProfile,
-        capabilities: u8,
-        approval_enabled: bool,
-        max_attachment_bytes: usize,
-        #[serde(default)]
-        platform: crate::PlatformSnapshot,
+        snapshot: RuntimeUiSnapshot,
     },
     ContextReport {
         report: crate::ContextReport,
@@ -432,6 +427,24 @@ pub struct UiSessionInfo {
     pub label: String,
     pub workspace: String,
     pub last_seen_secs: u64,
+    pub archived: bool,
+}
+
+/// Runtime-owned, redacted state for one visible Agent.
+///
+/// Channels serialize this snapshot unchanged. It deliberately contains no
+/// provider client, credential, tool executor, store, or platform callback.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RuntimeUiSnapshot {
+    pub agent_id: AgentId,
+    pub model: crate::ModelSelection,
+    pub reasoning_effort: ReasoningEffort,
+    pub models: Vec<crate::ModelDescriptor>,
+    pub permissions: PermissionProfile,
+    pub capabilities: u8,
+    pub approval_enabled: bool,
+    pub max_request_bytes: usize,
+    pub platform: crate::PlatformSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

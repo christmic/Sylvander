@@ -2320,7 +2320,13 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         .expect("build");
 
     let initial = run.runtime_model_info().await;
-    assert_eq!(initial.current_model, "claude-sonnet-5-20260601");
+    assert_eq!(
+        initial.current,
+        sylvander_api::ModelSelection {
+            provider_id: "anthropic".into(),
+            model_id: "claude-sonnet-5-20260601".into(),
+        }
+    );
     assert_eq!(initial.models.len(), 2);
     assert!(matches!(
         initial
@@ -2342,7 +2348,13 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         )
         .await
         .expect("select");
-    assert_eq!(selected.current_model, "thinking-model");
+    assert_eq!(
+        selected.current,
+        sylvander_api::ModelSelection {
+            provider_id: "anthropic".into(),
+            model_id: "thinking-model".into(),
+        }
+    );
     assert_eq!(
         selected.reasoning_effort,
         sylvander_api::ReasoningEffort::High
@@ -2359,8 +2371,11 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         .is_err()
     );
     assert_eq!(
-        run.runtime_model_info().await.current_model,
-        "thinking-model"
+        run.runtime_model_info().await.current,
+        sylvander_api::ModelSelection {
+            provider_id: "anthropic".into(),
+            model_id: "thinking-model".into(),
+        }
     );
 }
 
