@@ -38,7 +38,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `PreviewWorkspaceRollback`, `RollbackWorkspace` | complete | two-phase confirmation bound to Runtime turn identity |
 | `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | complete | Runtime diff review and fact-driven accept/discard |
 | `SelectModel`, `SelectPermissions` | complete | provider-qualified catalog and typed permission profile |
-| `Ping` | missing | explicit liveness journey |
+| `Ping` | complete | explicit user-requested liveness round trip |
 
 ## Server events
 
@@ -64,7 +64,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | workspace rollback lifecycle | complete | preview, restored files, and failure |
 | coding Session lifecycle | complete | diff, accepted, discarded, and operation failure |
 | `OperationError`, `BoundaryDenied` | complete | safe operation-specific notice and bounded retry timing |
-| `Pong` | missing | liveness state |
+| `Pong` | complete | checking becomes healthy only on Runtime response |
 
 ## Ordered implementation gates
 

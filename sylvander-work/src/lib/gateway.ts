@@ -31,7 +31,8 @@ export type RuntimeCommand =
   | { type: "preview_workspace_rollback"; session_id: string }
   | { type: "rollback_workspace"; session_id: string; expected_turn_id: string }
   | { type: "get_session_config"; session_id: string }
-  | { type: "update_session_config"; request: RuntimeSessionConfigUpdateRequest };
+  | { type: "update_session_config"; request: RuntimeSessionConfigUpdateRequest }
+  | { type: "ping" };
 
 export type PlanDecision =
   | { decision: "approved" }
@@ -211,6 +212,7 @@ export type RuntimeMessage =
   | { type: "workspace_rollback_completed"; session_id: string; report: { turn_id: string; restored: string[] } }
   | { type: "workspace_rollback_failed"; session_id: string; reason: string }
   | { type: "session_config"; state: RuntimeSessionConfigState }
+  | { type: "pong" }
   | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: ApprovalScope[] }
   | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }
   | { type: "ask_user"; session_id: string; call_id: string; question: string; options: string[]; multi_select: boolean }

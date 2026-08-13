@@ -65,6 +65,7 @@ export interface RuntimeViewState {
     detail?: string;
   };
   sessionConfig?: RuntimeSessionConfigState;
+  liveness: "idle" | "checking" | "healthy";
   diagnostic?: string;
 }
 
@@ -77,6 +78,7 @@ const initialState: RuntimeViewState = {
   tasks: [],
   interruptingSessionIds: [],
   contextRequestPending: false,
+  liveness: "idle",
 };
 
 // Retry scheduling is presentation orchestration only. Each attempt still
@@ -330,6 +332,9 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         if (message.state.session_id === selectedRef.current) {
           setState((current) => ({ ...current, sessionConfig: message.state }));
         }
+        break;
+      case "pong":
+        setState((current) => ({ ...current, liveness: "healthy" }));
         break;
       case "sessions_list": {
         const sessions = message.sessions.map((session) => ({
@@ -917,6 +922,20 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     return submit({ type: "compact", session_id: sessionId });
   }, [state.compaction?.status, submit]);
 
+  const checkLiveness = useCallback(async () => {
+    if (state.liveness === "checking") return;
+    setState((current) => ({ ...current, liveness: "checking" }));
+    try {
+      await submit({ type: "ping" });
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        liveness: "idle",
+        diagnostic: safeDiagnostic(error),
+      }));
+    }
+  }, [state.liveness, submit]);
+
   return {
     state,
     submit,
@@ -928,6 +947,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     interruptTurn,
     requestContext,
     compactContext,
+    checkLiveness,
   };
 }
 

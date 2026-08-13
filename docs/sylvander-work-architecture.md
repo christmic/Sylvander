@@ -249,6 +249,9 @@ provenance. Pinning or restoring inheritance uses explicit `set`/`inherit`
 patches against that revision, so omitted fields—including the redacted,
 write-only system prompt—remain untouched. A later `SessionConfig` is the only
 source of the next revision and displayed provenance.
+The settings surface also exposes an explicit liveness round trip. `Ping`
+enters a checking state and only `Pong` establishes healthy; connection state
+continues to come from the native socket lifecycle.
 
 The Changes inspector never reads Git directly. It requests Runtime's coding
 Session diff, keeps failure alongside the still-reviewable patch, and waits for

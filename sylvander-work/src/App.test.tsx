@@ -514,6 +514,11 @@ describe("Sylvander Work", () => {
         },
       },
     }));
+    act(() => screen.getByRole("button", { name: "Check liveness" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({ type: "ping" }));
+    expect(screen.getByText("Liveness · checking")).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: { type: "pong" } }));
+    expect(await screen.findByText("Liveness · healthy")).toBeTruthy();
   });
 
   it("reviews, accepts, and discards Runtime coding Sessions", async () => {
