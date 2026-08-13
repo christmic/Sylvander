@@ -22,6 +22,23 @@ use sylvander_api::AgentInstanceId;
 
 use crate::agent_definition::SessionId;
 
+/// Stable address of one first-class Agent participant inside a Session.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct AgentSessionKey {
+    pub session_id: SessionId,
+    pub agent_instance_id: AgentInstanceId,
+}
+
+impl AgentSessionKey {
+    #[must_use]
+    pub(crate) fn new(session_id: SessionId, agent_instance_id: AgentInstanceId) -> Self {
+        Self {
+            session_id,
+            agent_instance_id,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -90,6 +107,11 @@ impl SessionContext {
     pub fn append_user_message(&mut self, msg: ChatMessage) {
         self.history.push(msg);
         self.updated_at = now_secs();
+    }
+
+    #[must_use]
+    pub(crate) fn key(&self) -> AgentSessionKey {
+        AgentSessionKey::new(self.session_id.clone(), self.agent_instance_id.clone())
     }
 
     /// Append an assistant [`ModelResponse`] to the history.

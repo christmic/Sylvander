@@ -62,7 +62,7 @@ use crate::agent_definition::{AgentId, SessionId};
 use crate::execution::RuntimeExecutionService;
 use crate::observability::{RuntimeEvent, RuntimePersistenceOperation, RuntimeToolFailureKind};
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
-use crate::session::{SessionMetadata, now_secs};
+use crate::session::{AgentSessionKey, SessionMetadata, now_secs};
 use crate::storage::artifact::ArtifactTurnBinding;
 use crate::storage::session::{
     ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance, ModelIterationStart,
@@ -223,7 +223,10 @@ impl AgentRunInner {
             .sessions
             .read()
             .await
-            .get(&call.session_id)
+            .get(&AgentSessionKey::new(
+                call.session_id.clone(),
+                turn.agent_instance_id.clone(),
+            ))
             .map(|session| session.metadata.clone())
             .ok_or_else(|| {
                 AgentRunError::Configuration("recovery session is not attached".into())
@@ -631,7 +634,10 @@ impl AgentRunInner {
         let session_metadata = {
             let sessions = self.sessions.read().await;
             let ctx = sessions
-                .get(&session_id)
+                .get(&AgentSessionKey::new(
+                    session_id.clone(),
+                    agent_instance_id.clone(),
+                ))
                 .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
             ctx.metadata.clone()
         };
@@ -887,7 +893,10 @@ impl AgentRunInner {
         let history = {
             let mut sessions = self.sessions.write().await;
             let ctx = sessions
-                .get_mut(&session_id)
+                .get_mut(&AgentSessionKey::new(
+                    session_id.clone(),
+                    agent_instance_id.clone(),
+                ))
                 .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
             ctx.append_user_message(user_message);
             ctx.history_snapshot()
@@ -1850,7 +1859,9 @@ impl AgentRunInner {
                 });
         }
         let mut sessions = self.sessions.write().await;
-        if let Some(ctx) = sessions.get_mut(&session_id) {
+        if let Some(ctx) =
+            sessions.get_mut(&AgentSessionKey::new(session_id.clone(), agent_instance_id))
+        {
             ctx.append_assistant_message(msg);
         }
         drop(sessions);

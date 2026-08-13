@@ -175,11 +175,7 @@ impl AgentRun {
             AgentInstanceId::new(format!("moderator:{session_id}")),
             meta,
         );
-        self.inner
-            .sessions
-            .write()
-            .await
-            .insert(session_id.clone(), ctx);
+        self.inner.sessions.write().await.insert(ctx.key(), ctx);
         self.inner
             .authenticated_sessions
             .write()
@@ -2206,7 +2202,7 @@ async fn provider_manual_compaction_uses_backend_factory() {
     let session_id = run.join_session(test_metadata()).await;
     {
         let mut sessions = run.inner.sessions.write().await;
-        let session = sessions.get_mut(&session_id).unwrap();
+        let session = sole_session_context_mut(&mut sessions, &session_id).unwrap();
         for index in 0..6 {
             session.append_user_message(ChatMessage::user(format!("message {index}")));
         }
@@ -2776,7 +2772,10 @@ async fn context_report_separates_window_usage_from_cumulative_accounting() {
         .sessions
         .write()
         .await
-        .get_mut(&session_id)
+        .get_mut(&AgentSessionKey::new(
+            session_id.clone(),
+            AgentInstanceId::new(format!("moderator:{session_id}")),
+        ))
         .expect("session")
         .append_user_message(ChatMessage::user("hello"));
     run.inner.context_usage.write().await.insert(
@@ -3672,18 +3671,33 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
     );
     let session_id = SessionId::new("compact-session");
     let metadata = test_metadata();
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![agent_id.clone()],
+    );
+    let run = qualified_anthropic_run_builder(spec, client)
+        .bus(bus)
+        .session_store(store.clone())
+        .build()
+        .expect("build");
+    stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+    store.save(&stored).await.expect("save");
+    let membership = crate::runtime::initial_session_membership(
+        &stored,
+        stored.effective_config.as_ref().unwrap(),
+    )
+    .unwrap();
     store
-        .save(&StoredSession::new(
-            session_id.clone(),
-            metadata.name.clone(),
-            SessionLifetime::Persistent,
-            metadata.clone(),
-            vec![agent_id.clone()],
-        ))
+        .save_session_membership(&membership, None)
         .await
-        .expect("save");
+        .unwrap();
+    let instance_id = membership.governance.moderator_instance_id;
     let caller =
-        sylvander_api::SessionContext::new(metadata.user_id.clone(), agent_id, session_id.clone());
+        sylvander_api::SessionContext::new(metadata.user_id.clone(), agent_id, session_id.clone())
+            .with_agent_instance(instance_id.clone());
     for index in 0..6 {
         store
             .append_message(
@@ -3699,19 +3713,12 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
             .await
             .expect("append");
     }
-    let run = qualified_anthropic_run_builder(spec, client)
-        .bus(bus)
-        .session_store(store.clone())
-        .build()
-        .expect("build");
-    run.inner.sessions.write().await.insert(
-        session_id.clone(),
-        SessionContext::new(
-            session_id.clone(),
-            AgentInstanceId::new(format!("moderator:{session_id}")),
-            metadata,
-        ),
-    );
+    let context = SessionContext::new(session_id.clone(), instance_id, metadata);
+    run.inner
+        .sessions
+        .write()
+        .await
+        .insert(context.key(), context);
     let history = vec![
         ChatMessage::user("[Earlier conversation summary]\nimportant decisions"),
         ChatMessage::user("recent one"),
@@ -3817,14 +3824,16 @@ async fn raw_session_presence_has_no_trusted_memory_identity() {
         .build()
         .expect("build");
     let session_id = SessionId::new("raw-bus-session");
-    run.inner.sessions.write().await.insert(
+    let context = SessionContext::new(
         session_id.clone(),
-        SessionContext::new(
-            session_id.clone(),
-            AgentInstanceId::new(format!("moderator:{session_id}")),
-            test_metadata(),
-        ),
+        AgentInstanceId::new(format!("moderator:{session_id}")),
+        test_metadata(),
     );
+    run.inner
+        .sessions
+        .write()
+        .await
+        .insert(context.key(), context);
 
     assert!(matches!(
         run.memory_context_for_session(&session_id).await,
@@ -4001,6 +4010,32 @@ async fn join_and_leave_session() {
     assert_eq!(run.list_sessions().await.len(), 1);
     run.leave_session(&sid).await;
     assert!(run.list_sessions().await.is_empty());
+}
+
+#[tokio::test]
+async fn one_session_can_hold_multiple_agent_contexts_without_implicit_selection() {
+    let (spec, client) = test_spec_and_client();
+    let run = qualified_anthropic_run_builder(spec, client)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .build()
+        .unwrap();
+    let session_id = SessionId::new("multi-agent-contexts");
+    for instance in ["moderator", "worker"] {
+        let context = SessionContext::new(
+            session_id.clone(),
+            AgentInstanceId::new(instance),
+            test_metadata(),
+        );
+        run.inner
+            .sessions
+            .write()
+            .await
+            .insert(context.key(), context);
+    }
+
+    assert_eq!(run.list_sessions().await, vec![session_id.clone()]);
+    assert!(run.get_session(&session_id).await.is_none());
+    assert_eq!(run.inner.sessions.read().await.len(), 2);
 }
 
 #[tokio::test]

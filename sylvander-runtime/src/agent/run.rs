@@ -52,7 +52,7 @@ use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::execution::RuntimeExecutionService;
 use crate::observability::RuntimeObservability;
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
-use crate::session::{SessionContext, SessionMetadata, now_secs};
+use crate::session::{AgentSessionKey, SessionContext, SessionMetadata, now_secs};
 use crate::storage::artifact::RuntimeArtifactService;
 #[cfg(test)]
 use crate::storage::session::TurnStart;
@@ -209,7 +209,7 @@ pub(crate) struct AgentRunInner {
     /// Runtime-owned mandatory lifecycle recorder shared across every Agent.
     observability: RuntimeObservability,
     /// Per-session conversation state.
-    sessions: RwLock<HashMap<SessionId, SessionContext>>,
+    sessions: RwLock<HashMap<AgentSessionKey, SessionContext>>,
     /// Sessions whose identity was admitted through this run's private issuer.
     authenticated_sessions: RwLock<HashSet<SessionId>>,
     /// Permanently switches this run from legacy bus admission to Runtime
@@ -249,6 +249,40 @@ pub(crate) struct AgentRunInner {
     active_turns: Mutex<HashMap<SessionId, ActiveTurn>>,
     /// Latest typed Agent-machine state for each currently executing turn.
     turn_snapshots: RwLock<HashMap<SessionId, RuntimeTurnSnapshot>>,
+}
+
+fn sole_session_context<'a>(
+    sessions: &'a HashMap<AgentSessionKey, SessionContext>,
+    session_id: &SessionId,
+) -> Option<&'a SessionContext> {
+    let mut matches = sessions
+        .iter()
+        .filter(|(key, _)| &key.session_id == session_id)
+        .map(|(_, context)| context);
+    let context = matches.next()?;
+    matches.next().is_none().then_some(context)
+}
+
+fn sole_session_context_mut<'a>(
+    sessions: &'a mut HashMap<AgentSessionKey, SessionContext>,
+    session_id: &SessionId,
+) -> Option<&'a mut SessionContext> {
+    let key = {
+        let mut matches = sessions.keys().filter(|key| &key.session_id == session_id);
+        let key = matches.next()?.clone();
+        if matches.next().is_some() {
+            return None;
+        }
+        key
+    };
+    sessions.get_mut(&key)
+}
+
+fn remove_session_contexts(
+    sessions: &mut HashMap<AgentSessionKey, SessionContext>,
+    session_id: &SessionId,
+) {
+    sessions.retain(|key, _| &key.session_id != session_id);
 }
 
 #[derive(Clone)]
@@ -681,13 +715,10 @@ impl AgentRun {
             None => ContextUsage::default(),
         };
         let conversation_items = match session_id {
-            Some(session_id) => self
-                .inner
-                .sessions
-                .read()
-                .await
-                .get(session_id)
-                .map_or(0, SessionContext::len),
+            Some(session_id) => {
+                let sessions = self.inner.sessions.read().await;
+                sole_session_context(&sessions, session_id).map_or(0, SessionContext::len)
+            }
             None => 0,
         };
         let mut sources = Vec::new();
@@ -761,14 +792,12 @@ impl AgentRun {
         {
             return Err(CompactionError::new(CompactionFailureCode::Busy));
         }
-        let mut history = self
-            .inner
-            .sessions
-            .read()
-            .await
-            .get(session_id)
-            .ok_or_else(|| CompactionError::new(CompactionFailureCode::SessionUnavailable))?
-            .history_snapshot();
+        let mut history = {
+            let sessions = self.inner.sessions.read().await;
+            sole_session_context(&sessions, session_id)
+                .ok_or_else(|| CompactionError::new(CompactionFailureCode::SessionUnavailable))?
+                .history_snapshot()
+        };
         if history.len() <= 4 {
             return Err(CompactionError::new(
                 CompactionFailureCode::InsufficientHistory,
@@ -826,7 +855,7 @@ impl AgentRun {
         {
             return Err("interrupt active work before rolling back files".into());
         }
-        if !self.inner.sessions.read().await.contains_key(session_id) {
+        if sole_session_context(&*self.inner.sessions.read().await, session_id).is_none() {
             return Err(format!("unknown session: {session_id}"));
         }
         self.inner
@@ -913,11 +942,8 @@ impl AgentRun {
                 return Err(error);
             }
         };
-        self.inner
-            .sessions
-            .write()
-            .await
-            .insert(lease.session_id.clone(), ctx);
+        let key = ctx.key();
+        self.inner.sessions.write().await.insert(key, ctx);
         Ok(AuthenticatedSession {
             authority: lease.authority,
             session_id: lease.session_id,
@@ -931,7 +957,7 @@ impl AgentRun {
             .write()
             .await
             .remove(session_id);
-        self.inner.sessions.write().await.remove(session_id);
+        remove_session_contexts(&mut *self.inner.sessions.write().await, session_id);
         self.inner
             .authenticated_sessions
             .write()
@@ -985,12 +1011,22 @@ impl AgentRun {
 
     /// List all sessions.
     pub async fn list_sessions(&self) -> Vec<SessionId> {
-        self.inner.sessions.read().await.keys().cloned().collect()
+        let mut sessions = self
+            .inner
+            .sessions
+            .read()
+            .await
+            .keys()
+            .map(|key| key.session_id.clone())
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.0.cmp(&right.0));
+        sessions.dedup();
+        sessions
     }
 
     /// Get a session context.
     pub async fn get_session(&self, session_id: &SessionId) -> Option<SessionContext> {
-        self.inner.sessions.read().await.get(session_id).cloned()
+        sole_session_context(&*self.inner.sessions.read().await, session_id).cloned()
     }
 
     /// Return the latest Agent-machine state while this Session owns a turn.
@@ -1100,7 +1136,7 @@ impl AgentRun {
                                         .sessions
                                         .write()
                                         .await
-                                        .insert(session_id.clone(), context);
+                                        .insert(context.key(), context);
                                     info!(agent_id = %self.inner.id, %session_id, "joined session");
                                 }
                                 Err(error) => {
@@ -1124,7 +1160,10 @@ impl AgentRun {
                             {
                                 continue;
                             }
-                            self.inner.sessions.write().await.remove(session_id);
+                            remove_session_contexts(
+                                &mut *self.inner.sessions.write().await,
+                                session_id,
+                            );
                             self.inner
                                 .authenticated_sessions
                                 .write()
@@ -1253,7 +1292,7 @@ impl AgentRun {
                     let sid = msg.session_id.clone();
                     {
                         let sessions = self.inner.sessions.read().await;
-                        if !sessions.contains_key(&sid) {
+                        if sole_session_context(&sessions, &sid).is_none() {
                             warn!(agent_id = %self.inner.id, %sid, "chat for unknown session");
                             continue;
                         }
@@ -1339,9 +1378,8 @@ impl AgentRun {
             return Err(MemoryStoreError::AccessDenied);
         }
         let sessions = self.inner.sessions.read().await;
-        let session = sessions
-            .get(session_id)
-            .ok_or(MemoryStoreError::AccessDenied)?;
+        let session =
+            sole_session_context(&sessions, session_id).ok_or(MemoryStoreError::AccessDenied)?;
         let execution = AgentExecutionContext::restricted_for(
             session.metadata.user_id.clone(),
             self.inner.id.0.clone(),
@@ -1528,12 +1566,12 @@ impl AgentRunInner {
         history: &[ChatMessage],
         layers: &[sylvander_agent::compress::layer::LayerReport],
     ) -> Result<(), AgentRunError> {
-        let metadata = {
+        let (metadata, agent_instance_id) = {
             let sessions = self.sessions.read().await;
-            let Some(session) = sessions.get(session_id) else {
+            let Some(session) = sole_session_context(&sessions, session_id) else {
                 return Err(AgentRunError::UnknownSession(session_id.clone()));
             };
-            session.metadata.clone()
+            (session.metadata.clone(), session.agent_instance_id.clone())
         };
         if compaction_summary(layers).is_some()
             && let Some(store) = &self.session_store
@@ -1542,7 +1580,8 @@ impl AgentRunInner {
                 metadata.user_id,
                 self.id.clone(),
                 session_id.clone(),
-            );
+            )
+            .with_agent_instance(agent_instance_id);
             let mut replacement = Vec::with_capacity(history.len());
             for (index, message) in history.iter().enumerate() {
                 let content = serde_json::to_value(message).map_err(|_| {
@@ -1572,8 +1611,7 @@ impl AgentRunInner {
                 })?;
         }
         let mut sessions = self.sessions.write().await;
-        let session = sessions
-            .get_mut(session_id)
+        let session = sole_session_context_mut(&mut sessions, session_id)
             .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
         session.history = history.to_vec();
         session.updated_at = now_secs();
