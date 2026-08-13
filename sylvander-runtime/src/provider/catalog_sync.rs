@@ -99,5 +99,5 @@ fn by_identity(models: &[ModelInfo]) -> BTreeMap<String, &ModelInfo> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/provider_catalog_sync.rs"]
+#[path = "../../tests/unit/provider_catalog_sync.rs"]
 mod tests;

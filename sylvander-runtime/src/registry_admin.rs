@@ -18,13 +18,13 @@ use crate::credential_audit::{
     CredentialOperationAuditLedger,
 };
 use crate::credential_registry::{CredentialRegistryError, CredentialSecretResolver};
-use crate::model_registry::ModelRegistryError;
-use crate::provider_registry::ProviderRegistryError;
+use crate::provider::model_registry::ModelRegistryError;
+use crate::provider::registry::ProviderRegistryError;
+use crate::provider::request_scoped::AnthropicProviderFactory;
 use crate::registry_domain::{
     CredentialBindingView, ModelDefinition, ProviderDefinition, SecretReferenceKind,
     StoredRevision, canonicalize_model_capabilities,
 };
-use crate::request_scoped_provider::AnthropicProviderFactory;
 
 pub(crate) struct RegistryAdminService<'a> {
     registry: &'a AgentRegistry,

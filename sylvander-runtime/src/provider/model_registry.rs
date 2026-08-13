@@ -1,11 +1,11 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
+use crate::provider::request_scoped::{
+    AnthropicProviderFactory, ProviderAdapterFactory, ProviderFactoryError,
+};
 use crate::registry_domain::{
     ModelDefinition, ProviderDefinition, StoredRevision, canonical_definition,
-};
-use crate::request_scoped_provider::{
-    AnthropicProviderFactory, ProviderAdapterFactory, ProviderFactoryError,
 };
 
 const MAX_MODEL_PAGE_SIZE: u16 = 100;

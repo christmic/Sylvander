@@ -75,8 +75,6 @@ pub(crate) mod mcp;
 #[allow(dead_code)]
 pub(crate) mod mcp_stdio;
 mod memory_maintenance;
-#[allow(dead_code)] // internal API consumed by model routing/admin batches
-mod model_registry;
 #[cfg(test)]
 #[path = "../tests/unit/model_registry.rs"]
 mod model_registry_tests;
@@ -91,10 +89,10 @@ pub mod principal_binding;
 mod principal_binding_tests;
 /// Explicit translations between Agent prompt evidence and public DTOs.
 pub mod prompt_contract;
+/// Provider catalogs, registry state, and request-scoped credential routing.
+mod provider;
 /// Controlled synchronization of provider model catalogs into the registry.
-pub mod provider_catalog_sync;
-#[allow(dead_code)] // internal API consumed by provider routing/admin batches
-mod provider_registry;
+pub use provider::catalog_sync as provider_catalog_sync;
 #[cfg(test)]
 #[path = "../tests/unit/provider_registry.rs"]
 mod provider_registry_tests;
@@ -117,12 +115,10 @@ mod registry_domain;
 mod registry_domain_tests;
 /// Durable executor-backed Git worktree leases for remote coding sessions.
 pub mod remote_git_worktree;
-#[allow(dead_code)] // wired by registry-backed composition after snapshot resolution
-mod request_scoped_provider;
 #[cfg(test)]
 #[path = "../tests/unit/runtime_external_provider.rs"]
 mod runtime_external_provider_tests;
-pub use request_scoped_provider::{
+pub use provider::request_scoped::{
     ExternalSecretLease, ExternalSecretLeaseError, ExternalSecretLeaseFuture,
     MAX_EXTERNAL_SECRET_LEASE_SECONDS, RenewableExternalSecretProvider, SecretLeaseMetadata,
 };

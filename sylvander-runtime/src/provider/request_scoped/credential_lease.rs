@@ -1,4 +1,4 @@
-//! Renewable, short-lived credential leases used by request-scoped providers.
+//! Renewable, short-lived credential leases used by request-scoped provider execution.
 //!
 //! Mutable secret-provider state is deliberately kept outside immutable
 //! Provider definitions. Every request first reads the active registry
@@ -601,5 +601,5 @@ impl std::fmt::Debug for ZeroingSecret {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/credential_lease.rs"]
+#[path = "../../../tests/unit/credential_lease.rs"]
 mod tests;

@@ -47,15 +47,15 @@ use crate::execution::{
     ExecutionTargetRegistration, RuntimeExecutionService, SshExecutor,
 };
 use crate::guardian_runtime::WorkerToolGatewayFactory;
+use crate::provider::request_scoped::{
+    AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
+    RegistryCredentialSource, RenewableExternalSecretProvider,
+};
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
 #[doc(hidden)]
 pub use crate::registry_domain::ModelCapabilityIssue;
 use crate::registry_domain::{
     CanonicalModelCapability, ModelDefinition, ProviderDefinition, parse_model_capabilities,
-};
-use crate::request_scoped_provider::{
-    AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
-    RegistryCredentialSource, RenewableExternalSecretProvider,
 };
 use crate::storage::artifact::RuntimeArtifactService;
 use crate::storage::session::SessionStore;

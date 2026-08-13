@@ -6,7 +6,7 @@ use tempfile::tempdir;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::config::SecretRef;
-use crate::model_registry::ModelRegistryError;
+use crate::provider::model_registry::ModelRegistryError;
 use crate::registry_domain::{
     ModelDefinition, ProviderDefinition, canonical_definition, canonical_secret_reference,
 };

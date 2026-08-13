@@ -5,8 +5,8 @@ use sylvander_api::ModelLifecycle;
 use crate::agent_registry::AgentRegistry;
 use crate::config::{ConfigError, ServerConfig};
 use crate::credential_registry::CredentialRegistryError;
-use crate::model_registry::ModelRegistryError;
-use crate::provider_registry::ProviderRegistryError;
+use crate::provider::model_registry::ModelRegistryError;
+use crate::provider::registry::ProviderRegistryError;
 use crate::registry_domain::{
     CredentialBindingRevision, ModelCapabilityError, ModelDefinition, ProviderDefinition,
     canonicalize_model_capabilities,
