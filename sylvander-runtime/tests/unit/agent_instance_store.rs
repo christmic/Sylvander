@@ -394,4 +394,51 @@ async fn handoff_proposal_is_validated_persisted_and_deduplicated() {
             ..
         }
     ));
+
+    let awaiting = store
+        .transition_handoff(
+            &handoff.handoff_id,
+            &AgentInstanceId::new("worker-1"),
+            HandoffState::AwaitingArbitration,
+            0,
+            60,
+        )
+        .await
+        .unwrap();
+    assert_eq!(awaiting.revision, 1);
+    let accepted = store
+        .transition_handoff(
+            &handoff.handoff_id,
+            &AgentInstanceId::new("moderator-1"),
+            HandoffState::Accepted,
+            1,
+            70,
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.state, HandoffState::Accepted);
+    let reassigned = store.task(&task.task_id).await.unwrap().unwrap();
+    assert_eq!(
+        reassigned.assigned_to,
+        Some(AgentInstanceId::new("coordinator-1"))
+    );
+    assert_eq!(reassigned.handoff_count, 1);
+    assert_eq!(reassigned.revision, 1);
+    assert!(matches!(
+        store
+            .transition_handoff(
+                &handoff.handoff_id,
+                &AgentInstanceId::new("moderator-1"),
+                HandoffState::Accepted,
+                1,
+                71,
+            )
+            .await
+            .unwrap_err(),
+        SessionStoreError::HandoffConflict {
+            expected: Some(1),
+            actual: Some(2),
+            ..
+        }
+    ));
 }

@@ -46,6 +46,15 @@ pub trait CoordinationStore: Send + Sync {
         &self,
         handoff_id: &HandoffId,
     ) -> Result<Option<TaskHandoff>, SessionStoreError>;
+
+    async fn transition_handoff(
+        &self,
+        handoff_id: &HandoffId,
+        actor: &AgentInstanceId,
+        next_state: HandoffState,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<TaskHandoff, SessionStoreError>;
 }
 
 #[async_trait]
@@ -471,6 +480,134 @@ impl CoordinationStore for SqliteSessionStore {
         let handoff_id = handoff_id.clone();
         self.run(move |connection| load_handoff(connection, &handoff_id))
             .await
+    }
+
+    async fn transition_handoff(
+        &self,
+        handoff_id: &HandoffId,
+        actor: &AgentInstanceId,
+        next_state: HandoffState,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<TaskHandoff, SessionStoreError> {
+        let handoff_id = handoff_id.clone();
+        let actor = actor.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let Some(mut handoff) = load_handoff(&transaction, &handoff_id)? else {
+                return Err(SessionStoreError::HandoffConflict {
+                    handoff_id,
+                    expected: Some(expected_revision),
+                    actual: None,
+                });
+            };
+            if handoff.revision != expected_revision {
+                return Err(SessionStoreError::HandoffConflict {
+                    handoff_id,
+                    expected: Some(expected_revision),
+                    actual: Some(handoff.revision),
+                });
+            }
+            if !handoff.state.can_transition_to(next_state) {
+                return Err(SessionStoreError::Invalid(
+                    "invalid handoff state transition".into(),
+                ));
+            }
+            let authorized = match (handoff.state, next_state) {
+                (HandoffState::Proposed, HandoffState::AwaitingArbitration) => {
+                    actor == handoff.requested_by
+                }
+                (
+                    HandoffState::AwaitingArbitration,
+                    HandoffState::Accepted | HandoffState::Rejected,
+                )
+                | (_, HandoffState::Expired) => actor == handoff.arbitrator_instance_id,
+                (_, HandoffState::Cancelled) => {
+                    actor == handoff.requested_by || actor == handoff.arbitrator_instance_id
+                }
+                _ => false,
+            };
+            if !authorized {
+                return Err(SessionStoreError::Invalid(
+                    "Agent is not authorized for this handoff transition".into(),
+                ));
+            }
+            if now >= handoff.expires_at && next_state != HandoffState::Expired {
+                return Err(SessionStoreError::Invalid(
+                    "expired handoff must be fenced before another decision".into(),
+                ));
+            }
+            if next_state == HandoffState::Accepted {
+                let task = load_task(&transaction, &handoff.task_id)?.ok_or_else(|| {
+                    SessionStoreError::Invalid("handoff task no longer exists".into())
+                })?;
+                if task.revision != handoff.task_revision
+                    || task.assigned_to.as_ref() != Some(&handoff.from_instance_id)
+                    || task.state.is_terminal()
+                    || task.handoff_count >= task.max_handoffs
+                {
+                    return Err(SessionStoreError::TaskConflict {
+                        task_id: task.task_id,
+                        expected: Some(handoff.task_revision),
+                        actual: Some(task.revision),
+                    });
+                }
+                let next_task_revision = task
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| SessionStoreError::Invalid("task revision overflow".into()))?;
+                let next_handoff_count = task.handoff_count.checked_add(1).ok_or_else(|| {
+                    SessionStoreError::Invalid("task handoff count overflow".into())
+                })?;
+                let changed = transaction.execute(
+                    "UPDATE coordination_tasks SET assigned_to_instance_id=?1,handoff_count=?2,
+                     revision=?3,updated_at=?4 WHERE task_id=?5 AND revision=?6",
+                    params![
+                        handoff.to_instance_id.0,
+                        i64::from(next_handoff_count),
+                        checked_i64(next_task_revision, "task revision")?,
+                        now,
+                        handoff.task_id.0,
+                        checked_i64(task.revision, "task revision")?,
+                    ],
+                )?;
+                if changed != 1 {
+                    return Err(SessionStoreError::TaskConflict {
+                        task_id: task.task_id,
+                        expected: Some(task.revision),
+                        actual: None,
+                    });
+                }
+            }
+            let next_revision = handoff
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("handoff revision overflow".into()))?;
+            let changed = transaction.execute(
+                "UPDATE task_handoffs SET state=?1,revision=?2,updated_at=?3 \
+                 WHERE handoff_id=?4 AND revision=?5",
+                params![
+                    encode_handoff_state(next_state),
+                    checked_i64(next_revision, "handoff revision")?,
+                    now,
+                    handoff.handoff_id.0,
+                    checked_i64(handoff.revision, "handoff revision")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::HandoffConflict {
+                    handoff_id: handoff.handoff_id,
+                    expected: Some(handoff.revision),
+                    actual: None,
+                });
+            }
+            handoff.state = next_state;
+            handoff.revision = next_revision;
+            handoff.updated_at = now;
+            transaction.commit()?;
+            Ok(handoff)
+        })
+        .await
     }
 }
 
