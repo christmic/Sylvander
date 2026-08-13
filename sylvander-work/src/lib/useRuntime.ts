@@ -5,6 +5,15 @@ import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, Transcript
 
 export interface RuntimeViewState {
   connection: ConnectionState;
+  protocol?: { serverName: string; version: number; capabilities: string[] };
+  runtimeInfo?: {
+    providerId: string;
+    modelId: string;
+    reasoningEffort: "off" | "low" | "medium" | "high";
+    fileAccess: "none" | "read_only" | "workspace_write";
+    networkAccess: "denied" | "allowed";
+    approvalPolicy: "ask" | "allow" | "deny";
+  };
   agents: Array<{ id: string; name: string; providerId: string; modelId: string }>;
   sessions: SessionSummary[];
   selectedId?: string;
@@ -99,6 +108,19 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             providerId: agent.provider_id,
             modelId: agent.default_model_id,
           })),
+        }));
+        break;
+      case "runtime_info":
+        setState((current) => ({
+          ...current,
+          runtimeInfo: {
+            providerId: message.model.provider_id,
+            modelId: message.model.model_id,
+            reasoningEffort: message.reasoning_effort,
+            fileAccess: message.permissions.file_access,
+            networkAccess: message.permissions.network_access,
+            approvalPolicy: message.permissions.approval_policy,
+          },
         }));
         break;
       case "sessions_list": {
@@ -359,7 +381,16 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }
         connectedOnce = true;
         reconnectAttempt = 0;
-        setState((current) => ({ ...current, connection: "live", diagnostic: undefined }));
+        setState((current) => ({
+          ...current,
+          connection: "live",
+          diagnostic: undefined,
+          protocol: {
+            serverName: event.protocol.server_name,
+            version: event.protocol.version,
+            capabilities: event.protocol.capabilities,
+          },
+        }));
         void submit({ type: "discover_agents" });
         void submit({ type: "list_sessions" });
         void submit({ type: "get_runtime_info" });

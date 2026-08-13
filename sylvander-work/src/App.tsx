@@ -2,7 +2,7 @@ import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
 
 import crabMark from "../../docs/design/final-brand/sylvander-seed-crab-character-square.png";
 import type { RuntimeGatewayPort } from "./lib/gateway";
-import { useRuntime } from "./lib/useRuntime";
+import { useRuntime, type RuntimeViewState } from "./lib/useRuntime";
 
 export interface AppProps {
   gateway?: RuntimeGatewayPort;
@@ -193,7 +193,7 @@ export default function App({ gateway }: AppProps) {
       </div>
       <footer className="runtime-card">
         <span className={`runtime-dot ${state.connection}`} />
-        <div><strong>Local Runtime</strong><span>{connectionLabel(state.connection)}</span></div>
+        <div><strong>{state.protocol?.serverName ?? "Local Runtime"}</strong><span>{connectionLabel(state.connection)}{state.runtimeInfo ? ` · ${permissionLabel(state.runtimeInfo)}` : ""}</span></div>
         <button aria-label="Runtime details">···</button>
       </footer>
     </aside>
@@ -250,7 +250,7 @@ export default function App({ gateway }: AppProps) {
           <label htmlFor="composer-input" className="sr-only">Message Sylvander</label>
           <textarea id="composer-input" value={draft} onChange={(event) => updateDraft(event.target.value)} rows={2} placeholder="What should we work through?" onKeyDown={handleComposerKey} disabled={!selected || state.connection !== "live"} />
           <div className="composer-footer">
-            <div className="composer-tools"><button type="button" aria-label="Attach context">＋</button><button type="button">Standard <span>⌄</span></button><button type="button">Runtime model <span>⌄</span></button></div>
+            <div className="composer-tools"><button type="button" aria-label="Attach context">＋</button><button type="button">{reasoningLabel(state.runtimeInfo?.reasoningEffort)} <span>⌄</span></button><button type="button">{state.runtimeInfo ? `${state.runtimeInfo.providerId}/${state.runtimeInfo.modelId}` : "Runtime model"} <span>⌄</span></button></div>
             <div className="send-group"><span><kbd>↵</kbd> send · <kbd>⇧↵</kbd> line</span><button className="send-button" disabled={!draft.trim() || !selected || state.connection !== "live"} aria-label="Send">↑</button></div>
           </div>
         </form>
@@ -266,7 +266,7 @@ export default function App({ gateway }: AppProps) {
       {inspector === "plan" && state.activePlan && <form className="plan-editor" onSubmit={(event) => void revisePlan(event)}><fieldset><legend>Revise plan</legend>{planRevision.map((step, index) => <label key={index}>Step {index + 1}<input value={step} onChange={(event) => updatePlanStep(index, event.target.value)} /></label>)}</fieldset><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "rejected", reason: "cancelled by user" })}>Reject plan</button><button type="submit" className="secondary-button" disabled={planRevision.every((step) => !step.trim())}>Submit revision</button><button type="button" className="primary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "approved" })}>Approve plan</button></div></form>}
       {inspector === "tasks" && <div className="task-list">{state.tasks.map((task) => <article key={task.id}><span className={`presence ${task.state}`} /><div><strong>{task.purpose}</strong><p>{task.owner} · {task.state}{task.detail ? ` · ${task.detail}` : ""}</p></div>{task.state === "running" && <button className="secondary-button" onClick={() => void cancelTask(task.id)}>Cancel</button>}</article>)}</div>}
       {inspector === "changes" && <div className="empty-inspector"><span>±</span><h3>No reviewable diff</h3><p>Runtime-owned changes will appear here.</p></div>}
-      <footer className="inspector-summary"><span>Protocol</span><strong>v5</strong><div><span style={{ width: state.connection === "live" ? "100%" : "0%" }} /></div></footer>
+      <footer className="inspector-summary"><span>Protocol</span><strong>{state.protocol ? `v${state.protocol.version}` : "—"}</strong><div><span style={{ width: state.connection === "live" ? "100%" : "0%" }} /></div></footer>
     </aside>}
     <div className="sr-only" aria-live="polite">{connectionLabel(state.connection)}</div>
   </div>;
@@ -274,4 +274,16 @@ export default function App({ gateway }: AppProps) {
 
 function connectionLabel(state: string) {
   return state === "live" ? "Connected" : state.charAt(0).toUpperCase() + state.slice(1);
+}
+
+function reasoningLabel(effort?: string) {
+  if (!effort || effort === "off") return "Standard";
+  return `${effort.charAt(0).toUpperCase()}${effort.slice(1)} reasoning`;
+}
+
+function permissionLabel(info: NonNullable<RuntimeViewState["runtimeInfo"]>) {
+  const files = info.fileAccess === "workspace_write"
+    ? "workspace write"
+    : info.fileAccess === "read_only" ? "read only" : "no files";
+  return `${files} · network ${info.networkAccess} · approval ${info.approvalPolicy}`;
 }

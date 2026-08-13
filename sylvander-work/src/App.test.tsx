@@ -43,6 +43,24 @@ describe("Sylvander Work", () => {
       "list_sessions",
       "get_runtime_info",
     ]));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "runtime_info",
+      model: { provider_id: "openai", model_id: "gpt-test" },
+      reasoning_effort: "medium",
+      models: [],
+      permissions: {
+        file_access: "workspace_write",
+        network_access: "denied",
+        approval_policy: "ask",
+      },
+      capabilities: 0,
+      approval_enabled: true,
+      max_attachment_bytes: 1_024,
+      platform: {},
+    } }));
+    expect(await screen.findByRole("button", { name: /openai\/gpt-test/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Medium reasoning/ })).toBeTruthy();
+    expect(screen.getByText(/workspace write · network denied · approval ask/)).toBeTruthy();
 
     act(() => gateway.emit({
       type: "message",
@@ -54,6 +72,7 @@ describe("Sylvander Work", () => {
 
     await waitFor(() => expect(gateway.commands.at(-1)).toEqual({ type: "load_session", session_id: "session-1" }));
     expect(within(screen.getByLabelText("Sessions")).getByText("Long-term desktop")).toBeTruthy();
+    expect(within(screen.getByLabelText("Sessions")).getByText("test-runtime")).toBeTruthy();
 
     act(() => {
       gateway.emit({ type: "message", message: { type: "text_delta", session_id: "session-1", delta: "Hello " } });

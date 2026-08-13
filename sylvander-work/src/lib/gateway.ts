@@ -46,9 +46,25 @@ export interface RuntimeAgent {
   default_model_id: string;
 }
 
+export interface RuntimeInfo {
+  model: { provider_id: string; model_id: string };
+  reasoning_effort: "off" | "low" | "medium" | "high";
+  models: unknown[];
+  permissions: {
+    file_access: "none" | "read_only" | "workspace_write";
+    network_access: "denied" | "allowed";
+    approval_policy: "ask" | "allow" | "deny";
+  };
+  capabilities: number;
+  approval_enabled: boolean;
+  max_attachment_bytes: number;
+  platform: unknown;
+}
+
 export type RuntimeMessage =
   | { type: "sessions_list"; sessions: RuntimeSession[] }
   | { type: "agents_discovered"; agents: RuntimeAgent[] }
+  | ({ type: "runtime_info" } & RuntimeInfo)
   | { type: "session_history"; session: RuntimeSession; messages: RuntimeHistoryMessage[] }
   | { type: "text_delta"; session_id: string; delta: string }
   | { type: "thinking_delta"; session_id: string; delta: string }

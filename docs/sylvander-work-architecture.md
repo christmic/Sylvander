@@ -141,6 +141,12 @@ membership change only on `SessionUpdated` or `SessionDeleted`. Removing the
 selected Session also clears its ephemeral transcript, plan, and task
 projection so stale work is never displayed under an empty selection.
 
+The header and Composer render the negotiated server name/version and
+Runtime-projected provider-qualified model, reasoning effort, and permission
+profile. No protocol version, model, or capability is inferred from a model
+name or hard-coded in the view; missing information renders an explicit
+placeholder until `Welcome` or `RuntimeInfo` arrives.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem
