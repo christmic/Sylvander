@@ -63,17 +63,20 @@ impl AgentInstanceStore for SqliteSessionStore {
             )?;
 
             let mut definitions = std::collections::HashSet::new();
-            for participant in &membership.participants {
+            for (ordinal, participant) in membership.participants.iter().enumerate() {
                 let (role, swarm_id) = encode_role(&participant.role);
                 transaction.execute(
                     "INSERT INTO session_agent_instances \
-                     (instance_id,session_id,agent_id,definition_revision,origin_json,role,\
+                     (instance_id,session_id,membership_ordinal,agent_id,definition_revision,origin_json,role,\
                       role_swarm_id,history_view_json,approval_route_json,state,\
                       capability_revision,lifecycle_revision,created_at,updated_at) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
                     params![
                         participant.instance_id.0,
                         participant.session_id.0,
+                        i64::try_from(ordinal).map_err(|_| SessionStoreError::Invalid(
+                            "Agent membership ordinal exceeds SQLite range".into()
+                        ))?,
                         participant.definition.agent_id.0,
                         checked_i64(participant.definition.revision, "Agent definition revision")?,
                         encode_json(&participant.origin)?,
@@ -154,7 +157,7 @@ impl AgentInstanceStore for SqliteSessionStore {
                 "SELECT instance_id,agent_id,definition_revision,origin_json,role,role_swarm_id,\
                         history_view_json,approval_route_json,state,capability_revision,\
                         lifecycle_revision,created_at,updated_at \
-                 FROM session_agent_instances WHERE session_id=?1 ORDER BY created_at,instance_id",
+                 FROM session_agent_instances WHERE session_id=?1 ORDER BY membership_ordinal",
             )?;
             let rows = statement.query_map([&session_id.0], |row| {
                 Ok(EncodedInstance {
@@ -317,3 +320,7 @@ fn checked_u64(value: i64, label: &str) -> Result<u64, SessionStoreError> {
         .try_into()
         .map_err(|_| SessionStoreError::Store(format!("stored {label} is negative")))
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/agent_instance_store.rs"]
+mod tests;

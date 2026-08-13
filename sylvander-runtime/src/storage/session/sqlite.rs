@@ -328,6 +328,7 @@ CREATE TABLE session_agents (
 CREATE TABLE session_agent_instances (
     instance_id        TEXT PRIMARY KEY,
     session_id         TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    membership_ordinal INTEGER NOT NULL CHECK(membership_ordinal >= 0),
     agent_id           TEXT NOT NULL,
     definition_revision INTEGER NOT NULL CHECK(definition_revision > 0),
     origin_json        TEXT NOT NULL,
@@ -343,7 +344,8 @@ CREATE TABLE session_agent_instances (
     CHECK((role = 'coordinator' AND role_swarm_id IS NOT NULL)
        OR (role != 'coordinator' AND role_swarm_id IS NULL)),
     UNIQUE(session_id, instance_id),
-    UNIQUE(session_id, instance_id, role)
+    UNIQUE(session_id, instance_id, role),
+    UNIQUE(session_id, membership_ordinal)
 );
 
 -- Exactly one current root moderator signs final Session arbitration. The
