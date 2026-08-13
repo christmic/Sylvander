@@ -6,6 +6,7 @@
 
 pub mod atif;
 pub mod harbor;
+pub mod harbor_result;
 pub mod matrix;
 pub mod provider;
 pub mod recorder;

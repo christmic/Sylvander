@@ -49,6 +49,11 @@ observations, provider usage becomes per-step metrics, and `AgentOutcome`
 becomes final metrics. Missing terminals, invalid event order, non-object tool
 arguments, and dangling observation references fail closed.
 
+Harbor `result.json` ingestion follows the pinned `TrialResult`,
+`VerifierResult`, and `AgentContext` contracts. It cross-checks task/model
+coordinates and token totals against ATIF before emitting normalized evidence;
+missing verifier output is an infrastructure failure, never a passing skip.
+
 ## External benchmark adapters
 
 Harbor is the primary execution harness because its task contract separates
