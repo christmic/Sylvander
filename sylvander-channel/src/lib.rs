@@ -162,6 +162,36 @@ fn validate_ingress_part(value: &str) -> Result<(), IdentityIngressError> {
 /// Transport-neutral UI service boundary owned by the runtime.
 #[async_trait]
 pub trait ChannelHost: Send + Sync {
+    /// Attach one authenticated outbound workspace worker. The returned
+    /// receiver is the only request stream for this connection generation.
+    async fn attach_workspace_worker(
+        &self,
+        boundary: &BoundaryContext,
+        _hello: &sylvander_api::WorkspaceWorkerHello,
+    ) -> Result<
+        (
+            String,
+            tokio::sync::mpsc::Receiver<sylvander_api::WorkspaceWorkerServerMessage>,
+        ),
+        BoundaryError,
+    > {
+        Err(BoundaryError::forbidden(
+            boundary,
+            "attach_workspace_worker",
+        ))
+    }
+
+    async fn workspace_worker_event(
+        &self,
+        boundary: &BoundaryContext,
+        _generation: &str,
+        _event: sylvander_api::WorkspaceWorkerEvent,
+    ) -> Result<(), BoundaryError> {
+        Err(BoundaryError::forbidden(boundary, "workspace_worker_event"))
+    }
+
+    async fn detach_workspace_worker(&self, _target_id: &str, _generation: &str) {}
+
     /// Reject an ingress request that failed authentication before a public
     /// message existed. Production runtimes override this to rate-limit and
     /// persist a content-free audit fact.

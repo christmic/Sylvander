@@ -151,6 +151,7 @@ impl Channel for WsChannel {
 
         let app = Router::new()
             .route("/ws", get(ws_handler))
+            .route("/workspace-worker", get(workspace_worker_handler))
             .with_state(state.clone());
 
         let listener = match tokio::net::TcpListener::bind(self.addr).await {
@@ -243,6 +244,87 @@ async fn ws_handler(
         .max_message_size(state.max_request_bytes)
         .on_upgrade(move |socket| handle_socket(socket, state, principal))
         .into_response()
+}
+
+async fn workspace_worker_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let Some(principal) = authenticate(&state, &headers).await else {
+        return reject_ws_authentication(&state).await.into_response();
+    };
+    ws.max_frame_size(state.max_request_bytes)
+        .max_message_size(state.max_request_bytes)
+        .on_upgrade(move |socket| handle_workspace_worker(socket, state, principal))
+        .into_response()
+}
+
+async fn handle_workspace_worker(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    principal: sylvander_api::AuthenticatedPrincipal,
+) {
+    let Some(host) = state.ctx.host.as_ref() else {
+        return;
+    };
+    let (mut writer, mut reader) = socket.split();
+    let Some(Ok(Message::Text(first))) = reader.next().await else {
+        return;
+    };
+    if first.len() > state.max_request_bytes {
+        return;
+    }
+    let Ok(sylvander_api::WorkspaceWorkerClientMessage::Hello { worker }) =
+        serde_json::from_str::<sylvander_api::WorkspaceWorkerClientMessage>(&first)
+    else {
+        return;
+    };
+    let boundary = sylvander_api::BoundaryContext::authenticated(
+        principal.clone(),
+        &state.instance_id,
+        "websocket",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    let Ok((generation, mut requests)) = host.attach_workspace_worker(&boundary, &worker).await
+    else {
+        return;
+    };
+    let welcome = sylvander_api::WorkspaceWorkerServerMessage::Welcome {
+        protocol_version: sylvander_api::WORKSPACE_WORKER_PROTOCOL_VERSION,
+    };
+    let Ok(encoded) = serde_json::to_string(&welcome) else {
+        return;
+    };
+    if writer.send(Message::Text(encoded.into())).await.is_err() {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            outgoing = requests.recv() => {
+                let Some(outgoing) = outgoing else { break };
+                let Ok(encoded) = serde_json::to_string(&outgoing) else { break };
+                if writer.send(Message::Text(encoded.into())).await.is_err() { break; }
+            }
+            incoming = reader.next() => {
+                let Some(Ok(Message::Text(incoming))) = incoming else { break };
+                if incoming.len() > state.max_request_bytes { break; }
+                let Ok(sylvander_api::WorkspaceWorkerClientMessage::Event { event }) =
+                    serde_json::from_str::<sylvander_api::WorkspaceWorkerClientMessage>(&incoming)
+                else { break };
+                let boundary = sylvander_api::BoundaryContext::authenticated(
+                    principal.clone(), &state.instance_id, "websocket",
+                    uuid::Uuid::new_v4().to_string(),
+                );
+                if host.workspace_worker_event(&boundary, &generation, event).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    host.detach_workspace_worker(&worker.target_id, &generation)
+        .await;
 }
 
 async fn reject_ws_authentication(state: &AppState) -> StatusCode {

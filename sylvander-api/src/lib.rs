@@ -52,6 +52,7 @@ pub mod session_context;
 pub mod ui;
 /// Versioned global user-profile protocol and privacy classifications.
 pub mod user_profile;
+pub mod workspace_worker;
 
 pub use agent_admin::*;
 pub use boundary::*;
@@ -69,3 +70,4 @@ pub use session::*;
 pub use session_context::*;
 pub use ui::*;
 pub use user_profile::*;
+pub use workspace_worker::*;
