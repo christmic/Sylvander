@@ -121,8 +121,10 @@ enum MemoryAuthority {
 /// the context; tools and Channels only receive the opaque result.
 ///
 /// ```no_run
-/// use sylvander_agent::tools::MemoryExecutionContext;
-/// use sylvander_agent::execution_context::AgentExecutionContext;
+/// use sylvander_agent::{
+///     memory::store::MemoryExecutionContext,
+///     turn::execution_context::AgentExecutionContext,
+/// };
 /// let execution = AgentExecutionContext::restricted_for("trusted-user", "agent", "session");
 /// let _ = MemoryExecutionContext::for_runtime_worker(&execution);
 /// ```

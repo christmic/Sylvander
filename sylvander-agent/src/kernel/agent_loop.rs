@@ -3,10 +3,10 @@
 //! # Architecture
 //!
 //! The loop logic lives in three module-level free functions:
-//! - [`run`](crate::loop_::run) — consumes the stream, returns `Result<AgentOutcome, _>`
-//! - [`run_stream`](crate::loop_::run_stream) — the single source of truth: drives the
+//! - [`run`] — consumes the stream, returns `Result<AgentOutcome, _>`
+//! - [`run_stream`] — the single source of truth: drives the
 //!   iteration, yields `AgentEvent`s
-//! - [`run_with_events`](crate::loop_::run_with_events) — consumes the stream, fires events into a
+//! - [`run_with_events`] — consumes the stream, fires events into a
 //!   callback, returns the final `AgentOutcome`
 //!
 //! `AgentLoop` itself holds only stable retry, iteration, and compression

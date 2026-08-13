@@ -129,10 +129,7 @@ pub(crate) mod test_workspace;
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
-    pub use crate::artifact::{
-        ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore,
-    };
-    pub use crate::compress::{
+    pub use crate::context::compression::{
         AutoCompactLlm, CompressContext, DEFAULT_SUMMARY_PROMPT,
         layer::{
             CompressionLayer, LayerReport, first_failure, total_condensed, total_freed,
@@ -140,9 +137,24 @@ pub mod prelude {
         },
         pipeline::CompressionPipeline,
     };
-    pub use crate::execution_ports::AgentExecutionPorts;
+    pub use crate::context::turn_context::{
+        TurnContextBudget, TurnContextBudgets, TurnContextLayerKind, TurnContextManifest,
+    };
+    pub use crate::execution::artifact::{
+        ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore,
+    };
+    pub use crate::execution::ports::AgentExecutionPorts;
+    pub use crate::execution::tool_context::ToolContext;
+    pub use crate::execution::workspace::{
+        ProcessIsolation, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
+        WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
+        WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
+        WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
+    };
     pub use crate::interaction::plan::PlanDecision;
-    pub use crate::loop_::{AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events};
+    pub use crate::kernel::agent_loop::{
+        AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events,
+    };
     pub use crate::memory::curated::{
         CuratedContextEntry, CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope,
         MemoryCandidateError, MemoryCandidateReceipt, MemoryCandidateSink,
@@ -153,17 +165,16 @@ pub mod prelude {
         MemoryExpiryPatch, MemoryOwner, MemoryPatch, MemoryProvenance, MemoryProvenanceSource,
         MemoryScope, MemoryStore, MemoryStoreError, RelationshipMemoryRetentionPolicy,
     };
+    pub use crate::tool::builtins::{
+        EditTool, ListTool, MemoryReadTool, MemoryWriteTool, PresentPlanTool, ReadTool, SearchTool,
+        StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
+    };
     pub use crate::tool::{
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
         ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
         ToolExposure, ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput, ToolPreparation,
         ToolPrepareError, ToolProgressSink, ToolRegistry, ToolSourceFeature, ToolSourceKind,
         ToolSourceStatus, ToolSpec,
-    };
-    pub use crate::tool_context::ToolContext;
-    pub use crate::tools::{
-        EditTool, ListTool, MemoryReadTool, MemoryWriteTool, PresentPlanTool, ReadTool, SearchTool,
-        StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
     };
     pub use crate::turn::conversation::ConversationSnapshot;
     pub use crate::turn::error::AgentLoopError;
@@ -173,15 +184,6 @@ pub mod prelude {
     };
     pub use crate::turn::outcome::AgentOutcome;
     pub use crate::turn::request::AgentTurnRequest;
-    pub use crate::turn_context::{
-        TurnContextBudget, TurnContextBudgets, TurnContextLayerKind, TurnContextManifest,
-    };
-    pub use crate::workspace_executor::{
-        ProcessIsolation, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
-        WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
-        WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
-        WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
-    };
     pub use sylvander_llm_core::{
         ChatMessage, ChatRole, ContentBlock, InputSchema, ModelResponse, StopReason, TokenUsage,
     };

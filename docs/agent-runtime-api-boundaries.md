@@ -177,14 +177,13 @@ AgentTurnRequest + immutable AgentExecutionPorts snapshot
 
 ```text
 sylvander-agent/src/
-  request.rs + conversation.rs + execution_context.rs   immutable turn data
-  execution_ports.rs                                    selected turn services
-  loop_.rs + compress/                                   execution kernel
-  prompt.rs + turn_context.rs                            context composition
-  tool.rs + tool_context.rs + tool_invocation.rs         tool policy boundary
-  tools/                                                  built-in definitions
-  workspace_executor.rs + artifact.rs + *_gate.rs        neutral Runtime ports
-  event.rs + outcome.rs + error.rs                       progress and results
+  turn/          immutable request, conversation, authority, events, and result
+  kernel/        stable loop policy and provider-neutral iteration
+  context/       prompt composition, retrieval, profiles, and compression
+  tool/          contracts, invocation authorization, registry, and built-ins
+  execution/     selected turn services and neutral execution capabilities
+  interaction/   approval, user-question, plan, and background-task gates
+  memory/        relationship-memory domain, retention, and storage ports
 ```
 
 Concrete persistence and transport implementations are intentionally absent.

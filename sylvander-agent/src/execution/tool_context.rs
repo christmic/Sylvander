@@ -4,11 +4,11 @@
 //!
 //! Sylvander uses two distinct context types for different scopes:
 //!
-//! - [`AgentExecutionContext`](crate::turn::execution_context::AgentExecutionContext)
+//! - [`AgentExecutionContext`]
 //!   — Runtime-validated actor, logical workspace, capabilities, timeout, and
 //!   correlation for one Agent execution. It is deliberately not a wire type.
 //!
-//! - [`ToolContext`](crate::execution::tool_context::ToolContext) (this struct) — "everything a single tool
+//! - [`ToolContext`] (this struct) — "everything a single tool
 //!   invocation needs": owns an `AgentExecutionContext` for authority +
 //!   tool-specific concerns (execution budget, surface capabilities).
 //!   Short-lived: created per tool call by the agent loop.

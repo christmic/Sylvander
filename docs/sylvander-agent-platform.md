@@ -409,7 +409,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 - [x] **P1.3 Prompt resolver:** shared safety layers, exact qualified
   model/provider profiles, Agent prompt, allowed write-only session input,
   ordered provenance/digests, byte limits, deterministic restart, and
-  execution-boundary tamper rejection. Evidence: `sylvander-agent/src/prompt.rs`,
+  execution-boundary tamper rejection. Evidence: `sylvander-agent/src/context/prompt.rs`,
   `sylvander-agent/src/run.rs`, protocol schema/redaction tests, real Unix and
   WebSocket response tests, provider-wire composition tests, and runtime
   restart acceptance in `registry_agent_composition_tests.rs`.

@@ -1,10 +1,10 @@
 //! `AgentEvent` — the reactive event stream emitted by
-//! [`AgentLoop`](crate::loop_::AgentLoop).
+//! [`AgentLoop`](crate::kernel::agent_loop::AgentLoop).
 //!
-//! The agent loop has a single core API — [`AgentLoop::run_stream`](crate::loop_::run_stream) —
-//! that drives the iteration and yields events. [`AgentLoop::run`](crate::loop_::run) is
+//! The agent loop has a single core API — [`run_stream`](crate::kernel::agent_loop::run_stream) —
+//! that drives the iteration and yields events. [`run`](crate::kernel::agent_loop::run) is
 //! a thin wrapper that consumes the stream and returns an
-//! [`AgentOutcome`](crate::turn::outcome::AgentOutcome). [`AgentLoop::run_with_events`](crate::loop_::run_with_events) is a wrapper
+//! [`AgentOutcome`]. [`run_with_events`](crate::kernel::agent_loop::run_with_events) is a wrapper
 //! that fires events into a callback as they flow.
 //!
 //! Events fire in chronological order within a single iteration:

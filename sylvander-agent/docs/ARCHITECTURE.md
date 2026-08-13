@@ -11,7 +11,7 @@ The normative target and migration rules are documented in
 Runtime now owns `AgentRun`, supervision, Session persistence, public event
 mapping, MCP process transport, and durable relationship-memory persistence.
 
-## Internal layers
+## Physical module hierarchy
 
 ```text
 Runtime Agent service
@@ -23,36 +23,51 @@ Runtime Agent service
   -> result: AgentOutcome
 ```
 
+```text
+src/
+  turn/          immutable turn vocabulary and authority
+  kernel/        stable policy and model/tool iteration
+  context/       prompt composition, retrieval, profiles, compression
+  tool/          contracts, authorization, registry, built-ins
+  execution/     Runtime-injected workspace, artifact, and mutation capabilities
+  interaction/   approval, AskUser, plan, and background-task gates
+  memory/        relationship-memory domain, retention, and storage ports
+```
+
+These directories are the internal source of truth. `lib.rs` is only the
+external facade; it may re-export established API paths, but internal code uses
+the owning physical namespace so dependencies remain visible during review.
+
 `AgentTurnRequest` and `AgentExecutionPorts` are sibling inputs, not nested
 service objects. The request freezes model-visible domain data; the ports
 freeze Runtime-selected implementations and executable authority. The kernel
 validates that both describe the same turn before opening a provider stream or
 running a hook.
 
-- `turn_context` composes the immutable Safety/Agent/User Profile/
+- `context::turn_context` composes the immutable Safety/Agent/User Profile/
   Relationship Memory/Workspace Knowledge/Session precedence chain. It applies
   per-layer byte, token-estimate, and item budgets and records content-safe
   provenance plus digests for every included item.
-- `loop_` contains only stable execution policy and the provider-neutral
+- `kernel::agent_loop` contains only stable execution policy and the provider-neutral
   model/tool state machine. `AgentLoop` does not retain provider, model,
   transcript, tools, workspace, or authority. Runtime freezes those values in
   `AgentTurnRequest` and `AgentExecutionPorts`; the loop validates that both
   snapshots describe the same executable surface before work starts.
-- `tool` and `tool_context` define the invocation boundary. Tools receive
+- `tool` and `execution::tool_context` define the invocation boundary. Tools receive
   Runtime-derived identity, workspace, capability, and execution-budget data;
   model arguments are never authority.
-- `workspace_executor` contains only the neutral workspace port, values,
+- `execution::workspace` contains only the neutral workspace port, values,
   router, bounds, and fail-closed unavailable sentinel. Concrete local, SSH,
   and OCI implementations live in Runtime. `ToolContext` never grants host
   access merely because a filesystem path was supplied.
-- `artifact` defines the asynchronous, turn-bound retention port. Agent sends
+- `execution::artifact` defines the asynchronous, turn-bound retention port. Agent sends
   media type, bytes, and call correlation only; Runtime binds identity,
   encryption, retention, backend, and locator resolution. Compression exposes
   only an opaque `artifact:` locator and never a host path.
-- `tools` contains Agent-owned definitions and prepared-call handlers. Concrete
+- `tool::builtins` contains Agent-owned prepared-call handlers. Concrete
   storage and process services are injected through the execution context.
   Relationship-memory domain values, validation, and the `MemoryStore` port
-  remain here because tools consume that contract; SQLite, integrity anchors,
+  live under `memory`; SQLite, integrity anchors,
   backup, restore, and maintenance live in Runtime.
 - MCP is not part of the Agent source tree. Runtime owns the stdio process,
   JSON-RPC lifecycle, discovery, health, cancellation, and artifact sink, then

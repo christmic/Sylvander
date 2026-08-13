@@ -1,6 +1,6 @@
 //! Compression pipeline for the agent loop's message history.
 //!
-//! A multi-layer [`CompressionPipeline`](crate::context::compression::pipeline::CompressionPipeline)
+//! A multi-layer [`CompressionPipeline`]
 //! runs cheap-to-expensive layers in sequence. It is the only compression
 //! path; there is no legacy single-strategy fallback.
 //!
