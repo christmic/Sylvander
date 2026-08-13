@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "repetitions": 1,
+  "request_timeout_ms": 60000,
+  "max_output_tokens": 256,
+  "max_retries": 0,
+  "scenarios": ["connectivity", "usage", "image_input", "cache_write_read"],
+  "bindings": [
+    {
+      "provider_id": "aliyun-dashscope-cn",
+      "protocol": "dashscope_generation",
+      "base_url": "https://dashscope.aliyuncs.com",
+      "credential_env": "SYLVANDER_BENCH_DASHSCOPE_API_KEY",
+      "provider_features": ["enable_thinking", "reasoning_content"],
+      "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
+      "models": [
+        {"model_id": "qwen3.7-plus", "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]},
+        {"model_id": "qwen3.8-max", "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]},
+        {"model_id": "deepseek-v4-pro", "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]},
+        {"model_id": "glm-5.2", "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]}
+      ]
+    },
+    {
+      "provider_id": "aliyun-dashscope-cn",
+      "protocol": "dashscope_multimodal_generation",
+      "base_url": "https://dashscope.aliyuncs.com",
+      "credential_env": "SYLVANDER_BENCH_DASHSCOPE_API_KEY",
+      "provider_features": ["enable_thinking", "reasoning_content"],
+      "supported_scenarios": ["connectivity", "usage", "image_input"],
+      "models": [
+        {"model_id": "qwen3.7-plus", "advertised_scenarios": ["connectivity", "usage", "image_input"]},
+        {"model_id": "qwen3.8-max", "advertised_scenarios": ["connectivity", "usage", "image_input"]},
+        {"model_id": "deepseek-v4-pro", "advertised_scenarios": ["connectivity", "usage", "image_input"]},
+        {"model_id": "glm-5.2", "advertised_scenarios": ["connectivity", "usage", "image_input"]}
+      ]
+    }
+  ]
+}

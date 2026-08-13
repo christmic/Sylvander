@@ -14,7 +14,9 @@ use sylvander_llm_core::{
     ModelCapabilities, ModelProvider, ModelRef, ModelRequest, ProviderError, ProviderErrorKind,
     ProviderErrorPhase, ProviderFuture, validate_model_request_capabilities,
 };
-use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
+use sylvander_llm_dashscope::{
+    DashScopeFeatures, DashScopeProtocol, DashScopeProvider, DashScopeProviderConfig,
+};
 use sylvander_llm_openai::{
     OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
 };
@@ -369,12 +371,18 @@ impl ModelProvider for RequestScopedAnthropicProvider {
                     })?;
                     provider.complete_stream(request).await
                 }
-                "dashscope_generation" => {
+                "dashscope_generation" | "dashscope_multimodal_generation" => {
+                    let protocol = if self.kind == "dashscope_multimodal_generation" {
+                        DashScopeProtocol::MultimodalGeneration
+                    } else {
+                        DashScopeProtocol::TextGeneration
+                    };
                     let provider = DashScopeProvider::new(DashScopeProviderConfig {
                         provider_id: self.provider_id.clone(),
                         base_url: url::Url::parse(&self.base_url)
                             .map_err(|_| provider_configuration_error())?,
                         api_key: secret,
+                        protocol,
                         features: DashScopeFeatures::new(self.features.iter().cloned()),
                     })?;
                     provider.complete_stream(request).await

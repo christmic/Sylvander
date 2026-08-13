@@ -11,6 +11,31 @@ pub struct GenerationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MultimodalGenerationRequest {
+    pub model: String,
+    pub input: MultimodalGenerationInput,
+    pub parameters: GenerationParameters,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MultimodalGenerationInput {
+    pub messages: Vec<MultimodalMessageParam>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MultimodalMessageParam {
+    pub role: String,
+    pub content: Vec<MultimodalContent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum MultimodalContent {
+    Text { text: String },
+    Image { image: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GenerationInput {
     pub messages: Vec<GenerationMessageParam>,
 }

@@ -14,6 +14,12 @@ use sylvander_llm_core::{
 use crate::api::{DEFAULT_TIMEOUT, DashScopeClient, GenerationStreamEvent};
 use crate::convert;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashScopeProtocol {
+    TextGeneration,
+    MultimodalGeneration,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DashScopeFeatures {
     enabled: BTreeSet<String>,
@@ -50,6 +56,7 @@ pub struct DashScopeProviderConfig {
     pub provider_id: String,
     pub base_url: Url,
     pub api_key: String,
+    pub protocol: DashScopeProtocol,
     pub features: DashScopeFeatures,
 }
 
@@ -57,6 +64,7 @@ pub struct DashScopeProviderConfig {
 pub struct DashScopeProvider {
     provider_id: Arc<str>,
     features: DashScopeFeatures,
+    protocol: DashScopeProtocol,
     client: DashScopeClient,
 }
 
@@ -76,11 +84,19 @@ impl DashScopeProvider {
                 "provider feature is unsupported by native Generation",
             ));
         }
-        let client = DashScopeClient::new_with_timeout(config.base_url, &config.api_key, timeout)
-            .map_err(|error| convert::error(error, ProviderErrorPhase::Open))?;
+        let endpoint = match config.protocol {
+            DashScopeProtocol::TextGeneration => "api/v1/services/aigc/text-generation/generation",
+            DashScopeProtocol::MultimodalGeneration => {
+                "api/v1/services/aigc/multimodal-generation/generation"
+            }
+        };
+        let client =
+            DashScopeClient::new_with_endpoint(config.base_url, &config.api_key, timeout, endpoint)
+                .map_err(|error| convert::error(error, ProviderErrorPhase::Open))?;
         Ok(Self {
             provider_id: config.provider_id.into(),
             features: config.features,
+            protocol: config.protocol,
             client,
         })
     }
@@ -92,6 +108,7 @@ impl std::fmt::Debug for DashScopeProvider {
             .debug_struct("DashScopeProvider")
             .field("provider_id", &self.provider_id)
             .field("features", &self.features)
+            .field("protocol", &self.protocol)
             .finish_non_exhaustive()
     }
 }
@@ -107,12 +124,17 @@ impl ModelProvider for DashScopeProvider {
                 ));
             }
             let model = request.model.model.clone();
-            let wire = convert::request(&self.features, &request)?;
-            let stream = self
-                .client
-                .generation_stream(&wire)
-                .await
-                .map_err(|error| convert::error(error, ProviderErrorPhase::Open))?;
+            let stream = match self.protocol {
+                DashScopeProtocol::TextGeneration => {
+                    let wire = convert::request(&self.features, &request)?;
+                    self.client.generation_stream(&wire).await
+                }
+                DashScopeProtocol::MultimodalGeneration => {
+                    let wire = convert::multimodal_request(&self.features, &request)?;
+                    self.client.generation_stream(&wire).await
+                }
+            }
+            .map_err(|error| convert::error(error, ProviderErrorPhase::Open))?;
             let provider = self.provider_id.to_string();
             Ok(Box::pin(stream.map(move |event| {
                 let event =

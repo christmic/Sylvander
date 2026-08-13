@@ -2,10 +2,12 @@ use futures_util::StreamExt as _;
 use reqwest::Url;
 use serde_json::json;
 use sylvander_llm_core::{
-    ChatMessage, ContentBlock, ModelProvider, ModelRef, ModelRequest, ModelStreamEvent,
-    ReasoningConfig, StopReason,
+    ChatMessage, ContentBlock, ImageContent, MediaSource, ModelProvider, ModelRef, ModelRequest,
+    ModelStreamEvent, ReasoningConfig, StopReason,
 };
-use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
+use sylvander_llm_dashscope::{
+    DashScopeFeatures, DashScopeProtocol, DashScopeProvider, DashScopeProviderConfig,
+};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -22,11 +24,68 @@ fn request(model: &str) -> ModelRequest {
     }
 }
 
+#[tokio::test]
+async fn multimodal_generation_uses_the_native_image_endpoint_and_shape() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/api/v1/services/aigc/multimodal-generation/generation",
+        ))
+        .and(body_partial_json(json!({
+            "model": "qwen3.7-plus",
+            "input": {"messages": [{
+                "role": "user",
+                "content": [
+                    {"image": "data:image/png;base64,cG5n"},
+                    {"text": "identify"}
+                ]
+            }]}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            concat!(
+                "data: {\"request_id\":\"req_image\",\"output\":{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"7\"},\"finish_reason\":\"stop\"}]},",
+                "\"usage\":{\"input_tokens\":12,\"output_tokens\":1,\"total_tokens\":13}}\n\n"
+            ),
+            "text/event-stream",
+        ))
+        .mount(&server)
+        .await;
+    let provider = DashScopeProvider::new(DashScopeProviderConfig {
+        provider_id: "dashscope".into(),
+        base_url: Url::parse(&server.uri()).expect("mock URL"),
+        api_key: "key".into(),
+        protocol: DashScopeProtocol::MultimodalGeneration,
+        features: DashScopeFeatures::default(),
+    })
+    .expect("provider");
+    let mut value = request("qwen3.7-plus");
+    value.messages = vec![ChatMessage::user_blocks(vec![
+        ContentBlock::Image {
+            image: ImageContent {
+                source: MediaSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: "cG5n".into(),
+                },
+                alt_text: None,
+            },
+        },
+        ContentBlock::Text {
+            text: "identify".into(),
+        },
+    ])];
+    let mut stream = provider.complete_stream(value).await.expect("open stream");
+    assert!(matches!(
+        stream.next().await.expect("text").expect("event"),
+        ModelStreamEvent::TextDelta(ref value) if value == "7"
+    ));
+}
+
 fn provider(server: &MockServer, features: DashScopeFeatures) -> DashScopeProvider {
     DashScopeProvider::new(DashScopeProviderConfig {
         provider_id: "dashscope".into(),
         base_url: Url::parse(&server.uri()).expect("mock URL"),
         api_key: "explicit-key".into(),
+        protocol: DashScopeProtocol::TextGeneration,
         features,
     })
     .expect("provider")

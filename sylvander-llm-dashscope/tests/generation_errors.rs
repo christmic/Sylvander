@@ -10,7 +10,9 @@ use reqwest::Url;
 use sylvander_llm_core::{
     ModelProvider, ModelRef, ModelRequest, ProviderErrorKind, ProviderErrorPhase,
 };
-use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
+use sylvander_llm_dashscope::{
+    DashScopeFeatures, DashScopeProtocol, DashScopeProvider, DashScopeProviderConfig,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[test]
@@ -19,6 +21,7 @@ fn generation_rejects_unknown_feature_at_construction() {
         provider_id: "dashscope".into(),
         base_url: Url::parse("https://dashscope.aliyuncs.com").expect("URL"),
         api_key: "key".into(),
+        protocol: DashScopeProtocol::TextGeneration,
         features: DashScopeFeatures::new(["response_format"]),
     })
     .expect_err("unknown feature");
@@ -43,6 +46,7 @@ fn provider(server: &MockServer) -> DashScopeProvider {
         provider_id: "dashscope".into(),
         base_url: Url::parse(&server.uri()).expect("mock URL"),
         api_key: "key".into(),
+        protocol: DashScopeProtocol::TextGeneration,
         features: DashScopeFeatures::default(),
     })
     .expect("provider")
@@ -142,6 +146,7 @@ async fn configured_deadline_is_a_retryable_open_timeout() {
             provider_id: "dashscope".into(),
             base_url: Url::parse(&server.uri()).expect("mock URL"),
             api_key: "key".into(),
+            protocol: DashScopeProtocol::TextGeneration,
             features: DashScopeFeatures::default(),
         },
         Duration::from_millis(20),

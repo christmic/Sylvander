@@ -11,7 +11,8 @@ use crate::api::{
     DashScopeError, GenerationCompletion, GenerationFunctionCallParam,
     GenerationFunctionDefinition, GenerationFunctionTool, GenerationInput, GenerationMessageParam,
     GenerationParameters, GenerationRequest, GenerationToolCallParam, GenerationToolKind,
-    GenerationUsage,
+    GenerationUsage, MultimodalContent, MultimodalGenerationInput, MultimodalGenerationRequest,
+    MultimodalMessageParam,
 };
 
 pub(crate) fn request(
@@ -58,6 +59,77 @@ pub(crate) fn request(
             parallel_tool_calls: (features.contains("parallel_tool_calls") && !tools.is_empty())
                 .then_some(true),
             tools,
+        },
+    })
+}
+
+pub(crate) fn multimodal_request(
+    features: &DashScopeFeatures,
+    input: &ModelRequest,
+) -> Result<MultimodalGenerationRequest, ProviderError> {
+    if input.output_schema.is_some() || !input.tools.is_empty() {
+        return Err(unsupported(
+            "DashScope Multimodal Generation does not expose this request feature",
+        ));
+    }
+    let mut messages = input
+        .system
+        .iter()
+        .map(|instruction| MultimodalMessageParam {
+            role: "system".into(),
+            content: vec![MultimodalContent::Text {
+                text: instruction.text.clone(),
+            }],
+        })
+        .collect::<Vec<_>>();
+    for message in &input.messages {
+        if message.role != ChatRole::User {
+            return Err(unsupported(
+                "DashScope Multimodal Generation benchmark supports user input only",
+            ));
+        }
+        let mut content = Vec::new();
+        for block in &message.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    content.push(MultimodalContent::Text { text: text.clone() });
+                }
+                ContentBlock::Image { image } => {
+                    let image = match &image.source {
+                        sylvander_llm_core::MediaSource::Url { url } => url.clone(),
+                        sylvander_llm_core::MediaSource::Base64 { media_type, data } => {
+                            format!("data:{media_type};base64,{data}")
+                        }
+                    };
+                    content.push(MultimodalContent::Image { image });
+                }
+                ContentBlock::Document { .. }
+                | ContentBlock::Reasoning { .. }
+                | ContentBlock::ToolCall { .. }
+                | ContentBlock::ToolResult { .. } => {
+                    return Err(unsupported(
+                        "DashScope Multimodal Generation input block is unsupported",
+                    ));
+                }
+            }
+        }
+        messages.push(MultimodalMessageParam {
+            role: "user".into(),
+            content,
+        });
+    }
+    let (enable_thinking, thinking_budget) = reasoning(features, input)?;
+    Ok(MultimodalGenerationRequest {
+        model: input.model.model.clone(),
+        input: MultimodalGenerationInput { messages },
+        parameters: GenerationParameters {
+            result_format: "message".into(),
+            incremental_output: true,
+            max_tokens: input.max_output_tokens,
+            enable_thinking,
+            thinking_budget,
+            parallel_tool_calls: None,
+            tools: Vec::new(),
         },
     })
 }

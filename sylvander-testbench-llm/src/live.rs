@@ -21,7 +21,9 @@ use sylvander_llm_core::{
     ModelProvider, ModelRef, ModelRequest, ModelResponse, ModelStreamEvent, ProviderError,
     ProviderErrorKind, ProviderErrorPhase, StopReason, SystemInstruction, TokenUsage,
 };
-use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
+use sylvander_llm_dashscope::{
+    DashScopeFeatures, DashScopeProtocol, DashScopeProvider, DashScopeProviderConfig,
+};
 use sylvander_llm_openai::{
     OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
 };
@@ -370,12 +372,18 @@ fn build_provider(
             .map_err(|_| "invalid_provider_configuration")?;
             Ok(Arc::new(provider))
         }
-        "dashscope_generation" => {
+        "dashscope_generation" | "dashscope_multimodal_generation" => {
+            let protocol = if binding.protocol == "dashscope_multimodal_generation" {
+                DashScopeProtocol::MultimodalGeneration
+            } else {
+                DashScopeProtocol::TextGeneration
+            };
             let provider = DashScopeProvider::new_with_timeout(
                 DashScopeProviderConfig {
                     provider_id: binding.provider_id.clone(),
                     base_url: parse_url(&binding.base_url)?,
                     api_key: credential,
+                    protocol,
                     features: DashScopeFeatures::new(binding.provider_features.iter().cloned()),
                 },
                 timeout,
