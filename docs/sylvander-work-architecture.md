@@ -120,8 +120,9 @@ Plan review retains Runtime's `plan_id` alongside display steps. Approve and
 reject send the protocol's typed `PlanDecision` and clear only the pending
 review control after successful submission; they do not mark execution
 complete. Revised steps remain represented by the same protocol decision and
-will be enabled with the dedicated editor surface rather than an ad-hoc wire
-message.
+are edited in a dedicated, Session-local form. Empty rows are removed at the
+presentation boundary and an all-empty revision is rejected locally; accepted
+rows travel in `PlanDecision::Revised` without an ad-hoc wire message.
 
 Running task rows may issue the public `CancelTask` command with Runtime's
 `session_id` and `task_id`. Submission does not optimistically mark the row;

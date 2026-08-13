@@ -17,6 +17,7 @@ export default function App({ gateway }: AppProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [questionSelections, setQuestionSelections] = useState<string[]>([]);
   const [questionText, setQuestionText] = useState("");
+  const [planRevision, setPlanRevision] = useState<string[]>([]);
   const [compactLayout, setCompactLayout] = useState(() =>
     typeof matchMedia === "function" && matchMedia("(max-width: 860px)").matches);
   const selected = state.sessions.find((session) => session.id === state.selectedId);
@@ -34,6 +35,10 @@ export default function App({ gateway }: AppProps) {
     update();
     return () => query.removeEventListener("change", update);
   }, []);
+
+  useEffect(() => {
+    if (state.activePlan) setPlanRevision(state.plan.map((step) => step.label));
+  }, [state.activePlan?.planId, state.plan]);
 
   function updateDraft(value: string) {
     if (state.selectedId) setDrafts((current) => ({ ...current, [state.selectedId!]: value }));
@@ -84,6 +89,18 @@ export default function App({ gateway }: AppProps) {
     await answerQuestion(state.question.callId, answer);
     setQuestionSelections([]);
     setQuestionText("");
+  }
+
+  function updatePlanStep(index: number, value: string) {
+    setPlanRevision((current) => current.map((step, stepIndex) => stepIndex === index ? value : step));
+  }
+
+  async function revisePlan(event: FormEvent) {
+    event.preventDefault();
+    if (!state.activePlan) return;
+    const steps = planRevision.map((step) => step.trim()).filter(Boolean);
+    if (steps.length === 0) return;
+    await resolvePlan(state.activePlan.planId, { decision: "revised", steps });
   }
 
   return <div className="app-shell">
@@ -195,7 +212,7 @@ export default function App({ gateway }: AppProps) {
         {(["plan", "tasks", "changes"] as const).map((tab) => <button key={tab} role="tab" aria-selected={inspector === tab} className={inspector === tab ? "active" : ""} onClick={() => setInspector(tab)}>{tab}</button>)}
       </div>
       {inspector === "plan" && <ol className="plan-list">{state.plan.map((step, index) => <li key={`${index}-${step.label}`} data-state={step.state}><span>{step.state === "complete" ? "✓" : index + 1}</span><p>{step.label}</p></li>)}</ol>}
-      {inspector === "plan" && state.activePlan && <div className="decision-actions"><button className="secondary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "rejected", reason: "cancelled by user" })}>Reject plan</button><button className="primary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "approved" })}>Approve plan</button></div>}
+      {inspector === "plan" && state.activePlan && <form className="plan-editor" onSubmit={(event) => void revisePlan(event)}><fieldset><legend>Revise plan</legend>{planRevision.map((step, index) => <label key={index}>Step {index + 1}<input value={step} onChange={(event) => updatePlanStep(index, event.target.value)} /></label>)}</fieldset><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "rejected", reason: "cancelled by user" })}>Reject plan</button><button type="submit" className="secondary-button" disabled={planRevision.every((step) => !step.trim())}>Submit revision</button><button type="button" className="primary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "approved" })}>Approve plan</button></div></form>}
       {inspector === "tasks" && <div className="task-list">{state.tasks.map((task) => <article key={task.id}><span className={`presence ${task.state}`} /><div><strong>{task.purpose}</strong><p>{task.owner} · {task.state}{task.detail ? ` · ${task.detail}` : ""}</p></div>{task.state === "running" && <button className="secondary-button" onClick={() => void cancelTask(task.id)}>Cancel</button>}</article>)}</div>}
       {inspector === "changes" && <div className="empty-inspector"><span>±</span><h3>No reviewable diff</h3><p>Runtime-owned changes will appear here.</p></div>}
       <footer className="inspector-summary"><span>Protocol</span><strong>v5</strong><div><span style={{ width: state.connection === "live" ? "100%" : "0%" }} /></div></footer>

@@ -223,6 +223,26 @@ describe("Sylvander Work", () => {
       decision: { decision: "approved" },
     }));
     expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "plan_updated",
+      session_id: "session-1",
+      plan_id: "plan-2",
+      steps: ["Inspect", "Verify"],
+      current: 0,
+    } }));
+    const secondStep = await screen.findByRole("textbox", { name: "Step 2" });
+    fireEvent.change(secondStep, { target: { value: "Run focused verification" } });
+    act(() => screen.getByRole("button", { name: "Submit revision" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "resolve_plan",
+      session_id: "session-1",
+      plan_id: "plan-2",
+      decision: {
+        decision: "revised",
+        steps: ["Inspect", "Run focused verification"],
+      },
+    }));
   });
 
   it("projects the complete Runtime task lifecycle by task identity", async () => {
