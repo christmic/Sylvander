@@ -43,6 +43,16 @@ list with adapter kind, `ready` or `unverified` status, each enforced isolation
 property, and the derived full-sandbox result. `Unverified` is never presented
 as successful reachability.
 
+Every registered executor is wrapped by Runtime's workspace coordinator.
+Coordination is keyed by exact target identity and workspace path: reads share
+access, while ordinary writes, conditional writes, and arbitrary commands are
+exclusive across Sessions. `Edit` receives a content revision from its update
+read; the coordinator re-reads under the exclusive lock and rejects stale or
+truncated state before delegating the write. This boundary belongs here rather
+than in Agent scheduling because two product Sessions can mount the same
+physical workspace. It is process-local and does not claim to govern writers
+that bypass Runtime.
+
 Runtime now owns one bounded health worker for that service. Every 30 seconds
 it probes SSH targets with the executor's exact BatchMode, strict known-host,
 identity, and control-socket arguments and a fixed remote `true`; OCI targets

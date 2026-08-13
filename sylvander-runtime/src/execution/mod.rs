@@ -18,12 +18,17 @@ const EXECUTION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const EXECUTION_PROBE_INTERVAL: Duration = Duration::from_secs(30);
 
 pub mod container;
+mod coordinated;
+#[cfg(test)]
+#[path = "../../tests/unit/execution_coordination.rs"]
+mod coordinated_tests;
 mod local;
 mod persistent;
 mod persistent_container;
 pub mod ssh;
 
 pub use container::{ContainerExecutor, ContainerResourcePolicy};
+use coordinated::CoordinatedWorkspaceExecutor;
 pub(crate) use local::LocalExecutor;
 #[cfg(test)]
 pub(crate) use persistent::PersistentProcessIsolation;
@@ -161,8 +166,10 @@ impl RuntimeExecutionService {
                 return Err(ExecutionServiceError::InvalidTargetId);
             }
             let isolation = registration.executor.process_isolation();
+            let executor: Arc<dyn WorkspaceExecutor> =
+                Arc::new(CoordinatedWorkspaceExecutor::new(registration.executor));
             let entry = ExecutionTargetEntry {
-                executor: registration.executor,
+                executor,
                 persistent_processes: registration.persistent_processes,
                 probe: registration.probe,
                 health: RwLock::new(ExecutionTargetHealth {
