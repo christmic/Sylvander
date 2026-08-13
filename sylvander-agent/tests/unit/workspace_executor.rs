@@ -71,6 +71,29 @@ async fn tool_uses_injected_executor_and_preserves_target_identity() {
 }
 
 #[tokio::test]
+async fn conditional_write_fails_closed_without_runtime_coordination() {
+    let executor = RecordingExecutor::default();
+    let target = WorkspaceTarget {
+        id: "uncoordinated".into(),
+        workspace_path: "/workspace".into(),
+        read_only: false,
+    };
+    let update = executor
+        .read_file_for_update(&target, "file.txt", 1024)
+        .await
+        .expect("issue revision");
+    let error = executor
+        .write_file_if_revision(&target, "file.txt", &update.revision, b"replacement", 1024)
+        .await
+        .expect_err("uncoordinated executor must fail closed");
+    assert!(matches!(
+        error,
+        WorkspaceExecutorError::ConditionalWriteUnavailable(target_id)
+            if target_id == "uncoordinated"
+    ));
+}
+
+#[tokio::test]
 async fn every_workspace_tool_fails_closed_when_the_context_has_no_workspace() {
     let context = ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
         .with_capability(Cap::Read)

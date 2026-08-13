@@ -16,8 +16,9 @@ use sylvander_agent::execution::artifact::{
 use sylvander_agent::execution::ports::AgentExecutionPorts;
 use sylvander_agent::execution::tool_context::ToolContext;
 use sylvander_agent::execution::workspace::{
-    WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListRequest,
-    WorkspaceListResult, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
+    WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceFileRevision,
+    WorkspaceListRequest, WorkspaceListResult, WorkspaceSearchRequest, WorkspaceSearchResult,
+    WorkspaceTarget,
 };
 use sylvander_agent::interaction::ask_user::AskUserGate;
 use sylvander_agent::interaction::background_task::TaskGate;
@@ -374,6 +375,23 @@ impl WorkspaceExecutor for TestWorkspaceExecutor {
         }
         tokio::fs::write(path, content).await?;
         Ok(())
+    }
+
+    async fn write_file_if_revision(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        expected: &WorkspaceFileRevision,
+        content: &[u8],
+        max_bytes: usize,
+    ) -> Result<(), WorkspaceExecutorError> {
+        let current = self.read_file(target, relative_path).await?;
+        if current.len() > max_bytes || WorkspaceFileRevision::for_bytes(&current) != *expected {
+            return Err(WorkspaceExecutorError::WriteConflict(
+                relative_path.to_owned(),
+            ));
+        }
+        self.write_file(target, relative_path, content).await
     }
 
     async fn run_command(

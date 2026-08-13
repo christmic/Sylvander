@@ -14,6 +14,7 @@ use serde_json::{Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
 use crate::execution::tool_context::{Cap, ToolContext};
+use crate::execution::workspace::WorkspaceFileUpdate;
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
@@ -115,14 +116,15 @@ impl ToolExecutor for EditTool {
                 target.id
             )));
         }
-        let read = match ctx
+        let update = match ctx
             .executor
-            .read_file_bounded(target, path_str, MAX_EDIT_FILE_BYTES)
+            .read_file_for_update(target, path_str, MAX_EDIT_FILE_BYTES)
             .await
         {
-            Ok(read) => read,
+            Ok(update) => update,
             Err(error) => return Ok(ToolOutput::err(error.to_string())),
         };
+        let WorkspaceFileUpdate { read, revision } = update;
         if read.truncated {
             return Ok(ToolOutput::err(format!(
                 "file too large to edit ({} bytes > {} byte limit)",
@@ -174,7 +176,13 @@ impl ToolExecutor for EditTool {
 
         match ctx
             .executor
-            .write_file(target, path_str, new_content.as_bytes())
+            .write_file_if_revision(
+                target,
+                path_str,
+                &revision,
+                new_content.as_bytes(),
+                MAX_EDIT_FILE_BYTES,
+            )
             .await
         {
             Ok(()) => {

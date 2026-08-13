@@ -58,8 +58,11 @@ running a hook.
   model arguments are never authority.
 - `execution::workspace` contains only the neutral workspace port, values,
   router, bounds, and fail-closed unavailable sentinel. Concrete local, SSH,
-  and OCI implementations live in Runtime. `ToolContext` never grants host
-  access merely because a filesystem path was supplied.
+  and OCI implementations plus cross-Session workspace coordination live in
+  Runtime. Edit carries an opaque content revision from update-read to
+  conditional write and fails closed when the environment cannot enforce that
+  contract. `ToolContext` never grants host access merely because a filesystem
+  path was supplied.
 - `execution::artifact` defines the asynchronous, turn-bound retention port. Agent sends
   media type, bytes, and call correlation only; Runtime binds identity,
   encryption, retention, backend, and locator resolution. Compression exposes

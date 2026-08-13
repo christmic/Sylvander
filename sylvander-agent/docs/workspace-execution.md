@@ -10,7 +10,8 @@ capabilities.
 
 The contract provides:
 
-- full and bounded file reads plus bounded writes;
+- full and bounded file reads, ordinary writes, and revision-bound conditional
+  writes;
 - deterministic bounded list and text search;
 - ordinary and streaming command execution;
 - command-scoped environment overrides;
@@ -20,6 +21,28 @@ Read/Write/Edit/List/Search/Command/Git all receive the effective executor and
 target through `ToolContext`. Their constructors are zero-argument and retain
 no path state. An empty workspace or unknown target fails explicitly and never
 falls back to the process directory or a same-named host path.
+
+## Mutation consistency
+
+`Edit` is a read-modify-write operation, so an ordinary `write_file` is not a
+valid commit primitive. It first calls `read_file_for_update`, which returns
+the complete bounded bytes plus an opaque `WorkspaceFileRevision`, then calls
+`write_file_if_revision`. Agent can forward and compare this content revision
+but cannot derive filesystem metadata or a storage location from it.
+
+The conditional-write default fails closed. Runtime's execution service wraps
+every concrete target with a coordinator keyed by execution-target identity
+and workspace path. Reads take a shared lock; writes and arbitrary commands
+take the exclusive lock. A conditional write takes the exclusive lock,
+re-reads the file, rejects truncation or revision drift, and only then invokes
+the concrete write. This prevents two Sessions sharing one workspace from both
+committing edits prepared from the same bytes. A change made outside Runtime
+before revalidation is also rejected.
+
+The coordinator is process-local. Deployment policy must not let an unrelated
+writer bypass Runtime when exclusive ownership is required. Atomic replacement
+and crash durability of the final write remain properties of each concrete
+filesystem adapter; the revision contract does not invent those guarantees.
 
 Command environment overrides are limited to 64 entries. Names must use shell
 identifier syntax, names are at most 128 bytes, values are at most 8 KiB, and
@@ -37,8 +60,10 @@ cancellation terminates the whole group so descendants cannot outlive the
 Agent turn.
 
 Agent tests cover executor injection, logical mount routing, prepared-policy
-bounds, capability denial, and unavailable-target behavior through test
-doubles. Runtime tests own concrete `LocalExecutor` conformance: file
+bounds, capability denial, conditional Edit behavior, and unavailable-target
+behavior through test doubles. Runtime tests prove that concurrent stale
+revisions have exactly one winner and that a detected out-of-band change is
+preserved. Runtime also owns concrete `LocalExecutor` conformance: file
 read/write, bounded reads, list/search, environment, streaming, read-only
 enforcement, output pressure, UTF-8 chunk boundaries, timeout, and dropped
 future cancellation.

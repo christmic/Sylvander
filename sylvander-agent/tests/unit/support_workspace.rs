@@ -15,10 +15,10 @@ use std::os::unix::process::CommandExt;
 use crate::workspace_executor::{
     COMMAND_OUTPUT_HEAD_BYTES, MAX_COMMAND_OUTPUT_BYTES_PER_STREAM, MAX_QUERY_OUTPUT_BYTES,
     WorkspaceCommandOutput, WorkspaceCommandProgressSink, WorkspaceCommandStream,
-    WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListEntry,
-    WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits, WorkspaceReadResult,
-    WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
-    validate_command_environment,
+    WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceFileRevision,
+    WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
+    WorkspaceReadResult, WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult,
+    WorkspaceTarget, validate_command_environment,
 };
 use async_trait::async_trait;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
@@ -75,6 +75,25 @@ impl WorkspaceExecutor for TestWorkspaceExecutor {
         }
         tokio::fs::write(path, content).await?;
         Ok(())
+    }
+
+    async fn write_file_if_revision(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        expected: &WorkspaceFileRevision,
+        content: &[u8],
+        max_bytes: usize,
+    ) -> Result<(), WorkspaceExecutorError> {
+        let current = self
+            .read_file_bounded(target, relative_path, max_bytes)
+            .await?;
+        if current.truncated || WorkspaceFileRevision::for_bytes(&current.bytes) != *expected {
+            return Err(WorkspaceExecutorError::WriteConflict(
+                relative_path.to_owned(),
+            ));
+        }
+        self.write_file(target, relative_path, content).await
     }
 
     async fn run_command(

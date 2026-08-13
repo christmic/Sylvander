@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
@@ -50,6 +51,10 @@ pub enum WorkspaceExecutorError {
     Io(#[from] std::io::Error),
     #[error("workspace command timed out after {0:?}")]
     Timeout(Duration),
+    #[error("workspace file changed before the conditional write: {0}")]
+    WriteConflict(String),
+    #[error("execution target `{0}` cannot enforce conditional file writes")]
+    ConditionalWriteUnavailable(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +62,28 @@ pub struct WorkspaceReadResult {
     pub bytes: Vec<u8>,
     pub total_bytes: u64,
     pub truncated: bool,
+}
+
+/// Opaque content revision carried from an update read to a conditional write.
+///
+/// Agent code may compare and forward this value but must not infer filesystem
+/// metadata or storage location from it. Concrete execution environments are
+/// responsible for revalidating the revision inside their mutation boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceFileRevision([u8; 32]);
+
+impl WorkspaceFileRevision {
+    #[must_use]
+    pub fn for_bytes(bytes: &[u8]) -> Self {
+        Self(Sha256::digest(bytes).into())
+    }
+}
+
+/// Complete bounded read used to prepare one conflict-detecting mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceFileUpdate {
+    pub read: WorkspaceReadResult,
+    pub revision: WorkspaceFileRevision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +320,42 @@ pub trait WorkspaceExecutor: Send + Sync + Debug {
         relative_path: &str,
         content: &[u8],
     ) -> Result<(), WorkspaceExecutorError>;
+
+    /// Read one file and issue the revision required for a later conditional
+    /// write. A truncated result carries only the visible prefix revision;
+    /// callers must reject it and conforming conditional writes fail its
+    /// revalidation.
+    async fn read_file_for_update(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<WorkspaceFileUpdate, WorkspaceExecutorError> {
+        let read = self
+            .read_file_bounded(target, relative_path, max_bytes)
+            .await?;
+        let revision = WorkspaceFileRevision::for_bytes(&read.bytes);
+        Ok(WorkspaceFileUpdate { read, revision })
+    }
+
+    /// Replace a file only if it still matches a revision issued by
+    /// [`WorkspaceExecutor::read_file_for_update`].
+    ///
+    /// The default fails closed. Runtime must install an executor capable of
+    /// serializing trusted mutations and revalidating the exact file bytes.
+    async fn write_file_if_revision(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        expected: &WorkspaceFileRevision,
+        content: &[u8],
+        max_bytes: usize,
+    ) -> Result<(), WorkspaceExecutorError> {
+        let _ = (relative_path, expected, content, max_bytes);
+        Err(WorkspaceExecutorError::ConditionalWriteUnavailable(
+            target.id.clone(),
+        ))
+    }
 
     async fn run_command(
         &self,
@@ -532,6 +595,37 @@ impl WorkspaceExecutor for WorkspaceRouter {
         mount
             .executor
             .read_file_bounded(&mount.target, &path, max_bytes)
+            .await
+    }
+
+    async fn read_file_for_update(
+        &self,
+        _target: &WorkspaceTarget,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<WorkspaceFileUpdate, WorkspaceExecutorError> {
+        let (_, mount, path, _) = self.route_path(relative_path)?;
+        Self::require(mount, mount.capabilities.read, "read")?;
+        Self::require(mount, mount.capabilities.write, "write")?;
+        mount
+            .executor
+            .read_file_for_update(&mount.target, &path, max_bytes)
+            .await
+    }
+
+    async fn write_file_if_revision(
+        &self,
+        _target: &WorkspaceTarget,
+        relative_path: &str,
+        expected: &WorkspaceFileRevision,
+        content: &[u8],
+        max_bytes: usize,
+    ) -> Result<(), WorkspaceExecutorError> {
+        let (_, mount, path, _) = self.route_path(relative_path)?;
+        Self::require(mount, mount.capabilities.write, "write")?;
+        mount
+            .executor
+            .write_file_if_revision(&mount.target, &path, expected, content, max_bytes)
             .await
     }
 
