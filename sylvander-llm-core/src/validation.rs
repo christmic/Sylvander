@@ -20,6 +20,8 @@ pub enum RequiredModelCapability {
     Vision,
     /// Document input support.
     DocumentInput,
+    /// Inline audio input support.
+    AudioInput,
 }
 impl RequiredModelCapability {
     const fn flag(self) -> ModelCapabilities {
@@ -30,6 +32,7 @@ impl RequiredModelCapability {
             Self::PromptCaching => ModelCapabilities::PROMPT_CACHING,
             Self::Vision => ModelCapabilities::VISION,
             Self::DocumentInput => ModelCapabilities::DOCUMENT_INPUT,
+            Self::AudioInput => ModelCapabilities::AUDIO_INPUT,
         }
     }
 }
@@ -43,6 +46,7 @@ impl std::fmt::Display for RequiredModelCapability {
             Self::PromptCaching => "prompt_caching",
             Self::Vision => "vision",
             Self::DocumentInput => "document_input",
+            Self::AudioInput => "audio_input",
         })
     }
 }
@@ -72,6 +76,10 @@ pub enum ModelRequestFeature {
     DirectDocument,
     /// Document supplied inside a tool result.
     ToolResultDocument,
+    /// Audio supplied as a top-level message block.
+    DirectAudio,
+    /// Audio supplied inside a tool result.
+    ToolResultAudio,
 }
 
 impl std::fmt::Display for ModelRequestFeature {
@@ -88,6 +96,8 @@ impl std::fmt::Display for ModelRequestFeature {
             Self::ToolResultImage => "tool_result_image",
             Self::DirectDocument => "direct_document",
             Self::ToolResultDocument => "tool_result_document",
+            Self::DirectAudio => "direct_audio",
+            Self::ToolResultAudio => "tool_result_audio",
         })
     }
 }
@@ -110,6 +120,8 @@ struct FeatureScan {
     result_image: bool,
     document: bool,
     result_document: bool,
+    audio: bool,
+    result_audio: bool,
 }
 
 impl FeatureScan {
@@ -121,11 +133,13 @@ impl FeatureScan {
                 for item in content {
                     self.result_image |= matches!(item, ToolResultContent::Image { .. });
                     self.result_document |= matches!(item, ToolResultContent::Document { .. });
+                    self.result_audio |= matches!(item, ToolResultContent::Audio { .. });
                 }
             }
             ContentBlock::Reasoning { .. } => self.reasoning = true,
             ContentBlock::Image { .. } => self.image = true,
             ContentBlock::Document { .. } => self.document = true,
+            ContentBlock::Audio { .. } => self.audio = true,
             ContentBlock::Text { .. } => {}
         }
     }
@@ -180,6 +194,14 @@ fn requirements(request: &ModelRequest) -> Vec<(RequiredModelCapability, ModelRe
                 ModelRequestFeature::DirectDocument
             } else {
                 ModelRequestFeature::ToolResultDocument
+            },
+        )),
+        (scan.audio || scan.result_audio).then_some((
+            RequiredModelCapability::AudioInput,
+            if scan.audio {
+                ModelRequestFeature::DirectAudio
+            } else {
+                ModelRequestFeature::ToolResultAudio
             },
         )),
     ]

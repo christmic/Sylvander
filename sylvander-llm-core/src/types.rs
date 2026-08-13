@@ -91,6 +91,39 @@ pub struct ImageContent {
     pub alt_text: Option<String>,
 }
 
+/// Audio encoding carried by a provider-neutral inline input block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioFormat {
+    /// Waveform Audio File Format.
+    Wav,
+    /// MPEG-1/2 Audio Layer III.
+    Mp3,
+}
+
+impl AudioFormat {
+    /// Stable wire token used by adapters that support inline audio.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Mp3 => "mp3",
+        }
+    }
+}
+
+/// Inline audio input and optional accessible transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioContent {
+    /// Base64-encoded audio bytes without a data-URL prefix.
+    pub data: String,
+    /// Exact encoding of `data`.
+    pub format: AudioFormat,
+    /// Optional caller-supplied transcript; adapters must not treat it as a
+    /// substitute for the audio unless their protocol explicitly requires it.
+    pub transcript: Option<String>,
+}
+
 /// Document input and optional display title.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentContent {
@@ -113,6 +146,11 @@ pub enum ToolResultContent {
     Image {
         /// Typed image content.
         image: ImageContent,
+    },
+    /// Audio tool output.
+    Audio {
+        /// Typed audio content.
+        audio: AudioContent,
     },
     /// Document tool output.
     Document {
@@ -159,6 +197,11 @@ pub enum ContentBlock {
     Image {
         /// Typed image content.
         image: ImageContent,
+    },
+    /// Direct audio input.
+    Audio {
+        /// Typed audio content.
+        audio: AudioContent,
     },
     /// Direct document input.
     Document {

@@ -4,10 +4,10 @@ use std::sync::Arc;
 use futures_util::{StreamExt, stream};
 use serde_json::json;
 use sylvander_llm_core::{
-    CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent, ImageContent, InputSchema,
-    MediaSource, ModelCapabilities, ModelEventStream, ModelProvider, ModelRef, ModelRequest,
-    ModelRequestCapabilityError, ModelRequestFeature, ModelResponse, ModelStreamEvent,
-    OpaqueProviderState, ProviderErrorKind, ProviderFuture, ReasoningConfig,
+    AudioContent, AudioFormat, CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent,
+    ImageContent, InputSchema, MediaSource, ModelCapabilities, ModelEventStream, ModelProvider,
+    ModelRef, ModelRequest, ModelRequestCapabilityError, ModelRequestFeature, ModelResponse,
+    ModelStreamEvent, OpaqueProviderState, ProviderErrorKind, ProviderFuture, ReasoningConfig,
     RequiredModelCapability, StopReason, SystemInstruction, TokenUsage, TokenUsageDetails,
     ToolDefinition, ToolResultContent, required_model_capabilities,
     validate_model_request_capabilities,
@@ -132,6 +132,9 @@ fn rich_request_and_response_round_trip_without_provider_wire_types() {
                         ToolResultContent::Document {
                             document: url_document(),
                         },
+                        ToolResultContent::Audio {
+                            audio: base64_audio(),
+                        },
                     ],
                     is_error: false,
                 }],
@@ -168,6 +171,9 @@ fn rich_request_and_response_round_trip_without_provider_wire_types() {
             },
             ContentBlock::Document {
                 document: url_document(),
+            },
+            ContentBlock::Audio {
+                audio: base64_audio(),
             },
         ],
         stop_reason: StopReason::StopSequence("END".into()),
@@ -233,7 +239,7 @@ fn usage_accumulates_without_overflowing() {
 }
 
 #[test]
-fn request_features_require_all_six_capabilities_and_errors_are_redacted() {
+fn request_features_require_all_seven_capabilities_and_errors_are_redacted() {
     let mut input = base_request();
     input.tools.push(tool(None));
     input.reasoning = Some(ReasoningConfig {
@@ -254,6 +260,9 @@ fn request_features_require_all_six_capabilities_and_errors_are_redacted() {
             ContentBlock::Document {
                 document: secret_document(),
             },
+            ContentBlock::Audio {
+                audio: secret_audio(),
+            },
         ],
     });
     let tool_cap = ModelCapabilities::TOOL_USE;
@@ -261,7 +270,8 @@ fn request_features_require_all_six_capabilities_and_errors_are_redacted() {
     let schema = reasoning | ModelCapabilities::STRUCTURED_OUTPUT;
     let cache = schema | ModelCapabilities::PROMPT_CACHING;
     let vision = cache | ModelCapabilities::VISION;
-    let all = vision | ModelCapabilities::DOCUMENT_INPUT;
+    let document = vision | ModelCapabilities::DOCUMENT_INPUT;
+    let all = document | ModelCapabilities::AUDIO_INPUT;
     assert_eq!(required_model_capabilities(&input), all);
     for (available, capability, feature) in [
         (
@@ -293,6 +303,11 @@ fn request_features_require_all_six_capabilities_and_errors_are_redacted() {
             vision,
             RequiredModelCapability::DocumentInput,
             ModelRequestFeature::DirectDocument,
+        ),
+        (
+            document,
+            RequiredModelCapability::AudioInput,
+            ModelRequestFeature::DirectAudio,
         ),
     ] {
         assert_missing(&input, available, capability, feature);
@@ -342,6 +357,9 @@ fn history_and_nested_media_stack_requirements() {
                 ToolResultContent::Document {
                     document: secret_document(),
                 },
+                ToolResultContent::Audio {
+                    audio: secret_audio(),
+                },
             ],
             is_error: false,
         }],
@@ -349,9 +367,10 @@ fn history_and_nested_media_stack_requirements() {
     let tool_cap = ModelCapabilities::TOOL_USE;
     let reasoning = tool_cap | ModelCapabilities::REASONING;
     let vision = reasoning | ModelCapabilities::VISION;
+    let document = vision | ModelCapabilities::DOCUMENT_INPUT;
     assert_eq!(
         required_model_capabilities(&input),
-        vision | ModelCapabilities::DOCUMENT_INPUT
+        document | ModelCapabilities::AUDIO_INPUT
     );
     for (available, capability, feature) in [
         (
@@ -373,6 +392,11 @@ fn history_and_nested_media_stack_requirements() {
             vision,
             RequiredModelCapability::DocumentInput,
             ModelRequestFeature::ToolResultDocument,
+        ),
+        (
+            document,
+            RequiredModelCapability::AudioInput,
+            ModelRequestFeature::ToolResultAudio,
         ),
     ] {
         assert_missing(&input, available, capability, feature);
@@ -438,6 +462,22 @@ fn secret_document() -> DocumentContent {
             url: "https://secret.invalid/document".into(),
         },
         title: None,
+    }
+}
+
+fn base64_audio() -> AudioContent {
+    AudioContent {
+        data: "UklGRg==".into(),
+        format: AudioFormat::Wav,
+        transcript: Some("spoken diagram".into()),
+    }
+}
+
+fn secret_audio() -> AudioContent {
+    AudioContent {
+        data: "secret-audio".into(),
+        format: AudioFormat::Mp3,
+        transcript: Some("secret-transcript".into()),
     }
 }
 

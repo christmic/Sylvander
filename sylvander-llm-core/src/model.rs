@@ -40,6 +40,8 @@ impl ModelCapabilities {
     pub const VISION: Self = Self(1 << 4);
     /// Model accepts document input.
     pub const DOCUMENT_INPUT: Self = Self(1 << 5);
+    /// Model accepts inline audio input.
+    pub const AUDIO_INPUT: Self = Self(1 << 6);
 
     #[must_use]
     /// Return a capability set with no enabled features.
