@@ -17,6 +17,8 @@ fn command_guidance_requires_bounded_samples_and_linear_work() {
     assert!(guidelines.contains("genuinely bounded sample"));
     assert!(guidelines.contains("copying the full input does not create a sample"));
     assert!(guidelines.contains("Never put a whole-input scan inside a per-record loop"));
+    assert!(guidelines.contains("stop running equivalent scans"));
+    assert!(guidelines.contains("return that summary in the assistant response"));
 }
 
 #[tokio::test]

@@ -68,6 +68,8 @@ impl ToolDefinition for CommandTool {
             "Use the dedicated Read, List, Search, Edit, Write, and Git tools instead of shell equivalents when available.",
             "Before processing large inputs, measure their size and prove the approach on a genuinely bounded sample (for example, head or a limited range); copying the full input does not create a sample.",
             "Estimate full-input complexity before execution. Never put a whole-input scan inside a per-record loop; prefer a bounded number of linear passes and verify the sample before scaling up.",
+            "Batch related read-only inspections when one bounded command can answer them. After an authoritative verification passes, stop running equivalent scans with slightly different syntax.",
+            "Do not execute shell commands only to print a narrative summary; return that summary in the assistant response.",
         ])
     }
 
