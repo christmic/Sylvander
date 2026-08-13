@@ -66,6 +66,7 @@ use crate::composition::{
 use crate::config::{
     MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
 };
+use crate::coordination::arbitration::{ArbitrationCase, ModeratorDecision};
 use crate::coordination::handoff::TaskHandoff;
 use crate::coordination::mailbox::{AgentMessageTurn, CoordinationMessage, MessageClaim};
 use crate::coordination::service::{
@@ -4958,15 +4959,38 @@ impl Runtime {
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
         if let Some(scheduler) = &self.mailbox_scheduler {
             match &outcome {
-                DispatchMessageOutcome::Enqueued(message) => {
+                DispatchMessageOutcome::Enqueued(message)
+                | DispatchMessageOutcome::EnqueuedByModerator { message, .. } => {
                     scheduler.wake(message.recipient_instance_id.clone());
                 }
                 DispatchMessageOutcome::RequiresArbitration { case, .. } => {
                     scheduler.wake(case.moderator_instance_id.clone());
                 }
+                DispatchMessageOutcome::RejectedByModerator { .. } => {}
             }
         }
         Ok(outcome)
+    }
+
+    /// Apply a fenced moderator decision as one durable coordination transaction.
+    pub async fn decide_agent_arbitration(
+        &self,
+        actor: &AuthenticatedSession,
+        decision: &ModeratorDecision,
+    ) -> Result<ArbitrationCase, RuntimeError> {
+        let coordination = self.storage.coordination().ok_or_else(|| {
+            RuntimeError::Coordination("durable coordination is unavailable".into())
+        })?;
+        let case = coordination
+            .arbitration_case(&decision.case_id)
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Coordination("arbitration case disappeared".into()))?;
+        validate_coordination_actor(actor, &case.session_id, &decision.decided_by)?;
+        coordination
+            .decide_arbitration(decision, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
     }
 
     /// Fork, attach, and activate one child Agent through durable spawn boundaries.
@@ -4985,13 +5009,20 @@ impl Runtime {
             .fork_agent(request, crate::session::now_secs())
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
-        let ForkAgentOutcome::Created(participant) = outcome else {
-            if let ForkAgentOutcome::RequiresArbitration { case, .. } = &outcome
-                && let Some(scheduler) = &self.mailbox_scheduler
-            {
-                scheduler.wake(case.moderator_instance_id.clone());
+        let (participant, moderator_authorization) = match outcome {
+            ForkAgentOutcome::Created(participant) => (participant, None),
+            ForkAgentOutcome::CreatedByModerator {
+                participant,
+                decision,
+            } => (participant, Some(decision)),
+            outcome => {
+                if let ForkAgentOutcome::RequiresArbitration { case, .. } = &outcome
+                    && let Some(scheduler) = &self.mailbox_scheduler
+                {
+                    scheduler.wake(case.moderator_instance_id.clone());
+                }
+                return Ok(outcome);
             }
-            return Ok(outcome);
         };
         let mut session = self
             .storage
@@ -5093,7 +5124,13 @@ impl Runtime {
             .mark_agent_ready(&participant, crate::session::now_secs())
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
-        Ok(ForkAgentOutcome::Created(ready))
+        Ok(match moderator_authorization {
+            Some(decision) => ForkAgentOutcome::CreatedByModerator {
+                participant: ready,
+                decision,
+            },
+            None => ForkAgentOutcome::Created(ready),
+        })
     }
 
     /// Persist one authenticated wait-for edge for deadlock governance.

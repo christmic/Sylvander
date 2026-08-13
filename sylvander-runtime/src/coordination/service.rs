@@ -11,6 +11,7 @@ use crate::agent::instance::{
     AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute, HistoryView,
     SessionAgentRole,
 };
+use crate::coordination::arbitration::ModeratorVerdict;
 use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState, ModeratorDecision};
 use crate::coordination::governance::{
     GovernanceAssessment, GovernanceFinding, GovernancePolicy, GovernanceSnapshot,
@@ -47,9 +48,17 @@ pub struct DispatchMessageRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchMessageOutcome {
     Enqueued(CoordinationMessage),
+    EnqueuedByModerator {
+        message: CoordinationMessage,
+        decision: ModeratorDecision,
+    },
     RequiresArbitration {
         case: ArbitrationCase,
         assessment: GovernanceAssessment,
+    },
+    RejectedByModerator {
+        case: ArbitrationCase,
+        decision: ModeratorDecision,
     },
 }
 
@@ -64,9 +73,17 @@ pub struct ForkAgentRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForkAgentOutcome {
     Created(AgentInstance),
+    CreatedByModerator {
+        participant: AgentInstance,
+        decision: ModeratorDecision,
+    },
     RequiresArbitration {
         case: ArbitrationCase,
         assessment: GovernanceAssessment,
+    },
+    RejectedByModerator {
+        case: ArbitrationCase,
+        decision: ModeratorDecision,
     },
 }
 
@@ -193,6 +210,7 @@ where
                 handoffs: &observations.handoffs,
             },
         );
+        let mut moderator_authorization = None;
         if !assessment.permits_automatic_progress() {
             let case_id = governance_case_id(
                 "message",
@@ -201,6 +219,50 @@ where
                 topology.topology_revision,
             )?;
             if let Some(case) = self.store.arbitration_case(&case_id).await? {
+                if case.state == ArbitrationState::Applied {
+                    let decision = self.applied_decision(&case).await?;
+                    if matches!(
+                        decision.verdict,
+                        ModeratorVerdict::ContinueWithConditions { .. }
+                    ) {
+                        moderator_authorization = Some(decision);
+                    } else {
+                        return Ok(DispatchMessageOutcome::RejectedByModerator { case, decision });
+                    }
+                } else {
+                    self.ensure_arbitration_notification(
+                        &request.sender_instance_id,
+                        request.task_id.as_ref(),
+                        &case,
+                        &membership,
+                        &topology,
+                    )
+                    .await?;
+                    return Ok(DispatchMessageOutcome::RequiresArbitration { case, assessment });
+                }
+            } else {
+                let ttl = i64::try_from(self.arbitration_ttl_seconds)
+                    .map_err(|_| CoordinationServiceError::InvalidConfiguration)?;
+                let case = ArbitrationCase {
+                    case_id,
+                    session_id: request.session_id.clone(),
+                    moderator_instance_id: membership.governance.moderator_instance_id.clone(),
+                    membership_revision: membership.governance.membership_revision,
+                    topology_revision: topology.topology_revision,
+                    moderator_lease_epoch: membership.governance.lease_epoch,
+                    moderator_fencing_token: membership.governance.fencing_token,
+                    findings: assessment.findings.clone(),
+                    state: ArbitrationState::Open,
+                    revision: 0,
+                    expires_at: now
+                        .checked_add(ttl)
+                        .ok_or(CoordinationServiceError::InvalidConfiguration)?,
+                    created_at: now,
+                    updated_at: now,
+                };
+                self.store
+                    .create_arbitration_case(&case, &membership, &topology, now)
+                    .await?;
                 self.ensure_arbitration_notification(
                     &request.sender_instance_id,
                     request.task_id.as_ref(),
@@ -211,37 +273,6 @@ where
                 .await?;
                 return Ok(DispatchMessageOutcome::RequiresArbitration { case, assessment });
             }
-            let ttl = i64::try_from(self.arbitration_ttl_seconds)
-                .map_err(|_| CoordinationServiceError::InvalidConfiguration)?;
-            let case = ArbitrationCase {
-                case_id,
-                session_id: request.session_id.clone(),
-                moderator_instance_id: membership.governance.moderator_instance_id.clone(),
-                membership_revision: membership.governance.membership_revision,
-                topology_revision: topology.topology_revision,
-                moderator_lease_epoch: membership.governance.lease_epoch,
-                moderator_fencing_token: membership.governance.fencing_token,
-                findings: assessment.findings.clone(),
-                state: ArbitrationState::Open,
-                revision: 0,
-                expires_at: now
-                    .checked_add(ttl)
-                    .ok_or(CoordinationServiceError::InvalidConfiguration)?,
-                created_at: now,
-                updated_at: now,
-            };
-            self.store
-                .create_arbitration_case(&case, &membership, &topology, now)
-                .await?;
-            self.ensure_arbitration_notification(
-                &request.sender_instance_id,
-                request.task_id.as_ref(),
-                &case,
-                &membership,
-                &topology,
-            )
-            .await?;
-            return Ok(DispatchMessageOutcome::RequiresArbitration { case, assessment });
         }
 
         let route = topology
@@ -270,7 +301,13 @@ where
             .map_err(|error| CoordinationServiceError::InvalidDispatch(error.to_string()))?;
         if let Some(existing) = self.store.message(&message.message_id).await? {
             return if same_dispatch_intent(&existing, &message) {
-                Ok(DispatchMessageOutcome::Enqueued(existing))
+                Ok(match moderator_authorization {
+                    Some(decision) => DispatchMessageOutcome::EnqueuedByModerator {
+                        message: existing,
+                        decision,
+                    },
+                    None => DispatchMessageOutcome::Enqueued(existing),
+                })
             } else {
                 Err(CoordinationServiceError::IdempotencyConflict)
             };
@@ -278,7 +315,10 @@ where
         self.store
             .enqueue_message(&message, &membership, &topology, now)
             .await?;
-        Ok(DispatchMessageOutcome::Enqueued(message))
+        Ok(match moderator_authorization {
+            Some(decision) => DispatchMessageOutcome::EnqueuedByModerator { message, decision },
+            None => DispatchMessageOutcome::Enqueued(message),
+        })
     }
 
     /// Durably fork one child participant without rewriting existing members.
@@ -436,6 +476,7 @@ where
                 handoffs: &observations.handoffs,
             },
         );
+        let mut moderator_authorization = None;
         if !assessment.permits_automatic_progress() {
             let case_id = governance_case_id(
                 "fork",
@@ -443,8 +484,28 @@ where
                 membership.governance.membership_revision,
                 topology.topology_revision,
             )?;
-            let case = if let Some(case) = self.store.arbitration_case(&case_id).await? {
-                case
+            if let Some(case) = self.store.arbitration_case(&case_id).await? {
+                if case.state == ArbitrationState::Applied {
+                    let decision = self.applied_decision(&case).await?;
+                    if matches!(
+                        decision.verdict,
+                        ModeratorVerdict::ContinueWithConditions { .. }
+                    ) {
+                        moderator_authorization = Some(decision);
+                    } else {
+                        return Ok(ForkAgentOutcome::RejectedByModerator { case, decision });
+                    }
+                } else {
+                    self.ensure_arbitration_notification(
+                        &request.parent_instance_id,
+                        None,
+                        &case,
+                        &membership,
+                        &topology,
+                    )
+                    .await?;
+                    return Ok(ForkAgentOutcome::RequiresArbitration { case, assessment });
+                }
             } else {
                 let ttl = i64::try_from(self.arbitration_ttl_seconds)
                     .map_err(|_| CoordinationServiceError::InvalidConfiguration)?;
@@ -468,17 +529,16 @@ where
                 self.store
                     .create_arbitration_case(&case, &membership, &topology, now)
                     .await?;
-                case
-            };
-            self.ensure_arbitration_notification(
-                &request.parent_instance_id,
-                None,
-                &case,
-                &membership,
-                &topology,
-            )
-            .await?;
-            return Ok(ForkAgentOutcome::RequiresArbitration { case, assessment });
+                self.ensure_arbitration_notification(
+                    &request.parent_instance_id,
+                    None,
+                    &case,
+                    &membership,
+                    &topology,
+                )
+                .await?;
+                return Ok(ForkAgentOutcome::RequiresArbitration { case, assessment });
+            }
         }
         let participant = self
             .store
@@ -490,7 +550,13 @@ where
                 topology.topology_revision,
             )
             .await?;
-        Ok(ForkAgentOutcome::Created(participant))
+        Ok(match moderator_authorization {
+            Some(decision) => ForkAgentOutcome::CreatedByModerator {
+                participant,
+                decision,
+            },
+            None => ForkAgentOutcome::Created(participant),
+        })
     }
 
     /// Commit completion of external attach/provision effects for one spawn intent.
@@ -692,6 +758,35 @@ where
             )
             .await
             .map_err(Into::into)
+    }
+
+    pub async fn arbitration_case(
+        &self,
+        case_id: &GovernanceCaseId,
+    ) -> Result<Option<ArbitrationCase>, CoordinationServiceError> {
+        self.store
+            .arbitration_case(case_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn applied_decision(
+        &self,
+        case: &ArbitrationCase,
+    ) -> Result<ModeratorDecision, CoordinationServiceError> {
+        if case.state != ArbitrationState::Applied {
+            return Err(CoordinationServiceError::InvalidArbitration(
+                "arbitration case is not applied".into(),
+            ));
+        }
+        self.store
+            .arbitration_decision(&case.case_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::InvalidDurableFacts(
+                    "applied arbitration case has no moderator decision".into(),
+                )
+            })
     }
 
     /// Lease one durable envelope. Expired claims are recoverable by a later worker.

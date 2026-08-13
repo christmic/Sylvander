@@ -379,6 +379,87 @@ async fn coordination_service_persists_moderator_case_before_blocking_dispatch()
 }
 
 #[tokio::test]
+async fn moderator_conditions_authorize_the_exact_blocked_dispatch() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let task = CoordinationTask {
+        task_id: TaskId::new("stagnant-task"),
+        session_id: membership.session_id.clone(),
+        membership_revision: 0,
+        parent_task_id: None,
+        created_by: AgentInstanceId::new("moderator-1"),
+        assigned_to: Some(AgentInstanceId::new("worker-1")),
+        objective: "produce distinct evidence".into(),
+        state: CoordinationTaskState::Running,
+        token_budget: 1_000,
+        consumed_tokens: 100,
+        max_handoffs: 2,
+        handoff_count: 0,
+        revision: 0,
+        created_at: 10,
+        updated_at: 10,
+    };
+    store.create_task(&task).await.unwrap();
+    for sequence in 0..3 {
+        store
+            .record_progress(
+                &task.session_id,
+                &ProgressObservation {
+                    observation_id: format!("stagnant-{sequence}"),
+                    task_id: task.task_id.clone(),
+                    agent_instance_id: AgentInstanceId::new("worker-1"),
+                    task_revision: 0,
+                    consumed_tokens: 110 + sequence,
+                    evidence_digest: Some("sha256:same".into()),
+                    observed_at: 11 + i64::try_from(sequence).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    let request = dispatch_request("conditionally-authorized");
+    let DispatchMessageOutcome::RequiresArbitration { case, assessment } =
+        service.dispatch_message(request.clone(), 20).await.unwrap()
+    else {
+        panic!("stagnation must require moderator review");
+    };
+    assert!(!assessment.has_hard_stop());
+    let decision = ModeratorDecision {
+        case_id: case.case_id,
+        decided_by: AgentInstanceId::new("moderator-1"),
+        moderator_lease_epoch: 3,
+        moderator_fencing_token: 9,
+        verdict: ModeratorVerdict::ContinueWithConditions {
+            conditions: vec!["attach a distinct evidence digest on the next iteration".into()],
+        },
+        rationale: "one bounded iteration can produce the missing evidence".into(),
+        evidence_refs: vec!["progress:stagnant-2".into()],
+        decided_at: 21,
+    };
+    service.decide_arbitration(&decision, 21).await.unwrap();
+
+    let DispatchMessageOutcome::EnqueuedByModerator {
+        message,
+        decision: applied,
+    } = service.dispatch_message(request, 22).await.unwrap()
+    else {
+        panic!("the exact moderated intent must proceed with its decision attached");
+    };
+    assert_eq!(message.message_id.0, "conditionally-authorized");
+    assert_eq!(applied, decision);
+}
+
+#[tokio::test]
 async fn coordination_service_recovers_handoff_at_arbitration_boundary() {
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     store.save(&stored_session()).await.unwrap();
