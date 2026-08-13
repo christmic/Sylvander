@@ -178,6 +178,10 @@ kbd, code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .inspector-tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 3px; border-radius: 8px; background: #080709; }
 .inspector-tabs button { padding: 7px; border-radius: 6px; color: var(--muted-2); background: transparent; font-size: 9px; font-weight: 700; text-transform: capitalize; }
 .inspector-tabs button.active { color: var(--text); background: var(--surface-3); }
+.context-panel { display: grid; gap: 10px; padding: 16px; color: var(--muted); }
+.context-panel h3, .context-panel p { margin: 0; }.context-panel h3 { color: var(--text); }
+.context-panel ul { display: grid; gap: 6px; margin: 0; padding-left: 18px; }
+.context-actions { display: flex; gap: 8px; margin-top: 4px; }
 .plan-list { flex: 1; margin: 24px 0 0; padding: 0; list-style: none; }
 .plan-list li { position: relative; display: grid; grid-template-columns: 24px 1fr; gap: 9px; min-height: 53px; color: var(--muted-2); }
 .plan-list li:not(:last-child)::after { position: absolute; top: 24px; bottom: 0; left: 11px; width: 1px; content: ""; background: var(--line); }

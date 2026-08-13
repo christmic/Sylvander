@@ -9,10 +9,10 @@ export interface AppProps {
 }
 
 export default function App({ gateway }: AppProps) {
-  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, sendChat, interruptTurn } = useRuntime(gateway);
+  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, sendChat, interruptTurn, requestContext, compactContext } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [inspector, setInspector] = useState<"plan" | "tasks" | "changes">("plan");
+  const [inspector, setInspector] = useState<"plan" | "tasks" | "changes" | "context">("plan");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [questionSelections, setQuestionSelections] = useState<string[]>([]);
@@ -261,11 +261,18 @@ export default function App({ gateway }: AppProps) {
     {inspectorOpen && <aside className="inspector" aria-label="Session inspector">
       <header><div><span className="eyebrow">Live work</span><h2>Execution</h2></div><button className="icon-button" onClick={() => setInspectorOpen(false)} aria-label="Close inspector">×</button></header>
       <div className="inspector-tabs" role="tablist" aria-label="Execution details">
-        {(["plan", "tasks", "changes"] as const).map((tab) => <button key={tab} role="tab" aria-selected={inspector === tab} className={inspector === tab ? "active" : ""} onClick={() => setInspector(tab)}>{tab}</button>)}
+        {(["plan", "tasks", "context", "changes"] as const).map((tab) => <button key={tab} role="tab" aria-selected={inspector === tab} className={inspector === tab ? "active" : ""} onClick={() => setInspector(tab)}>{tab}</button>)}
       </div>
       {inspector === "plan" && <ol className="plan-list">{state.plan.map((step, index) => <li key={`${index}-${step.label}`} data-state={step.state}><span>{step.state === "complete" ? "✓" : index + 1}</span><p>{step.label}</p></li>)}</ol>}
       {inspector === "plan" && state.activePlan && <form className="plan-editor" onSubmit={(event) => void revisePlan(event)}><fieldset><legend>Revise plan</legend>{planRevision.map((step, index) => <label key={index}>Step {index + 1}<input value={step} onChange={(event) => updatePlanStep(index, event.target.value)} /></label>)}</fieldset><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "rejected", reason: "cancelled by user" })}>Reject plan</button><button type="submit" className="secondary-button" disabled={planRevision.every((step) => !step.trim())}>Submit revision</button><button type="button" className="primary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "approved" })}>Approve plan</button></div></form>}
       {inspector === "tasks" && <div className="task-list">{state.tasks.map((task) => <article key={task.id}><span className={`presence ${task.state}`} /><div><strong>{task.purpose}</strong><p>{task.owner} · {task.state}{task.detail ? ` · ${task.detail}` : ""}</p></div>{task.state === "running" && <button className="secondary-button" onClick={() => void cancelTask(task.id)}>Cancel</button>}</article>)}</div>}
+      {inspector === "context" && <section className="context-panel">
+        {state.contextReport ? <><h3>{state.contextReport.model}</h3><p>{state.contextReport.used_tokens} / {state.contextReport.context_window} tokens · {contextPercent(state.contextReport.used_tokens, state.contextReport.context_window)}%</p><p>{state.contextReport.remaining_tokens} remaining · cache {state.contextReport.cache_read_tokens} read / {state.contextReport.cache_write_tokens} written</p><ul>{state.contextReport.sources.map((source) => <li key={`${source.kind}-${source.label}`}>{source.label} · {source.items}</li>)}</ul></> : <p>Request Runtime's provider-confirmed context report.</p>}
+        {state.compaction?.status === "running" && <p role="status">{state.compaction.automatic ? "Automatic compaction" : "Compaction"} in progress…</p>}
+        {state.compaction?.status === "completed" && state.compaction.report && <p>{state.compaction.report.removed_messages} messages removed · {state.compaction.report.condensed_blocks} blocks condensed · ~{state.compaction.report.freed_tokens} tokens freed{state.compaction.report.summary ? ` · ${state.compaction.report.summary}` : ""}</p>}
+        {state.compaction?.status === "failed" && <p role="alert">Compaction failed · {state.compaction.reason}</p>}
+        <div className="context-actions"><button className="secondary-button" disabled={!selected || state.connection !== "live" || state.contextRequestPending} onClick={() => selected && void requestContext(selected.id)}>Refresh</button><button className="primary-button" disabled={!selected || state.connection !== "live" || state.compaction?.status === "running"} onClick={() => selected && void compactContext(selected.id)}>Compact</button></div>
+      </section>}
       {inspector === "changes" && <div className="empty-inspector"><span>±</span><h3>No reviewable diff</h3><p>Runtime-owned changes will appear here.</p></div>}
       <footer className="inspector-summary"><span>{state.sessionStats ? `${state.sessionStats.iterations} iterations · ${state.sessionStats.inputTokens + state.sessionStats.outputTokens} tokens${state.sessionStats.costNanoUsd === undefined ? "" : ` · ${formatCost(state.sessionStats.costNanoUsd)}`}${state.sessionStats.sourceSessionId ? ` · fork of ${state.sessionStats.sourceSessionId.slice(0, 8)}` : ""}` : "Protocol"}</span><strong>{state.protocol ? `v${state.protocol.version}` : "—"}</strong><div><span style={{ width: state.connection === "live" ? "100%" : "0%" }} /></div></footer>
     </aside>}
@@ -299,4 +306,8 @@ function approvalScopeLabel(scope: ApprovalScope) {
 
 function formatCost(costNanoUsd: number) {
   return `$${(costNanoUsd / 1_000_000_000).toFixed(6)}`;
+}
+
+function contextPercent(usedTokens: number, contextWindow: number) {
+  return contextWindow === 0 ? 0 : Math.floor((usedTokens * 100) / contextWindow);
 }

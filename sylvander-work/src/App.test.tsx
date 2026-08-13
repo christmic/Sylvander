@@ -326,6 +326,71 @@ describe("Sylvander Work", () => {
     expect(screen.getByText(/5 iterations · 580 tokens · \$0\.006500/)).toBeTruthy();
   });
 
+  it("requests and projects Runtime-owned context and compaction", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Context", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    act(() => screen.getByRole("button", { name: /^Plan / }).click());
+    act(() => screen.getByRole("tab", { name: "context" }).click());
+    act(() => screen.getByRole("button", { name: "Refresh" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "get_context", session_id: "session-1",
+    }));
+    expect(screen.getByRole("button", { name: "Refresh" }).hasAttribute("disabled")).toBe(true);
+    act(() => gateway.emit({ type: "message", message: {
+      type: "context_report",
+      report: {
+        model: "deep-code",
+        context_window: 200_000,
+        used_tokens: 50_000,
+        remaining_tokens: 150_000,
+        cache_read_tokens: 40_000,
+        cache_write_tokens: 2_000,
+        sources: [{ kind: "conversation", label: "conversation messages", items: 8 }],
+      },
+    } }));
+    expect(await screen.findByText("50000 / 200000 tokens · 25%")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByText("conversation messages · 8")).toBeTruthy();
+
+    act(() => screen.getByRole("button", { name: "Compact" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "compact", session_id: "session-1",
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "compaction_started", session_id: "session-1", automatic: false,
+    } }));
+    expect(await screen.findByText("Compaction in progress…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Compact" }).hasAttribute("disabled")).toBe(true);
+    act(() => gateway.emit({ type: "message", message: {
+      type: "compaction_completed",
+      session_id: "session-1",
+      report: {
+        automatic: false,
+        removed_messages: 12,
+        condensed_blocks: 3,
+        freed_tokens: 4_200,
+        summary: "Kept architecture decisions",
+      },
+    } }));
+    expect(await screen.findByText(/12 messages removed · 3 blocks condensed · ~4200 tokens freed/)).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "compaction_failed",
+      session_id: "session-1",
+      automatic: true,
+      reason: "Provider context changed",
+    } }));
+    expect(await screen.findByText("Compaction failed · Provider context changed")).toBeTruthy();
+  });
+
   it("rolls back the local turn lock when native chat submission fails", async () => {
     const gateway = new TestGateway();
     gateway.rejectChat = true;

@@ -34,7 +34,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
 | `ReattachSession` | complete | selected Session reattaches only after a successful reconnect |
 | `RestoreSession`, `ForkSession` | missing | archived/fork workflows |
-| `GetContext`, `Compact` | missing | context and compaction surface |
+| `GetContext`, `Compact` | complete | Runtime-owned report and compaction lifecycle |
 | `PreviewWorkspaceRollback`, `RollbackWorkspace` | missing | reviewed rollback flow |
 | `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | missing | changes/review surface |
 | `SelectModel`, `SelectPermissions` | missing | Runtime-validated selectors |
@@ -60,7 +60,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `IterationStart`, `IterationEnd` | complete | active state and cumulative usage/cost projection |
 | `SessionConfig` | missing | settings revision/provenance |
 | feedback, memory, admin, profile, identity responses | missing | matching command surfaces |
-| `ContextReport`, compaction lifecycle | missing | context inspector |
+| `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
 | workspace rollback lifecycle | missing | reviewed rollback result |
 | coding Session lifecycle | missing | changes inspector |
 | `OperationError`, `BoundaryDenied` | complete | safe operation-specific notice and bounded retry timing |

@@ -234,6 +234,12 @@ public `Interrupt` command exactly once and remains pending until Runtime emits
 a terminal event. Desktop never treats command delivery as proof that execution
 has stopped.
 
+The Context inspector requests provider-confirmed occupancy from Runtime and
+renders its structural sources and cache counters. Manual or automatic
+compaction remains a Runtime operation: Desktop disables duplicate requests
+while `CompactionStarted` is live and reports only the completed or failed
+public result.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled

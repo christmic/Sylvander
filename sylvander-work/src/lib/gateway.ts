@@ -20,7 +20,9 @@ export type RuntimeCommand =
   | { type: "resolve_plan"; session_id: string; plan_id: string; decision: PlanDecision }
   | { type: "cancel_task"; session_id: string; task_id: string }
   | { type: "create_session"; request: { agent_id: string; label: string; channel_id?: string; overrides: Record<string, never> } }
-  | { type: "get_runtime_info" };
+  | { type: "get_runtime_info" }
+  | { type: "get_context"; session_id?: string }
+  | { type: "compact"; session_id: string };
 
 export type PlanDecision =
   | { decision: "approved" }
@@ -77,6 +79,24 @@ export interface RuntimeInfo {
   platform: unknown;
 }
 
+export interface RuntimeContextReport {
+  model: string;
+  context_window: number;
+  used_tokens: number;
+  remaining_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  sources: Array<{ kind: "system_prompt" | "conversation" | "tools"; label: string; items: number }>;
+}
+
+export interface RuntimeCompactionReport {
+  automatic: boolean;
+  removed_messages: number;
+  condensed_blocks: number;
+  freed_tokens: number;
+  summary?: string;
+}
+
 interface RuntimeModelRetry {
   session_id: string;
   attempt: number;
@@ -116,6 +136,10 @@ export type RuntimeMessage =
   | { type: "tool_result"; session_id: string; call_id: string; tool_name: string; output: string; is_error: boolean }
   | { type: "iteration_start"; session_id: string; iteration: number }
   | { type: "iteration_end"; session_id: string; iteration: number; input_tokens: number; output_tokens: number; cost_nano_usd?: number }
+  | { type: "context_report"; report: RuntimeContextReport }
+  | { type: "compaction_started"; session_id: string; automatic: boolean }
+  | { type: "compaction_completed"; session_id: string; report: RuntimeCompactionReport }
+  | { type: "compaction_failed"; session_id: string; automatic: boolean; reason: string }
   | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: ApprovalScope[] }
   | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }
   | { type: "ask_user"; session_id: string; call_id: string; question: string; options: string[]; multi_select: boolean }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type RuntimeCommand, type RuntimeGatewayPort, type RuntimeMessage } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -42,6 +42,14 @@ export interface RuntimeViewState {
     multiSelect: boolean;
   };
   interruptingSessionIds: string[];
+  contextReport?: RuntimeContextReport;
+  contextRequestPending: boolean;
+  compaction?: {
+    status: "running" | "completed" | "failed";
+    automatic: boolean;
+    report?: RuntimeCompactionReport;
+    reason?: string;
+  };
   diagnostic?: string;
 }
 
@@ -53,6 +61,7 @@ const initialState: RuntimeViewState = {
   plan: [],
   tasks: [],
   interruptingSessionIds: [],
+  contextRequestPending: false,
 };
 
 // Retry scheduling is presentation orchestration only. Each attempt still
@@ -75,6 +84,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const terminalSequenceRef = useRef(0);
   const localTurnStateRef = useRef(new Map<string, "waiting" | "active">());
   const interruptingSessionsRef = useRef(new Set<string>());
+  const contextRequestSessionRef = useRef<string | undefined>(undefined);
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
 
@@ -163,6 +173,48 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           }));
         }
         break;
+      case "context_report":
+        if (!contextRequestSessionRef.current
+          || contextRequestSessionRef.current !== selectedRef.current) break;
+        contextRequestSessionRef.current = undefined;
+        setState((current) => ({
+          ...current,
+          contextReport: message.report,
+          contextRequestPending: false,
+        }));
+        break;
+      case "compaction_started":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            compaction: { status: "running", automatic: message.automatic },
+          }));
+        }
+        break;
+      case "compaction_completed":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            compaction: {
+              status: "completed",
+              automatic: message.report.automatic,
+              report: message.report,
+            },
+          }));
+        }
+        break;
+      case "compaction_failed":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            compaction: {
+              status: "failed",
+              automatic: message.automatic,
+              reason: message.reason,
+            },
+          }));
+        }
+        break;
       case "sessions_list": {
         const sessions = message.sessions.map((session) => ({
           id: session.id,
@@ -208,6 +260,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "session_created":
         selectedRef.current = message.session_id;
+        contextRequestSessionRef.current = undefined;
         setState((current) => ({
           ...current,
           selectedId: message.session_id,
@@ -215,13 +268,19 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           plan: [],
           tasks: [],
           sessionStats: undefined,
+          contextReport: undefined,
+          contextRequestPending: false,
+          compaction: undefined,
         }));
         void submit({ type: "list_sessions" });
         void submit({ type: "load_session", session_id: message.session_id });
         break;
       case "session_updated":
         if (message.archived) {
-          if (selectedRef.current === message.session_id) selectedRef.current = undefined;
+          if (selectedRef.current === message.session_id) {
+            selectedRef.current = undefined;
+            contextRequestSessionRef.current = undefined;
+          }
           setState((current) => ({
             ...current,
             selectedId: current.selectedId === message.session_id ? undefined : current.selectedId,
@@ -230,13 +289,15 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             plan: current.selectedId === message.session_id ? [] : current.plan,
             tasks: current.selectedId === message.session_id ? [] : current.tasks,
             sessionStats: current.selectedId === message.session_id ? undefined : current.sessionStats,
+            contextReport: current.selectedId === message.session_id ? undefined : current.contextReport,
+            contextRequestPending: current.selectedId === message.session_id
+              ? false
+              : current.contextRequestPending,
+            compaction: current.selectedId === message.session_id ? undefined : current.compaction,
           }));
         } else {
           setState((current) => ({
             ...current,
-            interruptingSessionIds: current.interruptingSessionIds.filter(
-              (sessionId) => sessionId !== message.session_id,
-            ),
             sessions: current.sessions.map((session) => session.id === message.session_id
               ? { ...session, label: message.label ?? session.label }
               : session),
@@ -244,7 +305,10 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }
         break;
       case "session_deleted":
-        if (selectedRef.current === message.session_id) selectedRef.current = undefined;
+        if (selectedRef.current === message.session_id) {
+          selectedRef.current = undefined;
+          contextRequestSessionRef.current = undefined;
+        }
         setState((current) => ({
           ...current,
           selectedId: current.selectedId === message.session_id ? undefined : current.selectedId,
@@ -253,12 +317,23 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           plan: current.selectedId === message.session_id ? [] : current.plan,
           tasks: current.selectedId === message.session_id ? [] : current.tasks,
           sessionStats: current.selectedId === message.session_id ? undefined : current.sessionStats,
+          contextReport: current.selectedId === message.session_id ? undefined : current.contextReport,
+          contextRequestPending: current.selectedId === message.session_id
+            ? false
+            : current.contextRequestPending,
+          compaction: current.selectedId === message.session_id ? undefined : current.compaction,
         }));
         break;
       case "operation_error":
+        if (message.operation === "get_context") {
+          contextRequestSessionRef.current = undefined;
+        }
         terminalSequenceRef.current += 1;
         setState((current) => ({
           ...current,
+          contextRequestPending: message.operation === "get_context"
+            ? false
+            : current.contextRequestPending,
           diagnostic: `${message.operation}: ${message.message}`,
           transcript: [...current.transcript, {
             id: `notice-operation-${terminalSequenceRef.current}`,
@@ -486,6 +561,9 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         } else {
           setState((current) => ({
             ...current,
+            interruptingSessionIds: current.interruptingSessionIds.filter(
+              (sessionId) => sessionId !== message.session_id,
+            ),
             sessions: current.sessions.map((session) => session.id === message.session_id
               ? { ...session, state: message.type === "error" ? "failed" : "idle" }
               : session),
@@ -579,6 +657,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
 
   const selectSession = useCallback((sessionId: string) => {
     selectedRef.current = sessionId;
+    contextRequestSessionRef.current = undefined;
     setState((current) => ({
       ...current,
       selectedId: sessionId,
@@ -587,6 +666,9 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       plan: [],
       activePlan: undefined,
       tasks: [],
+      contextReport: undefined,
+      contextRequestPending: false,
+      compaction: undefined,
       approval: undefined,
       question: undefined,
     }));
@@ -686,6 +768,27 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     }
   }, [state.sessions, submit]);
 
+  const requestContext = useCallback(async (sessionId: string) => {
+    if (contextRequestSessionRef.current) return;
+    contextRequestSessionRef.current = sessionId;
+    setState((current) => ({ ...current, contextRequestPending: true }));
+    try {
+      await submit({ type: "get_context", session_id: sessionId });
+    } catch (error) {
+      contextRequestSessionRef.current = undefined;
+      setState((current) => ({
+        ...current,
+        contextRequestPending: false,
+        diagnostic: safeDiagnostic(error),
+      }));
+    }
+  }, [submit]);
+
+  const compactContext = useCallback((sessionId: string) => {
+    if (state.compaction?.status === "running") return Promise.resolve();
+    return submit({ type: "compact", session_id: sessionId });
+  }, [state.compaction?.status, submit]);
+
   return {
     state,
     submit,
@@ -695,6 +798,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     cancelTask,
     sendChat,
     interruptTurn,
+    requestContext,
+    compactContext,
   };
 }
 
