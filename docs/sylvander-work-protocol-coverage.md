@@ -45,7 +45,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | Contract | Status | Remaining product work |
 |---|---|---|
 | `Welcome` | complete, native-owned | none |
-| `ProtocolError` | partial | preserve bounded public code/message instead of generic rejection |
+| `ProtocolError` | complete, native-owned | public code/message/version range; transport details remain generic |
 | `SessionCreated`, `SessionsList`, `SessionUpdated`, `SessionDeleted` | complete | restore/fork events use existing shapes |
 | `SessionHistory` | partial | recovery notice/truncation complete; usage and source remain |
 | `TextDelta`, `ThinkingDelta`, `ToolOutputDelta` | complete | visual progressive disclosure |
@@ -70,11 +70,10 @@ execution, persistence, or policy ownership moved into Desktop.
 
 1. Integrate the main Runtime lifecycle chain, including `TurnStarted`, in
    dependency order; do not cherry-pick only its enum.
-2. Close remaining P0 recovery: bounded protocol-error details.
-3. Complete Session history/replay metadata and approval scopes.
-4. Complete context, settings, model/permission selection, coding review, and
+2. Complete Session history/replay metadata and approval scopes.
+3. Complete context, settings, model/permission selection, coding review, and
    rollback workflows.
-5. Complete feedback, memory, identity, administration, attachments, and
+4. Complete feedback, memory, identity, administration, attachments, and
    liveness surfaces with protocol and accessibility tests.
 
 Every row moves to complete only with a typed command/event test and a product

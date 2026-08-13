@@ -204,6 +204,11 @@ clear gateway state and publish `Disconnected` only while its generation is
 still current. Replaced or explicitly closed tasks therefore cannot race a new
 handshake and schedule a redundant WebView reconnect.
 
+Handshake rejection preserves the protocol's public error code, bounded safe
+message, and supported version range. Native transport, TLS, and credential
+errors remain generic. This gives the user an actionable compatibility fact
+without exposing a bearer, request header, or socket diagnostic.
+
 After a successful reconnect, Desktop sends `ReattachSession` for the selected
 Runtime identity instead of treating recovery as an ordinary history load.
 `SessionHistory.recovery` marks that response, `notice` is rendered verbatim as

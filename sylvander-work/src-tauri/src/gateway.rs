@@ -261,11 +261,16 @@ where
         {
             Ok(protocol)
         }
-        Some(UiServerMessage::ProtocolError { .. }) => {
-            Err("Runtime rejected the UI protocol".into())
-        }
+        Some(UiServerMessage::ProtocolError { error }) => Err(protocol_error_message(&error)),
         _ => Err("Runtime did not acknowledge the UI protocol".into()),
     }
+}
+
+fn protocol_error_message(error: &sylvander_api::UiProtocolError) -> String {
+    format!(
+        "Runtime rejected UI protocol [{}]: {} (server supports {}..={})",
+        error.code, error.message, error.server_min_version, error.server_max_version
+    )
 }
 
 fn desktop_capabilities() -> Vec<String> {
@@ -294,7 +299,9 @@ mod tests {
 
     use tokio::sync::{Mutex, mpsc, oneshot};
 
-    use super::{ActiveConnection, finish_current_connection, runtime_request};
+    use super::{
+        ActiveConnection, finish_current_connection, protocol_error_message, runtime_request,
+    };
 
     #[test]
     fn endpoint_requires_websocket_scheme() {
@@ -324,5 +331,20 @@ mod tests {
         assert!(active.lock().await.is_some());
         assert!(finish_current_connection(&active, 2).await);
         assert!(active.lock().await.is_none());
+    }
+
+    #[test]
+    fn protocol_rejection_preserves_only_the_public_bounded_details() {
+        let message = protocol_error_message(&sylvander_api::UiProtocolError {
+            code: "incompatible_protocol".into(),
+            message: "client and server ranges do not overlap".into(),
+            server_min_version: 4,
+            server_max_version: 5,
+        });
+
+        assert_eq!(
+            message,
+            "Runtime rejected UI protocol [incompatible_protocol]: client and server ranges do not overlap (server supports 4..=5)"
+        );
     }
 }
