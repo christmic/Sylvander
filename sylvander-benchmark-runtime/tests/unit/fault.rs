@@ -57,3 +57,27 @@ fn controller_rejects_non_fault_coordinates() {
         FaultInjectionError::InvalidCoordinate
     );
 }
+
+#[test]
+fn perception_fault_points_are_distinct_durable_boundaries() {
+    let points = [
+        FailurePoint::PerceptionMediaPersisted,
+        FailurePoint::PerceptionInferenceStarted,
+        FailurePoint::PerceptionInferenceCompleted,
+        FailurePoint::PerceptionArtifactPersisted,
+    ];
+    for point in points {
+        let mut controller = FaultController::new(FaultInjectionSpec {
+            point,
+            occurrence: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            controller.checkpoint(point),
+            FaultDecision::Interrupt(FaultReceipt {
+                point,
+                occurrence: 1,
+            })
+        );
+    }
+}
