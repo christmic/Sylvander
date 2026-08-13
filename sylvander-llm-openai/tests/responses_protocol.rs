@@ -238,9 +238,8 @@ async fn responses_rejects_audio_before_network_dispatch() {
             transcript: None,
         },
     }])];
-    let error = match provider(&server).complete_stream(value).await {
-        Ok(_) => panic!("Responses audio must fail before opening a stream"),
-        Err(error) => error,
+    let Err(error) = provider(&server).complete_stream(value).await else {
+        panic!("Responses audio must fail before opening a stream");
     };
     assert_eq!(error.kind, ProviderErrorKind::InvalidRequest);
     assert!(server.received_requests().await.unwrap().is_empty());
