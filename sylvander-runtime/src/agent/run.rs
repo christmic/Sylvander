@@ -251,15 +251,18 @@ fn validate_tool_gateway_surface(
     invocation_gateway: &dyn ToolInvocationGateway,
 ) -> Result<(), AgentRunError> {
     let actual = invocation_gateway.snapshot();
-    if expected
+    if expected.iter().any(|descriptor| {
+        !actual.authorizes(
+            &descriptor.name,
+            descriptor.class,
+            descriptor.recovery_policy,
+        )
+    }) || actual
+        .features()
         .iter()
-        .any(|descriptor| !actual.authorizes(&descriptor.name, descriptor.class))
-        || actual
-            .features()
-            .iter()
-            .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(_)))
-            .count()
-            != expected.len()
+        .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(..)))
+        .count()
+        != expected.len()
     {
         return Err(AgentRunError::Configuration(
             "Session tool registry and authorization gateway differ".into(),

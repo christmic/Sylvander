@@ -42,13 +42,29 @@ pub enum ToolInvocationClass {
     Extension,
 }
 
-/// Immutable schema and execution-class description for one registered tool.
+/// Permission-independent recovery contract declared by a tool.
+///
+/// This value describes whether an invocation whose effect is uncertain may
+/// execute again. It never grants execution authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ToolRecoveryPolicy {
+    /// Never execute again after the effect might have started.
+    NeverReplay,
+    /// Re-execute only with the exact same stable Runtime invocation identity.
+    RetryWithSameInvocation,
+    /// Reconcile a durable receipt or journal before deciding whether to retry.
+    ReconcileBeforeRetry,
+}
+
+/// Immutable schema, authority, and recovery description for one registered tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolInvocationDescriptor {
     /// Exact route advertised to the model.
     pub name: String,
     /// Runtime policy class.
     pub class: ToolInvocationClass,
+    /// Recovery behavior, independent from execution authority.
+    pub recovery_policy: ToolRecoveryPolicy,
     /// JSON input schema used to content-address the route.
     pub input_schema: Value,
 }
@@ -58,7 +74,7 @@ pub struct ToolInvocationDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CapabilityFeatureKind {
     /// An exact executable route.
-    Executable(ToolInvocationClass),
+    Executable(ToolInvocationClass, ToolRecoveryPolicy),
     /// A Skill loaded as prompt context; it grants no execution authority.
     PromptContext,
 }
@@ -87,7 +103,10 @@ impl ToolInvocationSnapshot {
             .iter()
             .map(|descriptor| CapabilityFeature {
                 name: descriptor.name.clone(),
-                kind: CapabilityFeatureKind::Executable(descriptor.class),
+                kind: CapabilityFeatureKind::Executable(
+                    descriptor.class,
+                    descriptor.recovery_policy,
+                ),
             })
             .collect::<BTreeSet<_>>();
         let revision = snapshot_revision("base", "", &features);
@@ -136,20 +155,25 @@ impl ToolInvocationSnapshot {
     pub fn has_same_executable_surface(&self, other: &Self) -> bool {
         self.features
             .iter()
-            .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(_)))
+            .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(..)))
             .eq(other
                 .features
                 .iter()
-                .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(_))))
+                .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(..))))
     }
 
     /// Test whether one exact executable route belongs to this frozen surface.
     /// Runtime uses this when atomically installing Session-owned extensions.
     #[must_use]
-    pub fn authorizes(&self, name: &str, class: ToolInvocationClass) -> bool {
+    pub fn authorizes(
+        &self,
+        name: &str,
+        class: ToolInvocationClass,
+        recovery_policy: ToolRecoveryPolicy,
+    ) -> bool {
         self.features.contains(&CapabilityFeature {
             name: name.to_owned(),
-            kind: CapabilityFeatureKind::Executable(class),
+            kind: CapabilityFeatureKind::Executable(class, recovery_policy),
         })
     }
 }
@@ -160,6 +184,7 @@ pub struct ToolInvocationRequest {
     call_id: String,
     route: String,
     class: Option<ToolInvocationClass>,
+    recovery_policy: Option<ToolRecoveryPolicy>,
     context: ToolContext,
     input: Value,
     snapshot: ToolInvocationSnapshot,
@@ -176,6 +201,7 @@ impl ToolInvocationRequest {
         call_id: &str,
         route: &str,
         class: Option<ToolInvocationClass>,
+        recovery_policy: Option<ToolRecoveryPolicy>,
         context: &ToolContext,
         input: Value,
         snapshot: ToolInvocationSnapshot,
@@ -184,6 +210,7 @@ impl ToolInvocationRequest {
             call_id: call_id.to_owned(),
             route: route.to_owned(),
             class,
+            recovery_policy,
             context: context.clone(),
             input,
             snapshot,
@@ -206,6 +233,12 @@ impl ToolInvocationRequest {
     #[must_use]
     pub const fn class(&self) -> Option<ToolInvocationClass> {
         self.class
+    }
+
+    /// Tool-declared recovery contract. `None` means no registered tool exists.
+    #[must_use]
+    pub const fn recovery_policy(&self) -> Option<ToolRecoveryPolicy> {
+        self.recovery_policy
     }
 
     /// Runtime-created invocation context.
@@ -329,12 +362,18 @@ impl ToolInvocationGateway for RegistryBoundToolGateway {
         request: ToolInvocationRequest,
     ) -> Result<Box<dyn AuthorizedToolInvocation>, ToolInvocationError> {
         let class = request.class.ok_or(ToolInvocationError::Unavailable)?;
+        let recovery_policy = request
+            .recovery_policy
+            .ok_or(ToolInvocationError::Unavailable)?;
         let descriptor = self
             .descriptors
             .get(&request.route)
             .ok_or(ToolInvocationError::Unavailable)?;
         if descriptor.class != class
-            || !request.snapshot.authorizes(&request.route, class)
+            || descriptor.recovery_policy != recovery_policy
+            || !request
+                .snapshot
+                .authorizes(&request.route, class, recovery_policy)
             || contains_owner_selector(&request.input)
         {
             return Err(ToolInvocationError::AccessDenied);
@@ -362,15 +401,19 @@ fn snapshot_revision(
     features: &BTreeSet<CapabilityFeature>,
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"sylvander.tool.invocation-snapshot.v1\0");
+    hasher.update(b"sylvander.tool.invocation-snapshot.v2\0");
     hasher.update(base_revision.as_bytes());
     hasher.update([0]);
     hasher.update(tool_surface_revision.as_bytes());
     for feature in features {
         hasher.update([0]);
         hasher.update(match feature.kind {
-            CapabilityFeatureKind::Executable(class) => [b'e', invocation_class_code(class)],
-            CapabilityFeatureKind::PromptContext => [b'p', 0],
+            CapabilityFeatureKind::Executable(class, policy) => [
+                b'e',
+                invocation_class_code(class),
+                recovery_policy_code(policy),
+            ],
+            CapabilityFeatureKind::PromptContext => [b'p', 0, 0],
         });
         hasher.update(feature.name.as_bytes());
     }
@@ -388,6 +431,14 @@ const fn invocation_class_code(class: ToolInvocationClass) -> u8 {
         ToolInvocationClass::MemoryCandidate => 7,
         ToolInvocationClass::Control => 8,
         ToolInvocationClass::Extension => 9,
+    }
+}
+
+const fn recovery_policy_code(policy: ToolRecoveryPolicy) -> u8 {
+    match policy {
+        ToolRecoveryPolicy::NeverReplay => 1,
+        ToolRecoveryPolicy::RetryWithSameInvocation => 2,
+        ToolRecoveryPolicy::ReconcileBeforeRetry => 3,
     }
 }
 

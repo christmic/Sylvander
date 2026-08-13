@@ -23,7 +23,7 @@ use sylvander_agent::memory::curated::{
 use sylvander_agent::tool::invocation::{
     AuthorizedToolInvocation, CapabilityFeature, CapabilityFeatureKind, ToolInvocationClass,
     ToolInvocationDescriptor, ToolInvocationError, ToolInvocationGateway, ToolInvocationOutcome,
-    ToolInvocationRequest, ToolInvocationSnapshot,
+    ToolInvocationRequest, ToolInvocationSnapshot, ToolRecoveryPolicy,
 };
 use sylvander_agent::tool_context::ToolContext;
 use sylvander_agent::tools::MemoryOwner;
@@ -737,7 +737,12 @@ fn build_worker_tool_gateway(
         agent_id,
         routes: descriptors
             .iter()
-            .map(|descriptor| (descriptor.name.clone(), descriptor.class))
+            .map(|descriptor| {
+                (
+                    descriptor.name.clone(),
+                    (descriptor.class, descriptor.recovery_policy),
+                )
+            })
             .collect(),
         snapshot: ToolInvocationSnapshot::from_descriptors(&descriptors),
         learning_preferences,
@@ -852,7 +857,7 @@ impl GuardianRuntime {
 struct RuntimeWorkerToolGateway {
     capabilities: Arc<ActorCapabilityRuntime>,
     agent_id: sylvander_api::AgentId,
-    routes: BTreeMap<String, ToolInvocationClass>,
+    routes: BTreeMap<String, (ToolInvocationClass, ToolRecoveryPolicy)>,
     snapshot: ToolInvocationSnapshot,
     learning_preferences: Arc<dyn LearningPreferenceSource>,
 }
@@ -1043,7 +1048,10 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
         request: ToolInvocationRequest,
     ) -> Result<Box<dyn AuthorizedToolInvocation>, ToolInvocationError> {
         let class = request.class().ok_or(ToolInvocationError::Unavailable)?;
-        if self.routes.get(request.route()) != Some(&class)
+        let recovery_policy = request
+            .recovery_policy()
+            .ok_or(ToolInvocationError::Unavailable)?;
+        if self.routes.get(request.route()) != Some(&(class, recovery_policy))
             || request.context().agent_id() != self.agent_id.0
             || request.call_id().is_empty()
             || !self
@@ -1051,7 +1059,7 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
                 .has_same_executable_surface(request.snapshot())
             || !request.snapshot().features().contains(&CapabilityFeature {
                 name: request.route().to_owned(),
-                kind: CapabilityFeatureKind::Executable(class),
+                kind: CapabilityFeatureKind::Executable(class, recovery_policy),
             })
         {
             return Err(ToolInvocationError::AccessDenied);

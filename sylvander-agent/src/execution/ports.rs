@@ -129,13 +129,14 @@ impl AgentExecutionPorts {
         }
 
         let requested_tools = request.tools.invocation_descriptors();
-        if requested_tools
-            .iter()
-            .any(|tool| !self.invocation_snapshot.authorizes(&tool.name, tool.class))
-            || !self
-                .invocation_gateway
-                .snapshot()
-                .has_same_executable_surface(&self.invocation_snapshot)
+        if requested_tools.iter().any(|tool| {
+            !self
+                .invocation_snapshot
+                .authorizes(&tool.name, tool.class, tool.recovery_policy)
+        }) || !self
+            .invocation_gateway
+            .snapshot()
+            .has_same_executable_surface(&self.invocation_snapshot)
         {
             return Err(AgentLoopError::Validation(
                 "turn tools and invocation gateway expose different executable surfaces".into(),

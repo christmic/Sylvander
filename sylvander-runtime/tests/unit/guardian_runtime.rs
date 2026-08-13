@@ -1208,6 +1208,7 @@ fn tool_descriptor(name: &str, class: ToolInvocationClass) -> ToolInvocationDesc
     ToolInvocationDescriptor {
         name: name.into(),
         class,
+        recovery_policy: sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay,
         input_schema: json!({"type": "object"}),
     }
 }
@@ -1224,6 +1225,7 @@ fn tool_request(
         call_id,
         route,
         class,
+        class.map(|_| sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay),
         context,
         input,
         gateway

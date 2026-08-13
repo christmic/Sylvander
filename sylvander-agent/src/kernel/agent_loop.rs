@@ -1200,6 +1200,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         &call_id,
         &route,
         Some(prepared_call.spec().invocation_class),
+        Some(prepared_call.spec().recovery_policy),
         &tool_context,
         prepared_call.input().clone(),
         invocation_snapshot,

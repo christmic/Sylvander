@@ -14,7 +14,7 @@ use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::execution::tool_context::ToolContext;
-use crate::tool::invocation::ToolInvocationClass;
+use crate::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy};
 
 pub(crate) const TOOL_PROGRESS_CHANNEL_CAPACITY: usize = 64;
 pub(crate) const TOOL_PROGRESS_OMITTED_MARKER: &str =
@@ -185,6 +185,8 @@ pub struct ToolSpec {
     /// the model. Runtime composes them from the frozen turn registry.
     pub prompt_guidelines: Vec<String>,
     pub invocation_class: ToolInvocationClass,
+    /// Crash recovery behavior, independent from invocation authority.
+    pub recovery_policy: ToolRecoveryPolicy,
 }
 
 impl ToolSpec {
@@ -204,6 +206,7 @@ impl ToolSpec {
             exposure: ToolExposure::Immediate,
             prompt_guidelines: Vec::new(),
             invocation_class,
+            recovery_policy: ToolRecoveryPolicy::NeverReplay,
         }
     }
 
@@ -235,6 +238,13 @@ impl ToolSpec {
             .map(Into::into)
             .filter(|guideline| !guideline.trim().is_empty())
             .collect();
+        self
+    }
+
+    /// Declare recovery behavior for an uncertain effect.
+    #[must_use]
+    pub const fn with_recovery_policy(mut self, recovery_policy: ToolRecoveryPolicy) -> Self {
+        self.recovery_policy = recovery_policy;
         self
     }
 }
