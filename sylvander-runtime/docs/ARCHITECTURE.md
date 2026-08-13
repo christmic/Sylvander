@@ -82,8 +82,8 @@ crate without retaining a second production path.
   no secret or secret reference enters the ledger.
 - `storage` is the closed persistence composition root. It owns the Session
   commit authority and relationship-memory backend, and aggregates Agent
-  Registry, User Profile, Evidence, and credential-audit health. It retains
-  concrete health
+  Registry, User Profile, Evidence, credential-audit, and both Guardian-store
+  health planes. It retains concrete health
   probes only inside Runtime, and exposes one content-free operational view.
   Production health revalidates each live schema plus SQLite integrity;
   Session and Registry also check owned foreign keys, Registry checks its
@@ -110,6 +110,11 @@ crate without retaining a second production path.
   credential rotation, restart catch-up, and bounded drain. The detailed
   contract is in
   [`../GUARDIAN.md`](../GUARDIAN.md).
+  Curation and canonical storage are latest-only exact-schema databases.
+  RuntimeStorage receives a health-only clone of their store handles rather
+  than the Guardian supervisor. Consequently a schema/page failure contributes
+  `Storage`, while a supervisor-loop failure contributes
+  `GuardianSupervisor`; neither can mask or impersonate the other.
 - `execution`, `git_worktree`, and `remote_git_worktree` own location-neutral
   workspace selection, the concrete host-local/SSH/OCI adapters, and isolated
   local/host-backed and SSH coding worktrees. The local adapter enforces path,
@@ -126,12 +131,13 @@ crate without retaining a second production path.
   provider-neutral memory values, validation rules, and `MemoryStore` port;
   Runtime selects, opens, maintains, and injects the concrete store.
 - `storage::RuntimeStorage` is the crate-private composition root for durable
-  repositories. It currently closes public access to the selected Session and
-  relationship-memory handles. Session schema v2 makes turn lifecycle
+  repositories. It closes public access to the selected Session and
+  relationship-memory handles and aggregates live integrity for eight
+  production stores. Session schema v2 makes turn lifecycle
   authoritative: admission commits user input, configuration, and `running`;
   successful completion commits assistant output and `completed` in one
-  transaction. Other Runtime-owned stores and cross-domain transactions remain
-  to be folded into this facade; see
+  transaction. Artifact lifecycle and cross-domain transactions remain to be
+  folded into this facade; see
   [`application-services.md`](application-services.md) for exact status.
 - `observability` is the closed typed lifecycle recorder. Its first slice
   covers authorized chat admission, message-bus dispatch, turn terminals,
