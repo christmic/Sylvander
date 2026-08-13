@@ -20,12 +20,12 @@ use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_agent::tools::MemoryStore;
 use sylvander_api::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
-    AgentDescriptor, IdentityBindingCapabilities, IdentityBindingError, IdentityBindingErrorCode,
-    IdentityBindingRequest, IdentityBindingResponse, MemoryConfirmationErrorCode,
-    MemoryConfirmationRequest, MemoryConfirmationResponse, MemoryConfirmationValidationError,
-    ModelSelection, RegistryAdminError, RegistryAdminErrorCode, RegistryAdminRequest,
-    RegistryAdminResponse, RunFeedback, SessionConfigOverrides, SessionConfigState,
-    SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig,
+    AgentDescriptor, AgentInstanceId, IdentityBindingCapabilities, IdentityBindingError,
+    IdentityBindingErrorCode, IdentityBindingRequest, IdentityBindingResponse,
+    MemoryConfirmationErrorCode, MemoryConfirmationRequest, MemoryConfirmationResponse,
+    MemoryConfirmationValidationError, ModelSelection, RegistryAdminError, RegistryAdminErrorCode,
+    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, SessionConfigOverrides,
+    SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig,
     SessionRevisionPinError, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage as ClientMessage,
     UiHistoryMessage, UiSessionHistory, UiSessionInfo, UserId, UserProfileAction,
     UserProfileCapabilities, UserProfileError, UserProfileErrorCode, UserProfileOperation,
@@ -46,6 +46,10 @@ use sylvander_llm_core::{
 use crate::agent::administration::{
     AgentAdminDispatch, AgentAdminService, is_agent_administrator, map_registry_error,
     redact_revision,
+};
+use crate::agent::instance::{
+    AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute,
+    HistoryView, SessionAgentRole,
 };
 #[cfg(test)]
 use crate::agent::run::AgentRun;
@@ -82,9 +86,11 @@ use crate::session::boundary::BoundaryGuard;
 use crate::session::identity_binding::{
     IdentityBindingService, IdentityIngress, TrustedIdentityIssuer,
 };
+use crate::session::membership::{SessionGovernance, SessionMembership};
 use crate::session::principal_binding::{
     PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey,
 };
+use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::artifact::RuntimeArtifactService;
 use crate::storage::memory::{
     HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, MemoryIntegrityConfig,
@@ -387,6 +393,7 @@ pub(crate) struct RuntimeChannelHost {
     engine: Arc<AgentRunEngine>,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
+    agent_instances: Arc<dyn AgentInstanceStore>,
     observability: RuntimeObservability,
     agents: HashMap<AgentId, ConfiguredAgent>,
     pub(crate) agent_registry: Option<AgentRegistry>,
@@ -565,19 +572,70 @@ struct SessionPinClosure {
     changed: bool,
 }
 
+fn initial_session_membership(
+    session: &StoredSession,
+    effective: &SessionEffectiveConfig,
+) -> Result<SessionMembership, RuntimeError> {
+    if !session.agents.contains(&effective.agent_id) {
+        return Err(RuntimeError::Config(format!(
+            "session {} effective moderator definition is not a member",
+            session.id
+        )));
+    }
+    let now = crate::session::now_secs();
+    let instance_id = AgentInstanceId::new(format!("moderator:{}", session.id.0));
+    let capability_revision = format!(
+        "agent:{}:{}:provider:{}:model:{}",
+        effective.agent_id.0,
+        effective.agent_revision,
+        effective.provider_revision,
+        effective.model_revision
+    );
+    SessionMembership::new(
+        session.id.clone(),
+        vec![AgentInstance {
+            instance_id: instance_id.clone(),
+            session_id: session.id.clone(),
+            definition: AgentDefinitionKey {
+                agent_id: effective.agent_id.clone(),
+                revision: effective.agent_revision,
+            },
+            origin: AgentInstanceOrigin::Defined,
+            role: SessionAgentRole::Moderator,
+            history_view: HistoryView::SharedLane { cursor: 0 },
+            approval_route: ApprovalRoute::User,
+            state: AgentInstanceState::Ready,
+            lifecycle_revision: 0,
+            capability_revision: capability_revision.clone(),
+            created_at: session.created_at,
+            updated_at: now,
+        }],
+        SessionGovernance {
+            session_id: session.id.clone(),
+            moderator_instance_id: instance_id,
+            governance_revision: capability_revision,
+            membership_revision: 0,
+            lease_epoch: 1,
+            fencing_token: 1,
+            updated_at: now,
+        },
+    )
+    .map_err(|error| RuntimeError::Config(error.to_string()))
+}
+
 async fn close_session_revision_pins(
     registry: &AgentRegistry,
     session: &StoredSession,
     _active_agent: &ConfiguredAgent,
 ) -> Result<SessionPinClosure, SessionBindingError> {
-    let [member] = session.agents.as_slice() else {
+    if session.agents.is_empty() {
         return Err(SessionBindingError::InvalidMembership(session.id.clone()));
-    };
+    }
     let effective = if let Some(effective) = &session.effective_config {
-        if member != &effective.agent_id {
+        if !session.agents.contains(&effective.agent_id) {
             return Err(SessionBindingError::AgentMismatch {
                 session_id: session.id.clone(),
-                expected: member.clone(),
+                expected: session.agents[0].clone(),
                 actual: effective.agent_id.clone(),
             });
         }
@@ -1742,15 +1800,11 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             let session = self
                 .owned_session(boundary, &session_id, "submit_chat")
                 .await?;
-            let [session_agent] = session.agents.as_slice() else {
-                return Err(sylvander_api::BoundaryError::forbidden(
-                    boundary,
-                    "submit_chat",
-                ));
-            };
             // A durable session owns its Agent identity. Channel defaults are
             // creation defaults and must not override a TUI-selected Agent.
-            agent_id.clone_from(session_agent);
+            agent_id = self
+                .moderator_definition(boundary, &session.id, "submit_chat")
+                .await?;
             (session_id, None)
         } else {
             let create = SessionCreateRequest {
@@ -2365,6 +2419,26 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 }
 
 impl RuntimeChannelHost {
+    async fn moderator_definition(
+        &self,
+        boundary: &sylvander_api::BoundaryContext,
+        session_id: &SessionId,
+        operation: &str,
+    ) -> Result<AgentId, sylvander_api::BoundaryError> {
+        let membership = self
+            .agent_instances
+            .session_membership(session_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?
+            .ok_or_else(|| {
+                boundary_failure(boundary, operation, "Agent membership is unavailable")
+            })?;
+        membership
+            .validate()
+            .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?;
+        Ok(membership.moderator().definition.agent_id.clone())
+    }
+
     async fn session_history(
         &self,
         boundary: &sylvander_api::BoundaryContext,
@@ -2560,6 +2634,25 @@ impl RuntimeChannelHost {
             }
         }
         if let Err(error) = self.sessions.save(&session).await {
+            self.discard_worktree(
+                &session_id,
+                lease.as_ref().and_then(|lease| lease.target_id.as_deref()),
+            )
+            .await;
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                error.to_string(),
+            ));
+        }
+        let membership = initial_session_membership(&session, &effective)
+            .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
+        if let Err(error) = self
+            .agent_instances
+            .save_session_membership(&membership, None)
+            .await
+        {
+            let _ = self.sessions.delete(&session_id).await;
             self.discard_worktree(
                 &session_id,
                 lease.as_ref().and_then(|lease| lease.target_id.as_deref()),
@@ -3848,11 +3941,13 @@ impl Runtime {
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
         let observability = RuntimeObservability::new();
-        let session_store: Arc<dyn SessionStore> = Arc::new(
+        let sqlite_session_store = Arc::new(
             SqliteSessionStore::open_in_memory()
                 .await
                 .map_err(|e| RuntimeError::Store(format!("open session store: {e}")))?,
         );
+        let session_store: Arc<dyn SessionStore> = sqlite_session_store.clone();
+        let agent_instance_store: Arc<dyn AgentInstanceStore> = sqlite_session_store;
         let memory_store: Arc<dyn MemoryStore> = Arc::new(InMemoryMemoryStore::new());
         let execution_service = RuntimeExecutionService::standalone_local();
 
@@ -3933,6 +4028,7 @@ impl Runtime {
             engine: engine.clone(),
             bus: bus.clone(),
             sessions: session_store.clone(),
+            agent_instances: agent_instance_store,
             observability: observability.clone(),
             agents: configured_agents.clone(),
             agent_registry: None,
@@ -4052,12 +4148,14 @@ impl Runtime {
         );
         let storage_credential_audit_probe = credential_audit.clone();
 
-        let sqlite_session_store =
+        let sqlite_session_store = Arc::new(
             SqliteSessionStore::open_shared(session_db, REGISTRY_SCHEMA_OBJECT_NAMES)
                 .await
-                .map_err(|error| RuntimeError::Store(error.to_string()))?;
-        let storage_session_probe = sqlite_session_store.clone();
-        let session_store: Arc<dyn SessionStore> = Arc::new(sqlite_session_store);
+                .map_err(|error| RuntimeError::Store(error.to_string()))?,
+        );
+        let storage_session_probe = (*sqlite_session_store).clone();
+        let session_store: Arc<dyn SessionStore> = sqlite_session_store.clone();
+        let agent_instance_store: Arc<dyn AgentInstanceStore> = sqlite_session_store;
         let agent_registry = AgentRegistry::open_shared(session_db, SESSION_SCHEMA_OBJECT_NAMES)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
@@ -4455,19 +4553,20 @@ impl Runtime {
         );
 
         for mut session in persistent_sessions {
-            if session.agents.len() != 1 {
-                return Err(RuntimeError::Config(format!(
-                    "revisioned session {} requires exactly one Agent",
-                    session.id
-                )));
-            }
-            let agent = session
-                .agents
-                .iter()
-                .find_map(|id| configured_agents.get(id))
+            let effective_agent_id = session
+                .effective_config
+                .as_ref()
+                .map(|effective| &effective.agent_id)
+                .or_else(|| session.agents.first())
                 .ok_or_else(|| {
-                    RuntimeError::Config(format!("session {} has no configured Agent", session.id))
+                    RuntimeError::Config(format!("session {} has no Agent definition", session.id))
                 })?;
+            let agent = configured_agents.get(effective_agent_id).ok_or_else(|| {
+                RuntimeError::Config(format!(
+                    "session {} moderator definition is not configured",
+                    session.id
+                ))
+            })?;
             let closure = close_session_revision_pins(&agent_registry, &session, agent).await?;
             if closure.changed {
                 session.config_revision = session_store
@@ -4481,6 +4580,41 @@ impl Runtime {
                     .map_err(|error| RuntimeError::Store(error.to_string()))?;
             }
             session.effective_config = Some(closure.effective);
+            let existing_membership = agent_instance_store
+                .session_membership(&session.id)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?;
+            if let Some(membership) = existing_membership {
+                membership
+                    .validate()
+                    .map_err(|error| RuntimeError::Config(error.to_string()))?;
+                let effective = session
+                    .effective_config
+                    .as_ref()
+                    .expect("effective configuration was closed above");
+                if membership.moderator().definition.agent_id != effective.agent_id
+                    || membership.participants.iter().any(|participant| {
+                        !session.agents.contains(&participant.definition.agent_id)
+                    })
+                {
+                    return Err(RuntimeError::Config(format!(
+                        "session {} Agent membership does not match its pinned definitions",
+                        session.id
+                    )));
+                }
+            } else {
+                let membership = initial_session_membership(
+                    &session,
+                    session
+                        .effective_config
+                        .as_ref()
+                        .expect("effective configuration was closed above"),
+                )?;
+                agent_instance_store
+                    .save_session_membership(&membership, None)
+                    .await
+                    .map_err(|error| RuntimeError::Store(error.to_string()))?;
+            }
             agent
                 .attach_authenticated_session(session.id.clone(), session.metadata.clone())
                 .await
@@ -4555,6 +4689,7 @@ impl Runtime {
             engine: engine.clone(),
             bus: bus.clone(),
             sessions: session_store.clone(),
+            agent_instances: agent_instance_store,
             observability: observability.clone(),
             agents: configured_agents.clone(),
             agent_registry: Some(agent_registry.clone()),

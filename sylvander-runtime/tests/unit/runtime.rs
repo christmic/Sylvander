@@ -1190,6 +1190,7 @@ fn channel_host_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> Runtime
         engine: runtime.channel_host.engine.clone(),
         bus,
         sessions: runtime.channel_host.sessions.clone(),
+        agent_instances: runtime.channel_host.agent_instances.clone(),
         observability: runtime.channel_host.observability.clone(),
         agents: runtime.channel_host.agents.clone(),
         agent_registry: runtime.channel_host.agent_registry.clone(),
@@ -1316,6 +1317,28 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     )
     .await
     .unwrap();
+    let mut membership = runtime
+        .channel_host
+        .agent_instances
+        .session_membership(&existing.session_id)
+        .await
+        .unwrap()
+        .expect("Session creation persists moderator identity before returning");
+    assert_eq!(membership.participants.len(), 1);
+    let mut worker = membership.moderator().clone();
+    worker.instance_id = AgentInstanceId::new(format!("worker:{}", existing.session_id.0));
+    worker.role = SessionAgentRole::Worker;
+    worker.approval_route = ApprovalRoute::Moderator {
+        instance_id: membership.governance.moderator_instance_id.clone(),
+    };
+    membership.participants.push(worker);
+    membership.governance.membership_revision = 1;
+    runtime
+        .channel_host
+        .agent_instances
+        .save_session_membership(&membership, Some(0))
+        .await
+        .unwrap();
     let snapshot = sylvander_channel::ChannelHost::runtime_snapshot(
         runtime.channel_host.as_ref(),
         &boundary,
@@ -2875,6 +2898,18 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     assert_eq!(pins.provider_revision, 1);
     assert_eq!(pins.model_revision, 1);
     assert_eq!(effective.execution_target, "local");
+    let membership = runtime
+        .channel_host
+        .agent_instances
+        .session_membership(&SessionId::new("restored-session"))
+        .await
+        .unwrap()
+        .expect("boot initializes missing durable Agent membership before replay");
+    assert_eq!(membership.participants.len(), 1);
+    assert_eq!(
+        membership.moderator().definition.agent_id,
+        AgentId::new("assistant")
+    );
     assert_eq!(
         effective.provenance.user_workspace.kind,
         sylvander_api::SessionConfigSourceKind::SessionOverride
