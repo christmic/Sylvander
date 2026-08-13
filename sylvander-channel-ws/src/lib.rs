@@ -941,6 +941,125 @@ async fn handle_client_msg(
                 operation_error(tx, "list_sessions", "UI service is unavailable");
             }
         }
+        ClientMsg::LoadSession { session_id } => {
+            let Some(host) = &ctx.host else {
+                operation_error(tx, "load_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match host
+                .load_session(&boundary, &SessionId::new(session_id))
+                .await
+            {
+                Ok(snapshot) => send_session_history(tx, snapshot, None, None, false),
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
+        ClientMsg::RenameSession { session_id, label } => {
+            let session_id = SessionId::new(session_id);
+            let Some(host) = &ctx.host else {
+                operation_error(tx, "rename_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match host
+                .rename_session(&boundary, &session_id, label.clone())
+                .await
+            {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::SessionUpdated {
+                        session_id: session_id.0,
+                        label: Some(label),
+                        archived: false,
+                    });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
+        request @ (ClientMsg::ArchiveSession { .. } | ClientMsg::RestoreSession { .. }) => {
+            let restoring = matches!(&request, ClientMsg::RestoreSession { .. });
+            let (ClientMsg::ArchiveSession { session_id }
+            | ClientMsg::RestoreSession { session_id }) = request
+            else {
+                unreachable!()
+            };
+            let session_id = SessionId::new(session_id);
+            let Some(host) = &ctx.host else {
+                operation_error(
+                    tx,
+                    "session_lifecycle",
+                    "Runtime channel host is unavailable",
+                );
+                return;
+            };
+            let result = if restoring {
+                host.restore_session(&boundary, &session_id).await
+            } else {
+                host.archive_session(&boundary, &session_id).await
+            };
+            match result {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::SessionUpdated {
+                        session_id: session_id.0,
+                        label: None,
+                        archived: !restoring,
+                    });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
+        ClientMsg::DeleteSession { session_id } => {
+            let session_id = SessionId::new(session_id);
+            let Some(host) = &ctx.host else {
+                operation_error(tx, "delete_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match host.delete_session(&boundary, &session_id).await {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::SessionDeleted {
+                        session_id: session_id.0,
+                    });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
+        ClientMsg::ForkSession {
+            session_id,
+            completed_turns,
+            checkpoint,
+        } => {
+            if checkpoint && completed_turns.is_some() {
+                operation_error(
+                    tx,
+                    "fork_session",
+                    "checkpoint and completed_turns are mutually exclusive",
+                );
+                return;
+            }
+            let source_id = SessionId::new(session_id);
+            let Some(host) = &ctx.host else {
+                operation_error(tx, "fork_session", "Runtime channel host is unavailable");
+                return;
+            };
+            match host
+                .fork_session(&boundary, &source_id, completed_turns, checkpoint)
+                .await
+            {
+                Ok(snapshot) => {
+                    let notice = completed_turns
+                        .map(|turn| {
+                            format!(
+                                "Conversation rewound through completed turn {turn} · source session and workspace files unchanged"
+                            )
+                        })
+                        .or_else(|| {
+                            checkpoint.then(|| {
+                                "Conversation checkpoint branch created · source session and workspace files unchanged".into()
+                            })
+                        });
+                    send_session_history(tx, snapshot, notice, Some(source_id.0), false);
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
         }
@@ -951,6 +1070,27 @@ async fn handle_client_msg(
             });
         }
     }
+}
+
+fn send_session_history(
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    snapshot: sylvander_api::UiSessionHistory,
+    notice: Option<String>,
+    source_session_id: Option<String>,
+    recovery: bool,
+) {
+    let _ = tx.send(ServerMsg::SessionHistory {
+        session: snapshot.session,
+        messages: snapshot.messages,
+        iterations: snapshot.iterations,
+        input_tokens: snapshot.input_tokens,
+        output_tokens: snapshot.output_tokens,
+        cost_nano_usd: snapshot.cost_nano_usd,
+        notice,
+        source_session_id,
+        recovery,
+        replay_truncated: false,
+    });
 }
 
 fn visible_model_catalog(
