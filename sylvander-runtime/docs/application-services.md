@@ -60,6 +60,14 @@ staging file. This gives readers atomic replacement visibility on conforming
 filesystems; it does not claim cross-device behavior or durable directory
 metadata after host power loss.
 
+Execution-policy violations are typed only from backend-owned evidence. The
+OCI adapter's fixed filesystem scripts reserve exit status 126 for a resolved
+path crossing the workspace mount, and only that path becomes a neutral
+`FilesystemBoundary` violation. Runtime does not label arbitrary command
+failures, `EPERM` text, or container exit codes as sandbox violations. Linux
+network/syscall attribution remains unimplemented until the selected backend
+can emit a correlated, trustworthy signal.
+
 Runtime now owns one bounded health worker for that service. Every 30 seconds
 it probes SSH targets with the executor's exact BatchMode, strict known-host,
 identity, and control-socket arguments and a fixed remote `true`; OCI targets

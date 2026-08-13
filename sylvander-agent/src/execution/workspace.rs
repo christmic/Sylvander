@@ -55,6 +55,18 @@ pub enum WorkspaceExecutorError {
     WriteConflict(String),
     #[error("execution target `{0}` cannot enforce conditional file writes")]
     ConditionalWriteUnavailable(String),
+    #[error("execution environment blocked a filesystem-boundary policy violation")]
+    PolicyViolation(WorkspacePolicyViolation),
+}
+
+/// A policy rejection explicitly identified by the selected environment.
+///
+/// Adapters must not infer this classification from an arbitrary non-zero
+/// process status or permission-denied message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspacePolicyViolation {
+    /// A resolved path crossed the workspace filesystem boundary.
+    FilesystemBoundary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

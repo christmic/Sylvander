@@ -148,8 +148,9 @@ pub mod prelude {
     pub use crate::execution::workspace::{
         ProcessIsolation, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
         WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
-        WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
-        WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
+        WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspacePolicyViolation,
+        WorkspaceQueryLimits, WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult,
+        WorkspaceTarget,
     };
     pub use crate::interaction::plan::PlanDecision;
     pub use crate::kernel::agent_loop::{

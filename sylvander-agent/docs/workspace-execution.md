@@ -81,3 +81,19 @@ reconciliation against the configured remote worktree root. The opt-in
 real-SSH journey is the deployment acceptance gate because it requires a
 disposable SSH daemon and repository. Container resource policy and managed
 sandboxes use the same Agent-facing contract.
+
+## Policy violations
+
+The neutral executor error contract distinguishes a policy violation only when
+the physical backend provides an explicit, trustworthy signal. OCI's fixed
+file-operation scripts reserve exit status 126 exclusively for a canonical
+path crossing the mounted workspace boundary, so Runtime maps only that status
+to `WorkspacePolicyViolation::FilesystemBoundary`. Other non-zero statuses,
+stderr text, and generic permission errors remain ordinary operation failures.
+
+This conservative rule is intentional. Linux container and syscall sandboxes
+do not universally provide attribution for denied operations, and treating an
+arbitrary `EPERM` or exit code as a violation would fabricate observability.
+Future native adapters may add kinds only together with a backend-owned signal,
+per-invocation correlation, and tests proving that ordinary command failures
+cannot be misclassified.
