@@ -1,6 +1,8 @@
 import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock
 
-from sylvander_agent import _bounded_diagnostic, _last_json_line, _normalize_machine
+from sylvander_agent import SylvanderAgent, _bounded_diagnostic, _last_json_line, _normalize_machine
 
 
 class BoundedDiagnosticTest(unittest.TestCase):
@@ -37,6 +39,34 @@ class BoundedDiagnosticTest(unittest.TestCase):
         self.assertEqual(_normalize_machine(">>>> podman notice <<<<\nx86_64\n"), "x86_64")
         self.assertEqual(_normalize_machine("\x1b[0maarch64\n"), "aarch64")
         self.assertNotEqual(_normalize_machine("amd64"), _normalize_machine("arm64"))
+
+
+class CredentialTransportTest(unittest.IsolatedAsyncioTestCase):
+    async def test_raw_key_is_uploaded_and_never_added_to_exec_environment(self) -> None:
+        environment = AsyncMock()
+        environment.exec.return_value.return_code = 0
+        environment.exec.return_value.stdout = ""
+        uploaded_secret = None
+
+        async def capture_upload(source: Path, destination: str) -> None:
+            nonlocal uploaded_secret
+            if destination == SylvanderAgent.API_KEY_FILE:
+                uploaded_secret = source.read_text()
+
+        environment.upload_file.side_effect = capture_upload
+        agent = SylvanderAgent(
+            logs_dir=Path("/tmp/logs"),
+            model_name="provider/model",
+            extra_env={"SYLVANDER_HARBOR_API_KEY": "secret-value"},
+        )
+
+        await agent.run("task", environment, AsyncMock())
+
+        uploaded = environment.upload_file.call_args.args
+        self.assertEqual(uploaded[1], agent.API_KEY_FILE)
+        self.assertEqual(uploaded_secret, "secret-value")
+        for call in environment.exec.await_args_list:
+            self.assertNotIn("secret-value", str(call))
 
 
 if __name__ == "__main__":

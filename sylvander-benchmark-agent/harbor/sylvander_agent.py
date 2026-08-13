@@ -8,6 +8,7 @@ import base64
 import json
 import re
 import shlex
+import tempfile
 from pathlib import Path
 from typing import override
 
@@ -56,6 +57,7 @@ class SylvanderAgent(BaseAgent):
 
     SUPPORTS_ATIF = True
     BINARY = "/opt/sylvander/bin/sylvander-harbor-agent"
+    API_KEY_FILE = "/tmp/sylvander-harbor/api-key"
 
     @staticmethod
     @override
@@ -136,7 +138,6 @@ class SylvanderAgent(BaseAgent):
             self._get_env("SYLVANDER_HARBOR_PROVIDER_FEATURES") or ""
         )
         env = {
-            "SYLVANDER_HARBOR_API_KEY": api_key,
             "SYLVANDER_HARBOR_PROVIDER_ID": provider_id,
             "SYLVANDER_HARBOR_MODEL_ID": model_id,
             "SYLVANDER_HARBOR_BASE_URL": base_url,
@@ -152,8 +153,18 @@ class SylvanderAgent(BaseAgent):
         )
         if prepare.return_code != 0:
             raise RuntimeError("failed to prepare Sylvander task instruction")
+        with tempfile.NamedTemporaryFile() as credential:
+            credential.write(api_key.encode())
+            credential.flush()
+            await environment.upload_file(Path(credential.name), self.API_KEY_FILE)
+        protect = await environment.exec(
+            f"chmod 600 {shlex.quote(self.API_KEY_FILE)}", user="root", timeout_sec=10
+        )
+        if protect.return_code != 0:
+            raise RuntimeError("failed to protect Sylvander provider credential")
         result = await environment.exec(
-            f"{shlex.quote(self.BINARY)} "
+            "export SYLVANDER_HARBOR_API_KEY=\"$(cat "
+            f"{shlex.quote(self.API_KEY_FILE)})\"; exec {shlex.quote(self.BINARY)} "
             "--instruction-file /tmp/sylvander-harbor/instruction.md "
             "--trajectory-file /logs/agent/trajectory.json "
             "--final-answer-file /logs/agent/final_answer.txt "
@@ -161,6 +172,9 @@ class SylvanderAgent(BaseAgent):
             "--max-iterations 50 --max-output-tokens 2048 --timeout-secs 300",
             cwd=workspace,
             env=env,
+        )
+        await environment.exec(
+            f"rm -f {shlex.quote(self.API_KEY_FILE)}", user="root", timeout_sec=10
         )
         if result.return_code != 0:
             output = _bounded_diagnostic(result.stderr, result.stdout, api_key)
