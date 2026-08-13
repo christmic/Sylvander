@@ -1,5 +1,6 @@
 //! Multi-Agent coordination domain owned by Runtime.
 
+pub mod arbitration;
 pub mod governance;
 pub mod handoff;
 pub mod mailbox;

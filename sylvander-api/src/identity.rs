@@ -99,6 +99,16 @@ impl CoordinationMessageId {
     }
 }
 
+/// Stable identity for one moderator arbitration case.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GovernanceCaseId(pub String);
+
+impl GovernanceCaseId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
 /// Stable identity for one durable unit of Agent work.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskId(pub String);
