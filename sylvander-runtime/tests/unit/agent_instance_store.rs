@@ -285,6 +285,37 @@ async fn unresolved_mailbox_turn_is_idempotently_escalated_to_moderator() {
             .unwrap()
             .is_some()
     );
+    let decision = ModeratorDecision {
+        case_id: case.case_id.clone(),
+        decided_by: AgentInstanceId::new("moderator-1"),
+        moderator_lease_epoch: 3,
+        moderator_fencing_token: 9,
+        verdict: ModeratorVerdict::SuspendAgents {
+            agent_instance_ids: vec![AgentInstanceId::new("coordinator-1")],
+        },
+        rationale: "the interrupted effect requires explicit reconciliation".into(),
+        evidence_refs: vec![format!("message:{}", message.message_id.0)],
+        decided_at: 25,
+    };
+    let applied = service.decide_arbitration(&decision, 25).await.unwrap();
+    assert_eq!(applied.state, ArbitrationState::Applied);
+    assert_eq!(
+        store
+            .session_membership(&membership.session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .participants
+            .into_iter()
+            .find(|participant| participant.instance_id == AgentInstanceId::new("coordinator-1"))
+            .unwrap()
+            .state,
+        AgentInstanceState::ManualReconciliation
+    );
+    assert_eq!(
+        service.decide_arbitration(&decision, 26).await.unwrap(),
+        applied
+    );
 }
 
 #[tokio::test]
@@ -1462,8 +1493,11 @@ async fn arbitration_case_is_durable_and_fenced_to_exact_governance_facts() {
         .decide_arbitration(&decision, &membership, &graph, 0, 60)
         .await
         .unwrap();
-    assert_eq!(decided.state, ArbitrationState::Decided);
+    assert_eq!(decided.state, ArbitrationState::Applied);
     assert_eq!(decided.revision, 1);
+    let replanned = store.task(&TaskId::new("task-1")).await.unwrap().unwrap();
+    assert_eq!(replanned.state, CoordinationTaskState::Blocked);
+    assert_eq!(replanned.revision, 1);
     assert_eq!(
         store.arbitration_decision(&case.case_id).await.unwrap(),
         Some(decision.clone())

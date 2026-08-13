@@ -5,8 +5,9 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use sylvander_api::{AgentInstanceId, GovernanceCaseId, SessionId, TaskId};
 
+use crate::agent::instance::AgentInstanceState;
 use crate::coordination::governance::{FindingSeverity, GovernanceFinding};
-use crate::coordination::task::SessionTaskGraph;
+use crate::coordination::task::{CoordinationTaskState, SessionTaskGraph};
 use crate::session::membership::SessionMembership;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +174,26 @@ fn validate_verdict(
             if selected.is_empty() || selected.iter().any(|task| !task_ids.contains(task)) {
                 return Err(ArbitrationError::UnknownTask);
             }
+            let invalid_state = selected.iter().any(|task_id| {
+                let task = tasks
+                    .tasks
+                    .iter()
+                    .find(|task| &task.task_id == task_id)
+                    .expect("selected task existence was checked");
+                match verdict {
+                    ModeratorVerdict::Replan { .. } => !matches!(
+                        task.state,
+                        CoordinationTaskState::Ready
+                            | CoordinationTaskState::Running
+                            | CoordinationTaskState::AwaitingReview
+                    ),
+                    ModeratorVerdict::CancelTasks { .. } => task.state.is_terminal(),
+                    _ => unreachable!("verdict arm is fixed"),
+                }
+            });
+            if invalid_state {
+                return Err(ArbitrationError::InapplicableVerdict);
+            }
         }
         ModeratorVerdict::Reassign {
             task_id,
@@ -183,6 +204,28 @@ fn validate_verdict(
             }
             if !members.contains(to_instance_id) {
                 return Err(ArbitrationError::UnknownAgent);
+            }
+            let task = tasks
+                .tasks
+                .iter()
+                .find(|task| &task.task_id == task_id)
+                .expect("task existence was checked");
+            let recipient = membership
+                .participants
+                .iter()
+                .find(|participant| &participant.instance_id == to_instance_id)
+                .expect("recipient membership was checked");
+            if !matches!(
+                task.state,
+                CoordinationTaskState::Proposed
+                    | CoordinationTaskState::Ready
+                    | CoordinationTaskState::Blocked
+            ) || task.assigned_to.as_ref() == Some(to_instance_id)
+                || task.handoff_count >= task.max_handoffs
+                || recipient.state.is_terminal()
+                || recipient.state == AgentInstanceState::ManualReconciliation
+            {
+                return Err(ArbitrationError::InapplicableVerdict);
             }
         }
         ModeratorVerdict::SuspendAgents { agent_instance_ids } => {
@@ -195,6 +238,19 @@ fn validate_verdict(
                     .any(|agent| agent == &membership.governance.moderator_instance_id)
             {
                 return Err(ArbitrationError::UnknownAgent);
+            }
+            if agent_instance_ids.iter().any(|agent_id| {
+                membership
+                    .participants
+                    .iter()
+                    .find(|participant| &participant.instance_id == agent_id)
+                    .is_none_or(|participant| {
+                        !participant
+                            .state
+                            .can_transition_to(AgentInstanceState::ManualReconciliation)
+                    })
+            }) {
+                return Err(ArbitrationError::InapplicableVerdict);
             }
         }
     }
@@ -223,6 +279,8 @@ pub enum ArbitrationError {
     UnknownTask,
     #[error("moderator verdict references an unknown or protected Agent")]
     UnknownAgent,
+    #[error("moderator verdict cannot be applied to the current durable state")]
+    InapplicableVerdict,
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ fn terminal_instance_states_cannot_restart() {
 
 #[test]
 fn manual_reconciliation_requires_an_explicit_resolution() {
+    assert!(AgentInstanceState::Ready.can_transition_to(AgentInstanceState::ManualReconciliation));
     assert!(
         AgentInstanceState::Running.can_transition_to(AgentInstanceState::ManualReconciliation)
     );

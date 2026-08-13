@@ -11,7 +11,7 @@ use crate::agent::instance::{
     AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute, HistoryView,
     SessionAgentRole,
 };
-use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
+use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState, ModeratorDecision};
 use crate::coordination::governance::{
     GovernanceAssessment, GovernanceFinding, GovernancePolicy, GovernanceSnapshot,
     ProgressObservation, WaitDependency, assess,
@@ -639,6 +639,61 @@ where
             .map_err(Into::into)
     }
 
+    /// Validate a fenced moderator decision and atomically apply all of its
+    /// durable effects. Exact retries return the already-applied case.
+    pub async fn decide_arbitration(
+        &self,
+        decision: &ModeratorDecision,
+        now: i64,
+    ) -> Result<ArbitrationCase, CoordinationServiceError> {
+        let case = self
+            .store
+            .arbitration_case(&decision.case_id)
+            .await?
+            .ok_or(CoordinationServiceError::UnknownArbitration)?;
+        if case.state == ArbitrationState::Applied {
+            return match self.store.arbitration_decision(&decision.case_id).await? {
+                Some(existing) if existing == *decision => Ok(case),
+                _ => Err(CoordinationServiceError::IdempotencyConflict),
+            };
+        }
+        if case.state != ArbitrationState::Open {
+            return Err(CoordinationServiceError::InvalidArbitration(
+                "arbitration case is not open".into(),
+            ));
+        }
+        let membership = self
+            .store
+            .session_membership(&case.session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingMembership(case.session_id.clone()))?;
+        let topology = self
+            .store
+            .topology(&case.session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingTopology(case.session_id.clone()))?;
+        let tasks = self
+            .store
+            .task_graph(&case.session_id)
+            .await?
+            .unwrap_or_else(|| SessionTaskGraph {
+                session_id: case.session_id.clone(),
+                membership_revision: membership.governance.membership_revision,
+                tasks: Vec::new(),
+                dependencies: Vec::new(),
+            });
+        self.store
+            .decide_arbitration(
+                decision,
+                &membership,
+                &tasks,
+                topology.topology_revision,
+                now,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
     /// Lease one durable envelope. Expired claims are recoverable by a later worker.
     pub async fn claim_next_message(
         &self,
@@ -1031,6 +1086,8 @@ pub enum CoordinationServiceError {
     UnknownTask,
     #[error("coordination references an unknown handoff")]
     UnknownHandoff,
+    #[error("coordination references an unknown arbitration case")]
+    UnknownArbitration,
     #[error("handoff decision was not issued by its governed arbitrator")]
     UnauthorizedArbitrator,
     #[error("recipient is not reachable in the governed topology")]
@@ -1041,6 +1098,8 @@ pub enum CoordinationServiceError {
     InvalidDispatch(String),
     #[error("task handoff is invalid: {0}")]
     InvalidHandoff(String),
+    #[error("moderator arbitration is invalid: {0}")]
+    InvalidArbitration(String),
     #[error("coordination idempotency key was reused for different intent")]
     IdempotencyConflict,
     #[error("coordination service configuration is invalid")]

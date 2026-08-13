@@ -650,7 +650,7 @@ fn decode_role(
     }
 }
 
-const fn encode_state(state: AgentInstanceState) -> &'static str {
+pub(crate) const fn encode_state(state: AgentInstanceState) -> &'static str {
     match state {
         AgentInstanceState::Created => "created",
         AgentInstanceState::Ready => "ready",

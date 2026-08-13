@@ -1,7 +1,7 @@
 //! SQLite persistence for governed multi-Agent coordination facts.
 
 use async_trait::async_trait;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use sylvander_api::{
     AgentInstanceId, CoordinationMessageId, GovernanceCaseId, HandoffId, SessionId, TaskId,
 };
@@ -1017,8 +1017,9 @@ impl CoordinationStore for SqliteSessionStore {
                     decision.decided_at,
                 ],
             )?;
+            apply_moderator_verdict(&transaction, &decision, &membership, &tasks)?;
             let changed = transaction.execute(
-                "UPDATE governance_cases SET state='decided',revision=revision+1,updated_at=?1 \
+                "UPDATE governance_cases SET state='applied',revision=revision+1,updated_at=?1 \
                  WHERE case_id=?2 AND state='open' AND revision=?3",
                 params![
                     decision.decided_at,
@@ -1031,7 +1032,7 @@ impl CoordinationStore for SqliteSessionStore {
                     "arbitration case changed before decision commit".into(),
                 ));
             }
-            case.state = ArbitrationState::Decided;
+            case.state = ArbitrationState::Applied;
             case.revision = case.revision.checked_add(1).ok_or_else(|| {
                 SessionStoreError::Invalid("arbitration revision overflow".into())
             })?;
@@ -1952,6 +1953,141 @@ fn decode_handoff_state(state: &str) -> Result<HandoffState, SessionStoreError> 
         _ => Err(SessionStoreError::Store(
             "stored handoff state is invalid".into(),
         )),
+    }
+}
+
+fn apply_moderator_verdict(
+    transaction: &Transaction<'_>,
+    decision: &ModeratorDecision,
+    membership: &SessionMembership,
+    tasks: &SessionTaskGraph,
+) -> Result<(), SessionStoreError> {
+    match &decision.verdict {
+        ModeratorVerdict::ContinueWithConditions { .. } => {}
+        ModeratorVerdict::Replan { task_ids } => {
+            for task_id in task_ids {
+                let task = tasks
+                    .tasks
+                    .iter()
+                    .find(|task| &task.task_id == task_id)
+                    .expect("moderator decision validation checked every task");
+                let next_revision = task
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| SessionStoreError::Invalid("task revision overflow".into()))?;
+                let changed = transaction.execute(
+                    "UPDATE coordination_tasks SET state='blocked',revision=?1,updated_at=?2 \
+                     WHERE task_id=?3 AND revision=?4 AND state=?5",
+                    params![
+                        checked_i64(next_revision, "task revision")?,
+                        decision.decided_at,
+                        task.task_id.0,
+                        checked_i64(task.revision, "task revision")?,
+                        encode_task_state(task.state),
+                    ],
+                )?;
+                require_arbitration_effect(changed)?;
+            }
+        }
+        ModeratorVerdict::Reassign {
+            task_id,
+            to_instance_id,
+        } => {
+            let task = tasks
+                .tasks
+                .iter()
+                .find(|task| &task.task_id == task_id)
+                .expect("moderator decision validation checked the task");
+            let next_revision = task
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("task revision overflow".into()))?;
+            let next_handoff_count = task
+                .handoff_count
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("task handoff count overflow".into()))?;
+            let changed = transaction.execute(
+                "UPDATE coordination_tasks SET assigned_to_instance_id=?1,state='ready',
+                 handoff_count=?2,revision=?3,updated_at=?4
+                 WHERE task_id=?5 AND revision=?6 AND state=?7",
+                params![
+                    to_instance_id.0,
+                    i64::from(next_handoff_count),
+                    checked_i64(next_revision, "task revision")?,
+                    decision.decided_at,
+                    task.task_id.0,
+                    checked_i64(task.revision, "task revision")?,
+                    encode_task_state(task.state),
+                ],
+            )?;
+            require_arbitration_effect(changed)?;
+        }
+        ModeratorVerdict::SuspendAgents { agent_instance_ids } => {
+            for instance_id in agent_instance_ids {
+                let participant = membership
+                    .participants
+                    .iter()
+                    .find(|participant| &participant.instance_id == instance_id)
+                    .expect("moderator decision validation checked every Agent");
+                let next_revision =
+                    participant
+                        .lifecycle_revision
+                        .checked_add(1)
+                        .ok_or_else(|| {
+                            SessionStoreError::Invalid("Agent lifecycle revision overflow".into())
+                        })?;
+                let changed = transaction.execute(
+                    "UPDATE session_agent_instances SET state='manual_reconciliation',
+                     lifecycle_revision=?1,updated_at=?2
+                     WHERE session_id=?3 AND instance_id=?4 AND lifecycle_revision=?5 AND state=?6",
+                    params![
+                        checked_i64(next_revision, "Agent lifecycle revision")?,
+                        decision.decided_at,
+                        participant.session_id.0,
+                        participant.instance_id.0,
+                        checked_i64(participant.lifecycle_revision, "Agent lifecycle revision")?,
+                        crate::storage::agent_instance::encode_state(participant.state),
+                    ],
+                )?;
+                require_arbitration_effect(changed)?;
+            }
+        }
+        ModeratorVerdict::CancelTasks { task_ids } => {
+            for task_id in task_ids {
+                let task = tasks
+                    .tasks
+                    .iter()
+                    .find(|task| &task.task_id == task_id)
+                    .expect("moderator decision validation checked every task");
+                let next_revision = task
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| SessionStoreError::Invalid("task revision overflow".into()))?;
+                let changed = transaction.execute(
+                    "UPDATE coordination_tasks SET state='cancelled',revision=?1,updated_at=?2 \
+                     WHERE task_id=?3 AND revision=?4 AND state=?5",
+                    params![
+                        checked_i64(next_revision, "task revision")?,
+                        decision.decided_at,
+                        task.task_id.0,
+                        checked_i64(task.revision, "task revision")?,
+                        encode_task_state(task.state),
+                    ],
+                )?;
+                require_arbitration_effect(changed)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_arbitration_effect(changed: usize) -> Result<(), SessionStoreError> {
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(SessionStoreError::Invalid(
+            "arbitration target changed before verdict application".into(),
+        ))
     }
 }
 

@@ -99,8 +99,11 @@ impl AgentInstanceState {
         }
         matches!(
             (self, next),
-            (Self::Created, Self::Ready)
-                | (Self::Ready, Self::Running | Self::Cancelled)
+            (Self::Created, Self::Ready | Self::ManualReconciliation)
+                | (
+                    Self::Ready,
+                    Self::Running | Self::Cancelled | Self::ManualReconciliation
+                )
                 | (
                     Self::Running,
                     Self::WaitingMessage
