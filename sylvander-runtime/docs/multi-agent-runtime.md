@@ -181,3 +181,8 @@ following remain explicit follow-on work, not implied by the current types:
 - semantic merge planning across multiple isolated worktrees;
 - operator/API projections for listing cases, decisions, topology, tasks, and
   mailbox recovery state.
+
+The orthogonal boundary between first-class Agents, internal model roles,
+Agent-authored workflow, multimodal perception, soft recovery, Doctor, and the
+Runtime benchmark matrix is specified in
+[`agent-cognition-workflow-doctor.md`](agent-cognition-workflow-doctor.md).
