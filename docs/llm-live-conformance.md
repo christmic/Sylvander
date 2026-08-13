@@ -77,11 +77,17 @@ The live runner reads only bench-scoped environment variables. Production LLM
 crates continue to receive endpoint and credential values as constructor
 arguments and never discover them from the process environment.
 
-Required per selected provider:
+Required per selected provider use an explicit provider prefix. The initial
+Anthropic variables are:
 
-- `SYLVANDER_BENCH_BASE_URL`;
-- `SYLVANDER_BENCH_API_KEY`;
-- `SYLVANDER_BENCH_MODEL`.
+- `SYLVANDER_BENCH_ANTHROPIC_BASE_URL`;
+- `SYLVANDER_BENCH_ANTHROPIC_API_KEY`;
+- `SYLVANDER_BENCH_ANTHROPIC_MODEL`.
+
+OpenAI and DashScope use the same suffixes with `OPENAI` or `DASHSCOPE` in
+place of `ANTHROPIC`; protocol-specific model variables may narrow one shared
+provider configuration when its supported wire contracts require different
+models.
 
 The runner may also accept provider/protocol selection, request timeout, retry
 budget, maximum output tokens, and maximum billed input tokens. Defaults must
