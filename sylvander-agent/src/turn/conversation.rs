@@ -38,5 +38,5 @@ impl ConversationSnapshot {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/conversation.rs"]
+#[path = "../../tests/unit/conversation.rs"]
 mod tests;

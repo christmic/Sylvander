@@ -9,15 +9,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const KERNEL_MODULES: &[&str] = &[
-    "conversation.rs",
-    "error.rs",
-    "event.rs",
-    "execution_context.rs",
+    "turn/conversation.rs",
+    "turn/error.rs",
+    "turn/event.rs",
+    "turn/execution_context.rs",
     "execution_ports.rs",
     "loop_.rs",
-    "outcome.rs",
+    "turn/outcome.rs",
     "plan_gate.rs",
-    "request.rs",
+    "turn/request.rs",
     "tool.rs",
     "tool_context.rs",
     "tool_invocation.rs",

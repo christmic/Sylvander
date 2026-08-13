@@ -17,7 +17,7 @@ use std::sync::Arc;
 use futures_util::StreamExt as _;
 use sylvander_llm_core::{ChatMessage, ModelInfo};
 
-use crate::error::AgentLoopError;
+use crate::turn::error::AgentLoopError;
 
 /// System prompt used for L4 summarization.
 pub const DEFAULT_SUMMARY_PROMPT: &str = "You are a conversation compressor. \

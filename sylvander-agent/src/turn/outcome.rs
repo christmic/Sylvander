@@ -6,7 +6,7 @@
 
 use sylvander_llm_core::{ModelResponse, TokenUsage};
 
-use crate::conversation::ConversationSnapshot;
+use crate::turn::conversation::ConversationSnapshot;
 
 /// Provider-neutral result returned to Runtime for durable commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,5 +22,5 @@ pub struct AgentOutcome {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/outcome.rs"]
+#[path = "../../tests/unit/outcome.rs"]
 mod tests;

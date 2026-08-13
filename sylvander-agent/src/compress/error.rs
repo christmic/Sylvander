@@ -1,6 +1,6 @@
 //! Stable internal classification for compaction failures.
 
-use crate::error::AgentLoopError;
+use crate::turn::error::AgentLoopError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionFailureCode {

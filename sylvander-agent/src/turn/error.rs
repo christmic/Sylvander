@@ -74,5 +74,5 @@ impl AgentLoopError {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/error.rs"]
+#[path = "../../tests/unit/error.rs"]
 mod tests;

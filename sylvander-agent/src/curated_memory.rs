@@ -7,8 +7,8 @@
 
 use async_trait::async_trait;
 
-use crate::identity::{AgentId, SessionId, UserId};
 use crate::tool_context::ToolContext;
+use crate::turn::identity::{AgentId, SessionId, UserId};
 
 /// Governed destination proposed by a Worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

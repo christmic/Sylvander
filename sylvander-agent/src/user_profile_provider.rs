@@ -1,6 +1,6 @@
 //! Runtime-injected access to the authenticated user's current profile.
 
-use crate::identity::{AgentId, SessionId, UserId};
+use crate::turn::identity::{AgentId, SessionId, UserId};
 use crate::user_profile::UserProfileSnapshot;
 use async_trait::async_trait;
 

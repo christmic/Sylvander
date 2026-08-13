@@ -19,8 +19,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::execution_context::AgentExecutionContext;
-use crate::identity::{AgentId, SessionId, UserId};
+use crate::turn::execution_context::AgentExecutionContext;
+use crate::turn::identity::{AgentId, SessionId, UserId};
 pub const MAX_MEMORY_CONTENT_BYTES: usize = 16 * 1024;
 pub const MAX_MEMORY_QUERY_BYTES: usize = 4 * 1024;
 pub const MAX_MEMORY_TAGS: usize = 32;
@@ -797,7 +797,7 @@ impl MemoryStore for InMemoryMemoryStore {
             append,
             ctx.provenance(),
             self.retention_policy.revision(),
-            crate::time::now_secs(),
+            crate::turn::time::now_secs(),
         )?;
         self.entries.write().await.push(entry.clone());
         Ok(entry)
@@ -818,7 +818,7 @@ impl MemoryStore for InMemoryMemoryStore {
             return Err(MemoryStoreError::InvalidInput);
         }
         let query_lower = query.to_lowercase();
-        let now = crate::time::now_secs();
+        let now = crate::turn::time::now_secs();
         let entries = self.entries.read().await;
         let mut results: Vec<MemoryEntry> = entries
             .iter()
@@ -848,7 +848,7 @@ impl MemoryStore for InMemoryMemoryStore {
         self.retention_policy.validate_patch(&patch)?;
         let updates_expiry = patch.expiry.is_some();
         validate_revision(expected_revision)?;
-        let now = crate::time::now_secs();
+        let now = crate::turn::time::now_secs();
         let mut entries = self.entries.write().await;
         let entry = entries
             .iter_mut()
@@ -876,7 +876,7 @@ impl MemoryStore for InMemoryMemoryStore {
         let replacement = self.retention_policy.apply_append(replacement)?;
         validate_append(&replacement)?;
         validate_revision(expected_revision)?;
-        let now = crate::time::now_secs();
+        let now = crate::turn::time::now_secs();
         let replacement = MemoryEntry::materialize(
             uuid::Uuid::new_v4().to_string(),
             owner.clone(),
@@ -909,7 +909,7 @@ impl MemoryStore for InMemoryMemoryStore {
         let owner = ctx.relationship_owner()?;
         validate_memory_id(id)?;
         validate_revision(expected_revision)?;
-        let now = crate::time::now_secs();
+        let now = crate::turn::time::now_secs();
         let mut entries = self.entries.write().await;
         let Some(index) = entries
             .iter()
@@ -941,7 +941,9 @@ impl MemoryStore for InMemoryMemoryStore {
         Ok(entries
             .iter()
             .find(|entry| {
-                entry.id == id && entry.owner == owner && is_active(entry, crate::time::now_secs())
+                entry.id == id
+                    && entry.owner == owner
+                    && is_active(entry, crate::turn::time::now_secs())
             })
             .cloned())
     }

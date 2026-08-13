@@ -1,6 +1,6 @@
 //! Immutable service-port snapshot for one Agent execution.
 //!
-//! [`crate::request::AgentTurnRequest`] contains domain data;
+//! [`crate::turn::request::AgentTurnRequest`] contains turn data;
 //! this module contains the Runtime-selected implementations used to perform
 //! that data. Keeping them separate prevents a request from becoming a service
 //! locator and makes it impossible to deserialize client input into executable
@@ -13,12 +13,12 @@ use sylvander_llm_core::ModelProvider;
 use crate::approval::ApprovalGate;
 use crate::artifact::TurnArtifactStore;
 use crate::ask_user_gate::AskUserGate;
-use crate::error::AgentLoopError;
 use crate::plan_gate::PlanGate;
-use crate::request::AgentTurnRequest;
 use crate::task_gate::TaskGate;
 use crate::tool_context::ToolContext;
 use crate::tool_invocation::{ToolInvocationGateway, ToolInvocationSnapshot};
+use crate::turn::error::AgentLoopError;
+use crate::turn::request::AgentTurnRequest;
 
 /// Runtime-selected service implementations pinned for one Agent turn.
 ///

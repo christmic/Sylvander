@@ -4,7 +4,7 @@
 //!
 //! Sylvander uses two distinct context types for different scopes:
 //!
-//! - [`AgentExecutionContext`](crate::execution_context::AgentExecutionContext)
+//! - [`AgentExecutionContext`](crate::turn::execution_context::AgentExecutionContext)
 //!   — Runtime-validated actor, logical workspace, capabilities, timeout, and
 //!   correlation for one Agent execution. It is deliberately not a wire type.
 //!
@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::execution_context::AgentExecutionContext;
+use crate::turn::execution_context::AgentExecutionContext;
 use crate::workspace_executor::{UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget};
 use crate::workspace_journal::WorkspaceMutationJournal;
 
@@ -351,7 +351,7 @@ pub mod defaults {
     #[must_use]
     pub fn system_tool_context() -> super::ToolContext {
         super::ToolContext::new(
-            crate::execution_context::AgentExecutionContext::restricted_for(
+            crate::turn::execution_context::AgentExecutionContext::restricted_for(
                 "__system_user__",
                 "__system_agent__",
                 "__system_session__",

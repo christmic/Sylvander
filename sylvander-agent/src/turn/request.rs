@@ -7,9 +7,9 @@
 
 use sylvander_llm_core::{ModelInfo, ReasoningConfig, SystemInstruction};
 
-use crate::conversation::ConversationSnapshot;
-use crate::execution_context::AgentExecutionContext;
 use crate::tool::ToolRegistry;
+use crate::turn::conversation::ConversationSnapshot;
+use crate::turn::execution_context::AgentExecutionContext;
 
 /// Complete turn input constructed by Runtime after Session authorization.
 #[derive(Clone)]
@@ -43,5 +43,5 @@ impl std::fmt::Debug for AgentTurnRequest {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/request.rs"]
+#[path = "../../tests/unit/request.rs"]
 mod tests;

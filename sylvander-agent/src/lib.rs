@@ -94,33 +94,23 @@ pub mod artifact;
 pub mod ask_user_gate;
 /// Context-window compaction contracts and pipeline implementations.
 pub mod compress;
-/// Model-visible conversation snapshot owned only for one execution.
-pub mod conversation;
 /// Runtime-owned Guardian candidate and curated-context contracts.
 pub mod curated_memory;
-/// Agent-loop error taxonomy.
-pub mod error;
-/// Fine-grained loop events for observers and tests.
-pub mod event;
-/// Trusted, non-wire authority for one Agent execution.
-pub mod execution_context;
 pub mod execution_ports;
-/// Non-wire identities used by Agent-domain records and ports.
-pub mod identity;
 /// Provider-compatible iterative model/tool execution loop.
 pub mod loop_;
-/// Provider-neutral result returned to the Runtime owner.
-pub mod outcome;
 /// Plan proposal and acknowledgement gate.
 pub mod plan_gate;
 /// Deterministic system-prompt composition.
 pub mod prompt;
-/// Immutable input for one Agent execution.
-pub mod request;
 /// Restricted background-task lifecycle and result gate.
 pub mod task_gate;
-/// Bounded wall-clock conversion for Agent-owned records.
-pub mod time;
+/// Immutable input, authority, progress, and result vocabulary for one turn.
+pub mod turn;
+
+// Public facade for the established crate API. Internal code uses `turn::*`
+// paths so the physical ownership remains visible during development.
+pub use turn::{conversation, error, event, execution_context, identity, outcome, request, time};
 /// Tool registration, schemas, invocation, and normalized output.
 pub mod tool;
 /// Runtime-derived capability, identity, workspace, and execution budget context.
@@ -163,22 +153,14 @@ pub mod prelude {
         },
         pipeline::CompressionPipeline,
     };
-    pub use crate::conversation::ConversationSnapshot;
     pub use crate::curated_memory::{
         CuratedContextEntry, CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope,
         MemoryCandidateError, MemoryCandidateReceipt, MemoryCandidateSink,
         MemoryCandidateSubmission,
     };
-    pub use crate::error::AgentLoopError;
-    pub use crate::event::{AgentEvent, ModelRetryCause};
-    pub use crate::execution_context::{
-        AgentExecutionContext, ExecutionActor, ExecutionCapability, ExecutionWorkspace,
-    };
     pub use crate::execution_ports::AgentExecutionPorts;
     pub use crate::loop_::{AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events};
-    pub use crate::outcome::AgentOutcome;
     pub use crate::plan_gate::PlanDecision;
-    pub use crate::request::AgentTurnRequest;
     pub use crate::tool::{
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
         ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
@@ -194,6 +176,14 @@ pub mod prelude {
         MemoryWriteTool, PresentPlanTool, ReadTool, RelationshipMemoryRetentionPolicy, SearchTool,
         StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
     };
+    pub use crate::turn::conversation::ConversationSnapshot;
+    pub use crate::turn::error::AgentLoopError;
+    pub use crate::turn::event::{AgentEvent, ModelRetryCause};
+    pub use crate::turn::execution_context::{
+        AgentExecutionContext, ExecutionActor, ExecutionCapability, ExecutionWorkspace,
+    };
+    pub use crate::turn::outcome::AgentOutcome;
+    pub use crate::turn::request::AgentTurnRequest;
     pub use crate::turn_context::{
         TurnContextBudget, TurnContextBudgets, TurnContextLayerKind, TurnContextManifest,
     };

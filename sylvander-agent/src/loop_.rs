@@ -31,15 +31,14 @@ use sylvander_llm_core::{
     ModelRequest, ModelResponse, ProviderErrorKind, StopReason, TokenUsage,
 };
 
-use super::error::AgentLoopError;
-use super::event::AgentEvent;
-use super::event::ModelRetryCause;
 use super::execution_ports::AgentExecutionPorts;
-use super::outcome::AgentOutcome;
 use super::plan_gate::PlanDecision;
-use super::request::AgentTurnRequest;
 use super::tool::{AgentHookPhase, ToolRegistry};
-use crate::conversation::ConversationSnapshot;
+use crate::turn::conversation::ConversationSnapshot;
+use crate::turn::error::AgentLoopError;
+use crate::turn::event::{AgentEvent, ModelRetryCause};
+use crate::turn::outcome::AgentOutcome;
+use crate::turn::request::AgentTurnRequest;
 
 /// Stable policy for the provider-neutral Agent execution kernel.
 ///

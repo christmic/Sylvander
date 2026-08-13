@@ -149,5 +149,5 @@ impl AgentExecutionContext {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/execution_context.rs"]
+#[path = "../../tests/unit/execution_context.rs"]
 mod tests;

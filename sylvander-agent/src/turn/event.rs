@@ -4,7 +4,7 @@
 //! The agent loop has a single core API — [`AgentLoop::run_stream`](crate::loop_::run_stream) —
 //! that drives the iteration and yields events. [`AgentLoop::run`](crate::loop_::run) is
 //! a thin wrapper that consumes the stream and returns an
-//! [`AgentOutcome`](crate::outcome::AgentOutcome). [`AgentLoop::run_with_events`](crate::loop_::run_with_events) is a wrapper
+//! [`AgentOutcome`](crate::turn::outcome::AgentOutcome). [`AgentLoop::run_with_events`](crate::loop_::run_with_events) is a wrapper
 //! that fires events into a callback as they flow.
 //!
 //! Events fire in chronological order within a single iteration:
@@ -16,9 +16,9 @@ use serde_json::Value as JsonValue;
 use sylvander_llm_core::{ChatMessage, TokenUsage};
 
 use crate::compress::layer::LayerReport;
-use crate::error::AgentLoopError;
-use crate::outcome::AgentOutcome;
 use crate::plan_gate::PlanDecision;
+use crate::turn::error::AgentLoopError;
+use crate::turn::outcome::AgentOutcome;
 
 /// Provider-neutral reason for retrying a model request.
 ///
