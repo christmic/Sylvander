@@ -136,6 +136,12 @@ pub trait CoordinationStore: Send + Sync {
         case_id: &GovernanceCaseId,
     ) -> Result<Option<ArbitrationCase>, SessionStoreError>;
 
+    /// List non-terminal moderator cases for one Session in creation order.
+    async fn active_arbitration_cases(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<ArbitrationCase>, SessionStoreError>;
+
     async fn expire_arbitration(
         &self,
         case_id: &GovernanceCaseId,
@@ -1267,6 +1273,36 @@ impl CoordinationStore for SqliteSessionStore {
         let case_id = case_id.clone();
         self.run(move |connection| load_arbitration_case(connection, &case_id))
             .await
+    }
+
+    async fn active_arbitration_cases(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<ArbitrationCase>, SessionStoreError> {
+        let session_id = session_id.clone();
+        self.run(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT case_id FROM governance_cases
+                 WHERE session_id=?1 AND state IN ('open','decided','applying')
+                 ORDER BY created_at,case_id",
+            )?;
+            let case_ids = statement
+                .query_map([&session_id.0], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            case_ids
+                .into_iter()
+                .map(|case_id| {
+                    load_arbitration_case(connection, &GovernanceCaseId::new(case_id))?.ok_or_else(
+                        || {
+                            SessionStoreError::Store(
+                                "governance case disappeared during snapshot".into(),
+                            )
+                        },
+                    )
+                })
+                .collect()
+        })
+        .await
     }
 
     async fn expire_arbitration(

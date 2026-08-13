@@ -955,6 +955,13 @@ async fn coordination_service_persists_moderator_case_before_blocking_dispatch()
         store.arbitration_case(&case.case_id).await.unwrap(),
         Some(case.clone())
     );
+    assert_eq!(
+        store
+            .active_arbitration_cases(&membership.session_id)
+            .await
+            .unwrap(),
+        vec![case.clone()]
+    );
     assert!(
         store
             .message(&CoordinationMessageId::new("blocked-message"))

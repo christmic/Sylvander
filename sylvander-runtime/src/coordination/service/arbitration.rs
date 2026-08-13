@@ -1,6 +1,6 @@
 //! Moderator decision application and renewable arbitration recovery.
 
-use sylvander_api::GovernanceCaseId;
+use sylvander_api::{GovernanceCaseId, SessionId};
 
 use super::{
     ArbitrationCase, ArbitrationState, CoordinationService, CoordinationServiceError,
@@ -74,6 +74,17 @@ where
     ) -> Result<Option<ArbitrationCase>, CoordinationServiceError> {
         self.store
             .arbitration_case(case_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Read current moderator work without exposing the underlying store.
+    pub async fn active_arbitration_cases(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<ArbitrationCase>, CoordinationServiceError> {
+        self.store
+            .active_arbitration_cases(session_id)
             .await
             .map_err(Into::into)
     }
