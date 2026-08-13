@@ -328,3 +328,7 @@ const fn allowed(from: TurnPhase, to: TurnPhase, reason: TurnTransitionReason) -
             | (_, P::Interrupted, R::InterruptRequested)
     )
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/turn_machine.rs"]
+mod tests;
