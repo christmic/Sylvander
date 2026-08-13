@@ -24,6 +24,16 @@ def _bounded_diagnostic(stderr: str | None, stdout: str | None, secret: str) -> 
     return f"{output[:2_000]}…" if len(output) > 2_000 else output
 
 
+def _last_json_line(output: str) -> dict[str, object]:
+    """Decode the last JSON line, tolerating container-runtime notices."""
+
+    for line in reversed(output.splitlines()):
+        candidate = line.strip()
+        if candidate:
+            return json.loads(candidate)
+    raise ValueError("metrics command returned no JSON line")
+
+
 class SylvanderAgent(BaseAgent):
     """Run Sylvander inside the task environment and emit native ATIF v1.7."""
 
@@ -137,7 +147,7 @@ class SylvanderAgent(BaseAgent):
             timeout_sec=10,
         )
         if metrics_result.return_code == 0 and metrics_result.stdout:
-            metrics = json.loads(metrics_result.stdout)
+            metrics = _last_json_line(metrics_result.stdout)
             context.n_input_tokens = metrics.get("total_prompt_tokens")
             context.n_output_tokens = metrics.get("total_completion_tokens")
             context.n_cache_tokens = metrics.get("total_cached_tokens")
