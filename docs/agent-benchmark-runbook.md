@@ -91,6 +91,11 @@ official Python arm64-capable images, and their verifiers do not inherently
 need an external HTTP service. Image manifest and gold qualification still
 remain mandatory.
 
+The first qualified image is `cancel-async-tasks` at task revision
+`69671fbaac6d67a7ef0dfec016cc38a64ef7a77c`, native image digest
+`sha256:fa17b9590f1fe4aa1623fe906e867ecaa29bbdbbeed116acb2544e8cffaad5f2`.
+Its gold solution and first Sylvander run both passed all six verifier cases.
+
 ## Result classification
 
 | Condition | Classification | Waterline use |

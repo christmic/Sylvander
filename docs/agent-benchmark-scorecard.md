@@ -183,3 +183,25 @@ evidence gate has not yet been met; it does not mean the observed Agent is
 conversation-only. A clean passing Terminal-Bench regression task is still
 required for L1, and the four-suite portfolio is required for the requested
 final waterline.
+
+## The 2026-08-13 native-arm64 Terminal-Bench run
+
+`cancel-async-tasks` was rebuilt and executed natively on `linux/arm64`; QEMU
+was not used. The pinned task revision is
+`69671fbaac6d67a7ef0dfec016cc38a64ef7a77c` and the qualified image digest is
+`sha256:fa17b9590f1fe4aa1623fe906e867ecaa29bbdbbeed116acb2544e8cffaad5f2`.
+The reference solution first passed all six verifier tests with reward `1`.
+
+The real Sylvander/MiniMax/OpenAI-Chat run then completed with `Trials=1`, zero
+exceptions and reward `1.0`. Its ATIF evidence records 21 steps, 18 Command
+calls, 225,331 prompt tokens, 10,610 completion tokens and 81,471 cache-read
+tokens. The normalized record is `passed`, has no failure kind, and was
+recomputed on clean commit `b4b559278` with `worktree_dirty=false`. Artifact
+credential scanning found zero matches.
+
+This opens the L1 capability gate but does not yet satisfy its coverage gate.
+The fixed three-task native-arm64 L1 smoke currently has one executed cell, so
+the certifiable level remains L0 until at least 80% of those cells execute and
+the Agent-error rate remains below 20%. No additional pass is required by the
+literal L1 threshold, but the first pass is repeated three times before L1 is
+called stable.
