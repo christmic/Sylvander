@@ -36,6 +36,15 @@ pub trait AgentInstanceStore: Send + Sync {
         expected_membership_revision: u64,
         expected_topology_revision: u64,
     ) -> Result<(), SessionStoreError>;
+
+    async fn transition_agent_instance(
+        &self,
+        session_id: &SessionId,
+        instance_id: &AgentInstanceId,
+        expected_revision: u64,
+        next_state: AgentInstanceState,
+        now: i64,
+    ) -> Result<AgentInstance, SessionStoreError>;
 }
 
 #[async_trait]
@@ -386,6 +395,60 @@ impl AgentInstanceStore for SqliteSessionStore {
         })
         .await
     }
+
+    async fn transition_agent_instance(
+        &self,
+        session_id: &SessionId,
+        instance_id: &AgentInstanceId,
+        expected_revision: u64,
+        next_state: AgentInstanceState,
+        now: i64,
+    ) -> Result<AgentInstance, SessionStoreError> {
+        let session_id = session_id.clone();
+        let instance_id = instance_id.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let current = load_agent_instance(&transaction, &session_id, &instance_id)?
+                .ok_or_else(|| {
+                    SessionStoreError::Invalid("Agent instance does not exist".into())
+                })?;
+            if current.lifecycle_revision != expected_revision {
+                return Err(SessionStoreError::Invalid(
+                    "Agent instance lifecycle revision conflict".into(),
+                ));
+            }
+            if !current.state.can_transition_to(next_state) {
+                return Err(SessionStoreError::Invalid(
+                    "invalid Agent instance lifecycle transition".into(),
+                ));
+            }
+            let next_revision = expected_revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("Agent lifecycle revision overflow".into())
+            })?;
+            let changed = transaction.execute(
+                "UPDATE session_agent_instances SET state=?1,lifecycle_revision=?2,updated_at=?3 \
+                 WHERE session_id=?4 AND instance_id=?5 AND lifecycle_revision=?6",
+                params![
+                    encode_state(next_state),
+                    checked_i64(next_revision, "Agent lifecycle revision")?,
+                    now,
+                    session_id.0,
+                    instance_id.0,
+                    checked_i64(expected_revision, "Agent lifecycle revision")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "Agent instance lifecycle revision conflict".into(),
+                ));
+            }
+            let updated = load_agent_instance(&transaction, &session_id, &instance_id)?
+                .ok_or_else(|| SessionStoreError::Store("updated Agent disappeared".into()))?;
+            transaction.commit()?;
+            Ok(updated)
+        })
+        .await
+    }
 }
 
 fn insert_agent_instance(
@@ -421,6 +484,41 @@ fn insert_agent_instance(
         ],
     )?;
     Ok(())
+}
+
+fn load_agent_instance(
+    connection: &rusqlite::Connection,
+    session_id: &SessionId,
+    instance_id: &AgentInstanceId,
+) -> Result<Option<AgentInstance>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT agent_id,definition_revision,origin_json,role,role_swarm_id,
+                    history_view_json,approval_route_json,state,capability_revision,
+                    lifecycle_revision,created_at,updated_at FROM session_agent_instances
+             WHERE session_id=?1 AND instance_id=?2",
+            params![session_id.0, instance_id.0],
+            |row| {
+                Ok(EncodedInstance {
+                    instance_id: instance_id.0.clone(),
+                    agent_id: row.get(0)?,
+                    definition_revision: row.get(1)?,
+                    origin: row.get(2)?,
+                    role: row.get(3)?,
+                    role_swarm_id: row.get(4)?,
+                    history_view: row.get(5)?,
+                    approval_route: row.get(6)?,
+                    state: row.get(7)?,
+                    capability_revision: row.get(8)?,
+                    lifecycle_revision: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            },
+        )
+        .optional()?
+        .map(|row| decode_instance(session_id, row))
+        .transpose()
 }
 
 struct EncodedInstance {

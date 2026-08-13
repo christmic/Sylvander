@@ -859,6 +859,30 @@ async fn participant_append_updates_membership_and_topology_in_one_transaction()
             actual: Some(1)
         }
     ));
+    let ready = store
+        .transition_agent_instance(
+            &membership.session_id,
+            &child.instance_id,
+            0,
+            AgentInstanceState::Ready,
+            21,
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready.state, AgentInstanceState::Ready);
+    assert_eq!(ready.lifecycle_revision, 1);
+    assert!(
+        store
+            .transition_agent_instance(
+                &membership.session_id,
+                &child.instance_id,
+                0,
+                AgentInstanceState::Running,
+                22,
+            )
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

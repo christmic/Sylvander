@@ -916,6 +916,20 @@ impl crate::storage::agent_instance::AgentInstanceStore for FailingSessionStore 
             )
             .await
     }
+
+    async fn transition_agent_instance(
+        &self,
+        session_id: &SessionId,
+        instance_id: &AgentInstanceId,
+        expected_revision: u64,
+        next_state: crate::agent::instance::AgentInstanceState,
+        now: i64,
+    ) -> Result<crate::agent::instance::AgentInstance, crate::storage::session::SessionStoreError>
+    {
+        self.inner
+            .transition_agent_instance(session_id, instance_id, expected_revision, next_state, now)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
