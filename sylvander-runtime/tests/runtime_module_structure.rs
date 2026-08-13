@@ -75,3 +75,27 @@ fn crate_root_remains_a_small_public_facade() {
     assert!(facade.contains("mod runtime;"));
     assert!(facade.contains("pub use runtime::{"));
 }
+
+#[test]
+fn agent_run_keeps_construction_and_turn_orchestration_out_of_shared_state() {
+    let run = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/run");
+    for responsibility in [
+        "background.rs",
+        "builder.rs",
+        "error.rs",
+        "interaction.rs",
+        "orchestration.rs",
+        "projection.rs",
+    ] {
+        assert!(
+            run.join(responsibility).is_file(),
+            "Agent run responsibility must have a physical `{responsibility}` module"
+        );
+    }
+
+    let shared_state = include_str!("../src/agent/run.rs");
+    assert!(
+        shared_state.lines().count() <= 2_000,
+        "agent/run.rs must retain shared state instead of regaining construction or turn orchestration"
+    );
+}

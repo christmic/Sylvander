@@ -2486,11 +2486,15 @@ fn builder_uses_one_immutable_runtime_execution_service() {
         .build()
         .expect("build");
 
-    assert!(run.inner.execution_service.resolve("local").is_some());
-    assert!(Arc::ptr_eq(
-        run.inner.execution_service.resolve("ssh:build").unwrap(),
-        &remote
-    ));
+    let mut targets = run
+        .inner
+        .execution_service
+        .health()
+        .into_iter()
+        .map(|target| target.target_id)
+        .collect::<Vec<_>>();
+    targets.sort();
+    assert_eq!(targets, ["local", "ssh:build"]);
     assert!(run.inner.execution_service.resolve("unknown").is_none());
 }
 

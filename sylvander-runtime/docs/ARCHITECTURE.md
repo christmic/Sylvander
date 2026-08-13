@@ -36,6 +36,8 @@ src/
 ├── runtime/               # boot, lifecycle, ChannelHost, health, shutdown
 ├── agent/                 # definition, run, supervision, approval, prompt
 │   └── run/               # cohesive services used by turn orchestration
+│       ├── builder.rs     # validated dependencies and immutable run assembly
+│       ├── orchestration.rs # event-driven turn admission through terminal
 │       ├── interaction.rs # approval, question, and plan decision gates
 │       ├── background.rs  # isolated background Agent task lifecycle
 │       ├── projection.rs  # Agent/storage facts mapped to public Runtime APIs
@@ -62,13 +64,19 @@ code imports the owning physical path (`agent::run`, `workspace::local`,
 occupied the crate root; it is not a second public facade.
 
 Large orchestration entrypoints are split only when a child owns a real
-responsibility and state boundary. `agent/run/interaction.rs` owns pending
+responsibility and state boundary. `agent/run/builder.rs` validates the model
+catalog and injected Runtime services, constructs immutable execution policy,
+and assembles the shared run state. `agent/run/orchestration.rs` owns one
+event-driven turn from correlated admission through durable terminal state,
+including the frozen Agent request, event projection order, and turn-scoped
+tool/workspace context. `agent/run/interaction.rs` owns pending
 approval, question, and plan state together with their timeout and
 bus-publication rules. `agent/run/background.rs` owns cancellation, timeout,
 progress, and terminal publication for isolated background Agent work.
 `agent/run/projection.rs` is the type boundary from internal Agent and storage
 facts to public Runtime and governance DTOs; it contains no orchestration.
-`agent/run.rs` composes these services but does not implement their protocols.
+`agent/run.rs` retains the shared run/Session state and coordinates these
+services but does not implement their protocols or construction.
 A directory containing only a renamed former file does not satisfy this
 physical-layout rule.
 
