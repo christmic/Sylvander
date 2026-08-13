@@ -35,6 +35,7 @@ boundaries = {
     "sylvander-api/Cargo.toml": "docs/module-sylvander-api.md",
     "sylvander-runtime/Cargo.toml": "sylvander-runtime/docs/ARCHITECTURE.md",
     "sylvander-server/Cargo.toml": "docs/module-sylvander-server.md",
+    "sylvander-testbench-llm/Cargo.toml": "docs/module-sylvander-testbench-llm.md",
     "sylvander-tui/Cargo.toml": "sylvander-tui/docs/ARCHITECTURE.md",
 }
 

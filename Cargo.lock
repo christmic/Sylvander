@@ -3101,6 +3101,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sylvander-testbench-llm"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sylvander-llm-anthropic",
+ "sylvander-llm-core",
+ "sylvander-llm-dashscope",
+ "sylvander-llm-openai",
+ "tokio",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "sylvander-tui"
 version = "0.1.0"
 dependencies = [

@@ -65,7 +65,7 @@ newly generated production configuration, observes its Unix socket and durable
 databases, verifies the installed TUI, and requires a clean signal-driven
 shutdown.
 
-`verify-docs.sh` requires one indexed module boundary for all 16 current
+`verify-docs.sh` requires one indexed module boundary for all 17 current
 first-party Cargo packages and rejects broken relative links in maintained
 documentation.
 

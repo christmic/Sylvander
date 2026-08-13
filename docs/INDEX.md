@@ -131,6 +131,8 @@ and this index in the same change.
   latest wire schema, identifiers, negotiation, and generated contracts.
 - [module-sylvander-llm-core.md](module-sylvander-llm-core.md) —
   provider-neutral model requests, streaming, capabilities, and errors.
+- [module-sylvander-testbench-llm.md](module-sylvander-testbench-llm.md) —
+  live LLM conformance, fault injection, and machine-readable evidence.
 - [module-sylvander-server.md](module-sylvander-server.md) —
   process composition root, configuration handoff, and shutdown ownership.
 - [module-sylvander-channel-dingtalk.md](module-sylvander-channel-dingtalk.md) —
