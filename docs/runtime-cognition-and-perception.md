@@ -94,6 +94,29 @@ statistics:
 - median token increase;
 - p95 latency increase.
 
-The policy thresholds are explicit benchmark inputs. An eligible report is
-evidence for a later governed Registry activation; it does not mutate an Agent
-revision or silently turn on a cognitive role.
+The policy thresholds are explicit benchmark inputs. A versioned corpus
+manifest content-addresses every input and verifier, records provenance and
+license, and requires every declared scenario/run exactly once in the
+primary-only and candidate arms. Its canonical digest becomes the evidence-set
+identity.
+
+An eligible report is converted into a content-free API evidence record; it
+still does not activate anything. Registry activation is a separate durable
+state machine:
+
+1. an authenticated administrator proposes evidence for one exact Agent
+   revision, Agent-definition digest, cognitive role, and provider-qualified
+   model;
+2. an administrator approves it with an optimistic state revision;
+3. an administrator may later revoke it, also with optimistic concurrency.
+
+Only one approved fact may exist for an Agent revision and role. Every state
+transition has an append-only actor event, survives restart, and is checked by
+Registry health together with evidence and Agent binding digests. Rolling an
+Agent head backward or forward cannot carry an approval across revisions.
+
+Versioned production composition loads these approval facts as part of the
+immutable Registry closure. Configured roles without approval are removed from
+the runnable Agent spec; mismatched or corrupted facts fail composition. This
+keeps evaluation, owner authorization, and execution as three distinct
+boundaries.
