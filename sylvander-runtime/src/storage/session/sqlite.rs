@@ -484,22 +484,31 @@ fn schema_objects(
 impl SessionStore for SqliteSessionStore {
     // ---- session metadata CRUD ----
 
-    async fn list_persistent(&self) -> Result<Vec<StoredSession>, SessionStoreError> {
+    async fn list_persistent(
+        &self,
+        include_archived: bool,
+    ) -> Result<Vec<StoredSession>, SessionStoreError> {
         // Boot-loader path: returns all persistent, non-archived
         // sessions across all users. The caller (runtime::boot) is
         // itself a system-actor that creates AgentRuns per session;
         // per-user filtering happens in `list` at request time.
-        self.run(|c| {
-            let mut stmt = c.prepare(
+        self.run(move |c| {
+            let archive_filter = if include_archived {
+                ""
+            } else {
+                " AND s.is_archived = 0"
+            };
+            let sql = format!(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, s.created_at, \
                         s.updated_at, s.external_meta, s.config_revision, s.config_overrides, \
-                        s.effective_config, GROUP_CONCAT(sa.agent_id, ',') AS agents \
+                        s.effective_config, s.is_archived, GROUP_CONCAT(sa.agent_id, ',') AS agents \
                  FROM sessions s \
                  LEFT JOIN session_agents sa ON sa.session_id = s.id \
-                 WHERE s.lifetime = 'persistent' AND s.is_archived = 0 \
+                 WHERE s.lifetime = 'persistent'{archive_filter} \
                  GROUP BY s.id \
-                 ORDER BY s.updated_at DESC",
-            )?;
+                 ORDER BY s.updated_at DESC"
+            );
+            let mut stmt = c.prepare(&sql)?;
             let rows = stmt.query_map([], row_to_session_with_agents)?;
             let mut out = Vec::new();
             for row in rows {
@@ -1235,7 +1244,7 @@ impl SessionStore for SqliteSessionStore {
             let mut stmt = c.prepare(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
                         s.created_at, s.updated_at, s.external_meta, s.config_revision, \
-                        s.config_overrides, s.effective_config, \
+                        s.config_overrides, s.effective_config, s.is_archived, \
                         GROUP_CONCAT(sa.agent_id, ',') AS agents \
                  FROM sessions s \
                  LEFT JOIN session_agents sa ON sa.session_id = s.id \
@@ -1259,7 +1268,7 @@ impl SessionStore for SqliteSessionStore {
             let mut stmt = c.prepare(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
                         s.created_at, s.updated_at, s.external_meta, s.config_revision, \
-                        s.config_overrides, s.effective_config, \
+                        s.config_overrides, s.effective_config, s.is_archived, \
                         GROUP_CONCAT(sa.agent_id, ',') AS agents \
                  FROM sessions s \
                  LEFT JOIN session_agents sa ON sa.session_id = s.id \
@@ -1293,7 +1302,7 @@ impl SessionStore for SqliteSessionStore {
             let mut sql = String::from(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
                         s.created_at, s.updated_at, s.external_meta, s.config_revision, \
-                        s.config_overrides, s.effective_config, \
+                        s.config_overrides, s.effective_config, s.is_archived, \
                         GROUP_CONCAT(sa.agent_id, ',') AS agents \
                  FROM sessions s \
                  LEFT JOIN session_agents sa ON sa.session_id = s.id \
@@ -1358,7 +1367,7 @@ impl SessionStore for SqliteSessionStore {
             let pattern = format!("%{query}%");
             let mut stmt = c.prepare(
                 "SELECT id, name, lifetime, workspace, user_id, created_at, updated_at, external_meta, \
-                        config_revision, config_overrides, effective_config \
+                        config_revision, config_overrides, effective_config, is_archived \
                  FROM sessions \
                  WHERE is_archived = 0 \
                    AND user_id = ?3 \
@@ -1690,6 +1699,7 @@ fn row_to_session_no_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredS
     let config_revision: i64 = row.get(8)?;
     let config_overrides: String = row.get(9)?;
     let effective_config: Option<String> = row.get(10)?;
+    let archived: bool = row.get(11)?;
 
     Ok(StoredSession {
         id: SessionId::new(id),
@@ -1712,6 +1722,7 @@ fn row_to_session_no_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredS
             .as_deref()
             .map(|value| decode_json(10, value))
             .transpose()?,
+        archived,
     })
 }
 
@@ -1729,7 +1740,8 @@ fn row_to_session_with_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
     let config_revision: i64 = row.get(8)?;
     let config_overrides: String = row.get(9)?;
     let effective_config: Option<String> = row.get(10)?;
-    let agents_csv: Option<String> = row.get(11)?;
+    let archived: bool = row.get(11)?;
+    let agents_csv: Option<String> = row.get(12)?;
 
     let agents = agents_csv
         .map(|s| {
@@ -1761,6 +1773,7 @@ fn row_to_session_with_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
             .as_deref()
             .map(|value| decode_json(10, value))
             .transpose()?,
+        archived,
     })
 }
 

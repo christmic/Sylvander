@@ -771,12 +771,13 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
     async fn list_sessions(
         &self,
         boundary: &sylvander_api::BoundaryContext,
+        include_archived: bool,
     ) -> Result<Vec<sylvander_api::UiSessionInfo>, sylvander_api::BoundaryError> {
         require_principal(boundary, "list_sessions")?;
         let user_id = self.effective_user_id(boundary, "list_sessions").await?;
         let sessions = self
             .sessions
-            .list_persistent()
+            .list_persistent(include_archived)
             .await
             .map_err(|error| boundary_failure(boundary, "list_sessions", error.to_string()))?;
         let now = crate::session::now_secs();
@@ -807,9 +808,50 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 },
                 workspace: session.metadata.workspace.display().to_string(),
                 last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
+                archived: session.archived,
             });
         }
         Ok(visible)
+    }
+
+    async fn runtime_snapshot(
+        &self,
+        boundary: &sylvander_api::BoundaryContext,
+        agent_id: &AgentId,
+    ) -> Result<sylvander_api::RuntimeUiSnapshot, sylvander_api::BoundaryError> {
+        require_principal(boundary, "runtime_snapshot")?;
+        if !self
+            .current_agent_access_allowed(agent_id, boundary, "runtime_snapshot")
+            .await?
+        {
+            return Err(sylvander_api::BoundaryError::forbidden(
+                boundary,
+                "runtime_snapshot",
+            ));
+        }
+        let agent = self
+            .active_agent(agent_id, boundary, "runtime_snapshot")
+            .await?;
+        let runtime = agent.run.runtime_model_info().await;
+        let capabilities = runtime
+            .models
+            .iter()
+            .find(|model| {
+                model.provider == runtime.current.provider_id
+                    && model.id == runtime.current.model_id
+            })
+            .map_or(0, |model| model.capabilities);
+        Ok(sylvander_api::RuntimeUiSnapshot {
+            agent_id: agent_id.clone(),
+            model: runtime.current,
+            reasoning_effort: runtime.reasoning_effort,
+            models: runtime.models,
+            permissions: agent.run.permission_profile().await,
+            capabilities,
+            approval_enabled: agent.approval_enabled,
+            max_request_bytes: self.boundary.max_request_bytes(),
+            platform: agent.run.platform_snapshot(),
+        })
     }
 
     async fn load_session(
@@ -1010,9 +1052,13 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         let user_id = self
             .effective_user_id(boundary, "resolve_external_session")
             .await?;
-        let sessions = self.sessions.list_persistent().await.map_err(|error| {
-            boundary_failure(boundary, "resolve_external_session", error.to_string())
-        })?;
+        let sessions = self
+            .sessions
+            .list_persistent(false)
+            .await
+            .map_err(|error| {
+                boundary_failure(boundary, "resolve_external_session", error.to_string())
+            })?;
         let mut resolved = None;
         for session in sessions {
             if session.metadata.user_id != user_id.0 && !privileged_principal(boundary) {
@@ -3574,7 +3620,7 @@ fn ui_operation(message: &sylvander_api::UiClientMessage) -> &'static str {
         ClientMessage::RegistryAdmin { .. } => "registry_admin",
         ClientMessage::UserProfile { .. } => "user_profile",
         ClientMessage::IdentityBinding { .. } => "identity_binding",
-        ClientMessage::ListSessions => "list_sessions",
+        ClientMessage::ListSessions { .. } => "list_sessions",
         ClientMessage::LoadSession { .. } => "load_session",
         ClientMessage::ReattachSession { .. } => "reattach_session",
         ClientMessage::RenameSession { .. } => "rename_session",
@@ -3582,7 +3628,7 @@ fn ui_operation(message: &sylvander_api::UiClientMessage) -> &'static str {
         ClientMessage::RestoreSession { .. } => "restore_session",
         ClientMessage::DeleteSession { .. } => "delete_session",
         ClientMessage::ForkSession { .. } => "fork_session",
-        ClientMessage::GetRuntimeInfo => "get_runtime_info",
+        ClientMessage::GetRuntimeInfo { .. } => "get_runtime_info",
         ClientMessage::GetContext { .. } => "get_context",
         ClientMessage::Compact { .. } => "compact",
         ClientMessage::PreviewWorkspaceRollback { .. } => "preview_workspace_rollback",
@@ -3619,6 +3665,7 @@ fn ui_session_info(session: &StoredSession) -> UiSessionInfo {
         },
         workspace: session.metadata.workspace.display().to_string(),
         last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
+        archived: session.archived,
     }
 }
 
@@ -3756,7 +3803,7 @@ impl Runtime {
 
         // Restore durable identities only after Agents subscribe to the bus.
         for session in session_store
-            .list_persistent()
+            .list_persistent(false)
             .await
             .map_err(|e| RuntimeError::Store(format!("list persistent failed: {e}")))?
         {
@@ -4270,7 +4317,7 @@ impl Runtime {
         }
 
         let persistent_sessions = session_store
-            .list_persistent()
+            .list_persistent(false)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
         let active_worktrees = persistent_sessions
@@ -4357,7 +4404,7 @@ impl Runtime {
             .map_err(|error| RuntimeError::Store(error.to_string()))?,
         );
         for session in session_store
-            .list_persistent()
+            .list_persistent(false)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
         {
@@ -4715,7 +4762,7 @@ impl Runtime {
     /// diagnostics, metrics exporters, and alerting adapters.
     pub async fn operational_snapshot(&self) -> Result<RuntimeOperationalSnapshot, RuntimeError> {
         let agent_count = self.engine.list_agents().await.len();
-        let persistent_sessions = self.storage.sessions().list_persistent().await;
+        let persistent_sessions = self.storage.sessions().list_persistent(false).await;
         let persistent_session_count = persistent_sessions.as_ref().map_or(0, Vec::len);
         let storage = self.storage.operational_snapshot().await;
         let channels = self.channel_health().await;

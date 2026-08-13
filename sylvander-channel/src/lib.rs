@@ -48,10 +48,10 @@ use sylvander_api::{
     IdentityBindingErrorCode, IdentityBindingOperation, IdentityBindingRequest,
     IdentityBindingResponse, IdentityBindingValidationError, MemoryConfirmationRequest,
     MemoryConfirmationResponse, PrincipalKind, RegistryAdminError, RegistryAdminErrorCode,
-    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, SessionConfigOverrides,
-    SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest, SessionId,
-    USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo, UserProfileCapabilities,
-    UserProfileError, UserProfileRequest, UserProfileResponse,
+    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, RuntimeUiSnapshot,
+    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
+    SessionId, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo,
+    UserProfileCapabilities, UserProfileError, UserProfileRequest, UserProfileResponse,
 };
 
 /// Complete normalized input for one authenticated external chat turn.
@@ -187,6 +187,7 @@ pub trait ChannelHost: Send + Sync {
     async fn list_sessions(
         &self,
         boundary: &BoundaryContext,
+        _include_archived: bool,
     ) -> Result<Vec<UiSessionInfo>, BoundaryError> {
         Err(BoundaryError {
             code: BoundaryErrorCode::InvalidScope,
@@ -195,6 +196,17 @@ pub trait ChannelHost: Send + Sync {
             message: "runtime-owned session discovery is unavailable".into(),
             retry_after_ms: None,
         })
+    }
+    /// Return live, redacted Runtime state for one visible Agent.
+    ///
+    /// The transport supplies the configured Agent identity but must not
+    /// assemble model, permission, platform, or boundary-limit fields itself.
+    async fn runtime_snapshot(
+        &self,
+        boundary: &BoundaryContext,
+        _agent_id: &AgentId,
+    ) -> Result<RuntimeUiSnapshot, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "runtime_snapshot"))
     }
     /// Load one visible session and its durable transcript.
     async fn load_session(

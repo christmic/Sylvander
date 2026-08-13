@@ -832,8 +832,9 @@ impl FailingSessionStore {
 impl SessionStore for FailingSessionStore {
     async fn list_persistent(
         &self,
+        include_archived: bool,
     ) -> Result<Vec<StoredSession>, crate::storage::session::SessionStoreError> {
-        self.inner.list_persistent().await
+        self.inner.list_persistent(include_archived).await
     }
 
     async fn save(
