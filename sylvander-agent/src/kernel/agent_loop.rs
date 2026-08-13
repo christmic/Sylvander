@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use futures_util::{Stream, StreamExt};
+use sha2::{Digest as _, Sha256};
 use tracing::{Instrument as _, warn};
 
 use sylvander_llm_core::{
@@ -307,6 +308,21 @@ pub fn run_stream(
 
             // 2. Build and validate one exact provider-qualified request.
             let provider_request = AgentLoop::build_provider_request(&request, machine.messages());
+            let request_digest = match serde_json::to_vec(&provider_request) {
+                Ok(encoded) => format!("sha256:{:x}", Sha256::digest(encoded)),
+                Err(error) => {
+                    yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
+                    yield AgentEvent::Error(AgentLoopError::Validation(format!(
+                        "provider-neutral request serialization failed: {error}"
+                    )));
+                    return;
+                }
+            };
+            yield AgentEvent::ModelInvocationPrepared {
+                iteration,
+                invocation_id: provider_request.request_id.clone(),
+                request_digest,
+            };
 
             // 4. Open the provider stream. This is the only retry owner;
             //    provider adapters never retry and a failed streaming
@@ -397,6 +413,16 @@ pub fn run_stream(
 
             let response_stop_reason = response.stop_reason.clone();
 
+            let terminal_response = matches!(
+                response_stop_reason,
+                StopReason::EndTurn | StopReason::StopSequence(_) | StopReason::Refusal
+            );
+            yield AgentEvent::ModelResponsePrepared {
+                iteration,
+                message: assistant_message_from_response(&response),
+                terminal: terminal_response,
+            };
+
             // 6. Re-feed assistant message
             machine
                 .messages_mut()
@@ -421,6 +447,7 @@ pub fn run_stream(
                         arguments,
                     } => Some(PendingToolCall {
                         id: id.clone(),
+                        invocation_id: uuid::Uuid::new_v4().to_string(),
                         name: name.clone(),
                         input: arguments.clone(),
                     }),
@@ -429,10 +456,6 @@ pub fn run_stream(
                 .collect();
 
             if !tool_blocks.is_empty() {
-                yield AgentEvent::ModelToolResponsePrepared {
-                    iteration,
-                    message: assistant_message_from_response(&response),
-                };
                 yield AgentEvent::TurnTransition(required_turn_transition(
                     &mut machine,
                     TurnPhase::PreparingTools,
@@ -458,6 +481,7 @@ pub fn run_stream(
                     };
                     yield AgentEvent::ToolCallPrepared {
                         id: tool.id.clone(),
+                        invocation_id: tool.invocation_id.clone(),
                         name: tool.name.clone(),
                         invocation_class,
                         recovery_policy,
@@ -772,6 +796,7 @@ pub fn run_stream(
                                     invocation_snapshot: ports.invocation_snapshot.clone(),
                                     tool_context: ports.tool_context.clone(),
                                     call_id: tool_use.id.clone(),
+                                    invocation_id: tool_use.invocation_id.clone(),
                                     route: name.clone(),
                                     timeout: tool_timeout,
                                     progress,
@@ -869,6 +894,7 @@ pub fn run_stream(
                         .zip(prepared_calls.iter())
                         .map(|((tool_use, decision), prepared_call)| {
                         let id = tool_use.id.clone();
+                        let invocation_id = tool_use.invocation_id.clone();
                         let name = tool_use.name.clone();
                         let decision = decision.clone();
                         let prepared_call = prepared_call.clone();
@@ -906,6 +932,7 @@ pub fn run_stream(
                                                     invocation_snapshot,
                                                     tool_context: context,
                                                     call_id: id.clone(),
+                                                    invocation_id,
                                                     route: name.clone(),
                                                     timeout: tool_timeout,
                                                     progress,
@@ -921,6 +948,7 @@ pub fn run_stream(
                                                 invocation_snapshot,
                                                 tool_context: context,
                                                 call_id: id.clone(),
+                                                invocation_id,
                                                 route: name.clone(),
                                                 timeout: tool_timeout,
                                                 progress,
@@ -1143,6 +1171,7 @@ enum ParallelToolOutcome {
 #[derive(Clone)]
 struct PendingToolCall {
     id: String,
+    invocation_id: String,
     name: String,
     input: serde_json::Value,
 }
@@ -1179,12 +1208,55 @@ struct ToolExecutionOutcome {
     failure_kind: Option<crate::tool::ToolFailureKind>,
 }
 
+/// Exact same-identity tool execution used by a Runtime recovery coordinator.
+pub struct RecoveryToolRequest {
+    pub tools: crate::tool::ToolRegistry,
+    pub invocation_gateway: Arc<dyn crate::tool::invocation::ToolInvocationGateway>,
+    pub invocation_snapshot: crate::tool::invocation::ToolInvocationSnapshot,
+    pub tool_context: ToolContext,
+    pub call_id: String,
+    pub invocation_id: String,
+    pub route: String,
+    pub input: serde_json::Value,
+}
+
+/// Model-visible recovered output plus trusted failure classification.
+pub struct RecoveryToolOutput {
+    pub output: String,
+    pub is_error: bool,
+    pub failure_kind: Option<crate::tool::ToolFailureKind>,
+}
+
+/// Re-enter the unique prepared-tool execution boundary with a stable ID.
+pub async fn execute_recovery_tool(request: RecoveryToolRequest) -> RecoveryToolOutput {
+    let prepared_call = request.tools.prepare(&request.route, request.input);
+    let timeout = request.tool_context.budget.timeout;
+    let outcome = execute_registered_tool(RegisteredToolExecutionRequest {
+        prepared_call,
+        invocation_gateway: request.invocation_gateway,
+        invocation_snapshot: request.invocation_snapshot,
+        tool_context: request.tool_context,
+        call_id: request.call_id,
+        invocation_id: request.invocation_id,
+        route: request.route,
+        timeout,
+        progress: crate::tool::ToolProgressSink::new(|_| {}),
+    })
+    .await;
+    RecoveryToolOutput {
+        output: outcome.output,
+        is_error: outcome.is_error,
+        failure_kind: outcome.failure_kind,
+    }
+}
+
 struct RegisteredToolExecutionRequest {
     prepared_call: Result<crate::tool::PreparedToolCall, crate::tool::ToolPrepareError>,
     invocation_gateway: Arc<dyn crate::tool::invocation::ToolInvocationGateway>,
     invocation_snapshot: crate::tool::invocation::ToolInvocationSnapshot,
     tool_context: ToolContext,
     call_id: String,
+    invocation_id: String,
     route: String,
     timeout: Option<std::time::Duration>,
     progress: crate::tool::ToolProgressSink,
@@ -1197,6 +1269,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         invocation_snapshot,
         tool_context,
         call_id,
+        invocation_id,
         route,
         timeout,
         progress,
@@ -1218,7 +1291,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         }
     };
     let request = crate::tool::invocation::ToolInvocationRequest::new(
-        &call_id,
+        crate::tool::invocation::ToolInvocationIdentity::new(invocation_id, &call_id),
         &route,
         Some(prepared_call.spec().invocation_class),
         Some(prepared_call.spec().recovery_policy),

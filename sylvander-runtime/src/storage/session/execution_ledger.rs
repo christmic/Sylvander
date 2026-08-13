@@ -156,9 +156,9 @@ impl RecoveryClassification {
                 ),
             },
             ToolExecutionPosition::EffectCommitted => (
-                ToolRecoveryDecision::RecoverResult,
+                ToolRecoveryDecision::ManualReconciliation,
                 ToolRecoveryReason::EffectAlreadyCommitted,
-                false,
+                true,
             ),
             ToolExecutionPosition::ResultPersisted => (
                 ToolRecoveryDecision::ContinueTurn,

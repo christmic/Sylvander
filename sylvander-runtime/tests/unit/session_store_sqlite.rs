@@ -2,6 +2,9 @@ use super::*;
 use std::path::PathBuf;
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
 
+use crate::storage::session::{
+    ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryReason,
+};
 use crate::storage::workspace_journal::WorkspaceJournal;
 
 /// Default session context used by every test. Identity is the
@@ -27,6 +30,101 @@ fn make_session(id: &str, lifetime: SessionLifetime) -> StoredSession {
         test_meta(),
         vec![AgentId::new("agent-1")],
     )
+}
+
+#[tokio::test]
+async fn file_store_enforces_recovery_durability_controls() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = SqliteSessionStore::open(dir.path().join("sessions.db"))
+        .await
+        .unwrap();
+    let connection = store.inner.conn.lock().await;
+    let journal_mode = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+        .unwrap();
+    let synchronous = connection
+        .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    let foreign_keys = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+
+    assert_eq!(journal_mode, "wal");
+    assert_eq!(synchronous, SQLITE_SYNCHRONOUS_FULL);
+    assert_eq!(foreign_keys, 1);
+}
+
+#[tokio::test]
+async fn unknown_model_outcome_survives_restart_and_persists_manual_decision() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("model-crash.db");
+    let invocation_id = ModelInvocationId::new();
+    {
+        let store = SqliteSessionStore::open(&path).await.unwrap();
+        let mut session = make_session("model-crash", SessionLifetime::Persistent);
+        session.effective_config = Some(effective_config());
+        store.save(&session).await.unwrap();
+        store
+            .begin_turn(
+                &ctx(),
+                TurnStart {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-crash".into(),
+                    config_revision: 0,
+                    effective_config: effective_config(),
+                    user_content: serde_json::json!({"role":"user","content":"crash"}),
+                    model_id: "model-a".into(),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .begin_model_iteration(ModelIterationStart {
+                session_id: session.id,
+                turn_id: "turn-crash".into(),
+                iteration: 1,
+                invocation_id: invocation_id.clone(),
+                model_id: "model-a".into(),
+                capability_revision: format!("sha256:{}", "a".repeat(64)),
+                request_digest: format!("sha256:{}", "b".repeat(64)),
+            })
+            .await
+            .unwrap();
+    }
+
+    let store = SqliteSessionStore::open(&path).await.unwrap();
+    let interrupted = store.interrupted_model_iterations().await.unwrap();
+    assert_eq!(interrupted.len(), 1);
+    let classification = ModelRecoveryClassification::for_interrupted(
+        interrupted[0].position,
+        interrupted[0].response_message_id,
+        interrupted[0].response_terminal,
+    );
+    assert_eq!(
+        classification.decision,
+        ModelRecoveryDecision::ManualReconciliation
+    );
+    store
+        .classify_model_recovery(ModelRecoveryWrite {
+            invocation_id: invocation_id.clone(),
+            expected_revision: interrupted[0].ledger_revision,
+            recovery_owner: "restart-test".into(),
+            observed_at: 100,
+            lease_expires_at: 130,
+            classification,
+        })
+        .await
+        .unwrap();
+    drop(store);
+
+    let reopened = SqliteSessionStore::open(&path).await.unwrap();
+    let persisted = reopened.interrupted_model_iterations().await.unwrap();
+    assert_eq!(persisted[0].invocation_id, invocation_id);
+    assert_eq!(
+        persisted[0].recovery_reason,
+        Some(ModelRecoveryReason::ProviderOutcomeUnknown)
+    );
+    assert!(persisted[0].operator_action_required);
 }
 
 fn effective_config() -> sylvander_api::SessionEffectiveConfig {
@@ -273,6 +371,179 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
             .unwrap()
             .len(),
         3
+    );
+}
+
+#[tokio::test]
+async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let session = make_session("model-ledger", SessionLifetime::Persistent);
+    store.save(&session).await.unwrap();
+    let effective = effective_config();
+    store
+        .update_config(
+            &session.id,
+            0,
+            sylvander_api::SessionConfigOverrides::default(),
+            effective.clone(),
+        )
+        .await
+        .unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-model-ledger".into(),
+                config_revision: 1,
+                effective_config: effective,
+                user_content: serde_json::json!({"role":"user","content":"recover"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let invocation_id = ModelInvocationId::new();
+    store
+        .begin_model_iteration(ModelIterationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-model-ledger".into(),
+            iteration: 1,
+            invocation_id: invocation_id.clone(),
+            model_id: "model-a".into(),
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            request_digest: format!("sha256:{}", "b".repeat(64)),
+        })
+        .await
+        .unwrap();
+
+    let interrupted = store.interrupted_model_iterations().await.unwrap();
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(
+        interrupted[0].position,
+        ModelExecutionPosition::ModelStarted
+    );
+    let unknown = ModelRecoveryClassification::for_interrupted(
+        interrupted[0].position,
+        interrupted[0].response_message_id,
+        interrupted[0].response_terminal,
+    );
+    assert_eq!(
+        unknown.decision,
+        ModelRecoveryDecision::ManualReconciliation
+    );
+
+    let commit = store
+        .persist_model_response(
+            &ctx(),
+            ModelResponsePersistence {
+                invocation_id: invocation_id.clone(),
+                expected_revision: 0,
+                assistant_content: serde_json::json!({
+                    "role":"assistant",
+                    "content":[{"type":"tool_use","id":"call-1","name":"read","input":{}}]
+                }),
+                model_id: "model-a".into(),
+                terminal: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(commit.ledger_revision, 1);
+    assert_eq!(commit.message.role, MessageRole::Assistant);
+
+    let persisted = store
+        .model_iterations(&session.id, "turn-model-ledger")
+        .await
+        .unwrap();
+    assert_eq!(persisted[0].response_message_id, Some(commit.message.id));
+    assert_eq!(persisted[0].response_terminal, Some(false));
+    assert_eq!(
+        persisted[0].position,
+        ModelExecutionPosition::ResponsePersisted
+    );
+
+    let revision = store
+        .advance_model_iteration(ModelIterationAdvance {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 1,
+            expected_position: ModelExecutionPosition::ResponsePersisted,
+            next_position: ModelExecutionPosition::ToolsResolved,
+        })
+        .await
+        .unwrap();
+    assert_eq!(revision, 2);
+    assert!(
+        store
+            .advance_model_iteration(ModelIterationAdvance {
+                invocation_id,
+                expected_revision: 1,
+                expected_position: ModelExecutionPosition::ResponsePersisted,
+                next_position: ModelExecutionPosition::ToolsResolved,
+            })
+            .await
+            .is_err()
+    );
+
+    let terminal_id = ModelInvocationId::new();
+    store
+        .begin_model_iteration(ModelIterationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-model-ledger".into(),
+            iteration: 2,
+            invocation_id: terminal_id.clone(),
+            model_id: "model-a".into(),
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            request_digest: format!("sha256:{}", "c".repeat(64)),
+        })
+        .await
+        .unwrap();
+    let terminal = store
+        .persist_model_response(
+            &ctx(),
+            ModelResponsePersistence {
+                invocation_id: terminal_id.clone(),
+                expected_revision: 0,
+                assistant_content: serde_json::json!({"role":"assistant","content":"done"}),
+                model_id: "model-a".into(),
+                terminal: true,
+            },
+        )
+        .await
+        .unwrap();
+    let classification = ModelRecoveryClassification::for_interrupted(
+        ModelExecutionPosition::ResponsePersisted,
+        Some(terminal.message.id),
+        Some(true),
+    );
+    let classified_revision = store
+        .classify_model_recovery(ModelRecoveryWrite {
+            invocation_id: terminal_id.clone(),
+            expected_revision: terminal.ledger_revision,
+            recovery_owner: "test-recovery".into(),
+            observed_at: 100,
+            lease_expires_at: 130,
+            classification,
+        })
+        .await
+        .unwrap();
+    let completed = store
+        .complete_persisted_turn(PersistedTurnCompletion {
+            invocation_id: terminal_id,
+            expected_revision: classified_revision,
+        })
+        .await
+        .unwrap();
+    assert_eq!(completed.id, terminal.message.id);
+    assert_eq!(
+        store
+            .turn(&session.id, "turn-model-ledger")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        TurnState::Completed
     );
 }
 
@@ -852,7 +1123,7 @@ async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
     )
     .await
     .unwrap();
-    assert_eq!(summary.manual_reconciliation, 0);
+    assert_eq!(summary.manual_reconciliation, 1);
     assert_eq!(
         std::fs::read_to_string(workspace.path().join("result.txt")).unwrap(),
         "committed once"
@@ -861,7 +1132,7 @@ async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
     assert_eq!(calls[0].position, ToolExecutionPosition::EffectCommitted);
     assert_eq!(
         calls[0].recovery_decision,
-        Some(ToolRecoveryDecision::RecoverResult),
+        Some(ToolRecoveryDecision::ManualReconciliation),
     );
 }
 

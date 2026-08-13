@@ -62,7 +62,14 @@ fn committed_effect_is_never_selected_for_reexecution() {
                 policy,
             )
             .decision,
-            ToolRecoveryDecision::RecoverResult,
+            ToolRecoveryDecision::ManualReconciliation,
+        );
+        assert!(
+            RecoveryClassification::for_interrupted(
+                ToolExecutionPosition::EffectCommitted,
+                policy,
+            )
+            .operator_action_required
         );
         assert_eq!(
             RecoveryClassification::for_interrupted(

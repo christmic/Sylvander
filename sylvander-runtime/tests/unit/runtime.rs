@@ -776,7 +776,7 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
     assert_eq!(operational.observability.turns_completed, 1);
     assert_eq!(operational.observability.tools_started, 1);
     assert_eq!(operational.observability.tools_succeeded, 1);
-    assert_eq!(operational.observability.persistence_succeeded, 8);
+    assert_eq!(operational.observability.persistence_succeeded, 12);
     assert_eq!(operational.observability.active_turns, 0);
     assert_eq!(operational.observability.active_tools, 0);
     assert_eq!(operational.execution_targets.len(), 1);

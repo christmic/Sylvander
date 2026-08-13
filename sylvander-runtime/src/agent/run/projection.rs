@@ -177,10 +177,12 @@ pub(super) fn runtime_persistence_operation(
         SessionPersistenceOperation::CreateSession => RuntimePersistenceOperation::CreateSession,
         SessionPersistenceOperation::RestoreHistory => RuntimePersistenceOperation::RestoreHistory,
         SessionPersistenceOperation::BeginTurn => RuntimePersistenceOperation::BeginTurn,
-        SessionPersistenceOperation::BeginToolCall => RuntimePersistenceOperation::BeginToolCall,
-        SessionPersistenceOperation::PersistModelToolResponse => {
+        SessionPersistenceOperation::BeginModelIteration
+        | SessionPersistenceOperation::PersistModelResponse
+        | SessionPersistenceOperation::AdvanceModelIteration => {
             RuntimePersistenceOperation::PersistModelToolResponse
         }
+        SessionPersistenceOperation::BeginToolCall => RuntimePersistenceOperation::BeginToolCall,
         SessionPersistenceOperation::AdvanceToolCall => {
             RuntimePersistenceOperation::AdvanceToolCall
         }

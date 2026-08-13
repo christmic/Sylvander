@@ -8,11 +8,16 @@
 //! remain auditable on disk while the active loop view excludes them.
 
 mod execution_ledger;
+mod model_ledger;
 mod sqlite;
 
 pub use execution_ledger::{
     RecoveryClassification, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
     ToolRecoveryReason,
+};
+pub use model_ledger::{
+    ModelExecutionPosition, ModelInvocationId, ModelRecoveryClassification, ModelRecoveryDecision,
+    ModelRecoveryReason,
 };
 pub use sqlite::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 
@@ -261,6 +266,88 @@ pub struct TurnCompletion {
     pub model_id: String,
 }
 
+/// Complete a turn from an assistant response already durably linked to its
+/// model iteration; no message is appended by this operation.
+#[derive(Debug, Clone)]
+pub struct PersistedTurnCompletion {
+    pub invocation_id: ModelInvocationId,
+    pub expected_revision: u64,
+}
+
+/// Immutable facts written before one provider request may begin.
+#[derive(Debug, Clone)]
+pub struct ModelIterationStart {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub iteration: u32,
+    pub invocation_id: ModelInvocationId,
+    pub model_id: String,
+    pub capability_revision: String,
+    pub request_digest: String,
+}
+
+/// Optimistic transition after all tool work for an iteration is durable.
+#[derive(Debug, Clone)]
+pub struct ModelIterationAdvance {
+    pub invocation_id: ModelInvocationId,
+    pub expected_revision: u64,
+    pub expected_position: ModelExecutionPosition,
+    pub next_position: ModelExecutionPosition,
+}
+
+/// Assistant response and its execution boundary, committed atomically.
+#[derive(Debug, Clone)]
+pub struct ModelResponsePersistence {
+    pub invocation_id: ModelInvocationId,
+    pub expected_revision: u64,
+    pub assistant_content: JsonValue,
+    pub model_id: String,
+    pub terminal: bool,
+}
+
+/// Result of atomically persisting one provider-neutral response.
+#[derive(Debug, Clone)]
+pub struct ModelResponseCommit {
+    pub message: StoredMessage,
+    pub ledger_revision: u64,
+}
+
+/// Content-free durable model iteration used by recovery and diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelIterationSnapshot {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub iteration: u32,
+    pub invocation_id: ModelInvocationId,
+    pub model_id: String,
+    pub capability_revision: String,
+    pub request_digest: String,
+    pub position: ModelExecutionPosition,
+    pub ledger_revision: u64,
+    pub response_message_id: Option<i64>,
+    pub response_terminal: Option<bool>,
+    pub started_at: i64,
+    pub updated_at: i64,
+    pub recovery_decision: Option<ModelRecoveryDecision>,
+    pub recovery_reason: Option<ModelRecoveryReason>,
+    pub operator_action_required: bool,
+    pub recovery_attempts: u32,
+    pub recovery_owner: Option<String>,
+    pub recovery_lease_expires_at: Option<i64>,
+    pub first_interrupted_at: Option<i64>,
+}
+
+/// Atomic lease acquisition plus deterministic model recovery decision.
+#[derive(Debug, Clone)]
+pub struct ModelRecoveryWrite {
+    pub invocation_id: ModelInvocationId,
+    pub expected_revision: u64,
+    pub recovery_owner: String,
+    pub observed_at: i64,
+    pub lease_expires_at: i64,
+    pub classification: ModelRecoveryClassification,
+}
+
 /// Durable lifecycle state of one tool call inside a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -450,6 +537,12 @@ pub trait SessionStore: Send + Sync {
         completion: TurnCompletion,
     ) -> Result<StoredMessage, SessionStoreError>;
 
+    /// Atomically resolve a terminal model iteration and its parent turn.
+    async fn complete_persisted_turn(
+        &self,
+        completion: PersistedTurnCompletion,
+    ) -> Result<StoredMessage, SessionStoreError>;
+
     /// Mark a running turn unsuccessful before publishing its public terminal.
     async fn finish_turn(
         &self,
@@ -458,6 +551,43 @@ pub trait SessionStore: Send + Sync {
         state: TurnState,
         failure_kind: Option<TurnFailureKind>,
     ) -> Result<(), SessionStoreError>;
+
+    /// Persist immutable provider-request facts before network work starts.
+    async fn begin_model_iteration(
+        &self,
+        start: ModelIterationStart,
+    ) -> Result<(), SessionStoreError>;
+
+    /// Atomically append the response and cross its durable boundary.
+    async fn persist_model_response(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        response: ModelResponsePersistence,
+    ) -> Result<ModelResponseCommit, SessionStoreError>;
+
+    /// Advance from a persisted response after all referenced tools resolve.
+    async fn advance_model_iteration(
+        &self,
+        advance: ModelIterationAdvance,
+    ) -> Result<u64, SessionStoreError>;
+
+    /// Read model-iteration facts in execution order for one turn.
+    async fn model_iterations(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<ModelIterationSnapshot>, SessionStoreError>;
+
+    /// Scan the latest unfinished iteration of every non-terminal turn.
+    async fn interrupted_model_iterations(
+        &self,
+    ) -> Result<Vec<ModelIterationSnapshot>, SessionStoreError>;
+
+    /// Acquire/renew a bounded lease and persist one deterministic decision.
+    async fn classify_model_recovery(
+        &self,
+        write: ModelRecoveryWrite,
+    ) -> Result<u64, SessionStoreError>;
 
     /// Persist tool identity before approval or execution can produce a
     /// terminal. The addressed turn must currently be running.

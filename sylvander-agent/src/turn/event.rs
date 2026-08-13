@@ -52,6 +52,14 @@ pub enum AgentEvent {
         iteration: u32,
     },
 
+    /// Exact provider-neutral request is frozen and about to cross the
+    /// network boundary. Runtime must durably admit this identity first.
+    ModelInvocationPrepared {
+        iteration: u32,
+        invocation_id: String,
+        request_digest: String,
+    },
+
     /// Incremental text from the model's response. Multiple per
     /// iteration when streaming.
     TextChunk(String),
@@ -72,10 +80,12 @@ pub enum AgentEvent {
         cause: ModelRetryCause,
     },
 
-    /// Complete provider-neutral assistant message persisted before tools.
-    ModelToolResponsePrepared {
+    /// Complete provider-neutral assistant message ready for durable commit.
+    /// Emitted exactly once per iteration before tools or terminal handling.
+    ModelResponsePrepared {
         iteration: u32,
         message: ChatMessage,
+        terminal: bool,
     },
 
     /// A provider tool call was parsed and is about to enter approval.
@@ -84,6 +94,8 @@ pub enum AgentEvent {
     /// admission before any approval or execution side effect.
     ToolCallPrepared {
         id: String,
+        /// Stable identity reused by authorization, execution, and recovery.
+        invocation_id: String,
         name: String,
         /// Trusted authority class, absent when preparation found no route.
         invocation_class: Option<ToolInvocationClass>,

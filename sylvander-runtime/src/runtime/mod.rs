@@ -4279,11 +4279,12 @@ impl Runtime {
             .workspace_journal
             .as_ref()
             .map(crate::storage::workspace_journal::WorkspaceJournal::new);
+        let recovery_observed_at = crate::session::now_secs();
         let recovery = crate::agent::run::recovery::classify_interrupted_tool_calls(
             session_store.clone(),
             &observability,
             recovery_journal.as_ref(),
-            crate::session::now_secs(),
+            recovery_observed_at,
         )
         .await
         .map_err(|error| RuntimeError::Store(error.to_string()))?;
@@ -4292,7 +4293,10 @@ impl Runtime {
             classified = recovery.classified,
             lease_deferred = recovery.lease_deferred,
             manual_reconciliation = recovery.manual_reconciliation,
-            "classified interrupted tool executions"
+            model_discovered = recovery.model_discovered,
+            model_classified = recovery.model_classified,
+            turns_completed = recovery.turns_completed,
+            "recovered interrupted agent executions"
         );
         let active_worktrees = persistent_sessions
             .iter()
@@ -4347,6 +4351,20 @@ impl Runtime {
                 .attach_authenticated_session(session.id.clone(), session.metadata.clone())
                 .await
                 .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+            let replayed = agent
+                .run
+                .replay_classified_tool_calls(
+                    &session.id,
+                    recovery.recovery_owner.as_deref().ok_or_else(|| {
+                        RuntimeError::Store("recovery owner is unavailable".into())
+                    })?,
+                    recovery_observed_at,
+                )
+                .await
+                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+            if replayed != 0 {
+                info!(session_id = %session.id, replayed, "replayed durable tool invocations");
+            }
             engine
                 .attach_session(
                     session.id.clone(),

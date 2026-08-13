@@ -17,6 +17,7 @@ use sylvander_agent::plan_gate::{PlanDecision, PlanGate};
 use sylvander_agent::prompt::SHARED_SAFETY_PROMPT;
 use sylvander_agent::task_gate::TaskGate;
 use sylvander_agent::tool::ToolFailureKind as AgentToolFailureKind;
+use sylvander_agent::tool::invocation::prepared_input_digest;
 use sylvander_agent::tool_context::{Cap, NetworkPolicy, ToolContext};
 use sylvander_agent::tools::{MemoryReadTool, ReadTool};
 use sylvander_agent::turn::conversation::ConversationSnapshot;
@@ -64,14 +65,295 @@ use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionMetadata, now_secs};
 use crate::storage::artifact::ArtifactTurnBinding;
 use crate::storage::session::{
-    SessionStoreError, ToolCallAdvance, ToolCallCompletion,
-    ToolCallFailureKind as StoredToolCallFailureKind, ToolCallStart, ToolCallState,
-    ToolExecutionPosition, ToolInvocationId, ToolResultPersistence, TurnCompletion, TurnStart,
-    TurnState,
+    ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance, ModelIterationStart,
+    ModelResponsePersistence, PersistedTurnCompletion, SessionStoreError, ToolCallAdvance,
+    ToolCallCompletion, ToolCallFailureKind as StoredToolCallFailureKind, ToolCallSnapshot,
+    ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId, ToolResultPersistence,
+    TurnStart, TurnState,
 };
 use crate::storage::workspace_journal::WorkspaceJournal;
 
+fn find_durable_tool_input(
+    history: &[crate::storage::session::StoredMessage],
+    call: &ToolCallSnapshot,
+) -> Result<serde_json::Value, AgentRunError> {
+    history
+        .iter()
+        .filter_map(|message| serde_json::from_value::<ChatMessage>(message.content.clone()).ok())
+        .flat_map(|message| message.content)
+        .find_map(|block| match block {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+            } if id == call.call_id && name == call.tool_name => Some(arguments),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            AgentRunError::Configuration("durable recovery tool input is unavailable".into())
+        })
+}
+
 impl AgentRunInner {
+    pub(crate) async fn replay_classified_tool_calls(
+        &self,
+        session_id: &SessionId,
+        recovery_owner: &str,
+        observed_at: i64,
+    ) -> Result<u64, AgentRunError> {
+        let Some(store) = &self.session_store else {
+            return Ok(0);
+        };
+        let calls = store
+            .interrupted_tool_calls()
+            .await
+            .map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::InspectSession,
+                    source,
+                )
+            })?
+            .into_iter()
+            .filter(|call| {
+                call.session_id == *session_id
+                    && call.recovery_decision
+                        == Some(crate::storage::session::ToolRecoveryDecision::RetrySameInvocation)
+                    && call.recovery_owner.as_deref() == Some(recovery_owner)
+                    && matches!(
+                        call.effective_recovery_policy,
+                        sylvander_agent::tool::invocation::ToolRecoveryPolicy::RetryWithSameInvocation
+                            | sylvander_agent::tool::invocation::ToolRecoveryPolicy::ReconcileBeforeRetry
+                    )
+                    && call
+                        .recovery_lease_expires_at
+                        .is_some_and(|expires_at| expires_at > observed_at)
+            })
+            .collect::<Vec<_>>();
+        let mut recovered = 0_u64;
+        for call in calls {
+            let turn_id = call.turn_id.clone();
+            self.replay_tool_call(store, call).await?;
+            recovered = recovered.saturating_add(1);
+            if store
+                .tool_calls(session_id, &turn_id)
+                .await
+                .map_err(|source| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::InspectSession,
+                        source,
+                    )
+                })?
+                .iter()
+                .all(|tool| tool.state != ToolCallState::Running)
+                && let Some(iteration) = store
+                    .model_iterations(session_id, &turn_id)
+                    .await
+                    .map_err(|source| {
+                        AgentRunError::session_persistence(
+                            SessionPersistenceOperation::InspectSession,
+                            source,
+                        )
+                    })?
+                    .into_iter()
+                    .next_back()
+                && iteration.position == ModelExecutionPosition::ResponsePersisted
+                && iteration.response_terminal == Some(false)
+            {
+                store
+                    .advance_model_iteration(ModelIterationAdvance {
+                        invocation_id: iteration.invocation_id,
+                        expected_revision: iteration.ledger_revision,
+                        expected_position: ModelExecutionPosition::ResponsePersisted,
+                        next_position: ModelExecutionPosition::ToolsResolved,
+                    })
+                    .await
+                    .map_err(|source| {
+                        AgentRunError::session_persistence(
+                            SessionPersistenceOperation::AdvanceModelIteration,
+                            source,
+                        )
+                    })?;
+            }
+        }
+        Ok(recovered)
+    }
+
+    async fn replay_tool_call(
+        &self,
+        store: &Arc<dyn crate::storage::session::SessionStore>,
+        call: ToolCallSnapshot,
+    ) -> Result<(), AgentRunError> {
+        let turn = store
+            .turn(&call.session_id, &call.turn_id)
+            .await
+            .map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::InspectSession,
+                    source,
+                )
+            })?
+            .ok_or_else(|| AgentRunError::Configuration("recovery turn is unavailable".into()))?;
+        let metadata = self
+            .sessions
+            .read()
+            .await
+            .get(&call.session_id)
+            .map(|session| session.metadata.clone())
+            .ok_or_else(|| {
+                AgentRunError::Configuration("recovery session is not attached".into())
+            })?;
+        let caller = sylvander_api::SessionContext::new(
+            metadata.user_id.clone(),
+            self.id.clone(),
+            call.session_id.clone(),
+        );
+        let history = store
+            .read_history(&caller, &call.session_id, true, None)
+            .await
+            .map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::RestoreHistory,
+                    source,
+                )
+            })?;
+        let input = find_durable_tool_input(&history, &call)?;
+        if prepared_input_digest(&input) != call.input_digest {
+            return Err(AgentRunError::Configuration(
+                "recovery tool input digest differs".into(),
+            ));
+        }
+        let (tools, surface_revision, gateway) = if let Some(surface) = self
+            .session_tool_surfaces
+            .read()
+            .await
+            .get(&call.session_id)
+            .cloned()
+        {
+            let (tools, revision) = self
+                .tools
+                .compose_session_extensions(&surface.extensions)
+                .map_err(|error| AgentRunError::Configuration(error.to_string()))?
+                .freeze_for_turn();
+            let descriptors = tools.invocation_descriptors();
+            let gateway = (surface.invocation_gateway_factory)(descriptors.clone())?;
+            validate_tool_gateway_surface(&descriptors, gateway.as_ref())?;
+            (tools, revision, gateway)
+        } else {
+            let (tools, revision) = self.tools.freeze_for_turn();
+            (tools, revision, self.invocation_gateway.clone())
+        };
+        let features = self
+            .skill_features
+            .read()
+            .unwrap()
+            .iter()
+            .map(|feature| feature.name.clone())
+            .collect::<Vec<_>>();
+        let invocation_snapshot = gateway.snapshot().for_turn(&surface_revision, features);
+        if invocation_snapshot.revision() != call.capability_revision {
+            return Err(AgentRunError::Configuration(
+                "recovery tool capability revision differs".into(),
+            ));
+        }
+        let tool_context = tool_context_for_permissions(
+            ToolSessionExecution {
+                metadata: &metadata,
+                effective_config: Some(&turn.effective_config),
+                execution_service: &self.execution_service,
+            },
+            &self.id,
+            &call.session_id,
+            &turn.effective_config.permissions,
+            self.memory.is_some(),
+            self.workspace_journal.clone(),
+            Some(&call.turn_id),
+        );
+        self.observability.record(RuntimeEvent::ToolStarted {
+            turn_id: call.turn_id.clone(),
+            session_id: call.session_id.clone(),
+            tool_call_id: call.call_id.clone(),
+            tool_name: call.tool_name.clone(),
+        });
+        let outcome = sylvander_agent::kernel::agent_loop::execute_recovery_tool(
+            sylvander_agent::kernel::agent_loop::RecoveryToolRequest {
+                tools,
+                invocation_gateway: gateway,
+                invocation_snapshot,
+                tool_context,
+                call_id: call.call_id.clone(),
+                invocation_id: call.invocation_id.to_string(),
+                route: call.tool_name.clone(),
+                input,
+            },
+        )
+        .await;
+        self.observability.record(RuntimeEvent::ToolFinished {
+            turn_id: call.turn_id.clone(),
+            session_id: call.session_id.clone(),
+            tool_call_id: call.call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            succeeded: !outcome.is_error,
+            failure_kind: match outcome.failure_kind {
+                Some(AgentToolFailureKind::FilesystemBoundaryPolicyViolation) => {
+                    Some(RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation)
+                }
+                _ => None,
+            },
+        });
+        let revision = store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: call.session_id.clone(),
+                turn_id: call.turn_id.clone(),
+                call_id: call.call_id.clone(),
+                expected_revision: call.ledger_revision,
+                expected_position: ToolExecutionPosition::EffectStarted,
+                next_position: ToolExecutionPosition::EffectCommitted,
+            })
+            .await
+            .map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::AdvanceToolCall,
+                    source,
+                )
+            })?;
+        let content = serde_json::to_value(ChatMessage::user_blocks(vec![
+            ContentBlock::tool_result_text(call.call_id.clone(), outcome.output, outcome.is_error),
+        ]))
+        .map_err(|_| AgentRunError::Configuration("recovery result serialization failed".into()))?;
+        store
+            .persist_tool_result(
+                &caller,
+                ToolResultPersistence {
+                    session_id: call.session_id,
+                    turn_id: call.turn_id,
+                    call_id: call.call_id,
+                    expected_revision: revision,
+                    expected_position: ToolExecutionPosition::EffectCommitted,
+                    content,
+                    tool_name: call.tool_name,
+                    terminal_state: if outcome.is_error {
+                        ToolCallState::Failed
+                    } else {
+                        ToolCallState::Succeeded
+                    },
+                    failure_kind: match outcome.failure_kind {
+                        Some(AgentToolFailureKind::FilesystemBoundaryPolicyViolation) => {
+                            Some(StoredToolCallFailureKind::FilesystemBoundaryPolicyViolation)
+                        }
+                        _ => None,
+                    },
+                },
+            )
+            .await
+            .map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::PersistToolResult,
+                    source,
+                )
+            })?;
+        Ok(())
+    }
+
     pub(super) async fn interrupt_turn(&self, session_id: &SessionId) {
         if let Some(turn) = self.active_turns.lock().await.remove(session_id) {
             let _ = turn.interrupt.send(());
@@ -627,7 +909,7 @@ impl AgentRunInner {
                 session_metadata.user_id.clone(),
                 self.id.clone(),
                 approval_policy_revision(&permissions, &self.approval_rules),
-                capability_revision,
+                capability_revision.clone(),
             );
             let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
                 bus: self.bus.clone(),
@@ -770,6 +1052,7 @@ impl AgentRunInner {
         let mut stream = Box::pin(agent_loop::run_stream(&loop_config, request, ports));
         tokio::pin!(interrupted);
         let mut final_message: Option<ModelResponse> = None;
+        let mut model_invocation: Option<(ModelInvocationId, u64, bool)> = None;
 
         loop {
             let event = tokio::select! {
@@ -869,11 +1152,70 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::turn::event::AgentEvent::ModelToolResponsePrepared {
-                    iteration: _,
-                    message,
+                sylvander_agent::turn::event::AgentEvent::ModelInvocationPrepared {
+                    iteration,
+                    invocation_id,
+                    request_digest,
                 } => {
                     if let Some(store) = &self.session_store {
+                        if model_invocation.is_some() {
+                            return Err(AgentRunError::session_persistence(
+                                SessionPersistenceOperation::BeginModelIteration,
+                                SessionStoreError::Invalid(
+                                    "previous model iteration has not resolved".into(),
+                                ),
+                            ));
+                        }
+                        let invocation_id =
+                            ModelInvocationId::parse(invocation_id).map_err(|_| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::BeginModelIteration,
+                                    SessionStoreError::Invalid(
+                                        "model invocation identity is not a UUID".into(),
+                                    ),
+                                )
+                            })?;
+                        store
+                            .begin_model_iteration(ModelIterationStart {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.to_owned(),
+                                iteration,
+                                invocation_id: invocation_id.clone(),
+                                model_id: selected_model_id.clone(),
+                                capability_revision: capability_revision.clone(),
+                                request_digest,
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::BeginModelIteration,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::PersistModelToolResponse,
+                                succeeded: true,
+                            });
+                        model_invocation = Some((invocation_id, 0, false));
+                    }
+                }
+                sylvander_agent::turn::event::AgentEvent::ModelResponsePrepared {
+                    iteration: _,
+                    message,
+                    terminal,
+                } => {
+                    if let Some(store) = &self.session_store {
+                        let Some((invocation_id, revision, _)) = model_invocation.as_ref() else {
+                            return Err(AgentRunError::session_persistence(
+                                SessionPersistenceOperation::PersistModelResponse,
+                                SessionStoreError::Invalid(
+                                    "model response has no admitted invocation".into(),
+                                ),
+                            ));
+                        };
                         let caller = sylvander_api::SessionContext::new(
                             session_metadata.user_id.clone(),
                             self.id.clone(),
@@ -882,29 +1224,31 @@ impl AgentRunInner {
                         .with_trace_id(turn_id);
                         let content = serde_json::to_value(message).map_err(|_| {
                             AgentRunError::session_persistence(
-                                SessionPersistenceOperation::PersistModelToolResponse,
+                                SessionPersistenceOperation::PersistModelResponse,
                                 SessionStoreError::Invalid(
                                     "model tool response serialization failed".into(),
                                 ),
                             )
                         })?;
                         store
-                            .append_message(
+                            .persist_model_response(
                                 &caller,
-                                &session_id,
-                                crate::storage::session::MessageRole::Assistant,
-                                content,
-                                Some(&selected_model_id),
-                                None,
-                                None,
+                                ModelResponsePersistence {
+                                    invocation_id: invocation_id.clone(),
+                                    expected_revision: *revision,
+                                    assistant_content: content,
+                                    model_id: selected_model_id.clone(),
+                                    terminal,
+                                },
                             )
                             .await
                             .map_err(|source| {
                                 AgentRunError::session_persistence(
-                                    SessionPersistenceOperation::PersistModelToolResponse,
+                                    SessionPersistenceOperation::PersistModelResponse,
                                     source,
                                 )
                             })?;
+                        model_invocation = Some((invocation_id.clone(), revision + 1, terminal));
                         self.observability
                             .record(RuntimeEvent::PersistenceFinished {
                                 turn_id: turn_id.to_owned(),
@@ -916,6 +1260,7 @@ impl AgentRunInner {
                 }
                 sylvander_agent::turn::event::AgentEvent::ToolCallPrepared {
                     id,
+                    invocation_id,
                     name,
                     invocation_class,
                     recovery_policy,
@@ -937,7 +1282,16 @@ impl AgentRunInner {
                                 session_id: session_id.clone(),
                                 turn_id: turn_id.to_owned(),
                                 call_id: id.clone(),
-                                invocation_id: ToolInvocationId::new(),
+                                invocation_id: ToolInvocationId::parse(invocation_id).map_err(
+                                    |_| {
+                                        AgentRunError::session_persistence(
+                                            SessionPersistenceOperation::BeginToolCall,
+                                            SessionStoreError::Invalid(
+                                                "tool invocation identity is not a UUID".into(),
+                                            ),
+                                        )
+                                    },
+                                )?,
                                 tool_name: name.clone(),
                                 invocation_class,
                                 declared_recovery_policy: recovery_policy,
@@ -1267,6 +1621,32 @@ impl AgentRunInner {
                     usage,
                     provider_usage,
                 } => {
+                    if let (Some(store), Some((invocation_id, revision, false))) =
+                        (&self.session_store, model_invocation.as_ref())
+                    {
+                        store
+                            .advance_model_iteration(ModelIterationAdvance {
+                                invocation_id: invocation_id.clone(),
+                                expected_revision: *revision,
+                                expected_position: ModelExecutionPosition::ResponsePersisted,
+                                next_position: ModelExecutionPosition::ToolsResolved,
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::AdvanceModelIteration,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::PersistModelToolResponse,
+                                succeeded: true,
+                            });
+                        model_invocation = None;
+                    }
                     self.context_usage.write().await.insert(
                         session_id.clone(),
                         ContextUsage {
@@ -1410,25 +1790,21 @@ impl AgentRunInner {
                 || "unix-client".into(),
                 |context| context.metadata.user_id.clone(),
             );
-            let caller =
+            let _caller =
                 sylvander_api::SessionContext::new(user_id, self.id.clone(), session_id.clone());
-            let message = ChatMessage::assistant(msg.content.clone());
-            let content = serde_json::to_value(message).map_err(|_| {
-                AgentRunError::session_persistence(
+            let Some((invocation_id, revision, true)) = model_invocation.take() else {
+                return Err(AgentRunError::session_persistence(
                     SessionPersistenceOperation::CompleteTurn,
-                    SessionStoreError::Invalid("assistant message serialization failed".into()),
-                )
-            })?;
+                    SessionStoreError::Invalid(
+                        "terminal response is not durably linked to its model iteration".into(),
+                    ),
+                ));
+            };
             store
-                .complete_turn(
-                    &caller,
-                    TurnCompletion {
-                        session_id: session_id.clone(),
-                        turn_id: turn_id.to_owned(),
-                        assistant_content: content,
-                        model_id: msg.model.model.clone(),
-                    },
-                )
+                .complete_persisted_turn(PersistedTurnCompletion {
+                    invocation_id,
+                    expected_revision: revision,
+                })
                 .await
                 .map_err(|source| {
                     AgentRunError::session_persistence(
