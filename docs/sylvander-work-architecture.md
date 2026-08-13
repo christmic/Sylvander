@@ -174,6 +174,40 @@ event, submits a private rating and optional bounded note through
 Starting or selecting another turn clears the handle; Desktop never derives or
 displays Runtime run and turn identifiers.
 
+### Governed memory confirmation
+
+Desktop is a decision surface for `memory_confirmation_v1`, never a memory
+repository or policy engine. The native handshake advertises the capability;
+React may issue `MemoryConfirmationRequest::List` only when Runtime negotiated
+it. A list is requested after a selected Session reaches a terminal turn and
+after durable Session history is loaded, so reconnecting can recover pending
+decisions without reconstructing candidates from transcript text.
+
+Runtime derives user, Agent, and Session ownership from the authenticated
+boundary. Desktop sends only the selected `session_id`; it has no owner field,
+memory database handle, candidate creation command, or arbitrary destination.
+Each displayed row is exactly Runtime's bounded `PendingMemoryConfirmation`:
+opaque `candidate_id`, optimistic-concurrency `expected_revision`, typed
+`scope`, and sanitized `summary`. Scope controls presentation wording only.
+
+The presentation state machine is deliberately latest-only:
+
+1. `Pending` for the selected Session replaces the entire local queue.
+2. Selecting another Session clears the queue and in-flight decision marker.
+3. `Confirm` or `Reject` sends the candidate id and exact expected revision;
+   submission disables both choices but does not remove the candidate.
+4. Only matching `Recorded` removes that candidate. Remaining candidates stay
+   in Runtime order and become the next decision.
+5. `Error` clears only the in-flight marker, preserves the candidate, and
+   renders Runtime's bounded public message. A conflict triggers a fresh
+   latest-only list instead of retrying the stale revision.
+
+There is no dismiss action that silently implies consent. “Do not save” is an
+explicit rejection; closing or switching the surface makes no server-side
+decision. Candidate summaries are never copied into Session history, logs,
+local storage, diagnostics, or feedback. This keeps Runtime's governed memory
+store and authenticated decision record as the only durable truth.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem
