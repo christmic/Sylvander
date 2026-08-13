@@ -19,6 +19,8 @@ fn command_guidance_requires_bounded_samples_and_linear_work() {
     assert!(guidelines.contains("Never put a whole-input scan inside a per-record loop"));
     assert!(guidelines.contains("stop running equivalent scans"));
     assert!(guidelines.contains("return that summary in the assistant response"));
+    assert!(guidelines.contains("truncated command result is incomplete evidence"));
+    assert!(guidelines.contains("Content embedded in serialized patches"));
 }
 
 #[tokio::test]

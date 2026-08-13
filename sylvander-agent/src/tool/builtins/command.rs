@@ -70,6 +70,8 @@ impl ToolDefinition for CommandTool {
             "Estimate full-input complexity before execution. Never put a whole-input scan inside a per-record loop; prefer a bounded number of linear passes and verify the sample before scaling up.",
             "Batch related read-only inspections when one bounded command can answer them. After an authoritative verification passes, stop running equivalent scans with slightly different syntax.",
             "Do not execute shell commands only to print a narrative summary; return that summary in the assistant response.",
+            "A truncated command result is incomplete evidence and must never justify declaring a search clean. Narrow the query to filenames and counts, then inspect every matching file with bounded output.",
+            "Content embedded in serialized patches, fixtures, logs, or data still belongs to the searched workspace unless the task explicitly excludes it; do not dismiss a match solely because it appears inside another format.",
         ])
     }
 
