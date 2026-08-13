@@ -3662,6 +3662,148 @@ fn read_nonnegative_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Resu
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn perception_update(
+    store: &SqliteSessionStore,
+    invocation_id: PerceptionInvocationId,
+    expected_revision: u64,
+    expected_position: PerceptionExecutionPosition,
+    next_position: PerceptionExecutionPosition,
+    media_locator: Option<String>,
+    receipt_locator: Option<String>,
+    output_locator: Option<String>,
+    output_digest: Option<String>,
+) -> Result<u64, SessionStoreError> {
+    if !expected_position.can_advance_to(next_position) {
+        return Err(SessionStoreError::Invalid(
+            "perception positions must advance one boundary".into(),
+        ));
+    }
+    let expected = session_i64(expected_revision, "perception ledger revision")?;
+    let next = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| SessionStoreError::Invalid("perception ledger revision overflow".into()))?;
+    store
+        .run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE session_perception_invocations SET position=?1,
+                     ledger_revision=ledger_revision+1,
+                     media_artifact_locator=COALESCE(?2,media_artifact_locator),
+                     receipt_locator=COALESCE(?3,receipt_locator),
+                     output_artifact_locator=COALESCE(?4,output_artifact_locator),
+                     output_digest=COALESCE(?5,output_digest),updated_at=?6
+                     WHERE invocation_id=?7 AND position=?8 AND ledger_revision=?9
+                     AND EXISTS (SELECT 1 FROM session_turns t
+                       WHERE t.session_id=session_perception_invocations.session_id
+                       AND t.turn_id=session_perception_invocations.turn_id AND t.state='running')",
+                    params![
+                        perception_position_str(next_position),
+                        media_locator,
+                        receipt_locator,
+                        output_locator,
+                        output_digest,
+                        crate::session::now_secs(),
+                        invocation_id.as_str(),
+                        perception_position_str(expected_position),
+                        expected,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 1 {
+                Ok(next)
+            } else {
+                Err(SessionStoreError::Invalid(
+                    "perception ledger CAS conflict or turn is no longer running".into(),
+                ))
+            }
+        })
+        .await
+}
+
+async fn query_perception_invocations(
+    store: &SqliteSessionStore,
+    scope: Option<(SessionId, String)>,
+) -> Result<Vec<PerceptionInvocationSnapshot>, SessionStoreError> {
+    store
+        .run(move |connection| {
+            let columns = "p.session_id,p.turn_id,p.agent_instance_id,p.invocation_id,
+                p.modality,p.cognitive_role,p.provider_id,p.model_id,p.recovery_policy,
+                p.capability_revision,p.input_digest,p.input_bytes,p.position,p.ledger_revision,
+                p.media_artifact_locator,p.receipt_locator,p.output_artifact_locator,p.output_digest,
+                p.recovery_decision,p.recovery_reason,p.operator_action_required,p.recovery_owner,
+                p.recovery_lease_expires_at,p.started_at,p.updated_at";
+            let sql = if scope.is_some() {
+                format!(
+                    "SELECT {columns} FROM session_perception_invocations p
+                     WHERE p.session_id=?1 AND p.turn_id=?2 ORDER BY p.started_at,p.invocation_id"
+                )
+            } else {
+                format!(
+                    "SELECT {columns} FROM session_perception_invocations p
+                     JOIN session_turns t ON t.session_id=p.session_id AND t.turn_id=p.turn_id
+                     WHERE t.state='running' AND p.position!='result_persisted'
+                     ORDER BY p.updated_at,p.invocation_id"
+                )
+            };
+            let mut statement = connection.prepare(&sql).map_err(sqlite_err)?;
+            let map = |row: &rusqlite::Row<'_>| -> rusqlite::Result<_> {
+                let decision = row
+                    .get::<_, Option<String>>(18)?
+                    .map(|value| decode_perception_decision(&value))
+                    .transpose()?;
+                let reason = row
+                    .get::<_, Option<String>>(19)?
+                    .map(|value| decode_perception_reason(&value))
+                    .transpose()?;
+                Ok(PerceptionInvocationSnapshot {
+                    session_id: SessionId::new(row.get::<_, String>(0)?),
+                    turn_id: row.get(1)?,
+                    agent_instance_id: AgentInstanceId::new(row.get::<_, String>(2)?),
+                    invocation_id: PerceptionInvocationId::parse(row.get::<_, String>(3)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    modality: decode_perception_modality(&row.get::<_, String>(4)?)?,
+                    role: decode_cognitive_role(&row.get::<_, String>(5)?)?,
+                    provider_id: row.get(6)?,
+                    model_id: row.get(7)?,
+                    recovery_policy: decode_perception_policy(&row.get::<_, String>(8)?)?,
+                    capability_revision: row.get(9)?,
+                    input_digest: row.get(10)?,
+                    input_bytes: session_u64(row.get(11)?, "perception input bytes")
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    position: decode_perception_position(&row.get::<_, String>(12)?)?,
+                    ledger_revision: session_u64(row.get(13)?, "perception ledger revision")
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    media_artifact_locator: row.get(14)?,
+                    receipt_locator: row.get(15)?,
+                    output_artifact_locator: row.get(16)?,
+                    output_digest: row.get(17)?,
+                    recovery_decision: decision,
+                    recovery_reason: reason,
+                    operator_action_required: row.get(20)?,
+                    recovery_owner: row.get(21)?,
+                    recovery_lease_expires_at: row.get(22)?,
+                    started_at: row.get(23)?,
+                    updated_at: row.get(24)?,
+                })
+            };
+            let rows = match scope {
+                Some((session_id, turn_id)) => statement
+                    .query_map(params![session_id.0, turn_id], map)
+                    .map_err(sqlite_err)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(sqlite_err)?,
+                None => statement
+                    .query_map([], map)
+                    .map_err(sqlite_err)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(sqlite_err)?,
+            };
+            Ok(rows)
+        })
+        .await
+}
+
 async fn query_model_iterations(
     store: &SqliteSessionStore,
     turn: Option<(SessionId, String)>,
@@ -4099,6 +4241,145 @@ fn decode_model_recovery_reason(value: &str) -> rusqlite::Result<ModelRecoveryRe
         "tools_already_resolved" => Ok(ModelRecoveryReason::ToolsAlreadyResolved),
         "incomplete_durable_facts" => Ok(ModelRecoveryReason::IncompleteDurableFacts),
         "operator_abandoned" => Ok(ModelRecoveryReason::OperatorAbandoned),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_artifact_locator(value: &str) -> bool {
+    value
+        .strip_prefix("artifact:")
+        .is_some_and(|id| Uuid::parse_str(id).is_ok())
+}
+
+const fn perception_modality_str(modality: PerceptionModality) -> &'static str {
+    match modality {
+        PerceptionModality::Image => "image",
+        PerceptionModality::Audio => "audio",
+        PerceptionModality::Document => "document",
+    }
+}
+
+fn decode_perception_modality(value: &str) -> rusqlite::Result<PerceptionModality> {
+    match value {
+        "image" => Ok(PerceptionModality::Image),
+        "audio" => Ok(PerceptionModality::Audio),
+        "document" => Ok(PerceptionModality::Document),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn cognitive_role_str(role: CognitiveRole) -> &'static str {
+    match role {
+        CognitiveRole::FastDraft => "fast_draft",
+        CognitiveRole::Deliberation => "deliberation",
+        CognitiveRole::Critic => "critic",
+        CognitiveRole::Vision => "vision",
+        CognitiveRole::Audio => "audio",
+        CognitiveRole::Document => "document",
+    }
+}
+
+fn decode_cognitive_role(value: &str) -> rusqlite::Result<CognitiveRole> {
+    match value {
+        "vision" => Ok(CognitiveRole::Vision),
+        "audio" => Ok(CognitiveRole::Audio),
+        "document" => Ok(CognitiveRole::Document),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn perception_policy_str(policy: PerceptionRecoveryPolicy) -> &'static str {
+    match policy {
+        PerceptionRecoveryPolicy::NeverReplay => "never_replay",
+        PerceptionRecoveryPolicy::RetryWithSameInvocation => "retry_with_same_invocation",
+        PerceptionRecoveryPolicy::RecoverFromReceipt => "recover_from_receipt",
+    }
+}
+
+fn decode_perception_policy(value: &str) -> rusqlite::Result<PerceptionRecoveryPolicy> {
+    match value {
+        "never_replay" => Ok(PerceptionRecoveryPolicy::NeverReplay),
+        "retry_with_same_invocation" => Ok(PerceptionRecoveryPolicy::RetryWithSameInvocation),
+        "recover_from_receipt" => Ok(PerceptionRecoveryPolicy::RecoverFromReceipt),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn perception_position_str(position: PerceptionExecutionPosition) -> &'static str {
+    match position {
+        PerceptionExecutionPosition::Prepared => "prepared",
+        PerceptionExecutionPosition::MediaPersisted => "media_persisted",
+        PerceptionExecutionPosition::InferenceStarted => "inference_started",
+        PerceptionExecutionPosition::InferenceCompleted => "inference_completed",
+        PerceptionExecutionPosition::ArtifactPersisted => "artifact_persisted",
+        PerceptionExecutionPosition::ResultPersisted => "result_persisted",
+    }
+}
+
+fn decode_perception_position(value: &str) -> rusqlite::Result<PerceptionExecutionPosition> {
+    match value {
+        "prepared" => Ok(PerceptionExecutionPosition::Prepared),
+        "media_persisted" => Ok(PerceptionExecutionPosition::MediaPersisted),
+        "inference_started" => Ok(PerceptionExecutionPosition::InferenceStarted),
+        "inference_completed" => Ok(PerceptionExecutionPosition::InferenceCompleted),
+        "artifact_persisted" => Ok(PerceptionExecutionPosition::ArtifactPersisted),
+        "result_persisted" => Ok(PerceptionExecutionPosition::ResultPersisted),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn perception_decision_str(decision: PerceptionRecoveryDecision) -> &'static str {
+    match decision {
+        PerceptionRecoveryDecision::PersistMedia => "persist_media",
+        PerceptionRecoveryDecision::StartInference => "start_inference",
+        PerceptionRecoveryDecision::RetrySameInvocation => "retry_same_invocation",
+        PerceptionRecoveryDecision::RecoverReceipt => "recover_receipt",
+        PerceptionRecoveryDecision::PersistArtifact => "persist_artifact",
+        PerceptionRecoveryDecision::ContinueTurn => "continue_turn",
+        PerceptionRecoveryDecision::ManualReconciliation => "manual_reconciliation",
+    }
+}
+
+fn decode_perception_decision(value: &str) -> rusqlite::Result<PerceptionRecoveryDecision> {
+    match value {
+        "persist_media" => Ok(PerceptionRecoveryDecision::PersistMedia),
+        "start_inference" => Ok(PerceptionRecoveryDecision::StartInference),
+        "retry_same_invocation" => Ok(PerceptionRecoveryDecision::RetrySameInvocation),
+        "recover_receipt" => Ok(PerceptionRecoveryDecision::RecoverReceipt),
+        "persist_artifact" => Ok(PerceptionRecoveryDecision::PersistArtifact),
+        "continue_turn" => Ok(PerceptionRecoveryDecision::ContinueTurn),
+        "manual_reconciliation" => Ok(PerceptionRecoveryDecision::ManualReconciliation),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn perception_reason_str(reason: PerceptionRecoveryReason) -> &'static str {
+    match reason {
+        PerceptionRecoveryReason::EffectNotStarted => "effect_not_started",
+        PerceptionRecoveryReason::SameIdentityReplayAllowed => "same_identity_replay_allowed",
+        PerceptionRecoveryReason::ReceiptRequired => "receipt_required",
+        PerceptionRecoveryReason::InferenceOutcomeUncertain => "inference_outcome_uncertain",
+        PerceptionRecoveryReason::ReceiptAlreadyPersisted => "receipt_already_persisted",
+        PerceptionRecoveryReason::ArtifactAlreadyPersisted => "artifact_already_persisted",
+        PerceptionRecoveryReason::ResultAlreadyPersisted => "result_already_persisted",
+    }
+}
+
+fn decode_perception_reason(value: &str) -> rusqlite::Result<PerceptionRecoveryReason> {
+    match value {
+        "effect_not_started" => Ok(PerceptionRecoveryReason::EffectNotStarted),
+        "same_identity_replay_allowed" => Ok(PerceptionRecoveryReason::SameIdentityReplayAllowed),
+        "receipt_required" => Ok(PerceptionRecoveryReason::ReceiptRequired),
+        "inference_outcome_uncertain" => Ok(PerceptionRecoveryReason::InferenceOutcomeUncertain),
+        "receipt_already_persisted" => Ok(PerceptionRecoveryReason::ReceiptAlreadyPersisted),
+        "artifact_already_persisted" => Ok(PerceptionRecoveryReason::ArtifactAlreadyPersisted),
+        "result_already_persisted" => Ok(PerceptionRecoveryReason::ResultAlreadyPersisted),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
