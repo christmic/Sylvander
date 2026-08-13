@@ -62,6 +62,9 @@ Repository-tracked templates live under `sylvander-testbench-llm/matrices`:
 - `live.example.json` demonstrates multiple providers per protocol, multiple
   protocols per provider, multiple models per binding, and explicit model
   applicability;
+- `minimax.live.json` and `aliyun-token-plan.live.json` are versioned live
+  deployment matrices. They contain endpoint and credential-variable names,
+  never credential values;
 - `fault.example.json` targets disposable controlled endpoints. Production
   provider endpoints must never be used to provoke rate limits, timeouts, or
   server failures.

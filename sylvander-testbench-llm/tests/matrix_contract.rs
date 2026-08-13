@@ -114,6 +114,7 @@ fn rejects_duplicate_provider_protocol_model_coordinates() {
 fn repository_templates_are_valid_multimodel_matrices() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for name in [
+        "aliyun-token-plan.live.json",
         "live.example.json",
         "fault.example.json",
         "minimax.live.json",
