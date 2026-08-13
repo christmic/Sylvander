@@ -1920,6 +1920,184 @@ async fn runtime_workflow_control_plane_uses_durable_fenced_tasks() {
 }
 
 #[tokio::test]
+async fn moderator_resolves_an_exact_manual_recovery_case_and_releases_the_session() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &["assistant"]))
+        .await
+        .unwrap();
+    let actor = attach_memory_session(&runtime, "assistant", "recovery-operator").await;
+    let session_id = actor.id().clone();
+    let instance_id = actor.agent_instance_id().clone();
+    let stored = runtime
+        .storage
+        .sessions()
+        .get(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let effective = stored.effective_config.unwrap();
+    let turn_id = "operator-recovery-turn";
+    runtime
+        .storage
+        .sessions()
+        .begin_turn(
+            &sylvander_api::SessionContext::new(
+                stored.metadata.user_id,
+                effective.agent_id.0.clone(),
+                session_id.clone(),
+            )
+            .with_agent_instance(instance_id.clone()),
+            crate::storage::session::TurnStart {
+                session_id: session_id.clone(),
+                turn_id: turn_id.into(),
+                agent_instance_id: instance_id.clone(),
+                config_revision: stored.config_revision,
+                effective_config: effective,
+                user_content: serde_json::json!({"role":"user","content":"send once"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let invocation_id = crate::storage::session::ToolInvocationId::new();
+    runtime
+        .storage
+        .sessions()
+        .begin_tool_call(crate::storage::session::ToolCallStart {
+            session_id: session_id.clone(),
+            turn_id: turn_id.into(),
+            call_id: "send-once".into(),
+            invocation_id: invocation_id.clone(),
+            tool_name: "Send".into(),
+            invocation_class: Some(
+                sylvander_agent::tool::invocation::ToolInvocationClass::Extension,
+            ),
+            declared_recovery_policy:
+                sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay,
+            effective_recovery_policy:
+                sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay,
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            input_digest: format!("sha256:{}", "b".repeat(64)),
+        })
+        .await
+        .unwrap();
+    for (revision, current, next) in [
+        (
+            0,
+            crate::storage::session::ToolExecutionPosition::Prepared,
+            crate::storage::session::ToolExecutionPosition::Authorized,
+        ),
+        (
+            1,
+            crate::storage::session::ToolExecutionPosition::Authorized,
+            crate::storage::session::ToolExecutionPosition::EffectStarted,
+        ),
+    ] {
+        runtime
+            .storage
+            .sessions()
+            .advance_tool_call(crate::storage::session::ToolCallAdvance {
+                session_id: session_id.clone(),
+                turn_id: turn_id.into(),
+                call_id: "send-once".into(),
+                expected_revision: revision,
+                expected_position: current,
+                next_position: next,
+            })
+            .await
+            .unwrap();
+    }
+    let now = crate::session::now_secs();
+    runtime
+        .storage
+        .sessions()
+        .classify_tool_recovery(crate::storage::session::ToolRecoveryWrite {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 2,
+            recovery_owner: "expired-boot".into(),
+            observed_at: now - 60,
+            lease_expires_at: now - 30,
+            classification: crate::storage::session::RecoveryClassification::for_interrupted(
+                crate::storage::session::ToolExecutionPosition::EffectStarted,
+                sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay,
+            ),
+        })
+        .await
+        .unwrap();
+
+    let cases = runtime.session_recovery_cases(&actor).await.unwrap();
+    let [
+        SessionRecoveryCase::Tool {
+            ledger_revision,
+            actions,
+            ..
+        },
+    ] = cases.as_slice()
+    else {
+        panic!("the exact uncertain tool must be visible to its moderator");
+    };
+    assert_eq!(
+        actions,
+        &[
+            crate::storage::session::ExecutionRecoveryAction::AbandonTurn,
+            crate::storage::session::ExecutionRecoveryAction::ConfirmNoEffectAndRetry,
+        ]
+    );
+    let request = ResolveSessionRecoveryRequest {
+        action_id: crate::storage::session::ExecutionRecoveryActionId::new(),
+        turn_id: turn_id.into(),
+        target: crate::storage::session::ExecutionRecoveryActionTarget::Tool { invocation_id },
+        expected_ledger_revision: *ledger_revision,
+        action: crate::storage::session::ExecutionRecoveryAction::AbandonTurn,
+        rationale: "external state cannot be proven; release without replay".into(),
+    };
+    let outcome = runtime
+        .resolve_session_recovery(&actor, request.clone())
+        .await
+        .unwrap();
+    assert!(outcome.session_released);
+    assert_eq!(outcome.replayed_tool_calls, 0);
+    let observed = runtime.operational_snapshot().await.unwrap().observability;
+    assert_eq!(observed.recovery_actions_abandoned, 1);
+    assert_eq!(observed.recovery_retries_authorized, 0);
+    assert_eq!(
+        runtime
+            .resolve_session_recovery(&actor, request)
+            .await
+            .unwrap(),
+        outcome
+    );
+    assert!(
+        runtime
+            .session_recovery_cases(&actor)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        runtime
+            .storage
+            .sessions()
+            .turn(&session_id, turn_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::storage::session::TurnState::Interrupted
+    );
+    assert_eq!(
+        runtime
+            .session_doctor(&actor)
+            .await
+            .unwrap()
+            .recovery
+            .operator_tools,
+        0
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn runtime_composes_swarm_members_in_sponsorship_order() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &["assistant"]))
