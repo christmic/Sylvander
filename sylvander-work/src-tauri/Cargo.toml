@@ -1,0 +1,22 @@
+[package]
+name = "sylvander-work"
+description = "Sylvander Work desktop presentation client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sylvander-api = { path = "../../sylvander-api" }
+tauri = { version = "=2.11.5", features = [] }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+
+[lints]
+workspace = true

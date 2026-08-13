@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Sylvander",
+  "productName": "Sylvander Work",
   "version": "0.1.0",
-  "identifier": "dev.sylvander.desktop",
+  "identifier": "dev.sylvander.work",
   "build": {
     "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://127.0.0.1:1420",
@@ -16,7 +16,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sylvander",
+        "title": "Sylvander Work",
         "width": 1280,
         "height": 820,
         "minWidth": 680,
