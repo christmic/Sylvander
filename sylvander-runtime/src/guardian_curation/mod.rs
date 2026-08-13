@@ -5,11 +5,8 @@
 //! candidates, deterministic policy authorizes mutations, and an idempotent
 //! mutation outbox hands approved changes to the owning memory/profile store.
 
-#[path = "guardian_curation/models.rs"]
 mod models;
-#[path = "guardian_curation/policy.rs"]
 mod policy;
-#[path = "guardian_curation/schema.rs"]
 mod schema;
 
 use std::path::Path;
@@ -2593,5 +2590,5 @@ fn corrupt_sql(index: usize) -> rusqlite::Error {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/guardian_curation.rs"]
+#[path = "../../tests/unit/guardian_curation.rs"]
 mod tests;

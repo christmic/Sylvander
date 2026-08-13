@@ -1555,17 +1555,17 @@ fn validate_channel(channel: &ChannelInstanceConfig, errors: &mut Vec<String>) {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/config.rs"]
+#[path = "../../tests/unit/config.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../tests/unit/config_qualified_models.rs"]
+#[path = "../../tests/unit/config_qualified_models.rs"]
 mod qualified_model_tests;
 
 #[cfg(test)]
-#[path = "../tests/unit/config_evidence_governance.rs"]
+#[path = "../../tests/unit/config_evidence_governance.rs"]
 mod evidence_governance_tests;
 
 #[cfg(test)]
-#[path = "../tests/unit/config_local_example.rs"]
+#[path = "../../tests/unit/config_local_example.rs"]
 mod local_example_tests;

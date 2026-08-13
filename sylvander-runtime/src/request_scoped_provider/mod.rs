@@ -518,5 +518,5 @@ fn router_capability_rejection() -> ProviderError {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/request_scoped_provider.rs"]
+#[path = "../../tests/unit/request_scoped_provider.rs"]
 mod tests;

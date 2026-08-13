@@ -1549,5 +1549,5 @@ CREATE INDEX IF NOT EXISTS idx_governance_audit_scope
 ";
 
 #[cfg(test)]
-#[path = "../tests/unit/evidence.rs"]
+#[path = "../../tests/unit/evidence.rs"]
 mod tests;

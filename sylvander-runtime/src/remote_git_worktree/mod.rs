@@ -394,5 +394,5 @@ fn display_error(error: impl std::fmt::Display) -> String {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/remote_git_worktree.rs"]
+#[path = "../../tests/unit/remote_git_worktree.rs"]
 mod tests;
