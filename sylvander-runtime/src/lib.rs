@@ -1287,8 +1287,8 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         let agent = self
             .bind_session_revision(boundary, &session, agent, "update_session_config")
             .await?;
-        let mut effective = resolve_session_config(&agent, &overrides, None, None)
-            .map_err(|error| {
+        let mut effective =
+            resolve_session_config(&agent, &overrides, None, None).map_err(|error| {
                 boundary_failure(boundary, "update_session_config", error.to_string())
             })?;
         bind_effective_workspace(&mut effective, &session.metadata.workspace);
