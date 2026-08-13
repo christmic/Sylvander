@@ -11,10 +11,11 @@ struct TestRevisionProvider {
 
 #[async_trait::async_trait]
 impl RevisionedAgentRunProvider for TestRevisionProvider {
-    async fn revision_for_session(
+    async fn revision_for_participant(
         &self,
         _agent_id: &AgentId,
         session_id: &SessionId,
+        _agent_instance_id: Option<&sylvander_api::AgentInstanceId>,
     ) -> Result<u64, String> {
         self.bindings
             .read()
@@ -149,7 +150,7 @@ async fn revisioned_run_routes_concurrent_sessions_without_drift() {
         .insert(SessionId::new("future-session"), 2);
     assert_eq!(
         provider
-            .revision_for_session(&spec.id, &old_session)
+            .revision_for_participant(&spec.id, &old_session, None)
             .await
             .unwrap(),
         1

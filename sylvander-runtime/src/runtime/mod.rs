@@ -508,6 +508,7 @@ impl RuntimeRevisionProvider {
         &self,
         agent_id: &AgentId,
         session_id: &SessionId,
+        agent_instance_id: Option<&AgentInstanceId>,
     ) -> Result<u64, RuntimeError> {
         let session = self
             .sessions
@@ -515,6 +516,34 @@ impl RuntimeRevisionProvider {
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .ok_or_else(|| RuntimeError::Config(format!("session {session_id} is not bound")))?;
+        if let Some(instance_id) = agent_instance_id {
+            let membership = self
+                .sessions
+                .session_membership(session_id)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?
+                .ok_or_else(|| {
+                    RuntimeError::Config(format!(
+                        "session {session_id} has no durable Agent membership"
+                    ))
+                })?;
+            let participant = membership
+                .participants
+                .iter()
+                .find(|participant| &participant.instance_id == instance_id)
+                .ok_or_else(|| {
+                    RuntimeError::Config(format!(
+                        "Agent instance {instance_id} is not a member of session {session_id}"
+                    ))
+                })?;
+            if &participant.definition.agent_id != agent_id {
+                return Err(RuntimeError::Config(format!(
+                    "Agent instance {instance_id} is bound to {}, not {agent_id}",
+                    participant.definition.agent_id
+                )));
+            }
+            return Ok(participant.definition.revision);
+        }
         self.bound_stored_revision(agent_id, &session).await
     }
 
@@ -711,12 +740,13 @@ async fn close_session_revision_pins(
 
 #[async_trait::async_trait]
 impl RevisionedAgentRunProvider for RuntimeRevisionProvider {
-    async fn revision_for_session(
+    async fn revision_for_participant(
         &self,
         agent_id: &AgentId,
         session_id: &SessionId,
+        agent_instance_id: Option<&AgentInstanceId>,
     ) -> Result<u64, String> {
-        self.bound_revision(agent_id, session_id)
+        self.bound_revision(agent_id, session_id, agent_instance_id)
             .await
             .map_err(|error| error.to_string())
     }

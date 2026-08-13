@@ -41,10 +41,11 @@ use sylvander_channel::{MessageBus, SubscriptionFilter};
 #[async_trait::async_trait]
 pub trait RevisionedAgentRunProvider: Send + Sync {
     /// Return the immutable Agent revision bound to `session_id`.
-    async fn revision_for_session(
+    async fn revision_for_participant(
         &self,
         agent_id: &AgentId,
         session_id: &SessionId,
+        agent_instance_id: Option<&sylvander_api::AgentInstanceId>,
     ) -> Result<u64, String>;
 
     /// Build or retrieve the run for one immutable revision.
@@ -605,8 +606,12 @@ async fn run_revision_router(
             }
             break;
         }
+        let agent_instance_id = match &message.recipient {
+            Recipient::AgentInstance { instance_id, .. } => Some(instance_id),
+            _ => None,
+        };
         let revision = match provider
-            .revision_for_session(&agent_id, &message.session_id)
+            .revision_for_participant(&agent_id, &message.session_id, agent_instance_id)
             .await
         {
             Ok(revision) => revision,

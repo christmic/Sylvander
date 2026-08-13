@@ -2910,6 +2910,28 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         membership.moderator().definition.agent_id,
         AgentId::new("assistant")
     );
+    let revision_provider = runtime.revision_provider.as_ref().unwrap();
+    assert_eq!(
+        revision_provider
+            .revision_for_participant(
+                &AgentId::new("assistant"),
+                &membership.session_id,
+                Some(&membership.moderator().instance_id),
+            )
+            .await
+            .unwrap(),
+        membership.moderator().definition.revision
+    );
+    assert!(
+        revision_provider
+            .revision_for_participant(
+                &AgentId::new("assistant"),
+                &membership.session_id,
+                Some(&AgentInstanceId::new("forged-instance")),
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(
         effective.provenance.user_workspace.kind,
         sylvander_api::SessionConfigSourceKind::SessionOverride
@@ -2940,7 +2962,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .revision_provider
             .as_ref()
             .unwrap()
-            .revision_for_session(&AgentId::new("assistant"), &unconfigured.id)
+            .revision_for_participant(&AgentId::new("assistant"), &unconfigured.id, None)
             .await
             .is_err(),
         "execution routing must not repair unresolved pins on demand"
@@ -3111,7 +3133,7 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
             .revision_provider
             .as_ref()
             .unwrap()
-            .revision_for_session(&AgentId::new("different-agent"), &created.session_id)
+            .revision_for_participant(&AgentId::new("different-agent"), &created.session_id, None,)
             .await
             .is_err(),
         "a session revision binding must never be reused for another Agent"
