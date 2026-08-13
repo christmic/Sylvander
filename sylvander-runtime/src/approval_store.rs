@@ -54,7 +54,13 @@ impl ApprovalGrantContext {
             policy_revision: self.policy_revision.clone(),
             capability_revision: self.capability_revision.clone(),
             operation: request.tool_name.clone(),
-            resource_fingerprint: digest_json(b"sylvander.approval.resource.v1\0", &request.input),
+            resource_fingerprint: digest_json(
+                b"sylvander.approval.resource.v2\0",
+                &serde_json::json!({
+                    "input": request.input,
+                    "facts": request.facts.fingerprint_material(),
+                }),
+            ),
         }
     }
 }
