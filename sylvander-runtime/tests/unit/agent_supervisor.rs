@@ -7,6 +7,7 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 struct TestRevisionProvider {
     bindings: RwLock<HashMap<SessionId, u64>>,
     runs: HashMap<u64, AgentRun>,
+    prepared_instances: tokio::sync::Mutex<Vec<Option<sylvander_api::AgentInstanceId>>>,
 }
 
 #[async_trait::async_trait]
@@ -25,11 +26,17 @@ impl RevisionedAgentRunProvider for TestRevisionProvider {
             .ok_or_else(|| format!("missing binding for {session_id}"))
     }
 
-    async fn run_for_revision(
+    async fn prepare_run_for_participant(
         &self,
         _agent_id: &AgentId,
         revision: u64,
+        _session_id: &SessionId,
+        agent_instance_id: Option<&sylvander_api::AgentInstanceId>,
     ) -> Result<AgentRun, String> {
+        self.prepared_instances
+            .lock()
+            .await
+            .push(agent_instance_id.cloned());
         self.runs
             .get(&revision)
             .cloned()
@@ -83,6 +90,7 @@ async fn revisioned_run_routes_concurrent_sessions_without_drift() {
             (new_session.clone(), 2),
         ])),
         runs: HashMap::from([(1, revision_one.clone()), (2, revision_two.clone())]),
+        prepared_instances: tokio::sync::Mutex::new(Vec::new()),
     });
     engine
         .spawn_revisioned_run(spec.clone(), 1, revision_one.clone(), provider.clone())
@@ -140,6 +148,30 @@ async fn revisioned_run_routes_concurrent_sessions_without_drift() {
     .expect("both revisions receive their bound sessions");
     assert!(revision_one.get_session(&new_session).await.is_none());
     assert!(revision_two.get_session(&old_session).await.is_none());
+
+    let instance_id = sylvander_api::AgentInstanceId::new("worker-instance");
+    let mut directed = BusMessage::user_chat(old_session.clone(), "user", "directed work");
+    directed.recipient = Recipient::AgentInstance {
+        instance_id: instance_id.clone(),
+        agent_id: spec.id.clone(),
+    };
+    bus.publish(directed).await.unwrap();
+    tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+        loop {
+            if provider
+                .prepared_instances
+                .lock()
+                .await
+                .iter()
+                .any(|prepared| prepared.as_ref() == Some(&instance_id))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("participant identity reaches preparation before delivery");
 
     // Changing what a hypothetical new session would bind to cannot
     // mutate the already persisted old-session binding.

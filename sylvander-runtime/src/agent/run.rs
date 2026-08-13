@@ -441,6 +441,7 @@ pub struct AgentSessionIssuer {
 pub struct AuthenticatedSessionLease {
     authority: Arc<SessionAuthorityMarker>,
     session_id: SessionId,
+    agent_instance_id: Option<AgentInstanceId>,
     metadata: SessionMetadata,
 }
 
@@ -480,8 +481,22 @@ impl AgentSessionIssuer {
         Ok(AuthenticatedSessionLease {
             authority: self.authority.clone(),
             session_id,
+            agent_instance_id: None,
             metadata,
         })
+    }
+
+    /// Issue a run-bound capability for one exact durable Agent participant.
+    pub(crate) fn issue_for_agent_instance(
+        &self,
+        session_id: SessionId,
+        agent_instance_id: AgentInstanceId,
+        metadata: SessionMetadata,
+    ) -> Result<AuthenticatedSessionLease, AgentRunError> {
+        let mut lease = self.issue(session_id, metadata)?;
+        validate_identity_component("Agent instance id", &agent_instance_id.0, 256)?;
+        lease.agent_instance_id = Some(agent_instance_id);
+        Ok(lease)
     }
 }
 
@@ -497,6 +512,18 @@ fn validate_identity_component(
 }
 
 impl AgentRun {
+    pub(crate) fn authenticated_session_handle(
+        &self,
+        session_id: SessionId,
+        agent_instance_id: AgentInstanceId,
+    ) -> AuthenticatedSession {
+        AuthenticatedSession {
+            authority: self.inner.session_authority.clone(),
+            session_id,
+            agent_instance_id,
+        }
+    }
+
     pub(crate) async fn replay_classified_tool_calls(
         &self,
         session_id: &SessionId,
@@ -938,7 +965,11 @@ impl AgentRun {
             .insert(lease.session_id.clone());
         let ctx = match self
             .inner
-            .restore_session_context(&lease.session_id, None, &lease.metadata)
+            .restore_session_context(
+                &lease.session_id,
+                lease.agent_instance_id.as_ref(),
+                &lease.metadata,
+            )
             .await
         {
             Ok(context) => context,

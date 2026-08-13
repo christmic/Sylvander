@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::agent_definition::{AgentSpec, ToolRef};
+use crate::agent_definition::{AgentSpec, McpServerConfig, ToolRef};
 use crate::mcp::stdio::McpResultArtifactSink;
 use crate::mcp::{SessionMcpBinding, SessionMcpRuntimeService};
 use crate::observability::RuntimeObservability;
@@ -444,11 +444,65 @@ impl ConfiguredAgent {
             })
             .collect();
         let lease = self.session_issuer.issue(session_id.clone(), metadata)?;
-        let session = self.run.attach_authenticated_session(lease).await?;
-        if let Err(error) = self
-            .mcp_sessions
-            .attach(binding, servers, workspace_root)
+        self.attach_session_lease(lease, binding, servers, workspace_root)
             .await
+    }
+
+    pub(crate) async fn attach_agent_instance(
+        &self,
+        session_id: sylvander_api::SessionId,
+        agent_instance_id: sylvander_api::AgentInstanceId,
+        metadata: crate::session::SessionMetadata,
+    ) -> Result<AuthenticatedSession, AgentRunError> {
+        if let Some(context) = self
+            .run
+            .get_agent_session(&session_id, &agent_instance_id)
+            .await
+        {
+            return Ok(self
+                .run
+                .authenticated_session_handle(context.session_id, context.agent_instance_id));
+        }
+        let binding = SessionMcpBinding {
+            user_id: metadata.user_id.clone(),
+            agent_id: self.spec.id.clone(),
+            session_id: session_id.clone(),
+            policy_revision: self.definition.revision,
+        };
+        let workspace_root = metadata.workspace.clone();
+        let servers = self
+            .definition
+            .spec
+            .tools
+            .iter()
+            .filter_map(|reference| match reference {
+                ToolRef::McpServer(server) => Some(server.clone()),
+                ToolRef::Builtin { .. } => None,
+            })
+            .collect();
+        let lease = self.session_issuer.issue_for_agent_instance(
+            session_id,
+            agent_instance_id,
+            metadata,
+        )?;
+        self.attach_session_lease(lease, binding, servers, workspace_root)
+            .await
+    }
+
+    async fn attach_session_lease(
+        &self,
+        lease: crate::agent_run::AuthenticatedSessionLease,
+        binding: SessionMcpBinding,
+        servers: Vec<McpServerConfig>,
+        workspace_root: std::path::PathBuf,
+    ) -> Result<AuthenticatedSession, AgentRunError> {
+        let session_id = binding.session_id.clone();
+        let session = self.run.attach_authenticated_session(lease).await?;
+        if self.mcp_sessions.tool_registry(&session_id).is_none()
+            && let Err(error) = self
+                .mcp_sessions
+                .attach(binding, servers, workspace_root)
+                .await
         {
             self.run.leave_session(&session_id).await;
             return Err(AgentRunError::Configuration(error.to_string()));

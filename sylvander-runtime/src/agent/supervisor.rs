@@ -49,8 +49,13 @@ pub trait RevisionedAgentRunProvider: Send + Sync {
     ) -> Result<u64, String>;
 
     /// Build or retrieve the run for one immutable revision.
-    async fn run_for_revision(&self, agent_id: &AgentId, revision: u64)
-    -> Result<AgentRun, String>;
+    async fn prepare_run_for_participant(
+        &self,
+        agent_id: &AgentId,
+        revision: u64,
+        session_id: &SessionId,
+        agent_instance_id: Option<&sylvander_api::AgentInstanceId>,
+    ) -> Result<AgentRun, String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -625,29 +630,37 @@ async fn run_revision_router(
                 continue;
             }
         };
+        let prepared = match provider
+            .prepare_run_for_participant(
+                &agent_id,
+                revision,
+                &message.session_id,
+                agent_instance_id,
+            )
+            .await
+        {
+            Ok(run) if run.id() == &agent_id => run,
+            Ok(run) => {
+                warn!(
+                    %agent_id,
+                    revision,
+                    run_agent_id = %run.id(),
+                    "revision provider returned a run for another Agent"
+                );
+                continue;
+            }
+            Err(error) => {
+                warn!(
+                    %agent_id,
+                    revision,
+                    %error,
+                    "failed to compose Agent revision; dropping message"
+                );
+                continue;
+            }
+        };
         if let std::collections::hash_map::Entry::Vacant(entry) = workers.entry(revision) {
-            let run = match provider.run_for_revision(&agent_id, revision).await {
-                Ok(run) if run.id() == &agent_id => run,
-                Ok(run) => {
-                    warn!(
-                        %agent_id,
-                        revision,
-                        run_agent_id = %run.id(),
-                        "revision provider returned a run for another Agent"
-                    );
-                    continue;
-                }
-                Err(error) => {
-                    warn!(
-                        %agent_id,
-                        revision,
-                        %error,
-                        "failed to compose Agent revision; dropping message"
-                    );
-                    continue;
-                }
-            };
-            entry.insert(spawn_revision_worker(run));
+            entry.insert(spawn_revision_worker(prepared));
         }
         let delivered = if let Some(worker) = workers.get(&revision) {
             worker.inbox.send(message).await.is_ok()

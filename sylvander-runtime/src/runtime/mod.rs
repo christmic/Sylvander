@@ -751,15 +751,35 @@ impl RevisionedAgentRunProvider for RuntimeRevisionProvider {
             .map_err(|error| error.to_string())
     }
 
-    async fn run_for_revision(
+    async fn prepare_run_for_participant(
         &self,
         agent_id: &AgentId,
         revision: u64,
+        session_id: &SessionId,
+        agent_instance_id: Option<&AgentInstanceId>,
     ) -> Result<crate::agent_run::AgentRun, String> {
-        self.configured_revision(agent_id, revision)
+        let configured = self
+            .configured_revision(agent_id, revision)
             .await
-            .map(|configured| configured.run)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        let session = self
+            .sessions
+            .get(session_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("unknown Session {session_id}"))?;
+        if let Some(instance_id) = agent_instance_id {
+            configured
+                .attach_agent_instance(session_id.clone(), instance_id.clone(), session.metadata)
+                .await
+                .map_err(|error| error.to_string())?;
+        } else if configured.run.get_session(session_id).await.is_none() {
+            configured
+                .attach_authenticated_session(session_id.clone(), session.metadata)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(configured.run)
     }
 }
 
