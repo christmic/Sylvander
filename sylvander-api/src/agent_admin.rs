@@ -140,6 +140,14 @@ pub enum AgentToolDraft {
         #[serde(default)]
         environment: BTreeMap<String, AgentSecretReference>,
     },
+    /// A remote MCP server using the current single-endpoint Streamable HTTP
+    /// transport. The optional bearer token is resolved only by Runtime.
+    McpStreamableHttp {
+        name: String,
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_token: Option<AgentSecretReference>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -346,6 +354,7 @@ pub struct RedactedAgentDefinition {
 pub enum RedactedAgentTool {
     Builtin { name: String },
     McpServer { name: String },
+    McpStreamableHttp { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

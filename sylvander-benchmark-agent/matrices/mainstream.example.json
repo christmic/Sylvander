@@ -1,38 +1,46 @@
 {
   "schema_version": 1,
-  "repetitions": 1,
+  "repetitions": 3,
   "benchmarks": [
     {
       "benchmark_id": "harbor",
       "dataset_name": "terminal-bench",
-      "dataset_version": "2.0",
+      "dataset_version": "2.0@69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
       "tasks": [
-        {
-          "task_id": "replace-with-versioned-smoke-task",
-          "required_capabilities": ["terminal", "filesystem"]
-        }
+        { "task_id": "build-cython-ext", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "cancel-async-tasks", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "configure-git-webserver", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "custom-memory-heap-crash", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "db-wal-recovery", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "fix-code-vulnerability", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "git-multibranch", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "gpt2-codegolf", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "kv-store-grpc", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "large-scale-text-editing", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "portfolio-optimization", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "protein-assembly", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "pytorch-model-recovery", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "query-optimize", "required_capabilities": ["terminal", "filesystem"] },
+        { "task_id": "sanitize-git-repo", "required_capabilities": ["terminal", "filesystem", "git"] }
       ]
     },
     {
       "benchmark_id": "swe-bench",
-      "dataset_name": "swe-bench-verified",
-      "dataset_version": "replace-with-pinned-revision",
+      "dataset_name": "swebench-verified",
+      "dataset_version": "1.0@86723674f04e4209ac479d0fb75d9d9f44b4377e",
       "tasks": [
-        {
-          "task_id": "replace-with-instance-id",
-          "required_capabilities": ["terminal", "filesystem", "git"]
-        }
-      ]
-    },
-    {
-      "benchmark_id": "tau3-bench",
-      "dataset_name": "retail",
-      "dataset_version": "replace-with-pinned-revision",
-      "tasks": [
-        {
-          "task_id": "replace-with-task-id",
-          "required_capabilities": ["interactive_user", "domain_tools"]
-        }
+        { "task_id": "astropy__astropy-13977", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "django__django-15098", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "matplotlib__matplotlib-23476", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "mwaskom__seaborn-3187", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "pallets__flask-5014", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "psf__requests-2317", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "pydata__xarray-3095", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "pylint-dev__pylint-4604", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "pytest-dev__pytest-5809", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "scikit-learn__scikit-learn-12585", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "sphinx-doc__sphinx-8593", "required_capabilities": ["terminal", "filesystem", "git"] },
+        { "task_id": "sympy__sympy-13852", "required_capabilities": ["terminal", "filesystem", "git"] }
       ]
     }
   ],
@@ -47,7 +55,7 @@
     {
       "agent_revision": "replace-with-sylvander-commit",
       "provider_id": "minimax-cn",
-      "protocol": "openai_chat_completions",
+      "protocol": "anthropic_messages",
       "model_id": "MiniMax-M2.7-highspeed",
       "capabilities": ["terminal", "filesystem", "git"]
     }

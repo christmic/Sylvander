@@ -1,5 +1,6 @@
 use serde_json::json;
 use sylvander_agent::conversation::ConversationSnapshot;
+use sylvander_agent::error::AgentLoopError;
 use sylvander_agent::event::AgentEvent;
 use sylvander_agent::outcome::AgentOutcome;
 use sylvander_benchmark_agent::TrajectoryRecorder;
@@ -44,11 +45,13 @@ fn records_one_atif_step_per_model_iteration_with_correlated_tools() {
             name: "Command".into(),
             output: "Cargo.toml".into(),
             is_error: false,
+            failure_kind: None,
         })
         .unwrap();
     recorder
         .record(AgentEvent::IterationEnd {
             iteration: 1,
+            response_id: "response-1".into(),
             usage: usage(),
             provider_usage: usage(),
         })
@@ -92,4 +95,19 @@ fn records_one_atif_step_per_model_iteration_with_correlated_tools() {
 fn finish_rejects_an_incomplete_event_stream() {
     let recorder = TrajectoryRecorder::new("session-1", "provider/model", [], "task");
     assert!(recorder.finish().is_err());
+}
+
+#[test]
+fn preserves_agent_terminal_error_detail() {
+    let mut recorder = TrajectoryRecorder::new("session-1", "provider/model", [], "task");
+    let error = recorder
+        .record(AgentEvent::Error(AgentLoopError::Validation(
+            "missing capability".into(),
+        )))
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Agent execution failed: validation error: missing capability"
+    );
 }

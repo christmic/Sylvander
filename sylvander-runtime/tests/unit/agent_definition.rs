@@ -182,6 +182,11 @@ workspace_access = "read"
 command = "code-analyzer-mcp"
 args = ["--verbose"]
 
+[[tools]]
+type = "mcp_streamable_http"
+name = "remote-search"
+url = "https://mcp.example.test/service"
+
 [[memory_stores]]
 store_type = "sqlite"
 path = "/tmp/agent-memory.db"
@@ -197,7 +202,12 @@ max_retries = 5
     assert_eq!(spec.model.temperature, Some(0.7));
     assert_eq!(spec.model.max_tokens, Some(4096));
     assert_eq!(spec.model.allowed_models.len(), 1);
-    assert_eq!(spec.tools.len(), 3);
+    assert_eq!(spec.tools.len(), 4);
+    assert!(matches!(
+        &spec.tools[3],
+        ToolRef::McpStreamableHttp(server)
+            if server.name == "remote-search" && server.url == "https://mcp.example.test/service"
+    ));
     assert_eq!(spec.memory_stores.len(), 1);
     assert_eq!(spec.memory_stores[0].store_type, "sqlite");
     assert_eq!(spec.behavior.max_iterations, 30);

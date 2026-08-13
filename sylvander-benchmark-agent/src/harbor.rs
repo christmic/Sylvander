@@ -6,6 +6,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
+use nix::sys::signal::{Signal, killpg};
+use nix::unistd::Pid;
+use sylvander_agent::event::AgentEvent;
 use sylvander_agent::execution_context::{
     AgentExecutionContext, ExecutionCapability, ExecutionWorkspace,
 };
@@ -23,8 +26,9 @@ use sylvander_agent::workspace_executor::{
 use sylvander_llm_core::{
     ChatMessage, ModelCapabilities, ModelInfo, ModelProvider, ModelRef, SystemInstruction,
 };
+use tokio::io::AsyncReadExt as _;
 
-use crate::{RecorderError, Trajectory, TrajectoryRecorder};
+use crate::{ProviderAudit, RecorderError, Trajectory, TrajectoryRecorder, persist_trajectory};
 
 #[derive(Debug, Clone)]
 pub struct HarborRunConfig {
@@ -37,6 +41,8 @@ pub struct HarborRunConfig {
     pub max_output_tokens: u32,
     pub timeout: Duration,
     pub environment_isolated: bool,
+    pub trajectory_path: std::path::PathBuf,
+    pub provider_audit: ProviderAudit,
 }
 
 pub async fn run_harbor_task(
@@ -79,15 +85,22 @@ pub async fn run_harbor_task(
             ..ExecutionBudget::default()
         });
     let gateway = RegistryBoundToolGateway::new(tools.invocation_descriptors());
+    let mut system_instructions = vec![SystemInstruction {
+        text: "Complete the task in the current workspace. Use the Command tool to inspect, edit, and verify your work. Do not stop until the task verifier should pass.".into(),
+        cache_hint: None,
+    }];
+    if let Some(tool_guidelines) = tools.prompt_guidelines() {
+        system_instructions.push(SystemInstruction {
+            text: tool_guidelines,
+            cache_hint: None,
+        });
+    }
     let request = AgentTurnRequest {
         conversation: sylvander_agent::conversation::ConversationSnapshot::new(vec![
             ChatMessage::user(&config.instruction),
         ]),
         model,
-        system_instructions: vec![SystemInstruction {
-            text: "Complete the task in the current workspace. Use the Command tool to inspect, edit, and verify your work. Do not stop until the task verifier should pass.".into(),
-            cache_hint: None,
-        }],
+        system_instructions,
         reasoning: None,
         tools,
         execution,
@@ -106,12 +119,30 @@ pub async fn run_harbor_task(
             .iter()
             .map(|instruction| instruction.text.clone()),
         config.instruction,
-    );
+    )
+    .with_provider_audit(config.provider_audit);
+    recorder.checkpoint(&config.trajectory_path).await?;
     let mut events = Box::pin(run_stream(&kernel, request, ports));
     while let Some(event) = events.next().await {
-        recorder.record(event)?;
+        let checkpoint = requires_checkpoint(&event);
+        let record_result = recorder.record(event);
+        if checkpoint {
+            recorder.checkpoint(&config.trajectory_path).await?;
+        }
+        record_result?;
     }
-    recorder.finish()
+    let trajectory = recorder.finish()?;
+    persist_trajectory(&config.trajectory_path, &trajectory).await?;
+    Ok(trajectory)
+}
+
+fn requires_checkpoint(event: &AgentEvent) -> bool {
+    !matches!(
+        event,
+        AgentEvent::TextChunk(_)
+            | AgentEvent::ThinkingChunk(_)
+            | AgentEvent::ToolCallOutputDelta { .. }
+    )
 }
 
 /// Executes inside the sandbox selected and enforced by Harbor.
@@ -161,21 +192,75 @@ impl WorkspaceExecutor for HarborContainerExecutor {
             .current_dir(&target.workspace_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true);
-        let output = tokio::time::timeout(timeout, process.output())
-            .await
-            .map_err(|_| WorkspaceExecutorError::Timeout(timeout))??;
-        let stdout_total_bytes = output.stdout.len() as u64;
-        let stderr_total_bytes = output.stderr.len() as u64;
+        let mut child = process.spawn()?;
+        let mut process_group = ProcessGroupGuard::new(child.id());
+        let mut stdout = child.stdout.take().ok_or_else(|| {
+            WorkspaceExecutorError::InvalidRequest("command stdout was not piped".into())
+        })?;
+        let mut stderr = child.stderr.take().ok_or_else(|| {
+            WorkspaceExecutorError::InvalidRequest("command stderr was not piped".into())
+        })?;
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        let collect = async {
+            let (_, _, status) = tokio::try_join!(
+                stdout.read_to_end(&mut stdout_bytes),
+                stderr.read_to_end(&mut stderr_bytes),
+                child.wait(),
+            )?;
+            Ok::<_, std::io::Error>(status)
+        };
+        let status = if let Ok(status) = tokio::time::timeout(timeout, collect).await {
+            status?
+        } else {
+            // Keep the shell leader alive until the whole group has been
+            // signalled; otherwise its descendants can be re-parented before
+            // the group kill reaches them.
+            process_group.terminate();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(WorkspaceExecutorError::Timeout(timeout));
+        };
+        process_group.disarm();
+        let stdout_total_bytes = stdout_bytes.len() as u64;
+        let stderr_total_bytes = stderr_bytes.len() as u64;
         Ok(WorkspaceCommandOutput {
-            success: output.status.success(),
-            status_code: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
+            success: status.success(),
+            status_code: status.code(),
+            stdout: stdout_bytes,
+            stderr: stderr_bytes,
             stdout_truncated: false,
             stderr_truncated: false,
             stdout_total_bytes,
             stderr_total_bytes,
         })
+    }
+}
+
+struct ProcessGroupGuard(Option<u32>);
+
+impl ProcessGroupGuard {
+    fn new(process_group: Option<u32>) -> Self {
+        Self(process_group)
+    }
+
+    fn terminate(&mut self) {
+        if let Some(process_group) = self.0.take()
+            && let Ok(process_group) = i32::try_from(process_group)
+        {
+            let _ = killpg(Pid::from_raw(process_group), Signal::SIGKILL);
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.terminate();
     }
 }

@@ -6,7 +6,9 @@ ea2fee78517f2e591bad69fcf1e6731f9c23ec99.
 
 import base64
 import json
+import re
 import shlex
+import tempfile
 from pathlib import Path
 from typing import override
 
@@ -15,11 +17,47 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
 
+def _bounded_diagnostic(stderr: str | None, stdout: str | None, secret: str) -> str:
+    output = "\n".join(
+        value.strip() for value in (stderr, stdout) if value and value.strip()
+    )
+    if secret:
+        output = output.replace(secret, "[REDACTED]")
+    return f"{output[:2_000]}…" if len(output) > 2_000 else output
+
+
+def _last_json_line(output: str) -> dict[str, object] | None:
+    """Decode the last JSON line, tolerating container-runtime notices."""
+
+    for line in reversed(output.splitlines()):
+        candidate = line.strip()
+        if not candidate:
+            continue
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict):
+            return decoded
+    return None
+
+
+def _normalize_machine(machine: str) -> str:
+    machine = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", machine)
+    aliases = {"arm64": "aarch64", "x86_64": "x86_64", "amd64": "x86_64"}
+    tokens = machine.strip().lower().split()
+    for token in reversed(tokens):
+        if token in aliases or token == "aarch64":
+            return aliases.get(token, token)
+    return tokens[-1] if tokens else ""
+
+
 class SylvanderAgent(BaseAgent):
     """Run Sylvander inside the task environment and emit native ATIF v1.7."""
 
     SUPPORTS_ATIF = True
     BINARY = "/opt/sylvander/bin/sylvander-harbor-agent"
+    API_KEY_FILE = "/tmp/sylvander-harbor/api-key"
 
     @staticmethod
     @override
@@ -32,6 +70,17 @@ class SylvanderAgent(BaseAgent):
 
     @override
     async def setup(self, environment: BaseEnvironment) -> None:
+        required_arch = self._get_env("SYLVANDER_HARBOR_REQUIRED_ARCH")
+        if required_arch:
+            detected = await environment.exec("uname -m", timeout_sec=10)
+            actual = _normalize_machine(detected.stdout or "")
+            expected = _normalize_machine(required_arch)
+            if detected.return_code != 0 or actual != expected:
+                raise RuntimeError(
+                    "benchmark image architecture mismatch: "
+                    f"required {expected}, detected {actual or 'unknown'}; "
+                    "emulation fallback is forbidden"
+                )
         host_binary = self._get_env("SYLVANDER_HARBOR_BINARY_HOST_PATH")
         if host_binary:
             prepare = await environment.exec(
@@ -51,6 +100,15 @@ class SylvanderAgent(BaseAgent):
         if result.return_code != 0:
             raise RuntimeError(
                 "Sylvander benchmark binary is absent from the task image"
+            )
+        probe = await environment.exec(
+            f"{shlex.quote(self.BINARY)} --self-check", timeout_sec=10
+        )
+        if probe.return_code != 0:
+            output = _bounded_diagnostic(probe.stderr, probe.stdout, "")
+            detail = f": {output}" if output else ""
+            raise RuntimeError(
+                f"Sylvander benchmark binary cannot execute in the task image{detail}"
             )
 
     @override
@@ -80,7 +138,6 @@ class SylvanderAgent(BaseAgent):
             self._get_env("SYLVANDER_HARBOR_PROVIDER_FEATURES") or ""
         )
         env = {
-            "SYLVANDER_HARBOR_API_KEY": api_key,
             "SYLVANDER_HARBOR_PROVIDER_ID": provider_id,
             "SYLVANDER_HARBOR_MODEL_ID": model_id,
             "SYLVANDER_HARBOR_BASE_URL": base_url,
@@ -96,8 +153,18 @@ class SylvanderAgent(BaseAgent):
         )
         if prepare.return_code != 0:
             raise RuntimeError("failed to prepare Sylvander task instruction")
+        with tempfile.NamedTemporaryFile() as credential:
+            credential.write(api_key.encode())
+            credential.flush()
+            await environment.upload_file(Path(credential.name), self.API_KEY_FILE)
+        protect = await environment.exec(
+            f"chmod 600 {shlex.quote(self.API_KEY_FILE)}", user="root", timeout_sec=10
+        )
+        if protect.return_code != 0:
+            raise RuntimeError("failed to protect Sylvander provider credential")
         result = await environment.exec(
-            f"{shlex.quote(self.BINARY)} "
+            "export SYLVANDER_HARBOR_API_KEY=\"$(cat "
+            f"{shlex.quote(self.API_KEY_FILE)})\"; exec {shlex.quote(self.BINARY)} "
             "--instruction-file /tmp/sylvander-harbor/instruction.md "
             "--trajectory-file /logs/agent/trajectory.json "
             "--final-answer-file /logs/agent/final_answer.txt "
@@ -106,8 +173,15 @@ class SylvanderAgent(BaseAgent):
             cwd=workspace,
             env=env,
         )
+        await environment.exec(
+            f"rm -f {shlex.quote(self.API_KEY_FILE)}", user="root", timeout_sec=10
+        )
         if result.return_code != 0:
-            raise RuntimeError("Sylvander benchmark runner exited non-zero")
+            output = _bounded_diagnostic(result.stderr, result.stdout, api_key)
+            detail = f": {output}" if output else ""
+            raise RuntimeError(
+                f"Sylvander benchmark runner exited {result.return_code}{detail}"
+            )
         metrics_result = await environment.exec(
             "python3 -c \"import json; "
             "m=json.load(open('/logs/agent/trajectory.json'))['final_metrics']; "
@@ -115,11 +189,12 @@ class SylvanderAgent(BaseAgent):
             timeout_sec=10,
         )
         if metrics_result.return_code == 0 and metrics_result.stdout:
-            metrics = json.loads(metrics_result.stdout)
-            context.n_input_tokens = metrics.get("total_prompt_tokens")
-            context.n_output_tokens = metrics.get("total_completion_tokens")
-            context.n_cache_tokens = metrics.get("total_cached_tokens")
-            context.metadata = {"atif_schema": "ATIF-v1.7"}
+            metrics = _last_json_line(metrics_result.stdout)
+            if metrics is not None:
+                context.n_input_tokens = metrics.get("total_prompt_tokens")
+                context.n_output_tokens = metrics.get("total_completion_tokens")
+                context.n_cache_tokens = metrics.get("total_cached_tokens")
+                context.metadata = {"atif_schema": "ATIF-v1.7"}
 
 
 def adapter_path() -> Path:

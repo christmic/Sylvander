@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::agent_definition::{AgentSpec, McpServerConfig, ToolRef};
+use crate::agent_definition::{AgentSpec, McpServerConfig, McpStreamableHttpConfig, ToolRef};
 use crate::mcp::stdio::McpResultArtifactSink;
 use crate::mcp::{SessionMcpBinding, SessionMcpRuntimeService};
 use crate::observability::RuntimeObservability;
@@ -440,11 +440,21 @@ impl ConfiguredAgent {
             .iter()
             .filter_map(|reference| match reference {
                 ToolRef::McpServer(server) => Some(server.clone()),
-                ToolRef::Builtin { .. } => None,
+                ToolRef::Builtin { .. } | ToolRef::McpStreamableHttp(_) => None,
+            })
+            .collect();
+        let http_servers = self
+            .definition
+            .spec
+            .tools
+            .iter()
+            .filter_map(|reference| match reference {
+                ToolRef::McpStreamableHttp(server) => Some(server.clone()),
+                ToolRef::Builtin { .. } | ToolRef::McpServer(_) => None,
             })
             .collect();
         let lease = self.session_issuer.issue(session_id.clone(), metadata)?;
-        self.attach_session_lease(lease, binding, servers, workspace_root)
+        self.attach_session_lease(lease, binding, servers, http_servers, workspace_root)
             .await
     }
 
@@ -477,7 +487,17 @@ impl ConfiguredAgent {
             .iter()
             .filter_map(|reference| match reference {
                 ToolRef::McpServer(server) => Some(server.clone()),
-                ToolRef::Builtin { .. } => None,
+                ToolRef::Builtin { .. } | ToolRef::McpStreamableHttp(_) => None,
+            })
+            .collect();
+        let http_servers = self
+            .definition
+            .spec
+            .tools
+            .iter()
+            .filter_map(|reference| match reference {
+                ToolRef::McpStreamableHttp(server) => Some(server.clone()),
+                ToolRef::Builtin { .. } | ToolRef::McpServer(_) => None,
             })
             .collect();
         let lease = self.session_issuer.issue_for_agent_instance(
@@ -485,7 +505,7 @@ impl ConfiguredAgent {
             agent_instance_id,
             metadata,
         )?;
-        self.attach_session_lease(lease, binding, servers, workspace_root)
+        self.attach_session_lease(lease, binding, servers, http_servers, workspace_root)
             .await
     }
 
@@ -494,6 +514,7 @@ impl ConfiguredAgent {
         lease: crate::agent_run::AuthenticatedSessionLease,
         binding: SessionMcpBinding,
         servers: Vec<McpServerConfig>,
+        http_servers: Vec<McpStreamableHttpConfig>,
         workspace_root: std::path::PathBuf,
     ) -> Result<AuthenticatedSession, AgentRunError> {
         let session_id = binding.session_id.clone();
@@ -501,7 +522,7 @@ impl ConfiguredAgent {
         if self.mcp_sessions.tool_registry(&session_id).is_none()
             && let Err(error) = self
                 .mcp_sessions
-                .attach(binding, servers, workspace_root)
+                .attach(binding, servers, http_servers, workspace_root)
                 .await
         {
             self.run.leave_session(&session_id).await;

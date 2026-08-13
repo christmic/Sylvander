@@ -9,8 +9,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::agent_definition::{
-    AgentSpec, BehaviorConfig, McpServerConfig, MemoryStoreConfig, ModelConfig, PersonaConfig,
-    ToolPresentationConfig, ToolRef, UiCommandConfig,
+    AgentSpec, BehaviorConfig, McpServerConfig, McpStreamableHttpConfig, MemoryStoreConfig,
+    ModelConfig, PersonaConfig, ToolPresentationConfig, ToolRef, UiCommandConfig,
 };
 use sha2::{Digest, Sha256};
 use sylvander_agent::tool::{AgentHookPhase, ToolHookConfig};
@@ -217,6 +217,17 @@ pub(crate) fn definition_from_draft(
                     .into_iter()
                     .map(|(name, reference)| encode_secret_reference(name, reference))
                     .collect::<Result<_, _>>()?,
+            }),
+            AgentToolDraft::McpStreamableHttp {
+                name,
+                url,
+                bearer_token,
+            } => ToolRef::McpStreamableHttp(McpStreamableHttpConfig {
+                name,
+                url,
+                bearer_token: bearer_token
+                    .map(encode_optional_secret_reference)
+                    .transpose()?,
             }),
         });
     }
@@ -660,6 +671,23 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
                     }
                 }
             }
+            AgentToolDraft::McpStreamableHttp {
+                name,
+                url,
+                bearer_token,
+            } => {
+                if name.trim().is_empty() || url.trim().is_empty() {
+                    return Err(invalid_definition(
+                        "MCP Streamable HTTP name and URL must not be empty",
+                    ));
+                }
+                if bearer_token
+                    .as_ref()
+                    .is_some_and(|reference| !valid_secret_reference(reference))
+                {
+                    return Err(invalid_definition("MCP bearer-token reference is invalid"));
+                }
+            }
             AgentToolDraft::Builtin { .. } => {}
         }
     }
@@ -723,10 +751,21 @@ fn encode_secret_reference(
         .map_err(|_| invalid_definition("MCP secret reference cannot be encoded"))
 }
 
+fn encode_optional_secret_reference(
+    reference: AgentSecretReference,
+) -> Result<String, AgentAdminError> {
+    serde_json::to_string(&reference)
+        .map(|encoded| format!("{SECRET_REFERENCE_PREFIX}{encoded}"))
+        .map_err(|_| invalid_definition("MCP secret reference cannot be encoded"))
+}
+
 fn redact_tool(tool: &ToolRef) -> RedactedAgentTool {
     match tool {
         ToolRef::Builtin { name } => RedactedAgentTool::Builtin { name: name.clone() },
         ToolRef::McpServer(server) => RedactedAgentTool::McpServer {
+            name: server.name.clone(),
+        },
+        ToolRef::McpStreamableHttp(server) => RedactedAgentTool::McpStreamableHttp {
             name: server.name.clone(),
         },
     }

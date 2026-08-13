@@ -48,14 +48,23 @@ fn update_round_trip_carries_concurrency_and_secret_references_only() {
             temperature: None,
             max_tokens: Some(32_000),
             system_prompt: "private prompt".into(),
-            tools: vec![AgentToolDraft::McpServer {
-                name: "search".into(),
-                execution_environment: "sandbox".into(),
-                workspace_access: McpWorkspaceAccess::Read,
-                command: "mcp-search".into(),
-                args: vec!["serve".into()],
-                environment,
-            }],
+            tools: vec![
+                AgentToolDraft::McpServer {
+                    name: "search".into(),
+                    execution_environment: "sandbox".into(),
+                    workspace_access: McpWorkspaceAccess::Read,
+                    command: "mcp-search".into(),
+                    args: vec!["serve".into()],
+                    environment,
+                },
+                AgentToolDraft::McpStreamableHttp {
+                    name: "remote".into(),
+                    url: "https://mcp.example.test/service".into(),
+                    bearer_token: Some(AgentSecretReference::Environment {
+                        name: "REMOTE_MCP_TOKEN".into(),
+                    }),
+                },
+            ],
             memory_stores: Vec::new(),
             ui_commands: Vec::new(),
             hooks: vec![AgentHookDraft {
@@ -82,6 +91,10 @@ fn update_round_trip_carries_concurrency_and_secret_references_only() {
         "MCP_TOKEN"
     );
     assert_eq!(json["definition"]["hooks"][0]["phase"], "after_tool");
+    assert_eq!(
+        json["definition"]["tools"][1]["type"],
+        "mcp_streamable_http"
+    );
     assert_eq!(
         serde_json::from_value::<AgentAdminRequest>(json).unwrap(),
         request

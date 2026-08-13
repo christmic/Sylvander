@@ -1160,7 +1160,7 @@ impl ToolExecutor for McpResourceTool {
     }
 }
 
-fn namespaced_tool_name(server: &str, remote_name: &str) -> String {
+pub(super) fn namespaced_tool_name(server: &str, remote_name: &str) -> String {
     format!(
         "mcp__{}__{}",
         bounded_name_component(server, 20),
@@ -1241,7 +1241,7 @@ async fn read_process_frame(
     })
 }
 
-fn map_tool_result(result: &JsonValue, artifact_locator: Option<&str>) -> ToolOutput {
+pub(super) fn map_tool_result(result: &JsonValue, artifact_locator: Option<&str>) -> ToolOutput {
     let is_error = result
         .get("isError")
         .and_then(JsonValue::as_bool)

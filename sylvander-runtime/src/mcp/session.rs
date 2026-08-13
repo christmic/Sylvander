@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::agent_definition::{McpServerConfig, McpWorkspaceAccess, SessionId};
+use crate::agent_definition::{
+    McpServerConfig, McpStreamableHttpConfig, McpWorkspaceAccess, SessionId,
+};
 use crate::config::SecretRef;
 use crate::credential::registry::CredentialSecretResolver;
 use crate::execution::{
@@ -21,6 +23,7 @@ use crate::execution::{
 };
 use crate::mcp::SECRET_REFERENCE_PREFIX;
 use crate::mcp::stdio::{McpResultArtifactSink, McpStdioClient};
+use crate::mcp::streamable_http::McpStreamableHttpClient;
 use sylvander_agent::tool::ToolRegistry;
 use sylvander_api::{AgentId, AgentSecretReference};
 
@@ -50,8 +53,9 @@ pub(crate) struct SessionMcpRuntimeService {
 
 struct SessionMcpRuntime {
     binding: SessionMcpBinding,
-    servers: Arc<[McpServerConfig]>,
-    clients: Arc<[McpStdioClient]>,
+    server_count: usize,
+    stdio_clients: Arc<[McpStdioClient]>,
+    http_clients: Arc<[McpStreamableHttpClient]>,
     tools: ToolRegistry,
     state: AtomicU8,
 }
@@ -94,10 +98,11 @@ impl SessionMcpRuntimeService {
         &self,
         binding: SessionMcpBinding,
         servers: Vec<McpServerConfig>,
+        http_servers: Vec<McpStreamableHttpConfig>,
         workspace_root: PathBuf,
     ) -> Result<(), SessionMcpError> {
         validate_binding(&binding)?;
-        validate_servers(&servers)?;
+        validate_servers(&servers, &http_servers)?;
         let mut clients = Vec::with_capacity(servers.len());
         let mut tools = ToolRegistry::new();
         for declaration in &servers {
@@ -170,11 +175,32 @@ impl SessionMcpRuntimeService {
             tools = tools.register_dynamic_source(client.clone());
             clients.push(client);
         }
+        let mut http_clients = Vec::with_capacity(http_servers.len());
+        for declaration in &http_servers {
+            let bearer_token = declaration
+                .bearer_token
+                .as_deref()
+                .map(|encoded| self.resolve_secret_value(&declaration.name, encoded))
+                .transpose()?;
+            let client = McpStreamableHttpClient::connect(
+                declaration,
+                bearer_token,
+                self.result_artifacts.clone(),
+            )
+            .await
+            .map_err(|error| SessionMcpError::Connection {
+                server: declaration.name.clone(),
+                message: error.to_string(),
+            })?;
+            tools = tools.register_dynamic_source(client.clone());
+            http_clients.push(client);
+        }
         let session_id = binding.session_id.clone();
         let runtime = Arc::new(SessionMcpRuntime {
             binding,
-            servers: servers.into(),
-            clients: clients.into(),
+            server_count: servers.len().saturating_add(http_servers.len()),
+            stdio_clients: clients.into(),
+            http_clients: http_clients.into(),
             tools,
             state: AtomicU8::new(STATE_CONFIGURED),
         });
@@ -238,6 +264,21 @@ impl SessionMcpRuntimeService {
         Ok(server)
     }
 
+    fn resolve_secret_value(&self, server: &str, encoded: &str) -> Result<String, SessionMcpError> {
+        let resolver = self
+            .secrets
+            .as_ref()
+            .ok_or_else(|| SessionMcpError::Secret(server.to_owned()))?;
+        let reference = decode_secret_reference(encoded)
+            .ok_or_else(|| SessionMcpError::Secret(server.to_owned()))?;
+        resolver
+            .resolve_credential(&reference)
+            .map_err(|()| SessionMcpError::Secret(server.to_owned()))?
+            .as_str()
+            .map(str::to_owned)
+            .map_err(|_| SessionMcpError::Secret(server.to_owned()))
+    }
+
     #[cfg(test)]
     pub(crate) fn inspect(&self, session_id: &SessionId) -> Option<SessionMcpInspection> {
         self.sessions
@@ -246,7 +287,7 @@ impl SessionMcpRuntimeService {
             .get(session_id)
             .map(|runtime| SessionMcpInspection {
                 binding: runtime.binding.clone(),
-                server_count: runtime.servers.len(),
+                server_count: runtime.server_count,
                 configured: runtime.state.load(Ordering::Acquire) == STATE_CONFIGURED,
             })
     }
@@ -257,11 +298,11 @@ impl SessionMcpRuntime {
         tracing::debug!(
             agent_id = %self.binding.agent_id,
             session_id = %self.binding.session_id,
-            server_count = self.servers.len(),
+            server_count = self.server_count,
             "draining Session-owned MCP runtime"
         );
         self.state.store(STATE_STOPPED, Ordering::Release);
-        for client in self.clients.iter() {
+        for client in self.stdio_clients.iter() {
             if let Err(error) = client.shutdown().await {
                 tracing::warn!(
                     agent_id = %self.binding.agent_id,
@@ -270,6 +311,9 @@ impl SessionMcpRuntime {
                     "failed to stop Session-owned MCP server"
                 );
             }
+        }
+        for client in self.http_clients.iter() {
+            client.shutdown().await;
         }
     }
 }
@@ -293,11 +337,18 @@ fn validate_binding(binding: &SessionMcpBinding) -> Result<(), SessionMcpError> 
     Ok(())
 }
 
-fn validate_servers(servers: &[McpServerConfig]) -> Result<(), SessionMcpError> {
+fn validate_servers(
+    servers: &[McpServerConfig],
+    http_servers: &[McpStreamableHttpConfig],
+) -> Result<(), SessionMcpError> {
     let mut names = HashSet::new();
-    for server in servers {
-        if server.name.trim().is_empty() || !names.insert(server.name.clone()) {
-            return Err(SessionMcpError::DuplicateServer(server.name.clone()));
+    for server in servers
+        .iter()
+        .map(|server| &server.name)
+        .chain(http_servers.iter().map(|server| &server.name))
+    {
+        if server.trim().is_empty() || !names.insert(server.clone()) {
+            return Err(SessionMcpError::DuplicateServer(server.clone()));
         }
     }
     Ok(())

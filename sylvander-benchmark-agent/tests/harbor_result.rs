@@ -1,3 +1,4 @@
+use serde_json::{Map, json};
 use sylvander_benchmark_agent::atif::{Agent, FinalMetrics, Source, Step, Trajectory};
 use sylvander_benchmark_agent::harbor_result::{
     HarborAgentContext, HarborAgentInfo, HarborExceptionInfo, HarborModelInfo, HarborResultError,
@@ -116,6 +117,47 @@ fn records_missing_verifier_as_infrastructure_failure() {
     .unwrap();
     assert_eq!(result.status, AgentBenchStatus::InfrastructureError);
     assert_eq!(result.failure_kind.as_deref(), Some("harbor_exception"));
+}
+
+#[test]
+fn records_partial_agent_failure_separately_with_observed_metrics() {
+    let mut value = trial(None);
+    value.agent_result = Some(HarborAgentContext {
+        n_input_tokens: None,
+        n_cache_tokens: None,
+        n_output_tokens: None,
+    });
+    value.exception_info = Some(HarborExceptionInfo {
+        exception_type: "RuntimeError".into(),
+    });
+    let mut partial = trajectory();
+    partial.final_metrics = None;
+    partial.steps[0].metrics = Some(sylvander_benchmark_agent::Metrics {
+        prompt_tokens: 20,
+        completion_tokens: 10,
+        cached_tokens: Some(5),
+    });
+    partial.extra = Some(Map::from_iter([(
+        "sylvander_observability".into(),
+        json!({"status": "failed"}),
+    )]));
+
+    let result = normalize_harbor_result(
+        coordinate(),
+        RepositoryState {
+            sylvander_commit: "commit".into(),
+            worktree_dirty: false,
+        },
+        "harbor-ea2fee7",
+        &value,
+        &partial,
+    )
+    .unwrap();
+
+    assert_eq!(result.status, AgentBenchStatus::AgentError);
+    assert_eq!(result.reward, None);
+    assert_eq!(result.input_tokens, 20);
+    assert_eq!(result.cached_tokens, Some(5));
 }
 
 #[test]

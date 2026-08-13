@@ -22,8 +22,20 @@ was downloaded locally and pinned at
   request lifecycle;
 - `crates/rmcp/src/transport/child_process.rs` for stdio ownership, close,
   bounded graceful shutdown, and kill fallback;
+- `crates/rmcp/src/transport/streamable_http_client.rs` and
+  `crates/rmcp/src/transport/common/reqwest/streamable_http_client.rs` for the
+  current single-endpoint HTTP lifecycle, JSON/SSE response handling, protocol
+  version and Session headers, authentication, and bounded cleanup;
 - `crates/rmcp/tests/` and `examples/clients/` for notification, cancellation,
   structured-result, pagination, and real child-process fixtures.
+
+Sylvander supports stdio and the current single-endpoint Streamable HTTP
+transport. It does not implement the removed two-endpoint HTTP+SSE transport;
+SSE is only a response representation of Streamable HTTP. Production remote
+endpoints require HTTPS, redirects and URL user-info are rejected, and bearer
+values are resolved from Runtime secret references. Remote MCP receives no
+local process or workspace authority. Arbitrary MCP calls remain
+`NeverReplay` after ambiguous transport failure.
 
 Product architecture was compared with these pinned local sources:
 
@@ -105,7 +117,9 @@ and output types.
 
 ## Session lifecycle
 
-`SessionMcpRuntime` uses an explicit state machine:
+`SessionMcpRuntime` uses an explicit state machine. Stdio takes the process
+steps below; Streamable HTTP takes the corresponding connection/initialize/
+discover path without process or workspace authority:
 
 1. **Configured** — validated declarations exist; no secret or process exists.
 2. **Starting** — Runtime resolves secrets and asks the selected environment to
