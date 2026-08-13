@@ -300,8 +300,13 @@ fn validate_features(provider: &ProviderDefinition) -> Result<(), ProviderFactor
 
 fn protocol_supports(kind: &str, capability: CanonicalModelCapability) -> bool {
     match kind {
-        "anthropic_compatible" | "anthropic_messages" => true,
-        "openai_responses" => !matches!(capability, CanonicalModelCapability::PromptCaching),
+        "anthropic_compatible" | "anthropic_messages" => {
+            capability != CanonicalModelCapability::AudioInput
+        }
+        "openai_responses" => !matches!(
+            capability,
+            CanonicalModelCapability::PromptCaching | CanonicalModelCapability::AudioInput
+        ),
         "openai_chat_completions" => !matches!(
             capability,
             CanonicalModelCapability::PromptCaching | CanonicalModelCapability::DocumentInput
@@ -312,6 +317,7 @@ fn protocol_supports(kind: &str, capability: CanonicalModelCapability) -> bool {
                 | CanonicalModelCapability::StructuredOutput
                 | CanonicalModelCapability::Vision
                 | CanonicalModelCapability::DocumentInput
+                | CanonicalModelCapability::AudioInput
         ),
         _ => false,
     }

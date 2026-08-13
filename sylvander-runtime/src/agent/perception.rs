@@ -59,9 +59,7 @@ pub fn plan_perception(cognition: &CognitionConfig, signals: PerceptionSignals) 
             Some(ModelCapabilities::DOCUMENT_INPUT),
             CognitiveRole::Document,
         ),
-        // Core deliberately has no audio capability bit before it has a typed
-        // audio content block and provider validation path.
-        PerceptionModality::Audio => (None, CognitiveRole::Audio),
+        PerceptionModality::Audio => (Some(ModelCapabilities::AUDIO_INPUT), CognitiveRole::Audio),
     };
     if native_capability.is_some_and(|capability| signals.primary_capabilities.contains(capability))
     {

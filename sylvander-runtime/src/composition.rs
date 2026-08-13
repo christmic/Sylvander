@@ -1241,6 +1241,10 @@ fn canonical_model_capability_bits(
                 ModelCapabilities::DOCUMENT_INPUT,
                 ProviderModelCapabilities::DOCUMENT_INPUT,
             ),
+            CanonicalModelCapability::AudioInput => (
+                ModelCapabilities::AUDIO_INPUT,
+                ProviderModelCapabilities::AUDIO_INPUT,
+            ),
         };
         shadow |= shadow_capability;
         exact |= exact_capability;

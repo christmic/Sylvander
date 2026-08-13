@@ -22,15 +22,17 @@ fn parses_every_canonical_capability() {
         "tool_use",
         "vision",
         "document_input",
+        "audio_input",
     ])
     .unwrap();
-    assert_eq!(parsed.len(), 6);
+    assert_eq!(parsed.len(), 7);
     assert!(parsed.contains(&CanonicalModelCapability::ExtendedThinking));
     assert!(parsed.contains(&CanonicalModelCapability::PromptCaching));
     assert!(parsed.contains(&CanonicalModelCapability::StructuredOutput));
     assert!(parsed.contains(&CanonicalModelCapability::ToolUse));
     assert!(parsed.contains(&CanonicalModelCapability::Vision));
     assert!(parsed.contains(&CanonicalModelCapability::DocumentInput));
+    assert!(parsed.contains(&CanonicalModelCapability::AudioInput));
 }
 
 #[test]

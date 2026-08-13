@@ -44,6 +44,7 @@ pub(crate) enum CanonicalModelCapability {
     ToolUse,
     Vision,
     DocumentInput,
+    AudioInput,
 }
 
 impl CanonicalModelCapability {
@@ -56,6 +57,7 @@ impl CanonicalModelCapability {
             Self::ToolUse => "tool_use",
             Self::Vision => "vision",
             Self::DocumentInput => "document_input",
+            Self::AudioInput => "audio_input",
         }
     }
 
@@ -67,6 +69,7 @@ impl CanonicalModelCapability {
             "tool_use" => Some(Self::ToolUse),
             "vision" => Some(Self::Vision),
             "document_input" => Some(Self::DocumentInput),
+            "audio_input" => Some(Self::AudioInput),
             _ => None,
         }
     }

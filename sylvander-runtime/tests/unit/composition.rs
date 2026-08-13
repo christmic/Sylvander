@@ -23,6 +23,7 @@ fn capability_mapping_covers_the_canonical_vocabulary() {
             "tool_use",
             "vision",
             "document_input",
+            "audio_input",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -41,6 +42,7 @@ fn capability_mapping_covers_the_canonical_vocabulary() {
             | ModelCapabilities::TOOL_USE
             | ModelCapabilities::VISION
             | ModelCapabilities::DOCUMENT_INPUT
+            | ModelCapabilities::AUDIO_INPUT
     );
     assert_eq!(
         exact,
@@ -50,6 +52,7 @@ fn capability_mapping_covers_the_canonical_vocabulary() {
             | ProviderModelCapabilities::TOOL_USE
             | ProviderModelCapabilities::VISION
             | ProviderModelCapabilities::DOCUMENT_INPUT
+            | ProviderModelCapabilities::AUDIO_INPUT
     );
 }
 

@@ -62,3 +62,30 @@ fn unsupported_transport_cannot_be_bypassed_by_a_configured_role() {
         }
     );
 }
+
+#[test]
+fn audio_transport_uses_real_model_capability_before_specialist_fallback() {
+    assert_eq!(
+        plan_perception(
+            &specialist(CognitiveRole::Audio),
+            PerceptionSignals {
+                modality: PerceptionModality::Audio,
+                transport_supported: true,
+                primary_capabilities: ModelCapabilities::AUDIO_INPUT,
+            },
+        ),
+        PerceptionPlan::NativePrimary
+    );
+    assert!(matches!(
+        plan_perception(
+            &specialist(CognitiveRole::Audio),
+            PerceptionSignals {
+                modality: PerceptionModality::Audio,
+                transport_supported: true,
+                primary_capabilities: ModelCapabilities::empty(),
+            },
+        ),
+        PerceptionPlan::SpecialistCandidate { binding }
+            if binding.role == CognitiveRole::Audio
+    ));
+}

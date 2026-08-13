@@ -93,6 +93,10 @@ pub(super) fn public_capability_names(
             ModelCapabilities::DOCUMENT_INPUT,
             sylvander_api::ModelCapability::DocumentInput,
         ),
+        (
+            ModelCapabilities::AUDIO_INPUT,
+            sylvander_api::ModelCapability::AudioInput,
+        ),
     ]
     .into_iter()
     .filter_map(|(flag, name)| capabilities.contains(flag).then_some(name))

@@ -68,6 +68,7 @@ pub enum ModelCapability {
     ToolUse,
     Vision,
     DocumentInput,
+    AudioInput,
 }
 
 /// Stable identity for one model exposed by one provider.

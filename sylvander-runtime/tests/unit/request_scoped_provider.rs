@@ -108,6 +108,7 @@ fn all_capabilities() -> ModelCapabilities {
         | ModelCapabilities::TOOL_USE
         | ModelCapabilities::VISION
         | ModelCapabilities::DOCUMENT_INPUT
+        | ModelCapabilities::AUDIO_INPUT
 }
 
 fn tool_request(provider: &str) -> ModelRequest {
@@ -553,6 +554,34 @@ fn model_preflight_accepts_exactly_the_adapter_capability_surface() {
 
     let historical = stored_model("anthropic", &["reasoning"]);
     factory.preflight(&provider, &historical).unwrap();
+
+    assert_eq!(
+        factory.preflight(&provider, &stored_model("anthropic", &["audio_input"])),
+        Err(ProviderFactoryError::UnsupportedModelCapability)
+    );
+}
+
+#[test]
+fn audio_capability_is_bound_to_the_chat_completions_adapter() {
+    let factory: &dyn ProviderAdapterFactory = &AnthropicProviderFactory;
+    let audio = stored_model("anthropic", &["audio_input"]);
+    factory
+        .preflight(
+            &stored_provider(
+                4,
+                "openai_chat_completions",
+                "https://example.invalid".into(),
+            ),
+            &audio,
+        )
+        .expect("Chat Completions has a typed input_audio wire path");
+    assert_eq!(
+        factory.preflight(
+            &stored_provider(4, "openai_responses", "https://example.invalid".into(),),
+            &audio,
+        ),
+        Err(ProviderFactoryError::UnsupportedModelCapability)
+    );
 }
 
 #[test]
@@ -565,7 +594,12 @@ fn dashscope_generation_rejects_capabilities_owned_by_other_native_apis() {
             &stored_model("anthropic", &["extended_thinking", "tool_use"]),
         )
         .expect("native Generation capabilities");
-    for capability in ["vision", "document_input", "structured_output"] {
+    for capability in [
+        "vision",
+        "document_input",
+        "audio_input",
+        "structured_output",
+    ] {
         let error = factory
             .preflight(&provider, &stored_model("anthropic", &[capability]))
             .unwrap_err();

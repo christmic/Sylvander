@@ -35,6 +35,8 @@ impl ModelCapabilities {
     pub const VISION: Self = Self(1 << 4);
     /// Document (PDF) input support.
     pub const DOCUMENT_INPUT: Self = Self(1 << 5);
+    /// Inline audio input support in the selected provider adapter.
+    pub const AUDIO_INPUT: Self = Self(1 << 6);
 
     /// Empty capability set.
     #[must_use]
