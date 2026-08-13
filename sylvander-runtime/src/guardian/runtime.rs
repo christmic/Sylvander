@@ -1068,6 +1068,7 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
         if self.routes.get(request.route()) != Some(&(class, recovery_policy))
             || request.context().agent_id() != self.agent_id.0
             || request.call_id().is_empty()
+            || Uuid::parse_str(request.invocation_id()).is_err()
             || !self
                 .snapshot
                 .has_same_executable_surface(request.snapshot())
@@ -1114,13 +1115,14 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
                 || durable.declared_recovery_policy != recovery_policy
                 || durable.capability_revision != request.snapshot().revision()
                 || durable.input_digest != request.input_digest()
+                || durable.invocation_id.as_str() != request.invocation_id()
                 || durable.position != crate::storage::session::ToolExecutionPosition::EffectStarted
             {
                 return Err(ToolInvocationError::AccessDenied);
             }
             durable.invocation_id.to_string()
         } else {
-            Uuid::new_v4().to_string()
+            request.invocation_id().to_owned()
         };
 
         let workspace_ids = BTreeSet::from([request.context().execution_target.id.clone()]);

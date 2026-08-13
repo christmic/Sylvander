@@ -306,7 +306,12 @@ async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
     store.save(&session).await.unwrap();
     let effective = effective_config();
     store
-        .update_config(&session.id, 0, Default::default(), effective.clone())
+        .update_config(
+            &session.id,
+            0,
+            sylvander_api::SessionConfigOverrides::default(),
+            effective.clone(),
+        )
         .await
         .unwrap();
     store

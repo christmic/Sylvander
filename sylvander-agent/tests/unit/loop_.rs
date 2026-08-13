@@ -90,6 +90,7 @@ async fn tool_deadline_is_a_typed_outcome() {
         invocation_snapshot: snapshot,
         tool_context: crate::tool_context::defaults::system_tool_context(),
         call_id: "call-slow".into(),
+        invocation_id: "00000000-0000-4000-8000-000000000005".into(),
         route: "slow".into(),
         timeout: Some(std::time::Duration::from_millis(1)),
         progress: crate::tool::ToolProgressSink::new(|_| {}),

@@ -1222,7 +1222,10 @@ fn tool_request(
     input: serde_json::Value,
 ) -> ToolInvocationRequest {
     ToolInvocationRequest::new(
-        call_id,
+        sylvander_agent::tool::invocation::ToolInvocationIdentity::new(
+            "00000000-0000-4000-8000-000000000004",
+            call_id,
+        ),
         route,
         class,
         class.map(|_| sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay),

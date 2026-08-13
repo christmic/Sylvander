@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::execution::tool_context::ToolContext;
 
@@ -180,7 +181,25 @@ impl ToolInvocationSnapshot {
 
 /// Owned authorization request passed from the unique tool execution entry.
 #[derive(Debug, Clone)]
+pub struct ToolInvocationIdentity {
+    invocation_id: String,
+    call_id: String,
+}
+
+impl ToolInvocationIdentity {
+    #[must_use]
+    pub fn new(invocation_id: impl Into<String>, call_id: impl Into<String>) -> Self {
+        Self {
+            invocation_id: invocation_id.into(),
+            call_id: call_id.into(),
+        }
+    }
+}
+
+/// Owned authorization request passed from the unique tool execution entry.
+#[derive(Debug, Clone)]
 pub struct ToolInvocationRequest {
+    invocation_id: String,
     call_id: String,
     route: String,
     class: Option<ToolInvocationClass>,
@@ -198,7 +217,7 @@ impl ToolInvocationRequest {
     /// surface before returning a grant.
     #[must_use]
     pub fn new(
-        call_id: &str,
+        identity: ToolInvocationIdentity,
         route: &str,
         class: Option<ToolInvocationClass>,
         recovery_policy: Option<ToolRecoveryPolicy>,
@@ -207,7 +226,8 @@ impl ToolInvocationRequest {
         snapshot: ToolInvocationSnapshot,
     ) -> Self {
         Self {
-            call_id: call_id.to_owned(),
+            invocation_id: identity.invocation_id,
+            call_id: identity.call_id,
             route: route.to_owned(),
             class,
             recovery_policy,
@@ -215,6 +235,12 @@ impl ToolInvocationRequest {
             input,
             snapshot,
         }
+    }
+
+    /// Stable identity reused across a policy-authorized replay.
+    #[must_use]
+    pub fn invocation_id(&self) -> &str {
+        &self.invocation_id
     }
 
     /// Model-provider call identifier, used only for correlation.
@@ -377,6 +403,7 @@ impl ToolInvocationGateway for RegistryBoundToolGateway {
             .ok_or(ToolInvocationError::Unavailable)?;
         if descriptor.class != class
             || descriptor.recovery_policy != recovery_policy
+            || Uuid::parse_str(request.invocation_id()).is_err()
             || !request
                 .snapshot
                 .authorizes(&request.route, class, recovery_policy)

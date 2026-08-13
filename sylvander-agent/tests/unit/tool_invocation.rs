@@ -59,7 +59,7 @@ async fn standalone_gateway_rejects_unknown_route_and_forged_owner_input() {
     let snapshot = gateway.snapshot();
 
     let unknown = ToolInvocationRequest::new(
-        "call-1",
+        ToolInvocationIdentity::new("00000000-0000-4000-8000-000000000001", "call-1"),
         "browser",
         None,
         None,
@@ -73,7 +73,7 @@ async fn standalone_gateway_rejects_unknown_route_and_forged_owner_input() {
     ));
 
     let forged = ToolInvocationRequest::new(
-        "call-2",
+        ToolInvocationIdentity::new("00000000-0000-4000-8000-000000000002", "call-2"),
         "command",
         Some(ToolInvocationClass::Terminal),
         Some(ToolRecoveryPolicy::NeverReplay),
@@ -105,7 +105,7 @@ async fn recovery_policy_is_independent_and_authorized_exactly() {
         ),
     );
     let forged_policy = ToolInvocationRequest::new(
-        "call-3",
+        ToolInvocationIdentity::new("00000000-0000-4000-8000-000000000003", "call-3"),
         "lookup",
         Some(ToolInvocationClass::Read),
         Some(ToolRecoveryPolicy::NeverReplay),

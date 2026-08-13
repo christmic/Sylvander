@@ -979,6 +979,7 @@ impl AgentRunInner {
                 }
                 sylvander_agent::turn::event::AgentEvent::ToolCallPrepared {
                     id,
+                    invocation_id,
                     name,
                     invocation_class,
                     recovery_policy,
@@ -1000,7 +1001,16 @@ impl AgentRunInner {
                                 session_id: session_id.clone(),
                                 turn_id: turn_id.to_owned(),
                                 call_id: id.clone(),
-                                invocation_id: ToolInvocationId::new(),
+                                invocation_id: ToolInvocationId::parse(invocation_id).map_err(
+                                    |_| {
+                                        AgentRunError::session_persistence(
+                                            SessionPersistenceOperation::BeginToolCall,
+                                            SessionStoreError::Invalid(
+                                                "tool invocation identity is not a UUID".into(),
+                                            ),
+                                        )
+                                    },
+                                )?,
                                 tool_name: name.clone(),
                                 invocation_class,
                                 declared_recovery_policy: recovery_policy,

@@ -447,6 +447,7 @@ pub fn run_stream(
                         arguments,
                     } => Some(PendingToolCall {
                         id: id.clone(),
+                        invocation_id: uuid::Uuid::new_v4().to_string(),
                         name: name.clone(),
                         input: arguments.clone(),
                     }),
@@ -480,6 +481,7 @@ pub fn run_stream(
                     };
                     yield AgentEvent::ToolCallPrepared {
                         id: tool.id.clone(),
+                        invocation_id: tool.invocation_id.clone(),
                         name: tool.name.clone(),
                         invocation_class,
                         recovery_policy,
@@ -794,6 +796,7 @@ pub fn run_stream(
                                     invocation_snapshot: ports.invocation_snapshot.clone(),
                                     tool_context: ports.tool_context.clone(),
                                     call_id: tool_use.id.clone(),
+                                    invocation_id: tool_use.invocation_id.clone(),
                                     route: name.clone(),
                                     timeout: tool_timeout,
                                     progress,
@@ -891,6 +894,7 @@ pub fn run_stream(
                         .zip(prepared_calls.iter())
                         .map(|((tool_use, decision), prepared_call)| {
                         let id = tool_use.id.clone();
+                        let invocation_id = tool_use.invocation_id.clone();
                         let name = tool_use.name.clone();
                         let decision = decision.clone();
                         let prepared_call = prepared_call.clone();
@@ -928,6 +932,7 @@ pub fn run_stream(
                                                     invocation_snapshot,
                                                     tool_context: context,
                                                     call_id: id.clone(),
+                                                    invocation_id,
                                                     route: name.clone(),
                                                     timeout: tool_timeout,
                                                     progress,
@@ -943,6 +948,7 @@ pub fn run_stream(
                                                 invocation_snapshot,
                                                 tool_context: context,
                                                 call_id: id.clone(),
+                                                invocation_id,
                                                 route: name.clone(),
                                                 timeout: tool_timeout,
                                                 progress,
@@ -1165,6 +1171,7 @@ enum ParallelToolOutcome {
 #[derive(Clone)]
 struct PendingToolCall {
     id: String,
+    invocation_id: String,
     name: String,
     input: serde_json::Value,
 }
@@ -1207,6 +1214,7 @@ struct RegisteredToolExecutionRequest {
     invocation_snapshot: crate::tool::invocation::ToolInvocationSnapshot,
     tool_context: ToolContext,
     call_id: String,
+    invocation_id: String,
     route: String,
     timeout: Option<std::time::Duration>,
     progress: crate::tool::ToolProgressSink,
@@ -1219,6 +1227,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         invocation_snapshot,
         tool_context,
         call_id,
+        invocation_id,
         route,
         timeout,
         progress,
@@ -1240,7 +1249,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         }
     };
     let request = crate::tool::invocation::ToolInvocationRequest::new(
-        &call_id,
+        crate::tool::invocation::ToolInvocationIdentity::new(invocation_id, &call_id),
         &route,
         Some(prepared_call.spec().invocation_class),
         Some(prepared_call.spec().recovery_policy),

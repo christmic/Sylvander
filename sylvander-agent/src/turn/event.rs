@@ -94,6 +94,8 @@ pub enum AgentEvent {
     /// admission before any approval or execution side effect.
     ToolCallPrepared {
         id: String,
+        /// Stable identity reused by authorization, execution, and recovery.
+        invocation_id: String,
         name: String,
         /// Trusted authority class, absent when preparation found no route.
         invocation_class: Option<ToolInvocationClass>,
