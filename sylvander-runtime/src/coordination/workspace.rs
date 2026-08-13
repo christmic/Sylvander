@@ -242,6 +242,82 @@ impl WorkspaceIntegrationApproval {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceIntegrationState {
+    Approved,
+    Applying,
+    Applied,
+    Conflicted,
+    ManualReconciliation,
+}
+
+impl WorkspaceIntegrationState {
+    #[must_use]
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next || matches!(self, Self::Applied | Self::ManualReconciliation) {
+            return false;
+        }
+        matches!(
+            (self, next),
+            (
+                Self::Approved | Self::Conflicted,
+                Self::Applying | Self::ManualReconciliation
+            ) | (
+                Self::Applying,
+                Self::Applied | Self::Conflicted | Self::ManualReconciliation
+            )
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceIntegration {
+    pub approval: WorkspaceIntegrationApproval,
+    pub state: WorkspaceIntegrationState,
+    pub revision: u64,
+    pub updated_at: i64,
+}
+
+impl WorkspaceIntegration {
+    pub fn new(
+        approval: WorkspaceIntegrationApproval,
+        view: &AgentWorkspaceView,
+        membership: &SessionMembership,
+        topology_revision: u64,
+    ) -> Result<Self, WorkspaceViewError> {
+        approval.validate(view, membership, topology_revision)?;
+        let updated_at = approval.approved_at;
+        Ok(Self {
+            approval,
+            state: WorkspaceIntegrationState::Approved,
+            revision: 0,
+            updated_at,
+        })
+    }
+
+    pub fn transition(
+        &mut self,
+        expected_revision: u64,
+        next: WorkspaceIntegrationState,
+        now: i64,
+    ) -> Result<(), WorkspaceViewError> {
+        if self.revision != expected_revision {
+            return Err(WorkspaceViewError::RevisionConflict);
+        }
+        if !self.state.can_transition_to(next) {
+            return Err(WorkspaceViewError::InvalidIntegrationTransition);
+        }
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(WorkspaceViewError::RevisionOverflow)?;
+        self.state = next;
+        self.updated_at = now;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkspaceViewError {
     #[error("workspace view is not a new fenced lease")]
@@ -276,6 +352,8 @@ pub enum WorkspaceViewError {
     StaleIntegrationApproval,
     #[error("workspace integration approval has no reviewed candidate or invalid state")]
     InvalidIntegrationApproval,
+    #[error("workspace integration lifecycle transition is invalid")]
+    InvalidIntegrationTransition,
 }
 
 #[cfg(test)]

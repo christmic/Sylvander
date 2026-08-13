@@ -121,6 +121,15 @@ fn only_moderator_can_approve_an_exact_reviewed_workspace_revision() {
     };
 
     approval.validate(&view, &membership(), 7).unwrap();
+    let mut integration =
+        WorkspaceIntegration::new(approval.clone(), &view, &membership(), 7).unwrap();
+    integration
+        .transition(0, WorkspaceIntegrationState::Applying, 4)
+        .unwrap();
+    integration
+        .transition(1, WorkspaceIntegrationState::Applied, 5)
+        .unwrap();
+    assert_eq!(integration.revision, 2);
     approval.approved_by = AgentInstanceId::new("worker");
     assert_eq!(
         approval.validate(&view, &membership(), 7),
