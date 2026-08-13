@@ -15,8 +15,8 @@ use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
 };
 use crate::coordination::service::{
-    CoordinationService, DispatchMessageOutcome, DispatchMessageRequest, ProposeHandoffRequest,
-    ReportWaitRequest,
+    CoordinationService, DispatchMessageOutcome, DispatchMessageRequest, ForkAgentOutcome,
+    ForkAgentRequest, ProposeHandoffRequest, ReportWaitRequest,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -538,6 +538,84 @@ async fn durable_wait_cycle_blocks_dispatch_and_escalates_to_moderator() {
         finding,
         GovernanceFinding::WaitCycle { agents } if agents.len() == 2
     )));
+}
+
+#[tokio::test]
+async fn governed_fork_is_idempotent_and_reconciles_task_membership_revision() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    store
+        .create_task(&CoordinationTask {
+            task_id: TaskId::new("fork-existing-task"),
+            session_id: SessionId::new("multi-session"),
+            membership_revision: 0,
+            parent_task_id: None,
+            created_by: AgentInstanceId::new("moderator-1"),
+            assigned_to: Some(AgentInstanceId::new("worker-1")),
+            objective: "survive participant append".into(),
+            state: CoordinationTaskState::Running,
+            token_budget: 1_000,
+            consumed_tokens: 10,
+            max_handoffs: 2,
+            handoff_count: 0,
+            revision: 0,
+            created_at: 10,
+            updated_at: 10,
+        })
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    let request = ForkAgentRequest {
+        instance_id: AgentInstanceId::new("fork-child"),
+        session_id: SessionId::new("multi-session"),
+        parent_instance_id: AgentInstanceId::new("worker-1"),
+        base_sequence: 7,
+        branch_id: "branch-fork-child".into(),
+    };
+
+    let ForkAgentOutcome::Created(child) = service.fork_agent(request.clone(), 20).await.unwrap()
+    else {
+        panic!("bounded fork should not require arbitration");
+    };
+    assert_eq!(child.state, AgentInstanceState::Created);
+    assert_eq!(
+        service.fork_agent(request, 21).await.unwrap(),
+        ForkAgentOutcome::Created(child.clone())
+    );
+    let restored = store
+        .session_membership(&SessionId::new("multi-session"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.governance.membership_revision, 1);
+    assert_eq!(restored.participants.last(), Some(&child));
+    assert_eq!(
+        store
+            .topology(&SessionId::new("multi-session"))
+            .await
+            .unwrap()
+            .unwrap()
+            .topology_revision,
+        1
+    );
+    assert_eq!(
+        store
+            .task(&TaskId::new("fork-existing-task"))
+            .await
+            .unwrap()
+            .unwrap()
+            .membership_revision,
+        1
+    );
 }
 
 #[tokio::test]

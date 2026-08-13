@@ -7,7 +7,10 @@ use sha2::{Digest, Sha256};
 use sylvander_api::HandoffId;
 use sylvander_api::{AgentInstanceId, CoordinationMessageId, GovernanceCaseId, SessionId, TaskId};
 
-use crate::agent::instance::AgentInstanceState;
+use crate::agent::instance::{
+    AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute, HistoryView,
+    SessionAgentRole,
+};
 use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
 use crate::coordination::governance::{
     GovernanceAssessment, GovernancePolicy, GovernanceSnapshot, ProgressObservation,
@@ -18,6 +21,7 @@ use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageClaim, MessageDeliveryState,
 };
 use crate::coordination::task::SessionTaskGraph;
+use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::SessionStoreError;
@@ -42,6 +46,24 @@ pub struct DispatchMessageRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchMessageOutcome {
     Enqueued(CoordinationMessage),
+    RequiresArbitration {
+        case: ArbitrationCase,
+        assessment: GovernanceAssessment,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ForkAgentRequest {
+    pub instance_id: AgentInstanceId,
+    pub session_id: SessionId,
+    pub parent_instance_id: AgentInstanceId,
+    pub base_sequence: u64,
+    pub branch_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForkAgentOutcome {
+    Created(AgentInstance),
     RequiresArbitration {
         case: ArbitrationCase,
         assessment: GovernanceAssessment,
@@ -172,14 +194,21 @@ where
             },
         );
         if !assessment.permits_automatic_progress() {
-            let case_id = arbitration_case_id(
+            let case_id = governance_case_id(
+                "message",
                 &request,
                 membership.governance.membership_revision,
                 topology.topology_revision,
             )?;
             if let Some(case) = self.store.arbitration_case(&case_id).await? {
-                self.ensure_arbitration_notification(&request, &case, &membership, &topology)
-                    .await?;
+                self.ensure_arbitration_notification(
+                    &request.sender_instance_id,
+                    request.task_id.as_ref(),
+                    &case,
+                    &membership,
+                    &topology,
+                )
+                .await?;
                 return Ok(DispatchMessageOutcome::RequiresArbitration { case, assessment });
             }
             let ttl = i64::try_from(self.arbitration_ttl_seconds)
@@ -204,8 +233,14 @@ where
             self.store
                 .create_arbitration_case(&case, &membership, &topology, now)
                 .await?;
-            self.ensure_arbitration_notification(&request, &case, &membership, &topology)
-                .await?;
+            self.ensure_arbitration_notification(
+                &request.sender_instance_id,
+                request.task_id.as_ref(),
+                &case,
+                &membership,
+                &topology,
+            )
+            .await?;
             return Ok(DispatchMessageOutcome::RequiresArbitration { case, assessment });
         }
 
@@ -244,6 +279,216 @@ where
             .enqueue_message(&message, &membership, &topology, now)
             .await?;
         Ok(DispatchMessageOutcome::Enqueued(message))
+    }
+
+    /// Durably fork one child participant without rewriting existing members.
+    pub async fn fork_agent(
+        &self,
+        request: ForkAgentRequest,
+        now: i64,
+    ) -> Result<ForkAgentOutcome, CoordinationServiceError> {
+        if request.branch_id.trim().is_empty() || request.branch_id.len() > 256 {
+            return Err(CoordinationServiceError::InvalidAgentSpawn(
+                "fork branch identity is invalid".into(),
+            ));
+        }
+        let membership = self
+            .store
+            .session_membership(&request.session_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::MissingMembership(request.session_id.clone())
+            })?;
+        let parent = membership
+            .participants
+            .iter()
+            .find(|participant| participant.instance_id == request.parent_instance_id)
+            .ok_or(CoordinationServiceError::UnknownAgent)?;
+        ensure_available(&membership, &request.parent_instance_id)?;
+        if let Some(existing) = membership
+            .participants
+            .iter()
+            .find(|participant| participant.instance_id == request.instance_id)
+        {
+            return if same_fork_intent(existing, parent, &request) {
+                Ok(ForkAgentOutcome::Created(existing.clone()))
+            } else {
+                Err(CoordinationServiceError::IdempotencyConflict)
+            };
+        }
+        let topology = self
+            .store
+            .topology(&request.session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingTopology(request.session_id.clone()))?;
+        let fork_sequence = membership
+            .participants
+            .iter()
+            .filter_map(|participant| match &participant.origin {
+                AgentInstanceOrigin::Forked {
+                    parent_instance_id,
+                    fork_sequence,
+                } if parent_instance_id == &request.parent_instance_id => Some(*fork_sequence),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(CoordinationServiceError::InvalidAgentSpawn(
+                "fork sequence overflow".into(),
+            ))?;
+        let participant = AgentInstance {
+            instance_id: request.instance_id.clone(),
+            session_id: request.session_id.clone(),
+            definition: parent.definition.clone(),
+            origin: AgentInstanceOrigin::Forked {
+                parent_instance_id: request.parent_instance_id.clone(),
+                fork_sequence,
+            },
+            role: SessionAgentRole::Worker,
+            history_view: HistoryView::ForkSnapshot {
+                base_sequence: request.base_sequence,
+                branch_id: request.branch_id.clone(),
+            },
+            approval_route: ApprovalRoute::Parent {
+                instance_id: request.parent_instance_id.clone(),
+            },
+            state: AgentInstanceState::Created,
+            lifecycle_revision: 0,
+            capability_revision: parent.capability_revision.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        let next_membership_revision = membership
+            .governance
+            .membership_revision
+            .checked_add(1)
+            .ok_or(CoordinationServiceError::InvalidAgentSpawn(
+                "membership revision overflow".into(),
+            ))?;
+        let mut participants = membership.participants.clone();
+        participants.push(participant.clone());
+        let next_membership = crate::session::membership::SessionMembership::new(
+            request.session_id.clone(),
+            participants,
+            crate::session::membership::SessionGovernance {
+                membership_revision: next_membership_revision,
+                updated_at: now,
+                ..membership.governance.clone()
+            },
+        )
+        .map_err(|error| CoordinationServiceError::InvalidAgentSpawn(error.to_string()))?;
+        let next_topology_revision = topology.topology_revision.checked_add(1).ok_or(
+            CoordinationServiceError::InvalidAgentSpawn("topology revision overflow".into()),
+        )?;
+        let mut relations = topology.relations.clone();
+        relations.push(AgentRelation {
+            source: request.parent_instance_id.clone(),
+            target: request.instance_id.clone(),
+            kind: AgentRelationKind::ParentOf,
+            created_at: now,
+        });
+        let next_topology = SessionTopology::new(
+            request.session_id.clone(),
+            next_membership_revision,
+            next_topology_revision,
+            relations,
+            now,
+            &next_membership,
+        )
+        .map_err(|error| CoordinationServiceError::InvalidAgentSpawn(error.to_string()))?;
+        let mut tasks = self
+            .store
+            .task_graph(&request.session_id)
+            .await?
+            .unwrap_or_else(|| SessionTaskGraph {
+                session_id: request.session_id.clone(),
+                membership_revision: next_membership_revision,
+                tasks: Vec::new(),
+                dependencies: Vec::new(),
+            });
+        tasks.membership_revision = next_membership_revision;
+        for task in &mut tasks.tasks {
+            task.membership_revision = next_membership_revision;
+        }
+        tasks
+            .validate(&next_membership)
+            .map_err(|error| CoordinationServiceError::InvalidDurableFacts(error.to_string()))?;
+        let observations = self
+            .store
+            .governance_observations(
+                &request.session_id,
+                self.policy
+                    .stagnation_window
+                    .max(self.policy.handoff_ping_pong_window)
+                    .max(1),
+            )
+            .await?;
+        let assessment = assess(
+            &self.policy,
+            &GovernanceSnapshot {
+                membership: &next_membership,
+                topology: &next_topology,
+                tasks: &tasks,
+                waits: &observations.waits,
+                progress: &observations.progress,
+                handoffs: &observations.handoffs,
+            },
+        );
+        if !assessment.permits_automatic_progress() {
+            let case_id = governance_case_id(
+                "fork",
+                &request,
+                membership.governance.membership_revision,
+                topology.topology_revision,
+            )?;
+            let case = if let Some(case) = self.store.arbitration_case(&case_id).await? {
+                case
+            } else {
+                let ttl = i64::try_from(self.arbitration_ttl_seconds)
+                    .map_err(|_| CoordinationServiceError::InvalidConfiguration)?;
+                let case = ArbitrationCase {
+                    case_id,
+                    session_id: request.session_id.clone(),
+                    moderator_instance_id: membership.governance.moderator_instance_id.clone(),
+                    membership_revision: membership.governance.membership_revision,
+                    topology_revision: topology.topology_revision,
+                    moderator_lease_epoch: membership.governance.lease_epoch,
+                    moderator_fencing_token: membership.governance.fencing_token,
+                    findings: assessment.findings.clone(),
+                    state: ArbitrationState::Open,
+                    revision: 0,
+                    expires_at: now
+                        .checked_add(ttl)
+                        .ok_or(CoordinationServiceError::InvalidConfiguration)?,
+                    created_at: now,
+                    updated_at: now,
+                };
+                self.store
+                    .create_arbitration_case(&case, &membership, &topology, now)
+                    .await?;
+                case
+            };
+            self.ensure_arbitration_notification(
+                &request.parent_instance_id,
+                None,
+                &case,
+                &membership,
+                &topology,
+            )
+            .await?;
+            return Ok(ForkAgentOutcome::RequiresArbitration { case, assessment });
+        }
+        self.store
+            .add_session_participant(
+                &participant,
+                &next_membership,
+                &next_topology,
+                membership.governance.membership_revision,
+                topology.topology_revision,
+            )
+            .await?;
+        Ok(ForkAgentOutcome::Created(participant))
     }
 
     /// Persist and route a task ownership transfer to its governed arbitrator.
@@ -529,22 +774,23 @@ where
 
     async fn ensure_arbitration_notification(
         &self,
-        request: &DispatchMessageRequest,
+        sender_instance_id: &AgentInstanceId,
+        task_id: Option<&TaskId>,
         case: &ArbitrationCase,
         membership: &crate::session::membership::SessionMembership,
         topology: &crate::coordination::topology::SessionTopology,
     ) -> Result<(), CoordinationServiceError> {
         let route = topology
-            .route_between(&request.sender_instance_id, &case.moderator_instance_id)
+            .route_between(sender_instance_id, &case.moderator_instance_id)
             .ok_or(CoordinationServiceError::Unroutable)?;
         let hops = u16::try_from(route.len().saturating_sub(1))
             .map_err(|_| CoordinationServiceError::InvalidConfiguration)?;
         let message = CoordinationMessage {
             message_id: CoordinationMessageId::new(format!("arbitration:{}", case.case_id.0)),
-            session_id: request.session_id.clone(),
-            sender_instance_id: request.sender_instance_id.clone(),
+            session_id: case.session_id.clone(),
+            sender_instance_id: sender_instance_id.clone(),
             recipient_instance_id: case.moderator_instance_id.clone(),
-            task_id: request.task_id.clone(),
+            task_id: task_id.cloned(),
             kind: CoordinationMessageKind::Control,
             payload: format!("governance_case:{}", case.case_id.0),
             topology_revision: topology.topology_revision,
@@ -571,8 +817,9 @@ where
     }
 }
 
-fn arbitration_case_id(
-    request: &DispatchMessageRequest,
+fn governance_case_id(
+    prefix: &str,
+    request: &impl Serialize,
     membership_revision: u64,
     topology_revision: u64,
 ) -> Result<GovernanceCaseId, CoordinationServiceError> {
@@ -583,9 +830,36 @@ fn arbitration_case_id(
     digest.update(membership_revision.to_be_bytes());
     digest.update(topology_revision.to_be_bytes());
     Ok(GovernanceCaseId::new(format!(
-        "message:{:x}",
+        "{prefix}:{:x}",
         digest.finalize()
     )))
+}
+
+fn same_fork_intent(
+    existing: &AgentInstance,
+    parent: &AgentInstance,
+    request: &ForkAgentRequest,
+) -> bool {
+    existing.session_id == request.session_id
+        && existing.definition == parent.definition
+        && existing.role == SessionAgentRole::Worker
+        && existing.capability_revision == parent.capability_revision
+        && matches!(
+            &existing.origin,
+            AgentInstanceOrigin::Forked {
+                parent_instance_id,
+                ..
+            } if parent_instance_id == &request.parent_instance_id
+        )
+        && existing.history_view
+            == (HistoryView::ForkSnapshot {
+                base_sequence: request.base_sequence,
+                branch_id: request.branch_id.clone(),
+            })
+        && existing.approval_route
+            == (ApprovalRoute::Parent {
+                instance_id: request.parent_instance_id.clone(),
+            })
 }
 
 fn ensure_available(
@@ -661,6 +935,8 @@ pub enum CoordinationServiceError {
     IdempotencyConflict,
     #[error("coordination service configuration is invalid")]
     InvalidConfiguration,
+    #[error("Agent spawn is invalid: {0}")]
+    InvalidAgentSpawn(String),
     #[error(transparent)]
     Storage(#[from] SessionStoreError),
 }

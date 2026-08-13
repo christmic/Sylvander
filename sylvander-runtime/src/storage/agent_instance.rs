@@ -343,6 +343,15 @@ impl AgentInstanceStore for SqliteSessionStore {
                 ],
             )?;
             transaction.execute(
+                "UPDATE coordination_tasks SET membership_revision=?1 \
+                 WHERE session_id=?2 AND membership_revision=?3",
+                params![
+                    checked_i64(membership.governance.membership_revision, "membership revision")?,
+                    membership.session_id.0,
+                    checked_i64(expected_membership_revision, "membership revision")?,
+                ],
+            )?;
+            transaction.execute(
                 "DELETE FROM session_topology WHERE session_id=?1",
                 [&topology.session_id.0],
             )?;
