@@ -3155,6 +3155,7 @@ impl AgentRunInner {
                 }
                 sylvander_agent::turn::event::AgentEvent::IterationEnd {
                     iteration,
+                    response_id: _,
                     usage,
                     provider_usage,
                 } => {

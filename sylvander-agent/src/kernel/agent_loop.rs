@@ -874,6 +874,7 @@ pub fn run_stream(
             //    events (chunks + tool calls) have fired.
             yield AgentEvent::IterationEnd {
                 iteration,
+                response_id: response_id.clone(),
                 usage: cumulative_usage,
                 provider_usage: last_provider_usage,
             };

@@ -50,6 +50,7 @@ fn records_one_atif_step_per_model_iteration_with_correlated_tools() {
     recorder
         .record(AgentEvent::IterationEnd {
             iteration: 1,
+            response_id: "response-1".into(),
             usage: usage(),
             provider_usage: usage(),
         })
