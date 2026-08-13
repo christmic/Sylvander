@@ -128,8 +128,100 @@ describe("useRuntime user profile", () => {
     const before = gateway.commands.length;
     await act(async () => {
       expect(await view.result.current.requestUserProfile({ operation: "read" })).toBe(false);
+      expect(await view.result.current.requestIdentityBinding({ operation: "resolve" })).toBe(false);
     });
     expect(gateway.commands).toHaveLength(before);
+    view.unmount();
+  });
+
+  it("keeps one-time identity proof state ephemeral and response-bound", async () => {
+    const gateway = new ProfileGateway();
+    const view = renderHook(() => useRuntime(gateway));
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "runtime", version: 6, capabilities: ["identity_binding_v1"] },
+    }));
+
+    await act(async () => {
+      expect(await view.result.current.requestIdentityBinding({ operation: "begin" })).toBe(true);
+    });
+    expect(gateway.commands.at(-1)).toEqual({
+      type: "identity_binding",
+      request: { version: 1, action: { operation: "begin" } },
+    });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: {
+        result: "challenge_issued",
+        version: 1,
+        challenge_id: "challenge-1",
+        secret: "one-time-secret-123",
+        expires_at_unix_secs: 100,
+      },
+    } }));
+    expect(view.result.current.state.identityBinding.challenge).toEqual({
+      id: "challenge-1",
+      secret: "one-time-secret-123",
+      expiresAtUnixSecs: 100,
+    });
+
+    await act(async () => {
+      expect(await view.result.current.requestIdentityBinding({ operation: "resolve" })).toBe(true);
+    });
+    expect(view.result.current.state.identityBinding.challenge).toBeUndefined();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: {
+        result: "challenge_issued",
+        version: 1,
+        challenge_id: "stale-challenge",
+        secret: "stale-secret-value",
+        expires_at_unix_secs: 200,
+      },
+    } }));
+    expect(view.result.current.state.identityBinding.status).toBe("loading");
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: {
+        result: "resolved",
+        version: 1,
+        binding: { user_id: "alice", revision: 2, linked_at_unix_secs: 90 },
+      },
+    } }));
+    expect(view.result.current.state.identityBinding.binding).toEqual({
+      user_id: "alice",
+      revision: 2,
+      linked_at_unix_secs: 90,
+    });
+
+    await act(async () => {
+      expect(await view.result.current.requestIdentityBinding({
+        operation: "unlink",
+        expected_revision: 2,
+      })).toBe(true);
+    });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: {
+        result: "error",
+        version: 1,
+        error: {
+          code: "conflict",
+          operation: "unlink",
+          message: "identity binding revision changed",
+        },
+      },
+    } }));
+    expect(view.result.current.state.identityBinding.status).toBe("error");
+    expect(view.result.current.state.identityBinding.binding?.revision).toBe(2);
+
+    act(() => view.result.current.clearIdentityBinding());
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: { result: "unlinked", version: 1 },
+    } }));
+    expect(view.result.current.state.identityBinding).toEqual({ status: "idle" });
     view.unmount();
   });
 });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimePendingMemoryConfirmation, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeIdentityBindingAction, type RuntimeIdentityBindingView, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimePendingMemoryConfirmation, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -80,6 +80,13 @@ export interface RuntimeViewState {
     pendingOperation?: RuntimeUserProfileOperation;
     notice?: string;
   };
+  identityBinding: {
+    status: "idle" | "loading" | "ready" | "not_linked" | "submitting" | "error";
+    binding?: RuntimeIdentityBindingView;
+    challenge?: { id: string; secret: string; expiresAtUnixSecs: number };
+    pendingOperation?: RuntimeIdentityBindingAction["operation"];
+    notice?: string;
+  };
   liveness: "idle" | "checking" | "healthy";
   diagnostic?: string;
 }
@@ -96,6 +103,7 @@ const initialState: RuntimeViewState = {
   contextRequestPending: false,
   memoryConfirmations: [],
   userProfile: { status: "idle" },
+  identityBinding: { status: "idle" },
   liveness: "idle",
 };
 
@@ -123,6 +131,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const protocolCapabilitiesRef = useRef(new Set<string>());
   const memoryRequestSessionRef = useRef<string | undefined>(undefined);
   const userProfileRequestRef = useRef<RuntimeUserProfileOperation | undefined>(undefined);
+  const identityBindingRequestRef = useRef<RuntimeIdentityBindingAction["operation"] | undefined>(undefined);
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
 
@@ -171,6 +180,42 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           status: "error",
           pendingOperation: undefined,
           notice: "Runtime command queue is unavailable",
+        },
+      }));
+      return false;
+    }
+  }, [submit]);
+
+  // Challenge proofs are bearer secrets. Keep them out of generic diagnostics
+  // and discard the entire projection when the dedicated surface closes.
+  const requestIdentityBinding = useCallback(async (action: RuntimeIdentityBindingAction) => {
+    if (!protocolCapabilitiesRef.current.has("identity_binding_v1")) return false;
+    identityBindingRequestRef.current = action.operation;
+    setState((current) => ({
+      ...current,
+      identityBinding: {
+        ...current.identityBinding,
+        status: action.operation === "resolve" ? "loading" : "submitting",
+        challenge: undefined,
+        pendingOperation: action.operation,
+        notice: undefined,
+      },
+    }));
+    try {
+      await submit({ type: "identity_binding", request: { version: 1, action } });
+      return true;
+    } catch {
+      if (identityBindingRequestRef.current === action.operation) {
+        identityBindingRequestRef.current = undefined;
+      }
+      setState((current) => ({
+        ...current,
+        identityBinding: {
+          ...current.identityBinding,
+          status: "error",
+          challenge: undefined,
+          pendingOperation: undefined,
+          notice: "Runtime identity command queue is unavailable",
         },
       }));
       return false;
@@ -537,6 +582,59 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             status: "ready",
             profile: response.profile,
             notice: profileSuccessNotice(response.result),
+          },
+        }));
+        break;
+      }
+      case "identity_binding": {
+        const pendingOperation = identityBindingRequestRef.current;
+        const response = message.response;
+        if (!pendingOperation || !identityResponseMatches(pendingOperation, response)) break;
+        identityBindingRequestRef.current = undefined;
+        if (response.result === "challenge_issued") {
+          setState((current) => ({
+            ...current,
+            identityBinding: {
+              status: "ready",
+              challenge: {
+                id: response.challenge_id,
+                secret: response.secret,
+                expiresAtUnixSecs: response.expires_at_unix_secs,
+              },
+              notice: "One-time link proof issued",
+            },
+          }));
+          break;
+        }
+        if (response.result === "resolved") {
+          setState((current) => ({
+            ...current,
+            identityBinding: {
+              status: "ready",
+              binding: response.binding,
+              notice: "Identity binding resolved",
+            },
+          }));
+          break;
+        }
+        if (response.result === "not_linked" || response.result === "unlinked") {
+          setState((current) => ({
+            ...current,
+            identityBinding: {
+              status: "not_linked",
+              notice: response.result === "unlinked" ? "Identity binding removed" : "No identity binding exists",
+            },
+          }));
+          break;
+        }
+        setState((current) => ({
+          ...current,
+          identityBinding: {
+            ...current.identityBinding,
+            status: "error",
+            challenge: undefined,
+            pendingOperation: undefined,
+            notice: identityErrorNotice(response.error.message, response.error.retry_after_ms),
           },
         }));
         break;
@@ -963,7 +1061,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       default:
         break;
     }
-  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestMemoryConfirmations, requestUserProfile, submit]);
+  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestIdentityBinding, requestMemoryConfirmations, requestUserProfile, submit]);
 
   useEffect(() => {
     let stopped = false;
@@ -1019,7 +1117,12 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         protocolCapabilitiesRef.current.clear();
         memoryRequestSessionRef.current = undefined;
         userProfileRequestRef.current = undefined;
-        setState((current) => ({ ...current, userProfile: { status: "idle" } }));
+        identityBindingRequestRef.current = undefined;
+        setState((current) => ({
+          ...current,
+          userProfile: { status: "idle" },
+          identityBinding: { status: "idle" },
+        }));
         scheduleReconnect(event.reason);
       }
     };
@@ -1079,6 +1182,11 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const clearUserProfile = useCallback(() => {
     userProfileRequestRef.current = undefined;
     setState((current) => ({ ...current, userProfile: { status: "idle" } }));
+  }, []);
+
+  const clearIdentityBinding = useCallback(() => {
+    identityBindingRequestRef.current = undefined;
+    setState((current) => ({ ...current, identityBinding: { status: "idle" } }));
   }, []);
 
   const answerQuestion = useCallback(async (callId: string, answer: string) => {
@@ -1293,6 +1401,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     resolveMemoryConfirmation,
     requestUserProfile,
     clearUserProfile,
+    requestIdentityBinding,
+    clearIdentityBinding,
     sendChat,
     interruptTurn,
     requestContext,
@@ -1328,6 +1438,22 @@ function profileResponseOperation(response: Extract<RuntimeMessage, { type: "use
     case "error": return response.error.operation;
     case "not_found": return undefined;
   }
+}
+
+function identityResponseMatches(
+  operation: RuntimeIdentityBindingAction["operation"],
+  response: Extract<RuntimeMessage, { type: "identity_binding" }>["response"],
+) {
+  if (response.result === "error") return response.error.operation === operation;
+  if (response.result === "challenge_issued") return operation === "begin";
+  if (response.result === "resolved") return operation === "confirm" || operation === "resolve";
+  if (response.result === "not_linked") return operation === "resolve";
+  return operation === "unlink";
+}
+
+function identityErrorNotice(message: string, retryAfterMs?: number) {
+  const retry = retryAfterMs === undefined ? "" : `; retry in ${retryAfterMs} ms`;
+  return `${message}${retry}`;
 }
 
 function sameDeltaTarget(left: PendingDelta, right: PendingDelta): boolean {

@@ -37,6 +37,7 @@ export type RuntimeCommand =
   | { type: "submit_feedback"; feedback: RuntimeFeedback }
   | { type: "memory_confirmation"; request: RuntimeMemoryConfirmationRequest }
   | { type: "user_profile"; request: RuntimeUserProfileRequest }
+  | { type: "identity_binding"; request: RuntimeIdentityBindingRequest }
   | { type: "ping" };
 
 export type PlanDecision =
@@ -160,6 +161,45 @@ export type RuntimeUserProfileResponse =
         code: "unsupported_version" | "invalid_request" | "unauthenticated" | "forbidden" | "not_found" | "already_exists" | "conflict" | "rate_limited" | "service_unavailable" | "internal";
         operation: RuntimeUserProfileOperation;
         current_revision?: number;
+        retry_after_ms?: number;
+      };
+    };
+
+export type RuntimeIdentityBindingAction =
+  | { operation: "begin" }
+  | { operation: "confirm"; challenge_id: string; proof: string }
+  | { operation: "resolve" }
+  | { operation: "unlink"; expected_revision: number };
+
+export interface RuntimeIdentityBindingRequest {
+  version: 1;
+  action: RuntimeIdentityBindingAction;
+}
+
+export interface RuntimeIdentityBindingView {
+  user_id: string;
+  revision: number;
+  linked_at_unix_secs: number;
+}
+
+export type RuntimeIdentityBindingResponse =
+  | {
+      result: "challenge_issued";
+      version: 1;
+      challenge_id: string;
+      secret: string;
+      expires_at_unix_secs: number;
+    }
+  | { result: "resolved"; version: 1; binding: RuntimeIdentityBindingView }
+  | { result: "not_linked"; version: 1 }
+  | { result: "unlinked"; version: 1 }
+  | {
+      result: "error";
+      version: 1;
+      error: {
+        code: "unsupported_version" | "invalid_request" | "unauthenticated" | "forbidden" | "already_linked" | "not_linked" | "challenge_unavailable" | "challenge_expired" | "challenge_rejected" | "conflict" | "rate_limited" | "service_unavailable" | "internal";
+        operation: RuntimeIdentityBindingAction["operation"];
+        message: string;
         retry_after_ms?: number;
       };
     };
@@ -353,6 +393,7 @@ export type RuntimeMessage =
   | { type: "feedback_recorded"; feedback_id: string }
   | { type: "memory_confirmation"; response: RuntimeMemoryConfirmationResponse }
   | { type: "user_profile"; response: RuntimeUserProfileResponse }
+  | { type: "identity_binding"; response: RuntimeIdentityBindingResponse }
   | { type: "session_created"; session_id: string; config?: RuntimeSessionConfigState }
   | { type: "session_updated"; session_id: string; label?: string; archived: boolean }
   | { type: "session_deleted"; session_id: string }
