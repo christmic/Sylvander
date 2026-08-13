@@ -12,6 +12,7 @@ use crate::coordination::service::{
     CoordinationService, CreateTaskRequest, DEFAULT_ARBITRATION_TTL_SECONDS, TransitionTaskRequest,
 };
 use crate::coordination::task::CoordinationTaskState;
+use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability};
 use crate::session::now_secs;
 use crate::storage::session::SqliteSessionStore;
 
@@ -19,6 +20,7 @@ pub(super) struct RuntimeWorkflowGate {
     pub(super) store: Arc<SqliteSessionStore>,
     pub(super) session_id: SessionId,
     pub(super) agent_instance_id: AgentInstanceId,
+    pub(super) observability: RuntimeObservability,
 }
 
 #[async_trait::async_trait]
@@ -29,14 +31,14 @@ impl WorkflowGate for RuntimeWorkflowGate {
             GovernancePolicy::default(),
             DEFAULT_ARBITRATION_TTL_SECONDS,
         );
-        let task = match command {
+        let (task, outcome) = match command {
             WorkflowCommand::Create {
                 task_id,
                 objective,
                 token_budget,
                 max_handoffs,
             } => {
-                service
+                let task = service
                     .create_task(
                         CreateTaskRequest {
                             task_id: TaskId::new(task_id),
@@ -50,14 +52,15 @@ impl WorkflowGate for RuntimeWorkflowGate {
                         },
                         now_secs(),
                     )
-                    .await
+                    .await;
+                (task, RuntimeCoordinationOutcome::TaskCreated)
             }
             WorkflowCommand::Transition {
                 task_id,
                 state,
                 consumed_tokens,
             } => {
-                service
+                let task = service
                     .transition_task(
                         TransitionTaskRequest {
                             task_id: TaskId::new(task_id),
@@ -68,10 +71,16 @@ impl WorkflowGate for RuntimeWorkflowGate {
                         },
                         now_secs(),
                     )
-                    .await
+                    .await;
+                (task, RuntimeCoordinationOutcome::TaskTransitioned)
             }
-        }
-        .map_err(|error| error.to_string())?;
+        };
+        let task = task.map_err(|error| error.to_string())?;
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id: self.session_id.clone(),
+                outcome,
+            });
         Ok(WorkflowReceipt {
             task_id: task.task_id.0,
             state: agent_state(task.state),

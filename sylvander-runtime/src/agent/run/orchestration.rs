@@ -1152,6 +1152,7 @@ impl AgentRunInner {
                 store: store.clone(),
                 session_id: session_id.clone(),
                 agent_instance_id: agent_instance_id.clone(),
+                observability: self.observability.clone(),
             });
             ports = ports.with_workflow_gate(workflow_gate);
         }
