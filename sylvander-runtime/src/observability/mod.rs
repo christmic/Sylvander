@@ -421,7 +421,7 @@ impl RuntimeObservability {
                     iteration = transition.iteration,
                     from = transition.from.as_str(),
                     to = transition.to.as_str(),
-                    reason = ?transition.reason,
+                    reason = transition.reason.as_str(),
                     "runtime lifecycle fact"
                 );
             }

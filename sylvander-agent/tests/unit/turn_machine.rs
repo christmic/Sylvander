@@ -98,6 +98,10 @@ fn stable_projection_names_come_only_from_the_typed_vocabulary() {
     );
     assert_eq!(TurnPhase::Completed.as_str(), TurnPhase::COMPLETED);
     assert_eq!(
+        TurnTransitionReason::ContinueAfterToolResults.as_str(),
+        TurnTransitionReason::CONTINUE_AFTER_TOOL_RESULTS
+    );
+    assert_eq!(
         TurnContinuationReason::MaxOutputTokens.as_str(),
         TurnContinuationReason::MAX_OUTPUT_TOKENS
     );

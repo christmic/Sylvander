@@ -115,6 +115,65 @@ pub enum TurnTransitionReason {
     InterruptRequested,
 }
 
+impl TurnTransitionReason {
+    pub const EXECUTION_STARTED: &'static str = "execution_started";
+    pub const REQUEST_VALIDATED: &'static str = "request_validated";
+    pub const BEFORE_HOOKS_COMPLETED: &'static str = "before_hooks_completed";
+    pub const ITERATION_STARTED: &'static str = "iteration_started";
+    pub const COMPRESSION_STARTED: &'static str = "compression_started";
+    pub const COMPRESSION_COMPLETED: &'static str = "compression_completed";
+    pub const MODEL_CALL_STARTED: &'static str = "model_call_started";
+    pub const MODEL_STREAM_OPENED: &'static str = "model_stream_opened";
+    pub const MODEL_RESPONSE_COMPLETED: &'static str = "model_response_completed";
+    pub const TOOL_PREPARATION_STARTED: &'static str = "tool_preparation_started";
+    pub const APPROVAL_REQUIRED: &'static str = "approval_required";
+    pub const APPROVAL_RESOLVED: &'static str = "approval_resolved";
+    pub const USER_INPUT_REQUIRED: &'static str = "user_input_required";
+    pub const USER_INPUT_RESOLVED: &'static str = "user_input_resolved";
+    pub const PLAN_REVIEW_REQUIRED: &'static str = "plan_review_required";
+    pub const PLAN_REVIEW_RESOLVED: &'static str = "plan_review_resolved";
+    pub const TOOL_EXECUTION_STARTED: &'static str = "tool_execution_started";
+    pub const TOOL_EXECUTION_COMPLETED: &'static str = "tool_execution_completed";
+    pub const CONTINUE_AFTER_TOOL_RESULTS: &'static str = "continue_after_tool_results";
+    pub const CONTINUE_AFTER_MAX_OUTPUT_TOKENS: &'static str = "continue_after_max_output_tokens";
+    pub const TERMINAL_MODEL_RESPONSE: &'static str = "terminal_model_response";
+    pub const ITERATION_LIMIT_REACHED: &'static str = "iteration_limit_reached";
+    pub const AFTER_HOOKS_COMPLETED: &'static str = "after_hooks_completed";
+    pub const EXECUTION_FAILED: &'static str = "execution_failed";
+    pub const INTERRUPT_REQUESTED: &'static str = "interrupt_requested";
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExecutionStarted => Self::EXECUTION_STARTED,
+            Self::RequestValidated => Self::REQUEST_VALIDATED,
+            Self::BeforeHooksCompleted => Self::BEFORE_HOOKS_COMPLETED,
+            Self::IterationStarted => Self::ITERATION_STARTED,
+            Self::CompressionStarted => Self::COMPRESSION_STARTED,
+            Self::CompressionCompleted => Self::COMPRESSION_COMPLETED,
+            Self::ModelCallStarted => Self::MODEL_CALL_STARTED,
+            Self::ModelStreamOpened => Self::MODEL_STREAM_OPENED,
+            Self::ModelResponseCompleted => Self::MODEL_RESPONSE_COMPLETED,
+            Self::ToolPreparationStarted => Self::TOOL_PREPARATION_STARTED,
+            Self::ApprovalRequired => Self::APPROVAL_REQUIRED,
+            Self::ApprovalResolved => Self::APPROVAL_RESOLVED,
+            Self::UserInputRequired => Self::USER_INPUT_REQUIRED,
+            Self::UserInputResolved => Self::USER_INPUT_RESOLVED,
+            Self::PlanReviewRequired => Self::PLAN_REVIEW_REQUIRED,
+            Self::PlanReviewResolved => Self::PLAN_REVIEW_RESOLVED,
+            Self::ToolExecutionStarted => Self::TOOL_EXECUTION_STARTED,
+            Self::ToolExecutionCompleted => Self::TOOL_EXECUTION_COMPLETED,
+            Self::ContinueAfterToolResults => Self::CONTINUE_AFTER_TOOL_RESULTS,
+            Self::ContinueAfterMaxOutputTokens => Self::CONTINUE_AFTER_MAX_OUTPUT_TOKENS,
+            Self::TerminalModelResponse => Self::TERMINAL_MODEL_RESPONSE,
+            Self::IterationLimitReached => Self::ITERATION_LIMIT_REACHED,
+            Self::AfterHooksCompleted => Self::AFTER_HOOKS_COMPLETED,
+            Self::ExecutionFailed => Self::EXECUTION_FAILED,
+            Self::InterruptRequested => Self::INTERRUPT_REQUESTED,
+        }
+    }
+}
+
 /// Why the machine will run another model iteration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnContinuationReason {
