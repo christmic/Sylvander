@@ -73,23 +73,31 @@ with assistant output.
 
 Production composition also retains concrete, non-extensible health probes in
 this facade. Each operational request checks Session, relationship memory,
-Agent Registry, and User Profiles concurrently. The Session probe verifies its
-exact live schema, `SQLite` quick-check, and owned foreign keys. The memory
+Agent Registry, User Profiles, Evidence, and credential-operation audit
+concurrently. The Session probe verifies its exact live schema, `SQLite`
+quick-check, and owned foreign keys. The memory
 probe verifies its exact live schema, `SQLite` quick-check, and the independent
 authenticated integrity anchor when configured. Registry verifies the exact
 shared namespace, current schema ledger, owned foreign keys, and `SQLite`
-pages; User Profiles verify their exact schema and `SQLite` pages. Public
-results contain only component identity and
+pages; User Profiles verify their exact schema and `SQLite` pages. Evidence
+verifies its exact base schema, page/foreign-key integrity, and governed table
+shape when enabled. Credential audit verifies its exact schema and database
+integrity. Public results contain only component identity and
 `ready`, `unverified`, or `degraded`; raw errors and storage locations remain
 private. Any degraded component, or a failed Session-count read, contributes
 the stable `Storage` health issue and makes Runtime unready. `Unverified` is a
 test-composition state, not production success.
 
-Evidence, audit, Guardian, and artifact stores still open
+Guardian and artifact stores still open
 through their existing Runtime-owned services; there is not yet a cross-domain
 transaction, unified backup lifecycle, or health coverage for every store.
 Those are remaining implementation work, not capabilities callers may assume
 today.
+
+Evidence has two deliberately separate health facts. Database/schema failures
+are part of the unified `Storage` issue. The asynchronous recorder's sticky
+write failure remains `EvidenceRecorder`, because database recovery cannot
+retroactively restore an omitted governance fact.
 
 ## Built-in observability
 

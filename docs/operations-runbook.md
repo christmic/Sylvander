@@ -22,14 +22,19 @@ The snapshot never contains prompts, messages, tool inputs/results, external
 principal IDs, credentials, paths, or memory content.
 
 The `storage.components` entries currently cover `sessions`,
-`relationship_memory`, `agent_registry`, and `user_profiles`. `ready` means
-the live database integrity probe passed;
+`relationship_memory`, `agent_registry`, `user_profiles`, `evidence`, and
+`credential_audit`. `ready` means the live database integrity probe passed;
 `degraded` makes top-level readiness false. Production must never report
 `unverified`: that state exists only for isolated in-memory test composition.
 Session probing verifies the exact owned schema and foreign keys; relationship
 memory additionally verifies its authenticated anchor when one is configured.
 Registry probing verifies the declared shared namespace, current ledger, and
 owned foreign keys. User Profile probing verifies its exact current schema.
+Evidence verifies base schema, database/foreign-key integrity, and governed
+table shape; credential audit verifies exact schema and database integrity.
+Treat `Storage` and `EvidenceRecorder` separately: the first identifies the
+database health plane, while the second means an asynchronous evidence fact
+was lost and remains sticky even after later writes succeed.
 Probe failures deliberately omit database paths, SQL errors, row content, and
 anchor details. Check protected storage availability and integrity services
 from the operator side before restarting; repeated restarts do not repair

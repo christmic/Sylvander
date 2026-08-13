@@ -82,7 +82,8 @@ crate without retaining a second production path.
   no secret or secret reference enters the ledger.
 - `storage` is the closed persistence composition root. It owns the Session
   commit authority and relationship-memory backend, and aggregates Agent
-  Registry and User Profile health. It retains concrete health
+  Registry, User Profile, Evidence, and credential-audit health. It retains
+  concrete health
   probes only inside Runtime, and exposes one content-free operational view.
   Production health revalidates each live schema plus SQLite integrity;
   Session and Registry also check owned foreign keys, Registry checks its
@@ -91,6 +92,10 @@ crate without retaining a second production path.
   unready without disclosing paths, row data, database errors, or key/anchor
   material. The Agent receives only cloned provider-neutral ports and cannot
   select, inspect, or probe a backend.
+  Evidence database degradation is distinct from the recorder's sticky
+  asynchronous write-failure signal: the former is a `Storage` issue, while
+  the latter remains `EvidenceRecorder` because a later successful write
+  cannot reconstruct a missing fact.
 - `capability_runtime` freezes disjoint Worker and Guardian registries and
   re-authorizes Runtime-derived owner scope at invocation time. The production
   `ToolInvocationGateway` freezes the exact executable tool catalog and routes

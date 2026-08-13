@@ -210,22 +210,25 @@ and `completed` terminal together. Failed and interrupted terminals are also
 persisted before their public event when a durable turn exists.
 
 The same facade now emits a unified, content-free health snapshot for Session,
-relationship memory, the Agent Registry, and User Profiles. Production
-composition retains concrete probe handles while
+relationship memory, the Agent Registry, User Profiles, Evidence, and the
+credential-operation audit ledger. Production composition retains concrete
+probe handles while
 Agent revisions receive only their provider-neutral ports. Session health
 rechecks the exact live schema, SQLite pages, and owned foreign keys;
 relationship-memory health rechecks its exact schema, SQLite pages, and, when
 configured, the independent authenticated anchor. Registry health rechecks its
 exact shared namespace, current schema ledger, owned foreign keys, and SQLite
-pages. User Profile health rechecks its exact schema and SQLite pages. `Ready`
-means that live
-probe succeeded, `Degraded` makes Runtime unready, and `Unverified` is reserved
+pages. User Profile health rechecks its exact schema and SQLite pages. Evidence
+rechecks its exact base schema, database and foreign-key integrity, plus the
+governance table shape when governed capture is active. Credential audit
+rechecks its exact schema and database integrity. `Ready` means that live probe
+succeeded, `Degraded` makes Runtime unready, and `Unverified` is reserved
 for isolated test composition without production probes. A failed Session
 count no longer makes the health endpoint fail before it can report Storage as
 degraded. Paths, database errors, row data, and anchor material never enter the
 snapshot.
 
-The remaining Runtime stores, cross-repository transactions, unified backup
+Guardian and artifact stores, cross-repository transactions, unified backup
 lifecycle, and full-store health coverage remain incomplete. Callers must not
 infer those target capabilities from this architecture contract.
 
