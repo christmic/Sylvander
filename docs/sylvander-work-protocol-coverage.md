@@ -2,7 +2,7 @@
 
 > Status: active implementation ledger
 >
-> Verified against `sylvander-api/src/ui.rs` and Desktop commit `51abb1f8e`
+> Verified against `sylvander-api/src/ui.rs` and Desktop commit `f0928cd0b`
 > on 2026-08-13.
 
 ## Purpose
@@ -25,18 +25,18 @@ execution, persistence, or policy ownership moved into Desktop.
 | `CancelTask` | complete | none |
 | `DiscoverAgents` | complete | richer Agent selection metadata |
 | `CreateSession` | complete, sparse defaults | workspace/config editor |
-| `ListSessions`, `LoadSession` | complete | recovery metadata listed below |
-| `RenameSession`, `ArchiveSession`, `DeleteSession` | complete | restore archived Session |
-| `GetRuntimeInfo` | complete | model/permission selection commands |
+| `ListSessions`, `LoadSession` | complete end-to-end | live-turn recovery is separate |
+| `RenameSession`, `ArchiveSession`, `DeleteSession` | complete end-to-end | none |
+| `GetRuntimeInfo` | UI complete, WebSocket missing | add transport dispatch and runtime snapshot |
 | `GetSessionConfig`, `UpdateSessionConfig` | complete | revision-bound field patch preserves omitted write-only state |
 | `SubmitFeedback` | missing | terminal feedback surface |
 | `MemoryConfirmation` | missing | governed memory decision surface |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
-| `ReattachSession` | complete | selected Session reattaches only after a successful reconnect |
-| `RestoreSession`, `ForkSession` | missing | archived/fork workflows |
-| `GetContext`, `Compact` | complete | Runtime-owned report and compaction lifecycle |
-| `PreviewWorkspaceRollback`, `RollbackWorkspace` | complete | two-phase confirmation bound to Runtime turn identity |
-| `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | complete | Runtime diff review and fact-driven accept/discard |
+| `ReattachSession` | UI command only | WebSocket bounded live-event replay and recovery response |
+| `RestoreSession`, `ForkSession` | WebSocket complete, UI missing | archived/fork workflows |
+| `GetContext`, `Compact` | UI complete, WebSocket missing | transport dispatch to Runtime-owned lifecycle |
+| `PreviewWorkspaceRollback`, `RollbackWorkspace` | UI complete, WebSocket missing | transport dispatch for two-phase rollback |
+| `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | UI complete, WebSocket missing | transport dispatch for review and decision |
 | `SelectModel`, `SelectPermissions` | complete | provider-qualified catalog and typed permission profile |
 | `Ping` | complete | explicit user-requested liveness round trip |
 
@@ -68,11 +68,12 @@ execution, persistence, or policy ownership moved into Desktop.
 
 ## Ordered implementation gates
 
-1. Integrate the main Runtime lifecycle chain, including `TurnStarted`, in
-   dependency order; do not cherry-pick only its enum.
-2. Complete Session history/replay metadata and approval scopes.
-3. Complete context, settings, model/permission selection, coding review, and
-   rollback workflows.
+1. Complete WebSocket parity for Runtime info, context, compaction, coding
+   review, and rollback before marking their existing UI projections complete.
+2. Add bounded WebSocket live-event replay, then implement `ReattachSession`;
+   a history-only response is not recovery.
+3. Integrate the authoritative Runtime lifecycle chain, including
+   `TurnStarted`; do not infer it from local submission.
 4. Complete feedback, memory, identity, administration, attachments, and
    liveness surfaces with protocol and accessibility tests.
 

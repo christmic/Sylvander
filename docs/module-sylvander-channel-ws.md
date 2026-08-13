@@ -65,10 +65,13 @@ re-authenticating individual frames.
 6. **Session discovery** — `list_sessions` dispatches through Runtime
    `ChannelHost`, preserving stable-user visibility rules, and returns one typed
    `sessions_list` response.
-7. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
+7. **Session lifecycle** — load, rename, archive, restore, delete, and fork
+   dispatch through Runtime ownership checks. The channel only projects the
+   returned public history or lifecycle event; it never mutates persistence.
+8. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
    list/decide envelopes pass unchanged to Runtime under the authenticated
    WebSocket boundary. The adapter never derives or accepts owner identity.
-8. **Shutdown** — runtime closes idle connections gracefully and
+9. **Shutdown** — runtime closes idle connections gracefully and
    aborts stuck ones on supervisor shutdown.
 
 ## 6. Tests
@@ -76,8 +79,8 @@ re-authenticating individual frames.
 Unit tests in `sylvander-channel-ws/tests/unit/lib.rs` cover the mandatory
 handshake, capability negotiation, live bearer rotation and lease failure,
 Runtime-owned identity and administration dispatch, redaction, per-session
-model changes, Runtime-owned session listing, approval transport, and
-request-size limits. Governed-memory confirmation uses the same exhaustive
+model changes, Runtime-owned session lifecycle, runtime control forwarding,
+approval transport, and request-size limits. Governed-memory confirmation uses the same exhaustive
 message dispatcher; its typed shapes, Runtime ownership, and real transport
 round trip are covered by the protocol, Runtime, and Unix suites. Add a
 WebSocket-specific round-trip case whenever WebSocket framing or dispatch
@@ -91,6 +94,8 @@ changes.
   envelopes.
 - Assuming one socket per session — the channel allows multi-session
   use; tag every outbound message with the `session_id`.
+- Treating `LoadSession` as reconnect recovery — it returns durable history,
+  but live-event replay remains a separate bounded transport responsibility.
 - Treating `auth` as transport-only — it scopes the
   `BoundaryContext.principal` for downstream authorization.
 

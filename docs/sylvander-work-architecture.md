@@ -216,10 +216,11 @@ without exposing a bearer, request header, or socket diagnostic.
 
 After a successful reconnect, Desktop sends `ReattachSession` for the selected
 Runtime identity instead of treating recovery as an ordinary history load.
-`SessionHistory.recovery` marks that response, `notice` is rendered verbatim as
-a public notice, and `replay_truncated` marks it failed-visible before the Unix/
-WebSocket relay resumes buffered in-flight events. Initial selection continues
-to use `LoadSession`.
+The UI already projects `SessionHistory.recovery`, public `notice`, and
+`replay_truncated`, but WebSocket live-event replay is not implemented yet.
+Until a bounded relay is added, reconnect must remain visibly incomplete and
+must not be documented as successful recovery. Initial selection continues to
+use `LoadSession`, which returns durable history only.
 
 Session history also projects Runtime's iteration count, input/output tokens,
 optional nano-USD cost, and source Session identity. These are read-only run
