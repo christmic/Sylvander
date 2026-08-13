@@ -7,6 +7,10 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+mod ledger;
+
+pub use ledger::{AppendOutcome, BenchmarkLedger, BenchmarkLedgerError, PlanCoverage};
+
 /// Runtime capability family under evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -336,3 +340,7 @@ pub enum RuntimeBenchError {
 #[cfg(test)]
 #[path = "../tests/unit/contracts.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/ledger.rs"]
+mod ledger_tests;
