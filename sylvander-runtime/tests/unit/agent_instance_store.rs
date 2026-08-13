@@ -440,6 +440,108 @@ async fn ordinary_agent_cannot_assign_work_outside_its_owned_branch() {
 }
 
 #[tokio::test]
+async fn expired_task_lease_is_recovered_and_fences_the_old_executor() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("task-leases.db");
+    let store = Arc::new(SqliteSessionStore::open(&path).await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    let task = service
+        .create_task(
+            CreateTaskRequest {
+                task_id: TaskId::new("leased-task"),
+                session_id: membership.session_id,
+                parent_task_id: None,
+                created_by: AgentInstanceId::new("moderator-1"),
+                assigned_to: AgentInstanceId::new("worker-1"),
+                objective: "Survive executor replacement".into(),
+                token_budget: 1_000,
+                max_handoffs: 1,
+            },
+            10,
+        )
+        .await
+        .unwrap();
+    let first = store
+        .claim_task(
+            &task.task_id,
+            &AgentInstanceId::new("worker-1"),
+            "turn-1",
+            20,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.lease_epoch, 1);
+    assert_eq!(first.task_revision, 1);
+    assert_eq!(
+        store
+            .claim_task(
+                &task.task_id,
+                &AgentInstanceId::new("worker-1"),
+                "turn-1",
+                21,
+                10,
+            )
+            .await
+            .unwrap(),
+        first
+    );
+    assert!(
+        store
+            .claim_task(
+                &task.task_id,
+                &AgentInstanceId::new("worker-1"),
+                "turn-2",
+                21,
+                10,
+            )
+            .await
+            .is_err()
+    );
+
+    let reopened = SqliteSessionStore::open(&path).await.unwrap();
+    let recovered = reopened
+        .claim_task(
+            &task.task_id,
+            &AgentInstanceId::new("worker-1"),
+            "turn-2",
+            30,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(recovered.lease_epoch, 2);
+    assert_ne!(recovered.fencing_token, first.fencing_token);
+    assert!(reopened.renew_task_lease(&first, 31, 10).await.is_err());
+    assert!(
+        reopened
+            .finish_task_lease(&first, CoordinationTaskState::Completed, 100, 31)
+            .await
+            .is_err()
+    );
+
+    let renewed = reopened.renew_task_lease(&recovered, 31, 10).await.unwrap();
+    assert_eq!(renewed.expires_at, 41);
+    let completed = reopened
+        .finish_task_lease(&renewed, CoordinationTaskState::Completed, 240, 32)
+        .await
+        .unwrap();
+    assert_eq!(completed.state, CoordinationTaskState::Completed);
+    assert_eq!(completed.revision, 2);
+    assert_eq!(completed.consumed_tokens, 240);
+}
+
+#[tokio::test]
 async fn automatic_delivery_persists_one_turn_before_execution() {
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     store.save(&stored_session()).await.unwrap();

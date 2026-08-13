@@ -58,6 +58,7 @@ pub trait CoordinationStore: Send + Sync {
         &self,
         task_id: &TaskId,
         assignee: &AgentInstanceId,
+        claim_owner_id: &str,
         now: i64,
         lease_seconds: u64,
     ) -> Result<TaskExecutionLease, SessionStoreError>;
@@ -571,12 +572,19 @@ impl CoordinationStore for SqliteSessionStore {
         &self,
         task_id: &TaskId,
         assignee: &AgentInstanceId,
+        claim_owner_id: &str,
         now: i64,
         lease_seconds: u64,
     ) -> Result<TaskExecutionLease, SessionStoreError> {
         validate_task_lease_seconds(lease_seconds)?;
+        if claim_owner_id.trim().is_empty() {
+            return Err(SessionStoreError::Invalid(
+                "task claim owner identity is required".into(),
+            ));
+        }
         let task_id = task_id.clone();
         let assignee = assignee.clone();
+        let claim_owner_id = claim_owner_id.to_owned();
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction()?;
             let mut task = load_task(&transaction, &task_id)?
@@ -595,7 +603,10 @@ impl CoordinationStore for SqliteSessionStore {
             if let Some(lease) = &current
                 && lease.expires_at > now
             {
-                if lease.assignee == assignee && lease.task_revision == task.revision {
+                if lease.assignee == assignee
+                    && lease.claim_owner_id == claim_owner_id
+                    && lease.task_revision == task.revision
+                {
                     transaction.commit()?;
                     return Ok(lease.clone());
                 }
@@ -637,6 +648,7 @@ impl CoordinationStore for SqliteSessionStore {
                 task_id: task.task_id.clone(),
                 session_id: task.session_id.clone(),
                 assignee,
+                claim_owner_id,
                 task_revision: task.revision,
                 lease_epoch,
                 fencing_token: uuid::Uuid::new_v4().to_string(),
@@ -644,12 +656,13 @@ impl CoordinationStore for SqliteSessionStore {
             };
             transaction.execute(
                 "INSERT INTO coordination_task_leases \
-                 (task_id,session_id,assignee_instance_id,task_revision,lease_epoch,
+                 (task_id,session_id,assignee_instance_id,claim_owner_id,task_revision,lease_epoch,
                   fencing_token,lease_expires_at,updated_at) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
                  ON CONFLICT(task_id) DO UPDATE SET
                   session_id=excluded.session_id,
                   assignee_instance_id=excluded.assignee_instance_id,
+                  claim_owner_id=excluded.claim_owner_id,
                   task_revision=excluded.task_revision,
                   lease_epoch=excluded.lease_epoch,
                   fencing_token=excluded.fencing_token,
@@ -659,6 +672,7 @@ impl CoordinationStore for SqliteSessionStore {
                     lease.task_id.0,
                     lease.session_id.0,
                     lease.assignee.0,
+                    lease.claim_owner_id,
                     checked_i64(lease.task_revision, "task revision")?,
                     checked_i64(lease.lease_epoch, "task lease epoch")?,
                     lease.fencing_token,
@@ -2588,7 +2602,7 @@ fn load_task_lease(
 ) -> Result<Option<TaskExecutionLease>, SessionStoreError> {
     connection
         .query_row(
-            "SELECT session_id,assignee_instance_id,task_revision,lease_epoch,
+            "SELECT session_id,assignee_instance_id,claim_owner_id,task_revision,lease_epoch,
                     fencing_token,lease_expires_at
              FROM coordination_task_leases WHERE task_id=?1",
             [&task_id.0],
@@ -2596,10 +2610,11 @@ fn load_task_lease(
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         )
@@ -2609,10 +2624,11 @@ fn load_task_lease(
                 task_id: task_id.clone(),
                 session_id: SessionId::new(row.0),
                 assignee: AgentInstanceId::new(row.1),
-                task_revision: checked_u64(row.2, "task revision")?,
-                lease_epoch: checked_u64(row.3, "task lease epoch")?,
-                fencing_token: row.4,
-                expires_at: row.5,
+                claim_owner_id: row.2,
+                task_revision: checked_u64(row.3, "task revision")?,
+                lease_epoch: checked_u64(row.4, "task lease epoch")?,
+                fencing_token: row.5,
+                expires_at: row.6,
             })
         })
         .transpose()
@@ -2629,8 +2645,8 @@ fn ensure_task_lease(
             JOIN coordination_tasks task ON task.task_id=claim.task_id
             WHERE claim.task_id=?1 AND claim.session_id=?2
               AND claim.assignee_instance_id=?3 AND claim.task_revision=?4
-              AND claim.lease_epoch=?5 AND claim.fencing_token=?6
-              AND claim.lease_expires_at>?7 AND task.state='running'
+              AND claim.claim_owner_id=?5 AND claim.lease_epoch=?6 AND claim.fencing_token=?7
+              AND claim.lease_expires_at>?8 AND task.state='running'
               AND task.revision=claim.task_revision
         )",
         params![
@@ -2638,6 +2654,7 @@ fn ensure_task_lease(
             lease.session_id.0,
             lease.assignee.0,
             checked_i64(lease.task_revision, "task revision")?,
+            lease.claim_owner_id,
             checked_i64(lease.lease_epoch, "task lease epoch")?,
             lease.fencing_token,
             now,

@@ -79,6 +79,8 @@ pub struct TaskExecutionLease {
     pub task_id: TaskId,
     pub session_id: SessionId,
     pub assignee: AgentInstanceId,
+    /// Stable Runtime execution identity, normally the durable turn ID.
+    pub claim_owner_id: String,
     pub task_revision: u64,
     pub lease_epoch: u64,
     pub fencing_token: String,

@@ -453,6 +453,7 @@ CREATE TABLE coordination_task_leases (
     task_id             TEXT PRIMARY KEY REFERENCES coordination_tasks(task_id) ON DELETE CASCADE,
     session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     assignee_instance_id TEXT NOT NULL,
+    claim_owner_id      TEXT NOT NULL CHECK(length(trim(claim_owner_id)) > 0),
     task_revision       INTEGER NOT NULL CHECK(task_revision >= 0),
     lease_epoch         INTEGER NOT NULL CHECK(lease_epoch > 0),
     fencing_token       TEXT NOT NULL CHECK(length(trim(fencing_token)) > 0),
