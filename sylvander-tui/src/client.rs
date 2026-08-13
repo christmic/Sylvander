@@ -314,6 +314,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::SessionCreated { session_id, config } => {
             DomainEvent::SessionCreated { session_id, config }
         }
+        ServerMsg::TurnStarted { turn_id, .. } => DomainEvent::TurnStarted { turn_id },
         ServerMsg::AgentsDiscovered { agents } => DomainEvent::AgentsDiscovered { agents },
         ServerMsg::SessionConfig { state } => DomainEvent::SessionConfigLoaded { state },
         ServerMsg::MemoryConfirmation { response } => {

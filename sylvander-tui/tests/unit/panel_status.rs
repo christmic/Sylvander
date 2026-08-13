@@ -30,21 +30,21 @@ fn idle_when_connected_no_streaming_no_modal() {
 }
 
 #[test]
-fn working_when_streaming_text_open() {
+fn streaming_text_does_not_invent_active_turn_state() {
     let mut s = fresh_state();
     s.streaming.push_str("partial");
-    assert_eq!(status_mode_for(&s), StatusMode::Working);
+    assert_eq!(status_mode_for(&s), StatusMode::Idle);
 }
 
 #[test]
-fn working_when_thinking_streaming() {
+fn thinking_stream_does_not_invent_active_turn_state() {
     let mut s = fresh_state();
     s.streaming_thinking.push_str("mulling");
-    assert_eq!(status_mode_for(&s), StatusMode::Working);
+    assert_eq!(status_mode_for(&s), StatusMode::Idle);
 }
 
 #[test]
-fn working_when_a_tool_step_has_pending_child() {
+fn pending_tool_does_not_invent_active_turn_state() {
     let mut s = fresh_state();
     s.messages.push(ChatMessage::ToolStep {
         name: "step".into(),
@@ -58,6 +58,17 @@ fn working_when_a_tool_step_has_pending_child() {
             is_error: None,
         }],
     });
+    assert_eq!(status_mode_for(&s), StatusMode::Idle);
+}
+
+#[test]
+fn working_requires_local_admission_or_runtime_turn_truth() {
+    let mut s = fresh_state();
+    s.turn_pending = true;
+    assert_eq!(status_mode_for(&s), StatusMode::Working);
+    s.turn_pending = false;
+    s.turn_active = true;
+    s.active_turn_id = Some("turn-1".into());
     assert_eq!(status_mode_for(&s), StatusMode::Working);
 }
 
