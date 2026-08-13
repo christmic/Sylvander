@@ -46,12 +46,13 @@ use super::{
     PerceptionArtifactPersistence, PerceptionExecutionPosition, PerceptionInvocationId,
     PerceptionInvocationSnapshot, PerceptionInvocationStart, PerceptionMediaPersistence,
     PerceptionReceiptPersistence, PerceptionRecoveryDecision, PerceptionRecoveryPolicy,
-    PerceptionRecoveryReason, PerceptionRecoveryWrite, PersistedTurnCompletion, ReplacementMessage,
-    SessionFilter, SessionLifetime, SessionMetadataPatch, SessionStore, SessionStoreError,
-    SessionUsage, StoredMessage, StoredSession, ToolCallAdvance, ToolCallCompletion,
-    ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState, ToolExecutionPosition,
-    ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
-    ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot, TurnStart, TurnState,
+    PerceptionRecoveryReason, PerceptionRecoveryWrite, PerceptionSessionSummary,
+    PersistedTurnCompletion, ReplacementMessage, SessionFilter, SessionLifetime,
+    SessionMetadataPatch, SessionStore, SessionStoreError, SessionUsage, StoredMessage,
+    StoredSession, ToolCallAdvance, ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot,
+    ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
+    ToolRecoveryReason, ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind,
+    TurnSnapshot, TurnStart, TurnState,
 };
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2223,6 +2224,33 @@ impl SessionStore for SqliteSessionStore {
         &self,
     ) -> Result<Vec<PerceptionInvocationSnapshot>, SessionStoreError> {
         query_perception_invocations(self, None).await
+    }
+
+    async fn perception_session_summary(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<PerceptionSessionSummary, SessionStoreError> {
+        let session_id = session_id.clone();
+        self.run(move |connection| {
+            let (invocations, completed, interrupted, operator): (i64, i64, i64, i64) = connection
+                .query_row(
+                    "SELECT COUNT(*),
+                         COALESCE(SUM(position='result_persisted'),0),
+                         COALESCE(SUM(position!='result_persisted'),0),
+                         COALESCE(SUM(operator_action_required=1),0)
+                         FROM session_perception_invocations WHERE session_id=?1",
+                    params![session_id.0],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(sqlite_err)?;
+            Ok(PerceptionSessionSummary {
+                invocations: session_u64(invocations, "perception invocation count")?,
+                completed: session_u64(completed, "completed perception count")?,
+                interrupted: session_u64(interrupted, "interrupted perception count")?,
+                operator_action_required: session_u64(operator, "operator perception count")?,
+            })
+        })
+        .await
     }
 
     async fn classify_perception_recovery(

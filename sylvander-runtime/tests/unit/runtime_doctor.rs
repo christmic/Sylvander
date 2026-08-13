@@ -2,6 +2,8 @@ use super::*;
 
 fn empty_recovery() -> SessionRecoverySummary {
     SessionRecoverySummary {
+        total_perceptions: 0,
+        completed_perceptions: 0,
         interrupted_models: 0,
         interrupted_perceptions: 0,
         interrupted_tools: 0,

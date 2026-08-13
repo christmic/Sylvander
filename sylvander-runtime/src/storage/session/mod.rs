@@ -544,6 +544,15 @@ pub struct PerceptionInvocationSnapshot {
     pub updated_at: i64,
 }
 
+/// Content-free durable perception health for one Session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PerceptionSessionSummary {
+    pub invocations: u64,
+    pub completed: u64,
+    pub interrupted: u64,
+    pub operator_action_required: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct PerceptionRecoveryWrite {
     pub invocation_id: PerceptionInvocationId,
@@ -780,6 +789,15 @@ pub trait SessionStore: AgentInstanceStore + Send + Sync {
     async fn interrupted_perception_invocations(
         &self,
     ) -> Result<Vec<PerceptionInvocationSnapshot>, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    async fn perception_session_summary(
+        &self,
+        _session_id: &SessionId,
+    ) -> Result<PerceptionSessionSummary, SessionStoreError> {
         Err(SessionStoreError::Invalid(
             "durable perception is unavailable".into(),
         ))

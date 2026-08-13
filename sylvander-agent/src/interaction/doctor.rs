@@ -32,6 +32,8 @@ pub struct DoctorReport {
     pub manual_workspaces: u64,
     pub interrupted_models: u64,
     pub interrupted_perceptions: u64,
+    pub completed_perceptions: u64,
+    pub total_perceptions: u64,
     pub interrupted_tools: u64,
     pub operator_recoveries: u64,
     pub open_arbitrations: u64,

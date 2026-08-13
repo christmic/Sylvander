@@ -1714,6 +1714,15 @@ async fn specialist_execution_commits_receipt_artifact_and_model_visible_result(
         invocations[0].output_digest.as_deref(),
         Some(result.output_digest.as_str())
     );
+    assert_eq!(
+        store.perception_session_summary(&session.id).await.unwrap(),
+        PerceptionSessionSummary {
+            invocations: 1,
+            completed: 1,
+            interrupted: 0,
+            operator_action_required: 0,
+        }
+    );
 }
 
 #[tokio::test]

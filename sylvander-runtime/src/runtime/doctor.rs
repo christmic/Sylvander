@@ -74,18 +74,17 @@ impl DoctorGate for RuntimeDoctorGate {
             .collect::<Vec<_>>();
         let perceptions = self
             .store
-            .interrupted_perception_invocations()
+            .perception_session_summary(&self.session_id)
             .await
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter(|invocation| invocation.session_id == self.session_id)
-            .collect::<Vec<_>>();
+            .map_err(|error| error.to_string())?;
         let agents = summarize_agents(&membership.participants);
         let tasks = summarize_tasks(tasks.as_ref());
         let workspaces = summarize_workspaces(&workspaces);
         let recovery = SessionRecoverySummary {
             interrupted_models: models.len() as u64,
-            interrupted_perceptions: perceptions.len() as u64,
+            total_perceptions: perceptions.invocations,
+            completed_perceptions: perceptions.completed,
+            interrupted_perceptions: perceptions.interrupted,
             interrupted_tools: tools.len() as u64,
             operator_models: models
                 .iter()
@@ -95,10 +94,7 @@ impl DoctorGate for RuntimeDoctorGate {
                 .iter()
                 .filter(|call| call.operator_action_required)
                 .count() as u64,
-            operator_perceptions: perceptions
-                .iter()
-                .filter(|invocation| invocation.operator_action_required)
-                .count() as u64,
+            operator_perceptions: perceptions.operator_action_required,
         };
         let governance = SessionGovernanceSummary {
             topology_relations: topology.relations.len() as u64,
@@ -120,6 +116,8 @@ impl DoctorGate for RuntimeDoctorGate {
             manual_workspaces: workspaces.manual_reconciliation,
             interrupted_models: recovery.interrupted_models,
             interrupted_perceptions: recovery.interrupted_perceptions,
+            completed_perceptions: recovery.completed_perceptions,
+            total_perceptions: recovery.total_perceptions,
             interrupted_tools: recovery.interrupted_tools,
             operator_recoveries: recovery.operator_models
                 + recovery.operator_perceptions
@@ -182,6 +180,8 @@ pub struct SessionWorkspaceSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecoverySummary {
+    pub total_perceptions: u64,
+    pub completed_perceptions: u64,
     pub interrupted_models: u64,
     pub interrupted_perceptions: u64,
     pub interrupted_tools: u64,
@@ -275,19 +275,18 @@ impl Runtime {
         let perceptions = self
             .storage
             .sessions()
-            .interrupted_perception_invocations()
+            .perception_session_summary(session_id)
             .await
-            .map_err(|error| RuntimeError::Store(error.to_string()))?
-            .into_iter()
-            .filter(|invocation| &invocation.session_id == session_id)
-            .collect::<Vec<_>>();
+            .map_err(|error| RuntimeError::Store(error.to_string()))?;
 
         let agents = summarize_agents(&membership.participants);
         let tasks = summarize_tasks(graph.as_ref());
         let workspaces = summarize_workspaces(&views);
         let recovery = SessionRecoverySummary {
             interrupted_models: models.len() as u64,
-            interrupted_perceptions: perceptions.len() as u64,
+            total_perceptions: perceptions.invocations,
+            completed_perceptions: perceptions.completed,
+            interrupted_perceptions: perceptions.interrupted,
             interrupted_tools: tools.len() as u64,
             operator_models: models
                 .iter()
@@ -297,10 +296,7 @@ impl Runtime {
                 .iter()
                 .filter(|call| call.operator_action_required)
                 .count() as u64,
-            operator_perceptions: perceptions
-                .iter()
-                .filter(|invocation| invocation.operator_action_required)
-                .count() as u64,
+            operator_perceptions: perceptions.operator_action_required,
         };
         let governance = SessionGovernanceSummary {
             topology_relations: topology.relations.len() as u64,
