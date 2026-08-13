@@ -198,8 +198,10 @@ separately from their fully resolved effective configuration. Every turn
 atomically snapshots the Agent revision, provider/model, reasoning,
 permissions, prompt manifest/profile, workspaces, execution target, and
 per-field provenance before provider or tool work begins. Runtime updates
-require the caller's expected configuration revision so concurrent clients
-cannot silently overwrite each other.
+require the caller's expected configuration revision and an explicit
+per-field `set` or `inherit` patch. Missing patch fields remain unchanged, so
+clients cannot silently overwrite concurrent state or clear the write-only
+session prompt after receiving its redacted public projection.
 
 Agents may compose additional dependency and artifact workspaces beside their
 home and the session task workspace:

@@ -30,7 +30,7 @@ DTO、协议协商、纯校验和 JSON Schema。公开数据使用 `serde` 和
 | `identity` | `AgentId`、`SessionId`、`UserId` | 已认证执行身份 |
 | `model` | provider-qualified 模型选择、能力、价格、推理级别 | provider wire 请求 |
 | `platform` | 脱敏能力、命令和工具展示声明 | 凭据、回调、命令参数 |
-| `session` | sparse overrides、有效配置、版本钉住、prompt manifest、workspace DTO | Session 生命周期和存储 |
+| `session` | sparse overrides、显式字段 patch、有效配置、版本钉住、prompt manifest、workspace DTO | Session 生命周期和存储 |
 | `message` | 消息信封、附件、流式事件、系统控制 | 发布、订阅和背压实现 |
 | `execution` | 权限、上下文、压缩、回滚、超时和重试结果 DTO | 沙箱句柄和可执行权限 |
 | `feedback` | opaque target 与证据引用 | Runtime run/turn 内部 ID |
