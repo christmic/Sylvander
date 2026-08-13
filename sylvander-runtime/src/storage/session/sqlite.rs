@@ -356,6 +356,7 @@ CREATE TABLE session_governance (
     moderator_instance_id TEXT NOT NULL,
     moderator_role      TEXT NOT NULL DEFAULT 'moderator' CHECK(moderator_role = 'moderator'),
     governance_revision TEXT NOT NULL CHECK(length(trim(governance_revision)) > 0),
+    membership_revision INTEGER NOT NULL CHECK(membership_revision >= 0),
     lease_epoch         INTEGER NOT NULL CHECK(lease_epoch > 0),
     fencing_token       INTEGER NOT NULL CHECK(fencing_token > 0),
     updated_at          INTEGER NOT NULL,

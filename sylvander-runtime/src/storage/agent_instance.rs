@@ -13,10 +13,11 @@ use crate::storage::session::{SessionStoreError, SqliteSessionStore};
 /// Runtime-owned persistence port for Agent participants and moderator truth.
 #[async_trait]
 pub trait AgentInstanceStore: Send + Sync {
-    /// Atomically replace the complete membership and governance snapshot.
-    async fn replace_session_membership(
+    /// Atomically initialize or compare-and-set the complete membership.
+    async fn save_session_membership(
         &self,
         membership: &SessionMembership,
+        expected_revision: Option<u64>,
     ) -> Result<(), SessionStoreError>;
 
     /// Load the complete membership or `None` when it has not been initialized.
@@ -28,9 +29,10 @@ pub trait AgentInstanceStore: Send + Sync {
 
 #[async_trait]
 impl AgentInstanceStore for SqliteSessionStore {
-    async fn replace_session_membership(
+    async fn save_session_membership(
         &self,
         membership: &SessionMembership,
+        expected_revision: Option<u64>,
     ) -> Result<(), SessionStoreError> {
         membership
             .validate()
@@ -47,6 +49,32 @@ impl AgentInstanceStore for SqliteSessionStore {
                 .optional()?;
             if exists.is_none() {
                 return Err(SessionStoreError::NotFound(membership.session_id));
+            }
+            let actual_revision = transaction
+                .query_row(
+                    "SELECT membership_revision FROM session_governance WHERE session_id=?1",
+                    [&membership.session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|value| checked_u64(value, "membership revision"))
+                .transpose()?;
+            if actual_revision != expected_revision {
+                return Err(SessionStoreError::MembershipConflict {
+                    expected: expected_revision,
+                    actual: actual_revision,
+                });
+            }
+            let required_revision = match expected_revision {
+                None => 0,
+                Some(revision) => revision.checked_add(1).ok_or_else(|| {
+                    SessionStoreError::Invalid("membership revision overflow".into())
+                })?,
+            };
+            if membership.governance.membership_revision != required_revision {
+                return Err(SessionStoreError::Invalid(
+                    "next membership revision is not sequential".into(),
+                ));
             }
 
             transaction.execute(
@@ -106,12 +134,16 @@ impl AgentInstanceStore for SqliteSessionStore {
             transaction.execute(
                 "INSERT INTO session_governance \
                  (session_id,moderator_instance_id,moderator_role,governance_revision,\
-                  lease_epoch,fencing_token,updated_at) \
-                 VALUES (?1,?2,'moderator',?3,?4,?5,?6)",
+                  membership_revision,lease_epoch,fencing_token,updated_at) \
+                 VALUES (?1,?2,'moderator',?3,?4,?5,?6,?7)",
                 params![
                     membership.session_id.0,
                     membership.governance.moderator_instance_id.0,
                     membership.governance.governance_revision,
+                    checked_i64(
+                        membership.governance.membership_revision,
+                        "membership revision"
+                    )?,
                     checked_i64(membership.governance.lease_epoch, "moderator lease epoch")?,
                     checked_i64(
                         membership.governance.fencing_token,
@@ -134,8 +166,8 @@ impl AgentInstanceStore for SqliteSessionStore {
         self.run(move |connection| {
             let governance = connection
                 .query_row(
-                    "SELECT moderator_instance_id,governance_revision,lease_epoch,\
-                            fencing_token,updated_at \
+                    "SELECT moderator_instance_id,governance_revision,membership_revision,\
+                            lease_epoch,fencing_token,updated_at \
                      FROM session_governance WHERE session_id=?1",
                     [&session_id.0],
                     |row| {
@@ -145,11 +177,14 @@ impl AgentInstanceStore for SqliteSessionStore {
                             row.get::<_, i64>(2)?,
                             row.get::<_, i64>(3)?,
                             row.get::<_, i64>(4)?,
+                            row.get::<_, i64>(5)?,
                         ))
                     },
                 )
                 .optional()?;
-            let Some((moderator, revision, epoch, fencing, updated_at)) = governance else {
+            let Some((moderator, revision, membership_revision, epoch, fencing, updated_at)) =
+                governance
+            else {
                 return Ok(None);
             };
 
@@ -185,6 +220,7 @@ impl AgentInstanceStore for SqliteSessionStore {
                 session_id: session_id.clone(),
                 moderator_instance_id: AgentInstanceId::new(moderator),
                 governance_revision: revision,
+                membership_revision: checked_u64(membership_revision, "membership revision")?,
                 lease_epoch: checked_u64(epoch, "moderator lease epoch")?,
                 fencing_token: checked_u64(fencing, "moderator fencing token")?,
                 updated_at,

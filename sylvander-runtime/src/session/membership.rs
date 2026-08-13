@@ -17,6 +17,8 @@ pub struct SessionGovernance {
     pub session_id: SessionId,
     pub moderator_instance_id: AgentInstanceId,
     pub governance_revision: String,
+    /// Monotonic CAS revision of membership, roles, and moderator ownership.
+    pub membership_revision: u64,
     pub lease_epoch: u64,
     pub fencing_token: u64,
     pub updated_at: i64,

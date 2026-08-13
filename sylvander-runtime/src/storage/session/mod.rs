@@ -773,6 +773,11 @@ pub enum SessionStoreError {
     Invalid(String),
     #[error("session configuration revision conflict: expected {expected}, actual {actual}")]
     ConfigConflict { expected: u64, actual: u64 },
+    #[error("session membership revision conflict: expected {expected:?}, actual {actual:?}")]
+    MembershipConflict {
+        expected: Option<u64>,
+        actual: Option<u64>,
+    },
 }
 
 impl From<rusqlite::Error> for SessionStoreError {

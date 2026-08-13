@@ -30,6 +30,7 @@ fn governance(moderator: &str) -> SessionGovernance {
         session_id: SessionId::new("session-1"),
         moderator_instance_id: AgentInstanceId::new(moderator),
         governance_revision: "sha256:governance".into(),
+        membership_revision: 0,
         lease_epoch: 1,
         fencing_token: 1,
         updated_at: 1,
