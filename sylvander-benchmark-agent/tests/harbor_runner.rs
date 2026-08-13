@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use sylvander_benchmark_agent::ProviderAudit;
 use sylvander_benchmark_agent::harbor::{HarborRunConfig, run_harbor_task};
 use sylvander_llm_core::{
     ContentBlock, ModelEventStream, ModelProvider, ModelRef, ModelRequest, ModelResponse,
@@ -12,6 +13,10 @@ struct ScriptedProvider {
     responses: Mutex<VecDeque<ModelResponse>>,
 }
 
+struct HangingAfterResponseProvider {
+    response: Mutex<Option<ModelResponse>>,
+}
+
 impl ModelProvider for ScriptedProvider {
     fn complete_stream(&self, _request: ModelRequest) -> ProviderFuture<'_> {
         let response = self.responses.lock().unwrap().pop_front().unwrap();
@@ -19,6 +24,21 @@ impl ModelProvider for ScriptedProvider {
             let events: Vec<Result<ModelStreamEvent, ProviderError>> =
                 vec![Ok(ModelStreamEvent::Completed(Box::new(response)))];
             Ok(Box::pin(futures_util::stream::iter(events)) as ModelEventStream)
+        })
+    }
+}
+
+impl ModelProvider for HangingAfterResponseProvider {
+    fn complete_stream(&self, _request: ModelRequest) -> ProviderFuture<'_> {
+        let response = self.response.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some(response) = response {
+                let events: Vec<Result<ModelStreamEvent, ProviderError>> =
+                    vec![Ok(ModelStreamEvent::Completed(Box::new(response)))];
+                Ok(Box::pin(futures_util::stream::iter(events)) as ModelEventStream)
+            } else {
+                std::future::pending().await
+            }
         })
     }
 }
@@ -37,6 +57,16 @@ fn response(content: Vec<ContentBlock>, stop_reason: StopReason) -> ModelRespons
             details: TokenUsageDetails::default(),
         },
     }
+}
+
+fn audit() -> ProviderAudit {
+    ProviderAudit::new(
+        "provider",
+        "openai_chat_completions",
+        "model",
+        "https://provider.invalid/v1",
+        "test-credential",
+    )
 }
 
 #[tokio::test]
@@ -75,6 +105,8 @@ async fn executes_a_command_in_the_harness_workspace_and_records_trajectory() {
             max_output_tokens: 128,
             timeout: Duration::from_secs(10),
             environment_isolated: true,
+            trajectory_path: workspace.path().join("trajectory.json"),
+            provider_audit: audit(),
         },
     )
     .await
@@ -106,6 +138,8 @@ async fn rejects_execution_without_harness_isolation_attestation() {
             max_output_tokens: 16,
             timeout: Duration::from_secs(1),
             environment_isolated: false,
+            trajectory_path: workspace.path().join("trajectory.json"),
+            provider_audit: audit(),
         },
     )
     .await;
@@ -152,6 +186,8 @@ async fn command_timeout_terminates_the_complete_process_group() {
             max_output_tokens: 128,
             timeout: Duration::from_millis(100),
             environment_isolated: true,
+            trajectory_path: workspace.path().join("trajectory.json"),
+            provider_audit: audit(),
         },
     )
     .await
@@ -193,5 +229,81 @@ async fn command_timeout_terminates_the_complete_process_group() {
             .any(|content| content.contains("timed out")),
         "trajectory did not retain the timeout: {:?}",
         trajectory.steps
+    );
+}
+
+#[tokio::test]
+async fn interrupted_run_retains_a_valid_content_safe_observability_checkpoint() {
+    let workspace = tempfile::tempdir().unwrap();
+    let credential = "credential-that-must-not-be-persisted";
+    let trajectory_path = workspace.path().join("trajectory.json");
+    let provider = Arc::new(HangingAfterResponseProvider {
+        response: Mutex::new(Some(response(
+            vec![ContentBlock::ToolCall {
+                id: "call-observed".into(),
+                name: "Command".into(),
+                arguments: serde_json::json!({"command": "printf observed"}),
+            }],
+            StopReason::ToolUse,
+        ))),
+    });
+    let run = run_harbor_task(
+        provider,
+        HarborRunConfig {
+            session_id: "interrupted-session".into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            workspace: workspace.path().into(),
+            instruction: "exercise interruption".into(),
+            max_iterations: 4,
+            max_output_tokens: 128,
+            timeout: Duration::from_secs(10),
+            environment_isolated: true,
+            trajectory_path: trajectory_path.clone(),
+            provider_audit: ProviderAudit::new(
+                "provider",
+                "openai_chat_completions",
+                "model",
+                "https://provider.invalid/v1",
+                credential,
+            ),
+        },
+    );
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), run)
+            .await
+            .is_err()
+    );
+    let encoded = std::fs::read_to_string(&trajectory_path).unwrap();
+    assert!(!encoded.contains(credential));
+    let trajectory: sylvander_benchmark_agent::Trajectory = serde_json::from_str(&encoded).unwrap();
+    trajectory.validate().unwrap();
+    let observability = &trajectory.extra.as_ref().unwrap()["sylvander_observability"];
+    assert_eq!(observability["status"], "running");
+    assert_eq!(
+        observability["provider"]["credential_fingerprint"]
+            .as_str()
+            .unwrap()
+            .len(),
+        23
+    );
+    assert!(
+        observability["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event["kind"] == "iteration_finished" && event["response_id"] == "response"
+            })
+    );
+    assert!(
+        observability["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event["kind"] == "tool_finished" && event["call_id"] == "call-observed"
+            })
     );
 }

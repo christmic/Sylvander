@@ -1,5 +1,6 @@
 //! Lossless conversion from Sylvander's provider-neutral Agent events to ATIF.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -62,10 +63,11 @@ impl ProviderAudit {
         credential: &str,
     ) -> Self {
         let digest = Sha256::digest(credential.as_bytes());
-        let credential_fingerprint = digest[..8]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let mut credential_fingerprint = String::with_capacity(16);
+        for byte in &digest[..8] {
+            write!(&mut credential_fingerprint, "{byte:02x}")
+                .expect("writing to a String cannot fail");
+        }
         Self {
             provider_id: provider_id.into(),
             protocol: protocol.into(),
