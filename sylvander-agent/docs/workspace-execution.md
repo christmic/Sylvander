@@ -98,7 +98,8 @@ path crossing the mounted workspace boundary, so Runtime maps only that status
 to `WorkspacePolicyViolation::FilesystemBoundary`. Other non-zero statuses,
 stderr text, and generic permission errors remain ordinary operation failures.
 
-Built-in workspace tools preserve that explicit denial as
+Built-in workspace tools preserve that explicit denial on the single
+`ToolCallEnd` terminal as
 `ToolFailureKind::FilesystemBoundaryPolicyViolation` while keeping the
 human-readable result model-visible. All other model-visible failures default
 to `Unclassified`. Runtime can therefore count or persist policy facts without

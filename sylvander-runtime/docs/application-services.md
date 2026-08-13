@@ -38,10 +38,11 @@ isolated adapter. OCI owns the named container tree and force-removes it when a
 timeout, cancellation, transport loss, or dropped future prevents ordinary
 completion.
 
-Tool failure observation is fact-based. Agent emits a separate content-safe
-classification only when a tool preserves an adapter-provided policy denial;
-Runtime records that fact independently from the provider-facing `is_error`
-result. The built-in snapshot currently counts explicit filesystem-boundary
+Tool failure observation is fact-based. Agent attaches a content-safe
+classification to the tool's single terminal only when an adapter-provided
+policy denial is preserved. Runtime records that fact independently from the
+provider-facing `is_error` result. Timeout interaction events do not create a
+second terminal. The built-in snapshot currently counts explicit filesystem-boundary
 violations. It does not inspect model-visible error text and is not replaceable
 by extensions.
 
@@ -107,9 +108,19 @@ Current implementation status: the crate-private `RuntimeStorage` composition
 root owns the exact Session, relationship-memory, and encrypted turn-artifact
 authorities selected at boot. `Runtime` no longer exposes those authorities as
 public fields.
-Session schema v2 stores explicit turn lifecycle. Turn admission is atomic
+The Session schema stores explicit turn lifecycle. Turn admission is atomic
 with user input and immutable configuration; successful completion is atomic
 with assistant output.
+
+The latest-only Session schema v3 provides content-free tool lifecycle rows
+for `(session, turn, call, tool name)`. The storage contract permits exactly
+one `succeeded`, `failed`, or `rejected` terminal. A successful turn cannot
+commit while any tool row is still running; an interrupted or failed turn
+atomically marks its remaining calls `abandoned`. Wiring AgentRun events into
+this contract remains required before Runtime can claim durable tool-call
+lifecycle coverage. Tool arguments and results belong in provider-neutral
+conversation history or the governed artifact domain, not this operational
+table.
 
 Production composition also retains concrete, non-extensible health probes in
 this facade. Each operational request checks Session, relationship memory,

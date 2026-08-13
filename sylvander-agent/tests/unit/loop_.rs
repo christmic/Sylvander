@@ -2,6 +2,7 @@ use super::*;
 use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::test_support::MockTool;
 use crate::tool_invocation::ToolInvocationGateway as _;
+use crate::turn::conversation::ConversationSnapshot;
 use serde_json::json;
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ChatRole, ContentBlock as ProviderBlock, DocumentContent, ImageContent,
@@ -100,6 +101,50 @@ async fn tool_deadline_is_a_typed_outcome() {
     );
     assert!(outcome.is_error);
     assert!(outcome.output.contains("timed out"));
+}
+
+#[tokio::test]
+async fn timed_out_tool_emits_one_authoritative_terminal() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "call-slow".into(),
+                name: "slow".into(),
+                arguments: json!({}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let tools = crate::tool::ToolRegistry::new().register(SlowTool);
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let mut ports = turn_ports(provider, &request);
+    ports.tool_context.budget.timeout = Some(std::time::Duration::from_millis(1));
+    let kernel = kernel();
+    let mut events = Box::pin(run_stream(&kernel, request, ports));
+    let mut timeout_events = 0;
+    let mut terminal_events = 0;
+
+    while let Some(event) = events.next().await {
+        match event {
+            AgentEvent::ToolTimedOut { id, .. } if id == "call-slow" => timeout_events += 1,
+            AgentEvent::ToolCallEnd {
+                id,
+                is_error: true,
+                failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
+                ..
+            } if id == "call-slow" => terminal_events += 1,
+            _ => {}
+        }
+    }
+
+    assert_eq!(timeout_events, 1);
+    assert_eq!(terminal_events, 1);
 }
 
 fn provider_model() -> ProviderModelInfo {
@@ -477,10 +522,13 @@ async fn trusted_tool_failure_classification_reaches_the_event_stream() {
     while let Some(event) = events.next().await {
         if matches!(
             event,
-            AgentEvent::ToolFailureClassified {
+            AgentEvent::ToolCallEnd {
                 id,
                 name,
-                kind: crate::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation,
+                failure_kind: Some(
+                    crate::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation
+                ),
+                ..
             } if id == "call-policy" && name == "guarded"
         ) {
             classified = true;

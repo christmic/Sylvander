@@ -20,6 +20,7 @@ use crate::interaction::plan::PlanDecision;
 use crate::tool::ToolFailureKind;
 use crate::turn::error::AgentLoopError;
 use crate::turn::outcome::AgentOutcome;
+use crate::turn::machine::TurnTransition;
 
 /// Provider-neutral reason for retrying a model request.
 ///
@@ -41,6 +42,9 @@ pub enum ModelRetryCause {
 /// underlying stream — there is one source of truth for the iteration.
 #[derive(Debug)]
 pub enum AgentEvent {
+    /// Authoritative content-free transition of the current turn machine.
+    TurnTransition(TurnTransition),
+
     /// A new iteration is starting (LLM call about to fire).
     IterationStart {
         /// Iteration number, 1-indexed.
@@ -90,17 +94,6 @@ pub enum AgentEvent {
         timeout_secs: u64,
     },
 
-    /// A tool returned a trusted, content-safe failure classification.
-    ///
-    /// This event precedes the corresponding [`Self::ToolCallEnd`]. Generic
-    /// model-visible failures are not emitted because they carry no stronger
-    /// execution fact than `is_error`.
-    ToolFailureClassified {
-        id: String,
-        name: String,
-        kind: ToolFailureKind,
-    },
-
     /// Tool execution finished.
     ToolCallEnd {
         /// Tool call ID.
@@ -111,6 +104,9 @@ pub enum AgentEvent {
         output: String,
         /// `true` if the tool returned `is_error: true`.
         is_error: bool,
+        /// Trusted classification supplied by the executor, independent from
+        /// model-visible error text.
+        failure_kind: Option<ToolFailureKind>,
     },
 
     /// Tool execution was rejected by the approval gate (not executed).

@@ -2999,6 +2999,13 @@ impl AgentRunInner {
                 break;
             };
             match event {
+                sylvander_agent::turn::event::AgentEvent::TurnTransition(transition) => {
+                    self.observability.record(RuntimeEvent::TurnTransitioned {
+                        turn_id: turn_id.to_owned(),
+                        session_id: session_id.clone(),
+                        transition,
+                    });
+                }
                 sylvander_agent::turn::event::AgentEvent::TextChunk(text) => {
                     self.publish_stream(
                         &session_id,
@@ -3077,16 +3084,9 @@ impl AgentRunInner {
                 }
                 sylvander_agent::turn::event::AgentEvent::ToolTimedOut {
                     id,
-                    name,
+                    name: _,
                     timeout_secs,
                 } => {
-                    self.observability.record(RuntimeEvent::ToolFinished {
-                        turn_id: turn_id.to_owned(),
-                        session_id: session_id.clone(),
-                        tool_call_id: id.clone(),
-                        tool_name: name,
-                        succeeded: false,
-                    });
                     publish_interaction_timeout(
                         &self.bus,
                         &session_id,
@@ -3098,35 +3098,26 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::turn::event::AgentEvent::ToolFailureClassified {
-                    id,
-                    name,
-                    kind,
-                } => match kind {
-                    sylvander_agent::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation => {
-                        self.observability
-                            .record(RuntimeEvent::ToolFailureClassified {
-                                turn_id: turn_id.to_owned(),
-                                session_id: session_id.clone(),
-                                tool_call_id: id,
-                                tool_name: name,
-                                kind: RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation,
-                            });
-                    }
-                    sylvander_agent::tool::ToolFailureKind::Unclassified => {}
-                },
                 sylvander_agent::turn::event::AgentEvent::ToolCallEnd {
                     id,
                     name,
                     output,
                     is_error,
+                    failure_kind,
                 } => {
+                    let failure_kind = match failure_kind {
+                        Some(
+                            sylvander_agent::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation,
+                        ) => Some(RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation),
+                        Some(sylvander_agent::tool::ToolFailureKind::Unclassified) | None => None,
+                    };
                     self.observability.record(RuntimeEvent::ToolFinished {
                         turn_id: turn_id.to_owned(),
                         session_id: session_id.clone(),
                         tool_call_id: id.clone(),
                         tool_name: name.clone(),
                         succeeded: !is_error,
+                        failure_kind,
                     });
                     if matches!(
                         name.as_str(),
@@ -3152,6 +3143,7 @@ impl AgentRunInner {
                         tool_call_id: id.clone(),
                         tool_name: name.clone(),
                         succeeded: false,
+                        failure_kind: None,
                     });
                     self.publish_stream(
                         &session_id,

@@ -93,22 +93,22 @@ fn turn_tool_and_persistence_facts_reduce_to_content_safe_counts() {
         tool_call_id: "call-1".into(),
         tool_name: "read".into(),
     });
-    for succeeded in [true, false] {
+    for (succeeded, failure_kind) in [
+        (true, None),
+        (
+            false,
+            Some(RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation),
+        ),
+    ] {
         recorder.record(RuntimeEvent::ToolFinished {
             turn_id: turn_id.clone(),
             session_id: session_id.clone(),
             tool_call_id: "call-1".into(),
             tool_name: "read".into(),
             succeeded,
+            failure_kind,
         });
     }
-    recorder.record(RuntimeEvent::ToolFailureClassified {
-        turn_id: turn_id.clone(),
-        session_id: session_id.clone(),
-        tool_call_id: "call-1".into(),
-        tool_name: "read".into(),
-        kind: RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation,
-    });
     for succeeded in [true, false] {
         recorder.record(RuntimeEvent::PersistenceFinished {
             turn_id: turn_id.clone(),
@@ -134,7 +134,7 @@ fn turn_tool_and_persistence_facts_reduce_to_content_safe_counts() {
     assert_eq!(
         recorder.snapshot(),
         RuntimeObservabilitySnapshot {
-            event_count: 11,
+            event_count: 10,
             turns_started: 1,
             turns_completed: 1,
             turns_interrupted: 1,
@@ -203,6 +203,7 @@ fn paired_lifecycles_report_active_work_and_bounded_latency() {
         tool_call_id: "call-1".into(),
         tool_name: "read".into(),
         succeeded: true,
+        failure_kind: None,
     });
     clock.set(600_000);
     recorder.record(RuntimeEvent::TurnCompleted {

@@ -10,8 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use crate::agent_definition::{AgentId, SessionId};
+use sylvander_agent::turn::machine::TurnTransition;
 use sylvander_api::MessageId;
+
+use crate::agent_definition::{AgentId, SessionId};
 
 /// Inclusive upper bounds for the first seven duration buckets. The eighth
 /// bucket contains observations above 30 seconds.
@@ -138,6 +140,11 @@ pub(crate) enum RuntimeEvent {
         session_id: SessionId,
         agent_id: AgentId,
     },
+    TurnTransitioned {
+        turn_id: String,
+        session_id: SessionId,
+        transition: TurnTransition,
+    },
     ModelRetried {
         turn_id: String,
         session_id: SessionId,
@@ -155,13 +162,7 @@ pub(crate) enum RuntimeEvent {
         tool_call_id: String,
         tool_name: String,
         succeeded: bool,
-    },
-    ToolFailureClassified {
-        turn_id: String,
-        session_id: SessionId,
-        tool_call_id: String,
-        tool_name: String,
-        kind: RuntimeToolFailureKind,
+        failure_kind: Option<RuntimeToolFailureKind>,
     },
     PersistenceFinished {
         turn_id: String,
@@ -407,6 +408,23 @@ impl RuntimeObservability {
                     "runtime lifecycle fact"
                 );
             }
+            RuntimeEvent::TurnTransitioned {
+                turn_id,
+                session_id,
+                transition,
+            } => {
+                tracing::info!(
+                    event = "turn_transitioned",
+                    %turn_id,
+                    %session_id,
+                    sequence = transition.sequence,
+                    iteration = transition.iteration,
+                    from = transition.from.as_str(),
+                    to = transition.to.as_str(),
+                    reason = ?transition.reason,
+                    "runtime lifecycle fact"
+                );
+            }
             RuntimeEvent::ToolStarted {
                 turn_id,
                 session_id,
@@ -429,11 +447,20 @@ impl RuntimeObservability {
                 tool_call_id,
                 tool_name,
                 succeeded,
+                failure_kind,
             } => {
                 if succeeded {
                     self.inner.tools_succeeded.fetch_add(1, Ordering::Relaxed);
                 } else {
                     self.inner.tools_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                if matches!(
+                    failure_kind,
+                    Some(RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation)
+                ) {
+                    self.inner
+                        .filesystem_policy_violations
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 tracing::info!(
                     event = "tool_finished",
@@ -442,29 +469,7 @@ impl RuntimeObservability {
                     %tool_call_id,
                     %tool_name,
                     succeeded,
-                    "runtime lifecycle fact"
-                );
-            }
-            RuntimeEvent::ToolFailureClassified {
-                turn_id,
-                session_id,
-                tool_call_id,
-                tool_name,
-                kind,
-            } => {
-                match kind {
-                    RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation => self
-                        .inner
-                        .filesystem_policy_violations
-                        .fetch_add(1, Ordering::Relaxed),
-                };
-                tracing::info!(
-                    event = "tool_failure_classified",
-                    %turn_id,
-                    %session_id,
-                    %tool_call_id,
-                    %tool_name,
-                    ?kind,
+                    ?failure_kind,
                     "runtime lifecycle fact"
                 );
             }
@@ -611,8 +616,8 @@ impl RuntimeObservability {
                     timing.turn_latency.observe(duration);
                 }
             }
-            RuntimeEvent::ModelRetried { .. }
-            | RuntimeEvent::ToolFailureClassified { .. }
+            RuntimeEvent::TurnTransitioned { .. }
+            | RuntimeEvent::ModelRetried { .. }
             | RuntimeEvent::PersistenceFinished { .. } => {}
         }
     }
