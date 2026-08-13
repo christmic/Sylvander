@@ -2,7 +2,9 @@ use super::*;
 use std::path::PathBuf;
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
 
-use crate::storage::session::{ModelRecoveryClassification, ModelRecoveryDecision};
+use crate::storage::session::{
+    ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryReason,
+};
 use crate::storage::workspace_journal::WorkspaceJournal;
 
 /// Default session context used by every test. Identity is the
@@ -50,6 +52,79 @@ async fn file_store_enforces_recovery_durability_controls() {
     assert_eq!(journal_mode, "wal");
     assert_eq!(synchronous, SQLITE_SYNCHRONOUS_FULL);
     assert_eq!(foreign_keys, 1);
+}
+
+#[tokio::test]
+async fn unknown_model_outcome_survives_restart_and_persists_manual_decision() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("model-crash.db");
+    let invocation_id = ModelInvocationId::new();
+    {
+        let store = SqliteSessionStore::open(&path).await.unwrap();
+        let mut session = make_session("model-crash", SessionLifetime::Persistent);
+        session.effective_config = Some(effective_config());
+        store.save(&session).await.unwrap();
+        store
+            .begin_turn(
+                &ctx(),
+                TurnStart {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-crash".into(),
+                    config_revision: 0,
+                    effective_config: effective_config(),
+                    user_content: serde_json::json!({"role":"user","content":"crash"}),
+                    model_id: "model-a".into(),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .begin_model_iteration(ModelIterationStart {
+                session_id: session.id,
+                turn_id: "turn-crash".into(),
+                iteration: 1,
+                invocation_id: invocation_id.clone(),
+                model_id: "model-a".into(),
+                capability_revision: format!("sha256:{}", "a".repeat(64)),
+                request_digest: format!("sha256:{}", "b".repeat(64)),
+            })
+            .await
+            .unwrap();
+    }
+
+    let store = SqliteSessionStore::open(&path).await.unwrap();
+    let interrupted = store.interrupted_model_iterations().await.unwrap();
+    assert_eq!(interrupted.len(), 1);
+    let classification = ModelRecoveryClassification::for_interrupted(
+        interrupted[0].position,
+        interrupted[0].response_message_id,
+        interrupted[0].response_terminal,
+    );
+    assert_eq!(
+        classification.decision,
+        ModelRecoveryDecision::ManualReconciliation
+    );
+    store
+        .classify_model_recovery(ModelRecoveryWrite {
+            invocation_id: invocation_id.clone(),
+            expected_revision: interrupted[0].ledger_revision,
+            recovery_owner: "restart-test".into(),
+            observed_at: 100,
+            lease_expires_at: 130,
+            classification,
+        })
+        .await
+        .unwrap();
+    drop(store);
+
+    let reopened = SqliteSessionStore::open(&path).await.unwrap();
+    let persisted = reopened.interrupted_model_iterations().await.unwrap();
+    assert_eq!(persisted[0].invocation_id, invocation_id);
+    assert_eq!(
+        persisted[0].recovery_reason,
+        Some(ModelRecoveryReason::ProviderOutcomeUnknown)
+    );
+    assert!(persisted[0].operator_action_required);
 }
 
 fn effective_config() -> sylvander_api::SessionEffectiveConfig {
