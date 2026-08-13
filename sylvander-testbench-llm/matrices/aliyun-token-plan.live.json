@@ -55,6 +55,31 @@
           "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
         }
       ]
+    },
+    {
+      "provider_id": "aliyun-token-plan-cn",
+      "protocol": "openai_responses",
+      "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "credential_env": "SYLVANDER_BENCH_ALIYUN_TOKEN_PLAN_API_KEY",
+      "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
+      "models": [
+        {
+          "model_id": "qwen3.7-plus",
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
+        },
+        {
+          "model_id": "qwen3.8-max",
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
+        },
+        {
+          "model_id": "deepseek-v4-pro",
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
+        },
+        {
+          "model_id": "glm-5.2",
+          "advertised_scenarios": []
+        }
+      ]
     }
   ]
 }
