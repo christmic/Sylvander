@@ -261,7 +261,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 7;
+const SESSION_SCHEMA_VERSION: i64 = 8;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -279,6 +279,8 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "task_dependencies",
     "task_handoffs",
     "coordination_messages",
+    "governance_cases",
+    "moderator_decisions",
     "session_messages",
     "session_usage",
     "session_turns",
@@ -293,6 +295,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_tasks_assignee_state",
     "idx_handoffs_arbitrator_state",
     "idx_messages_recipient_state",
+    "idx_governance_cases_moderator_state",
     "idx_session_agents_agent",
     "idx_agent_instances_definition",
     "idx_agent_instances_state",
@@ -474,6 +477,38 @@ CREATE INDEX idx_handoffs_arbitrator_state
 CREATE INDEX idx_messages_recipient_state
     ON coordination_messages(session_id, recipient_instance_id, state, created_at);
 
+CREATE TABLE governance_cases (
+    case_id             TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    moderator_instance_id TEXT NOT NULL,
+    membership_revision INTEGER NOT NULL CHECK(membership_revision >= 0),
+    topology_revision   INTEGER NOT NULL CHECK(topology_revision >= 0),
+    moderator_lease_epoch INTEGER NOT NULL CHECK(moderator_lease_epoch > 0),
+    moderator_fencing_token INTEGER NOT NULL CHECK(moderator_fencing_token > 0),
+    findings_json       TEXT NOT NULL,
+    state               TEXT NOT NULL CHECK(state IN ('open','decided','expired')),
+    revision            INTEGER NOT NULL CHECK(revision >= 0),
+    expires_at          INTEGER NOT NULL,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    FOREIGN KEY(session_id, moderator_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id)
+);
+
+CREATE TABLE moderator_decisions (
+    case_id             TEXT PRIMARY KEY REFERENCES governance_cases(case_id) ON DELETE CASCADE,
+    decided_by_instance_id TEXT NOT NULL,
+    moderator_lease_epoch INTEGER NOT NULL CHECK(moderator_lease_epoch > 0),
+    moderator_fencing_token INTEGER NOT NULL CHECK(moderator_fencing_token > 0),
+    verdict_json        TEXT NOT NULL,
+    rationale           TEXT NOT NULL CHECK(length(trim(rationale)) > 0),
+    evidence_refs_json  TEXT NOT NULL,
+    decided_at          INTEGER NOT NULL
+);
+
+CREATE INDEX idx_governance_cases_moderator_state
+    ON governance_cases(session_id, moderator_instance_id, state, created_at);
+
 -- Messages (one row per user/assistant/tool message)
 --
 -- Identity / trace / priority are denormalized into real columns
@@ -618,7 +653,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_session
     ON session_turns(session_id) WHERE state = 'running';
-PRAGMA user_version=7;
+PRAGMA user_version=8;
 COMMIT;
 ";
 
