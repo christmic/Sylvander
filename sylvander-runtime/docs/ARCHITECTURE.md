@@ -194,7 +194,8 @@ crate without retaining a second production path.
 
 - [`application-services.md`](application-services.md) — Session supervision,
   execution/sandbox ownership, unified storage, and built-in observability.
-- [`mcp.md`](mcp.md) — MCP stdio lifecycle, bounds, cancellation, and current
+- [`mcp.md`](mcp.md) — Session-owned MCP lifecycle, persistent process sandbox,
+  immutable tool snapshots, protocol bounds, cancellation, and current
   transport limits.
 - [`channel-supervision.md`](channel-supervision.md) — concrete channel
   lifecycle and restart parameters.

@@ -94,7 +94,8 @@ and this index in the same change.
 - [sylvander-agent/docs/workspace-execution.md](../sylvander-agent/docs/workspace-execution.md) —
   executor dispatch across local, SSH, container, and sandbox targets.
 - [sylvander-runtime/docs/mcp.md](../sylvander-runtime/docs/mcp.md) —
-  MCP runtime lifecycle, health, reconnection contract.
+  normative Session ownership, persistent sandbox, lifecycle, protocol,
+  storage, observability, and migration contract.
 - [sylvander-agent/docs/skills.md](../sylvander-agent/docs/skills.md) —
   Skill package discovery, precedence, isolation, and the per-turn budget.
 - [sylvander-agent/docs/approval.md](../sylvander-agent/docs/approval.md) —
