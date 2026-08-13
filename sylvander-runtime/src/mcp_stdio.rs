@@ -7,7 +7,7 @@
 //! reconnect, health, cancellation, and artifact persistence stay outside the
 //! Agent kernel because they require concrete operating-system authority.
 
-use std::process::Stdio;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
@@ -16,18 +16,27 @@ use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
+#[cfg(test)]
+use std::process::Stdio;
+#[cfg(test)]
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(test)]
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+
 use crate::agent_definition::McpServerConfig;
+use crate::execution::{
+    PersistentProcess, PersistentProcessAuthority, PersistentProcessEnvironment,
+    PersistentProcessError, PersistentProcessSpec,
+};
+use sylvander_agent::tool::invocation::ToolInvocationClass;
 use sylvander_agent::tool::{
     DynamicToolSource, PreparedToolCall, RegisteredTool, ToolDefinition, ToolError, ToolExecutor,
     ToolOutput, ToolSourceFeature, ToolSourceKind, ToolSourceStatus, ToolSpec,
 };
 use sylvander_agent::tool_context::ToolContext;
-use sylvander_agent::tool_invocation::ToolInvocationClass;
 use sylvander_llm_core::InputSchema;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -38,7 +47,6 @@ const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 const TOOL_RESULT_HEAD_BYTES: usize = 16 * 1024;
 const MCP_HEALTH_ACTIVE: u8 = 1;
 const MCP_HEALTH_DEGRADED: u8 = 2;
-#[cfg(test)]
 const MCP_HEALTH_UNAVAILABLE: u8 = 3;
 const MCP_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -64,20 +72,14 @@ pub(crate) trait McpResultArtifactSink: Send + Sync {
 /// Errors raised while starting or communicating with an MCP server.
 #[derive(Debug, Error)]
 pub(crate) enum McpError {
-    #[error("failed to start MCP server {server}: {source}")]
-    Spawn {
+    #[error("MCP server {server} process boundary failed: {source}")]
+    Process {
         server: String,
         #[source]
-        source: std::io::Error,
+        source: PersistentProcessError,
     },
     #[error("MCP server {server} closed its output")]
     Closed { server: String },
-    #[error("MCP server {server} I/O failed: {source}")]
-    Io {
-        server: String,
-        #[source]
-        source: std::io::Error,
-    },
     #[error("MCP server {server} sent an invalid frame: {message}")]
     InvalidFrame { server: String, message: String },
     #[error("MCP server {server} sent invalid JSON: {source}")]
@@ -106,9 +108,24 @@ pub(crate) enum McpError {
     },
 }
 
-struct ProcessIo {
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+#[derive(Clone)]
+enum McpProcessFactory {
+    Managed {
+        environment: Arc<dyn PersistentProcessEnvironment>,
+        authority: PersistentProcessAuthority,
+    },
+    #[cfg(test)]
+    TestHost,
+}
+
+impl McpProcessFactory {
+    fn drain_timeout(&self) -> Duration {
+        match self {
+            Self::Managed { authority, .. } => authority.drain_timeout,
+            #[cfg(test)]
+            Self::TestHost => Duration::from_secs(2),
+        }
+    }
 }
 
 struct McpInner {
@@ -118,8 +135,8 @@ struct McpInner {
     next_id: AtomicU64,
     generation: AtomicU64,
     reconnect: Mutex<()>,
-    io: Mutex<ProcessIo>,
-    child: Mutex<Child>,
+    process_factory: McpProcessFactory,
+    process: Mutex<Box<dyn PersistentProcess>>,
     result_artifact_sink: Option<Arc<dyn McpResultArtifactSink>>,
     tool_definitions: std::sync::RwLock<Vec<JsonValue>>,
     resource_definitions: std::sync::RwLock<Vec<JsonValue>>,
@@ -191,12 +208,49 @@ impl std::fmt::Debug for McpStdioClient {
 }
 
 impl McpStdioClient {
-    /// Start a server, complete the MCP handshake, and return a live client.
-    pub(crate) async fn connect(
+    /// Start a server inside one admitted persistent-process environment.
+    pub(crate) async fn connect_in(
+        config: &McpServerConfig,
+        request_timeout: Duration,
+        environment: Arc<dyn PersistentProcessEnvironment>,
+        authority: PersistentProcessAuthority,
+    ) -> Result<Self, McpError> {
+        if !environment.isolation().enforces_required_boundary() {
+            return Err(McpError::Process {
+                server: config.name.clone(),
+                source: PersistentProcessError::InvalidAuthority(
+                    "execution environment does not enforce the required boundary",
+                ),
+            });
+        }
+        Self::connect_inner(
+            config,
+            request_timeout,
+            None,
+            true,
+            McpProcessFactory::Managed {
+                environment,
+                authority,
+            },
+        )
+        .await
+    }
+
+    /// Test-only host process path for exercising protocol mechanics. Product
+    /// composition has no call surface for unconfined process execution.
+    #[cfg(test)]
+    async fn connect(
         config: &McpServerConfig,
         request_timeout: Duration,
     ) -> Result<Self, McpError> {
-        Self::connect_inner(config, request_timeout, None, true).await
+        Self::connect_inner(
+            config,
+            request_timeout,
+            None,
+            true,
+            McpProcessFactory::TestHost,
+        )
+        .await
     }
 
     /// Start a server and persist every complete tool result through `sink`.
@@ -208,8 +262,28 @@ impl McpStdioClient {
         config: &McpServerConfig,
         request_timeout: Duration,
         sink: Arc<dyn McpResultArtifactSink>,
+        environment: Arc<dyn PersistentProcessEnvironment>,
+        authority: PersistentProcessAuthority,
     ) -> Result<Self, McpError> {
-        Self::connect_inner(config, request_timeout, Some(sink), true).await
+        if !environment.isolation().enforces_required_boundary() {
+            return Err(McpError::Process {
+                server: config.name.clone(),
+                source: PersistentProcessError::InvalidAuthority(
+                    "execution environment does not enforce the required boundary",
+                ),
+            });
+        }
+        Self::connect_inner(
+            config,
+            request_timeout,
+            Some(sink),
+            true,
+            McpProcessFactory::Managed {
+                environment,
+                authority,
+            },
+        )
+        .await
     }
 
     async fn connect_inner(
@@ -217,32 +291,9 @@ impl McpStdioClient {
         request_timeout: Duration,
         result_artifact_sink: Option<Arc<dyn McpResultArtifactSink>>,
         start_health_monitor: bool,
+        process_factory: McpProcessFactory,
     ) -> Result<Self, McpError> {
-        let mut command = Command::new(&config.command);
-        command
-            .args(&config.args)
-            // MCP servers are external capability processes. They receive
-            // only deployment-reviewed values, never Runtime's ambient
-            // credentials, proxy configuration, or user environment.
-            .env_clear()
-            .envs(&config.envs)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
-
-        let mut child = command.spawn().map_err(|source| McpError::Spawn {
-            server: config.name.clone(),
-            source,
-        })?;
-        let stdin = child.stdin.take().ok_or_else(|| McpError::InvalidFrame {
-            server: config.name.clone(),
-            message: "child stdin was not piped".into(),
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| McpError::InvalidFrame {
-            server: config.name.clone(),
-            message: "child stdout was not piped".into(),
-        })?;
+        let process = spawn_process(config, &process_factory).await?;
 
         let client = Self {
             inner: Arc::new(McpInner {
@@ -252,11 +303,8 @@ impl McpStdioClient {
                 next_id: AtomicU64::new(1),
                 generation: AtomicU64::new(1),
                 reconnect: Mutex::new(()),
-                io: Mutex::new(ProcessIo {
-                    stdin,
-                    stdout: BufReader::new(stdout),
-                }),
-                child: Mutex::new(child),
+                process_factory,
+                process: Mutex::new(process),
                 result_artifact_sink,
                 tool_definitions: std::sync::RwLock::new(Vec::new()),
                 resource_definitions: std::sync::RwLock::new(Vec::new()),
@@ -465,12 +513,20 @@ impl McpStdioClient {
         Ok(map_tool_result(&result, locator.as_deref()))
     }
 
-    /// Stop the child process and wait for it to exit.
-    #[cfg(test)]
+    /// Stop the complete governed process tree.
     pub(crate) async fn shutdown(&self) -> Result<(), McpError> {
         self.inner.shutdown.store(true, Ordering::Release);
-        let mut child = self.inner.child.lock().await;
-        let result = stop_child(&self.inner.server_name, &mut child).await;
+        let mut process = self.inner.process.lock().await;
+        let drain_timeout = self.inner.process_factory.drain_timeout();
+        let result =
+            if process.close_stdin().await.is_ok() && process.wait(drain_timeout).await.is_ok() {
+                Ok(())
+            } else {
+                process
+                    .terminate_tree()
+                    .await
+                    .map_err(|source| self.process_error(source))
+            };
         self.inner
             .health
             .store(MCP_HEALTH_UNAVAILABLE, Ordering::Release);
@@ -550,6 +606,7 @@ impl McpStdioClient {
             self.inner.request_timeout,
             self.inner.result_artifact_sink.clone(),
             false,
+            self.inner.process_factory.clone(),
         )
         .await?;
         let refreshed = replacement.list_tools().await?;
@@ -563,14 +620,14 @@ impl McpStdioClient {
         let supports_resources = replacement.supports_resources.load(Ordering::Acquire);
         let tool_definitions = replacement.tool_definitions.into_inner().unwrap();
         let resource_definitions = replacement.resource_definitions.into_inner().unwrap();
-        let new_io = replacement.io.into_inner();
-        let new_child = replacement.child.into_inner();
+        let new_process = replacement.process.into_inner();
 
-        let mut io = self.inner.io.lock().await;
-        let mut child = self.inner.child.lock().await;
-        stop_child(&self.inner.server_name, &mut child).await?;
-        *io = new_io;
-        *child = new_child;
+        let mut process = self.inner.process.lock().await;
+        process
+            .terminate_tree()
+            .await
+            .map_err(|source| self.process_error(source))?;
+        *process = new_process;
         *self.inner.tool_definitions.write().unwrap() = tool_definitions;
         *self.inner.resource_definitions.write().unwrap() = resource_definitions;
         self.inner
@@ -658,13 +715,13 @@ impl McpStdioClient {
         method: &str,
         request: &JsonValue,
     ) -> Result<JsonValue, McpError> {
-        let mut io = self.inner.io.lock().await;
-        write_frame(&mut io.stdin, request)
+        let mut process = self.inner.process.lock().await;
+        write_process_frame(process.as_mut(), request)
             .await
-            .map_err(|source| self.io_error(source))?;
+            .map_err(|source| self.process_error(source))?;
 
         loop {
-            let response = read_frame(&mut io.stdout, &self.inner.server_name).await?;
+            let response = read_process_frame(process.as_mut(), &self.inner.server_name).await?;
             if response.get("id").and_then(JsonValue::as_u64) != Some(id) {
                 // Server notifications may arrive between a request and response.
                 continue;
@@ -693,14 +750,14 @@ impl McpStdioClient {
 
     async fn notify(&self, method: &str, params: JsonValue) -> Result<(), McpError> {
         let notification = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        let mut io = self.inner.io.lock().await;
-        write_frame(&mut io.stdin, &notification)
+        let mut process = self.inner.process.lock().await;
+        write_process_frame(process.as_mut(), &notification)
             .await
-            .map_err(|source| self.io_error(source))
+            .map_err(|source| self.process_error(source))
     }
 
-    fn io_error(&self, source: std::io::Error) -> McpError {
-        McpError::Io {
+    fn process_error(&self, source: PersistentProcessError) -> McpError {
+        McpError::Process {
             server: self.inner.server_name.clone(),
             source,
         }
@@ -772,30 +829,121 @@ impl DynamicToolSource for McpStdioClient {
 fn is_recoverable_transport_error(error: &McpError) -> bool {
     matches!(
         error,
-        McpError::Closed { .. } | McpError::Io { .. } | McpError::Timeout { .. }
+        McpError::Closed { .. } | McpError::Process { .. } | McpError::Timeout { .. }
     )
 }
 
-async fn stop_child(server: &str, child: &mut Child) -> Result<(), McpError> {
-    match child.try_wait() {
-        Ok(Some(_)) => return Ok(()),
-        Ok(None) => {}
-        Err(source) => {
-            return Err(McpError::Io {
-                server: server.into(),
-                source,
-            });
+async fn spawn_process(
+    config: &McpServerConfig,
+    factory: &McpProcessFactory,
+) -> Result<Box<dyn PersistentProcess>, McpError> {
+    let spec = PersistentProcessSpec {
+        program: config.command.clone(),
+        arguments: config.args.clone(),
+        environment: config
+            .envs
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>(),
+    };
+    let result = match factory {
+        McpProcessFactory::Managed {
+            environment,
+            authority,
+        } => environment.spawn(&spec, authority).await,
+        #[cfg(test)]
+        McpProcessFactory::TestHost => spawn_test_host(&spec).await,
+    };
+    result.map_err(|source| McpError::Process {
+        server: config.name.clone(),
+        source,
+    })
+}
+
+#[cfg(test)]
+struct TestHostPersistentProcess {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+}
+
+#[cfg(test)]
+async fn spawn_test_host(
+    spec: &PersistentProcessSpec,
+) -> Result<Box<dyn PersistentProcess>, PersistentProcessError> {
+    let mut command = Command::new(&spec.program);
+    command
+        .args(&spec.arguments)
+        .env_clear()
+        .envs(&spec.environment)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command.spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or(PersistentProcessError::InvalidSpecification("test stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or(PersistentProcessError::InvalidSpecification("test stdout"))?;
+    Ok(Box::new(TestHostPersistentProcess {
+        child,
+        stdin: Some(stdin),
+        stdout: BufReader::new(stdout),
+    }))
+}
+
+#[cfg(test)]
+#[async_trait]
+impl PersistentProcess for TestHostPersistentProcess {
+    async fn write_stdin(&mut self, bytes: &[u8]) -> Result<(), PersistentProcessError> {
+        let stdin = self.stdin.as_mut().ok_or(PersistentProcessError::Closed)?;
+        stdin.write_all(bytes).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
+    async fn read_stdout_frame(&mut self) -> Result<Vec<u8>, PersistentProcessError> {
+        let mut frame = Vec::new();
+        let bytes = self.stdout.read_until(b'\n', &mut frame).await?;
+        if bytes == 0 {
+            return Err(PersistentProcessError::Closed);
+        }
+        if frame.len() > MAX_FRAME_BYTES {
+            return Err(PersistentProcessError::FrameTooLarge(MAX_FRAME_BYTES));
+        }
+        Ok(frame)
+    }
+
+    async fn close_stdin(&mut self) -> Result<(), PersistentProcessError> {
+        if let Some(mut stdin) = self.stdin.take() {
+            stdin.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    async fn wait(&mut self, duration: Duration) -> Result<(), PersistentProcessError> {
+        let status = timeout(duration, self.child.wait())
+            .await
+            .map_err(|_| PersistentProcessError::Timeout(duration))??;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(PersistentProcessError::Exited(status.code()))
         }
     }
-    child.kill().await.map_err(|source| McpError::Io {
-        server: server.into(),
-        source,
-    })?;
-    child.wait().await.map_err(|source| McpError::Io {
-        server: server.into(),
-        source,
-    })?;
-    Ok(())
+
+    async fn terminate_tree(&mut self) -> Result<(), PersistentProcessError> {
+        self.stdin.take();
+        if self.child.try_wait()?.is_none() {
+            self.child.kill().await?;
+        }
+        let _ = self.child.wait().await?;
+        Ok(())
+    }
 }
 
 /// A discovered MCP tool adapted to Sylvander's ordinary tool interface.
@@ -1021,30 +1169,31 @@ fn bounded_name_component(value: &str, max_len: usize) -> String {
     format!("{head}_{suffix}")
 }
 
-async fn write_frame(writer: &mut ChildStdin, value: &JsonValue) -> std::io::Result<()> {
-    let body = serde_json::to_vec(value).expect("serializing JSON values cannot fail");
-    writer.write_all(&body).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await
+async fn write_process_frame(
+    process: &mut dyn PersistentProcess,
+    value: &JsonValue,
+) -> Result<(), PersistentProcessError> {
+    let mut body = serde_json::to_vec(value).expect("serializing JSON values cannot fail");
+    body.push(b'\n');
+    process.write_stdin(&body).await
 }
 
-async fn read_frame(
-    reader: &mut BufReader<ChildStdout>,
+async fn read_process_frame(
+    process: &mut dyn PersistentProcess,
     server: &str,
 ) -> Result<JsonValue, McpError> {
-    let mut line = Vec::new();
-    let bytes = reader
-        .read_until(b'\n', &mut line)
-        .await
-        .map_err(|source| McpError::Io {
-            server: server.into(),
-            source,
-        })?;
-    if bytes == 0 {
-        return Err(McpError::Closed {
-            server: server.into(),
-        });
-    }
+    let mut line = process.read_stdout_frame().await.map_err(|source| {
+        if matches!(source, PersistentProcessError::Closed) {
+            McpError::Closed {
+                server: server.into(),
+            }
+        } else {
+            McpError::Process {
+                server: server.into(),
+                source,
+            }
+        }
+    })?;
     if line.len() > MAX_FRAME_BYTES {
         return Err(McpError::InvalidFrame {
             server: server.into(),
