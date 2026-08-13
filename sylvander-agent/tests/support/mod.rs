@@ -16,9 +16,9 @@ use sylvander_agent::execution::artifact::{
 use sylvander_agent::execution::ports::AgentExecutionPorts;
 use sylvander_agent::execution::tool_context::ToolContext;
 use sylvander_agent::execution::workspace::{
-    WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceFileRevision,
-    WorkspaceListRequest, WorkspaceListResult, WorkspaceSearchRequest, WorkspaceSearchResult,
-    WorkspaceTarget,
+    ProcessIsolation, WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError,
+    WorkspaceFileRevision, WorkspaceListRequest, WorkspaceListResult, WorkspaceSearchRequest,
+    WorkspaceSearchResult, WorkspaceTarget,
 };
 use sylvander_agent::interaction::ask_user::AskUserGate;
 use sylvander_agent::interaction::background_task::TaskGate;
@@ -327,6 +327,116 @@ pub(crate) fn workspace_tool_context(
         .with_executor(Arc::new(TestWorkspaceExecutor), target),
         ToolContext::with_capability,
     )
+}
+
+/// Build a context whose command port is a deterministic, process-free hook
+/// simulator. It may claim process isolation because no process is created.
+pub(crate) fn sandboxed_hook_tool_context(root: &std::path::Path) -> ToolContext {
+    ToolContext::new(AgentExecutionContext::restricted_for(
+        "test-user",
+        "test-agent",
+        "test-session",
+    ))
+    .with_executor(
+        Arc::new(SandboxedHookExecutor),
+        WorkspaceTarget::local(root.to_path_buf(), false),
+    )
+}
+
+#[derive(Debug)]
+struct SandboxedHookExecutor;
+
+#[async_trait]
+impl WorkspaceExecutor for SandboxedHookExecutor {
+    fn process_isolation(&self) -> ProcessIsolation {
+        ProcessIsolation::restricted()
+    }
+
+    async fn read_file(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+    ) -> Result<Vec<u8>, WorkspaceExecutorError> {
+        TestWorkspaceExecutor.read_file(target, relative_path).await
+    }
+
+    async fn write_file(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        content: &[u8],
+    ) -> Result<(), WorkspaceExecutorError> {
+        TestWorkspaceExecutor
+            .write_file(target, relative_path, content)
+            .await
+    }
+
+    async fn run_command(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        _timeout: Duration,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let (success, status_code) = match command {
+            "exit 3" => (false, Some(3)),
+            "printf before >> lifecycle" => {
+                append_hook_output(target, b"before").await?;
+                (true, Some(0))
+            }
+            "printf after >> lifecycle" => {
+                append_hook_output(target, b"after").await?;
+                (true, Some(0))
+            }
+            _ => {
+                return Err(WorkspaceExecutorError::InvalidRequest(format!(
+                    "unsupported simulated hook command `{command}`"
+                )));
+            }
+        };
+        Ok(WorkspaceCommandOutput {
+            success,
+            status_code,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            stdout_total_bytes: 0,
+            stderr_total_bytes: 0,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        })
+    }
+
+    async fn list(
+        &self,
+        _target: &WorkspaceTarget,
+        _request: WorkspaceListRequest,
+    ) -> Result<WorkspaceListResult, WorkspaceExecutorError> {
+        Err(read_only_test_error())
+    }
+
+    async fn search(
+        &self,
+        _target: &WorkspaceTarget,
+        _request: WorkspaceSearchRequest,
+    ) -> Result<WorkspaceSearchResult, WorkspaceExecutorError> {
+        Err(read_only_test_error())
+    }
+}
+
+async fn append_hook_output(
+    target: &WorkspaceTarget,
+    content: &[u8],
+) -> Result<(), WorkspaceExecutorError> {
+    use tokio::io::AsyncWriteExt;
+
+    let root = tokio::fs::canonicalize(&target.workspace_path).await?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("lifecycle"))
+        .await?;
+    file.write_all(content).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 /// Minimal integration-test adapter proving that Agent uses an injected port.

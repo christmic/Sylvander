@@ -10,7 +10,7 @@ use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use support::{qualified_anthropic_loop_builder, workspace_tool_context};
+use support::{qualified_anthropic_loop_builder, sandboxed_hook_tool_context};
 
 fn client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()
@@ -43,7 +43,7 @@ async fn blocking_before_turn_hook_prevents_the_model_request() {
     }]);
     let loop_ = qualified_anthropic_loop_builder(client(&server), model())
         .tools(hooks)
-        .tool_context(workspace_tool_context(workspace.path(), []))
+        .tool_context(sandboxed_hook_tool_context(workspace.path()))
         .build()
         .expect("loop build");
 
@@ -103,7 +103,7 @@ async fn successful_turn_runs_before_and_after_hooks_once() {
     ]);
     let loop_ = qualified_anthropic_loop_builder(client(&server), model())
         .tools(hooks)
-        .tool_context(workspace_tool_context(workspace.path(), []))
+        .tool_context(sandboxed_hook_tool_context(workspace.path()))
         .build()
         .expect("loop build");
 
