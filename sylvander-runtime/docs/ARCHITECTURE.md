@@ -80,6 +80,15 @@ crate without retaining a second production path.
   registry mutation service, and server-composed Channel credential source
   append content-safe create/acquire/renew/rotate/revoke/failure facts to it;
   no secret or secret reference enters the ledger.
+- `storage` is the closed persistence composition root. It owns the Session
+  commit authority and relationship-memory backend, retains concrete health
+  probes only inside Runtime, and exposes one content-free operational view.
+  Production health revalidates each live schema plus SQLite integrity;
+  Session also checks owned foreign keys and protected memory also verifies
+  its independent authenticated anchor. A degraded component makes Runtime
+  unready without disclosing paths, row data, database errors, or key/anchor
+  material. The Agent receives only cloned provider-neutral ports and cannot
+  select, inspect, or probe a backend.
 - `capability_runtime` freezes disjoint Worker and Guardian registries and
   re-authorizes Runtime-derived owner scope at invocation time. The production
   `ToolInvocationGateway` freezes the exact executable tool catalog and routes

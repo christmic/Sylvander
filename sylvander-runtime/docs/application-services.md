@@ -69,9 +69,22 @@ root owns the exact Session and relationship-memory repository handles selected
 at boot. `Runtime` no longer exposes either repository as a public field.
 Session schema v2 stores explicit turn lifecycle. Turn admission is atomic
 with user input and immutable configuration; successful completion is atomic
-with assistant output. Registry, profile, evidence, audit, Guardian, and
-artifact stores still open through their existing Runtime-owned services;
-there is not yet a cross-domain transaction or one backend health record.
+with assistant output.
+
+Production composition also retains concrete, non-extensible health probes in
+this facade. Each operational request checks Session and relationship memory
+concurrently. The Session probe verifies its exact live schema, `SQLite`
+quick-check, and owned foreign keys. The memory probe verifies its exact live
+schema, `SQLite` quick-check, and the independent authenticated integrity
+anchor when configured. Public results contain only component identity and
+`ready`, `unverified`, or `degraded`; raw errors and storage locations remain
+private. Any degraded component, or a failed Session-count read, contributes
+the stable `Storage` health issue and makes Runtime unready. `Unverified` is a
+test-composition state, not production success.
+
+Registry, profile, evidence, audit, Guardian, and artifact stores still open
+through their existing Runtime-owned services; there is not yet a cross-domain
+transaction, unified backup lifecycle, or health coverage for every store.
 Those are remaining implementation work, not capabilities callers may assume
 today.
 

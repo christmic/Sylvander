@@ -207,10 +207,23 @@ backend publicly. Session schema v2 promotes turns to durable lifecycle
 records. `begin_turn` commits the user message, immutable effective config,
 and `running` state together; `complete_turn` commits the assistant message
 and `completed` terminal together. Failed and interrupted terminals are also
-persisted before their public event when a durable turn exists. The other
-Runtime stores, cross-repository transactions, backup lifecycle, and unified
-health record remain incomplete. Callers must not infer those target
-capabilities from this architecture contract.
+persisted before their public event when a durable turn exists.
+
+The same facade now emits a unified, content-free health snapshot for these
+two repositories. Production composition retains concrete probe handles while
+Agent revisions receive only their provider-neutral ports. Session health
+rechecks the exact live schema, SQLite pages, and owned foreign keys;
+relationship-memory health rechecks its exact schema, SQLite pages, and, when
+configured, the independent authenticated anchor. `Ready` means that live
+probe succeeded, `Degraded` makes Runtime unready, and `Unverified` is reserved
+for isolated test composition without production probes. A failed Session
+count no longer makes the health endpoint fail before it can report Storage as
+degraded. Paths, database errors, row data, and anchor material never enter the
+snapshot.
+
+The other Runtime stores, cross-repository transactions, unified backup
+lifecycle, and full-store health coverage remain incomplete. Callers must not
+infer those target capabilities from this architecture contract.
 
 ## Built-in observability
 

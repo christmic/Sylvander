@@ -21,6 +21,17 @@ An enabled HTTP channel exposes three unauthenticated, content-free operations:
 The snapshot never contains prompts, messages, tool inputs/results, external
 principal IDs, credentials, paths, or memory content.
 
+The `storage.components` entries currently cover `sessions` and
+`relationship_memory`. `ready` means the live database integrity probe passed;
+`degraded` makes top-level readiness false. Production must never report
+`unverified`: that state exists only for isolated in-memory test composition.
+Session probing verifies the exact owned schema and foreign keys; relationship
+memory additionally verifies its authenticated anchor when one is configured.
+Probe failures deliberately omit database paths, SQL errors, row content, and
+anchor details. Check protected storage availability and integrity services
+from the operator side before restarting; repeated restarts do not repair
+corruption.
+
 Recommended probes:
 
 ```sh
