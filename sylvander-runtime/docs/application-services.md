@@ -104,8 +104,9 @@ The initial backend is built-in SQLite. There is no storage plugin registry or
 public backend trait.
 
 Current implementation status: the crate-private `RuntimeStorage` composition
-root owns the exact Session and relationship-memory repository handles selected
-at boot. `Runtime` no longer exposes either repository as a public field.
+root owns the exact Session, relationship-memory, and encrypted turn-artifact
+authorities selected at boot. `Runtime` no longer exposes those authorities as
+public fields.
 Session schema v2 stores explicit turn lifecycle. Turn admission is atomic
 with user input and immutable configuration; successful completion is atomic
 with assistant output.
@@ -137,7 +138,11 @@ required configured store.
 
 Turn artifacts now enter one Runtime-owned encrypted service bound to the
 authenticated user, Agent, Session, and turn. Agent receives only a
-location-neutral port and opaque locator. There is not yet an authorized
+location-neutral port and opaque locator. Runtime boot clones that bounded
+factory from `RuntimeStorage`; no sibling service selects another backend.
+Messages remain the turn terminal authority, so this ownership closure does
+not claim an atomic transaction across the Session and evidence databases.
+There is not yet an authorized
 retrieval service, cross-domain transaction, or unified backup lifecycle;
 callers must not infer those target capabilities today.
 

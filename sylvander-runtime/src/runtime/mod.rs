@@ -4134,6 +4134,17 @@ impl Runtime {
             .then(|| RuntimeArtifactService::new(security_audit.clone()))
             .transpose()
             .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
+        let storage = RuntimeStorage::new(session_store.clone(), memory_store.clone())
+            .with_health_probes(
+                storage_session_probe,
+                storage_memory_probe,
+                storage_agent_registry_probe,
+                storage_user_profile_probe,
+                storage_evidence_probe,
+                storage_credential_audit_probe,
+            )
+            .with_artifact_service(artifact_service);
+        let artifact_service = storage.artifact_service();
         let identity_bindings = open_identity_binding_service(&config).await?;
         let evidence = Some(
             EvidenceRecorder::start(
@@ -4377,16 +4388,7 @@ impl Runtime {
         let execution_health = Some(ExecutionHealthTask::start(execution_service.clone()));
         Ok(Self {
             engine,
-            storage: RuntimeStorage::new(session_store, memory_store)
-                .with_health_probes(
-                    storage_session_probe,
-                    storage_memory_probe,
-                    storage_agent_registry_probe,
-                    storage_user_profile_probe,
-                    storage_evidence_probe,
-                    storage_credential_audit_probe,
-                )
-                .with_guardian_probe(storage_guardian_probe),
+            storage: storage.with_guardian_probe(storage_guardian_probe),
             observability,
             execution_service,
             execution_health,

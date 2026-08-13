@@ -169,8 +169,9 @@ crate without retaining a second production path.
   provider-neutral memory values, validation rules, and `MemoryStore` port;
   Runtime selects, opens, maintains, and injects the concrete store.
 - `storage::RuntimeStorage` is the crate-private composition root for durable
-  repositories. It closes public access to the selected Session and
-  relationship-memory handles and aggregates live integrity for nine
+  repositories. It closes public access to the selected Session,
+  relationship-memory, and encrypted turn-artifact authorities and aggregates
+  live integrity for nine
   production stores. Session schema v2 makes turn lifecycle
   authoritative: admission commits user input, configuration, and `running`;
   successful completion commits assistant output and `completed` in one
