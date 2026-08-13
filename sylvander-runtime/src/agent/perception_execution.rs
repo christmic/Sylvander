@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sylvander_api::AgentInstanceId;
 use sylvander_llm_core::{
@@ -157,15 +157,19 @@ pub async fn execute_perception(
     finish_from_response(store, artifacts, request.invocation_id, revision, response).await
 }
 
-/// Resume after a deterministic provider receipt was written but the `SQLite`
-/// program counter did not cross `InferenceCompleted`.
+/// Resume every post-inference durability window without calling the provider.
 pub async fn recover_perception_receipt(
     store: Arc<dyn SessionStore>,
     artifacts: Arc<dyn PerceptionArtifactStore>,
     snapshot: PerceptionInvocationSnapshot,
 ) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
-    if snapshot.position != PerceptionExecutionPosition::InferenceStarted
-        || snapshot.recovery_policy != PerceptionRecoveryPolicy::RecoverFromReceipt
+    if !matches!(
+        snapshot.position,
+        PerceptionExecutionPosition::InferenceStarted
+            | PerceptionExecutionPosition::InferenceCompleted
+            | PerceptionExecutionPosition::ArtifactPersisted
+            | PerceptionExecutionPosition::ResultPersisted
+    ) || snapshot.recovery_policy != PerceptionRecoveryPolicy::RecoverFromReceipt
     {
         return Err(PerceptionExecutionError::InvalidRequest);
     }
@@ -183,15 +187,43 @@ pub async fn recover_perception_receipt(
     {
         return Err(PerceptionExecutionError::InvalidResponse);
     }
-    finish_from_persisted_receipt(
-        store,
-        artifacts,
-        snapshot.invocation_id,
-        snapshot.ledger_revision,
-        response,
-        receipt.locator,
-    )
-    .await
+    match snapshot.position {
+        PerceptionExecutionPosition::InferenceStarted => {
+            finish_from_persisted_receipt(
+                store,
+                artifacts,
+                snapshot.invocation_id,
+                snapshot.ledger_revision,
+                response,
+                receipt.locator,
+            )
+            .await
+        }
+        PerceptionExecutionPosition::InferenceCompleted => {
+            persist_normalized_output(
+                store,
+                artifacts,
+                snapshot.invocation_id,
+                snapshot.ledger_revision,
+                response,
+            )
+            .await
+        }
+        PerceptionExecutionPosition::ArtifactPersisted => {
+            let result = load_completed_result(&artifacts, &snapshot, response).await?;
+            store
+                .complete_perception(&snapshot.invocation_id, snapshot.ledger_revision)
+                .await
+                .map_err(|_| PerceptionExecutionError::Persistence)?;
+            Ok(result)
+        }
+        PerceptionExecutionPosition::ResultPersisted => {
+            load_completed_result(&artifacts, &snapshot, response).await
+        }
+        PerceptionExecutionPosition::Prepared | PerceptionExecutionPosition::MediaPersisted => {
+            Err(PerceptionExecutionError::InvalidRequest)
+        }
+    }
 }
 
 async fn call_specialist(
@@ -305,12 +337,22 @@ async fn finish_from_persisted_receipt(
         })
         .await
         .map_err(|_| PerceptionExecutionError::Persistence)?;
+    persist_normalized_output(store, artifacts, invocation_id, revision, response).await
+}
+
+async fn persist_normalized_output(
+    store: Arc<dyn SessionStore>,
+    artifacts: Arc<dyn PerceptionArtifactStore>,
+    invocation_id: PerceptionInvocationId,
+    revision: u64,
+    response: ModelResponse,
+) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
     let text = response.text();
     let output = NormalizedPerceptionOutput {
         schema_version: 1,
-        invocation_id: invocation_id.as_str(),
-        provider_response_id: &response.id,
-        text: &text,
+        invocation_id: invocation_id.as_str().to_owned(),
+        provider_response_id: response.id.clone(),
+        text: text.clone(),
     };
     let output_payload =
         serde_json::to_vec(&output).map_err(|_| PerceptionExecutionError::InvalidResponse)?;
@@ -346,12 +388,50 @@ async fn finish_from_persisted_receipt(
     })
 }
 
-#[derive(Serialize)]
-struct NormalizedPerceptionOutput<'a> {
+async fn load_completed_result(
+    artifacts: &Arc<dyn PerceptionArtifactStore>,
+    snapshot: &PerceptionInvocationSnapshot,
+    response: ModelResponse,
+) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
+    let artifact = artifacts
+        .load_exact(
+            &snapshot.invocation_id,
+            PerceptionArtifactKind::NormalizedOutput,
+        )
+        .await
+        .map_err(|_| PerceptionExecutionError::Artifact)?
+        .ok_or(PerceptionExecutionError::Artifact)?;
+    if snapshot.output_artifact_locator.as_deref() != Some(artifact.locator.as_str())
+        || snapshot.output_digest.as_deref() != Some(artifact.digest.as_str())
+    {
+        return Err(PerceptionExecutionError::InvalidResponse);
+    }
+    let output: NormalizedPerceptionOutput = serde_json::from_slice(&artifact.payload)
+        .map_err(|_| PerceptionExecutionError::InvalidResponse)?;
+    if output.schema_version != 1
+        || output.invocation_id != snapshot.invocation_id.as_str()
+        || output.provider_response_id != response.id
+        || output.text.trim().is_empty()
+    {
+        return Err(PerceptionExecutionError::InvalidResponse);
+    }
+    Ok(PerceptionExecutionResult {
+        invocation_id: snapshot.invocation_id.clone(),
+        provider_response_id: response.id,
+        text: output.text,
+        artifact_locator: artifact.locator,
+        output_digest: artifact.digest,
+        usage: response.usage,
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NormalizedPerceptionOutput {
     schema_version: u8,
-    invocation_id: &'a str,
-    provider_response_id: &'a str,
-    text: &'a str,
+    invocation_id: String,
+    provider_response_id: String,
+    text: String,
 }
 
 fn validate_request(request: &PerceptionExecutionRequest) -> Result<(), PerceptionExecutionError> {
