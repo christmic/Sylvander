@@ -7,8 +7,13 @@
 //! transaction. Compaction marks retired messages with `is_summarized`; they
 //! remain auditable on disk while the active loop view excludes them.
 
+mod execution_ledger;
 mod sqlite;
 
+pub use execution_ledger::{
+    RecoveryClassification, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
+    ToolRecoveryReason,
+};
 pub use sqlite::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 
 use std::collections::HashMap;
