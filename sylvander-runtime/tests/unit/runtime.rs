@@ -18,7 +18,8 @@ use crate::execution::LocalExecutor;
 use crate::storage::session::TurnState;
 use sylvander_api::{
     AgentInstanceId, CoordinationMessageId, SessionConfigFieldPatch, SessionConfigPatch,
-    SessionWorkspaceBinding, SessionWorkspaceMount, WorkspaceCapabilityPolicy, WorkspaceMountRole,
+    SessionWorkspaceBinding, SessionWorkspaceMount, TaskId, WorkspaceCapabilityPolicy,
+    WorkspaceMountRole,
 };
 use tokio::sync::Notify;
 use wiremock::matchers::{method, path};
@@ -1669,6 +1670,74 @@ async fn attach_memory_session(
         .attach_authenticated_session(created.session_id, stored.metadata)
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn runtime_workflow_control_plane_uses_durable_fenced_tasks() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &["assistant"]))
+        .await
+        .unwrap();
+    let actor = attach_memory_session(&runtime, "assistant", "workflow-user").await;
+    let session_id = actor.id().clone();
+    let agent_instance_id = actor.agent_instance_id().clone();
+    let task_id = TaskId::new("workflow-control-plane");
+    let task = runtime
+        .create_agent_task(
+            &actor,
+            CreateTaskRequest {
+                task_id: task_id.clone(),
+                session_id: session_id.clone(),
+                parent_task_id: None,
+                created_by: agent_instance_id.clone(),
+                assigned_to: agent_instance_id.clone(),
+                objective: "prove the public durable workflow boundary".into(),
+                token_budget: 1_000,
+                max_handoffs: 2,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        task.state,
+        crate::coordination::task::CoordinationTaskState::Ready
+    );
+
+    let lease = runtime
+        .claim_agent_task(
+            &actor,
+            ClaimTaskRequest {
+                task_id: task_id.clone(),
+                session_id: session_id.clone(),
+                actor: agent_instance_id,
+                claim_owner_id: "turn:workflow-control-plane".into(),
+                lease_seconds: 30,
+            },
+        )
+        .await
+        .unwrap();
+    let completed = runtime
+        .finish_agent_task(
+            &actor,
+            FinishClaimedTaskRequest {
+                lease,
+                next_state: crate::coordination::task::CoordinationTaskState::Completed,
+                consumed_tokens: 100,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        completed.state,
+        crate::coordination::task::CoordinationTaskState::Completed
+    );
+    let graph = runtime.agent_task_graph(&actor).await.unwrap().unwrap();
+    assert_eq!(graph.tasks, vec![completed]);
+    let observed = runtime.operational_snapshot().await.unwrap().observability;
+    assert_eq!(observed.coordination_tasks_created, 1);
+    assert_eq!(observed.coordination_tasks_claimed, 1);
+    assert_eq!(observed.coordination_tasks_transitioned, 1);
+    runtime.shutdown().await.unwrap();
 }
 
 #[tokio::test]

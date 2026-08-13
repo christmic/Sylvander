@@ -72,10 +72,12 @@ use crate::coordination::arbitration::{ArbitrationCase, ModeratorDecision};
 use crate::coordination::handoff::TaskHandoff;
 use crate::coordination::mailbox::{AgentMessageTurn, CoordinationMessage, MessageClaim};
 use crate::coordination::service::{
+    CancelTaskRequest, ClaimTaskRequest, CoordinationServiceError, CreateTaskRequest,
     DefineAgentOutcome, DefineAgentRequest, DispatchMessageOutcome, DispatchMessageRequest,
-    ForkAgentOutcome, ForkAgentRequest, RelateAgentsOutcome, RelateAgentsRequest,
-    ReportProgressRequest, ReportWaitRequest,
+    FinishClaimedTaskRequest, ForkAgentOutcome, ForkAgentRequest, RelateAgentsOutcome,
+    RelateAgentsRequest, ReportProgressRequest, ReportWaitRequest, TransitionTaskRequest,
 };
+use crate::coordination::task::{CoordinationTask, SessionTaskGraph, TaskExecutionLease};
 use crate::coordination::workspace::WorkspaceAccess;
 use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::credential::registry::CredentialSecretResolver;
@@ -5365,6 +5367,127 @@ impl Runtime {
             .map_err(|error| RuntimeError::Coordination(error.to_string()))
     }
 
+    /// Persist one bounded task authored by the authenticated Agent.
+    pub async fn create_agent_task(
+        &self,
+        actor: &AuthenticatedSession,
+        request: CreateTaskRequest,
+    ) -> Result<CoordinationTask, RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.created_by)?;
+        let task = self
+            .coordination_service()?
+            .create_task(request, crate::session::now_secs())
+            .await
+            .map_err(coordination_error)?;
+        self.record_coordination(&task.session_id, RuntimeCoordinationOutcome::TaskCreated);
+        Ok(task)
+    }
+
+    /// Advance a non-running workflow boundary under Agent authority.
+    pub async fn transition_agent_task(
+        &self,
+        actor: &AuthenticatedSession,
+        request: TransitionTaskRequest,
+    ) -> Result<CoordinationTask, RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.actor)?;
+        let task = self
+            .coordination_service()?
+            .transition_task(request, crate::session::now_secs())
+            .await
+            .map_err(coordination_error)?;
+        self.record_coordination(
+            &task.session_id,
+            RuntimeCoordinationOutcome::TaskTransitioned,
+        );
+        Ok(task)
+    }
+
+    /// Enter or recover execution with one durable owner and fencing token.
+    pub async fn claim_agent_task(
+        &self,
+        actor: &AuthenticatedSession,
+        request: ClaimTaskRequest,
+    ) -> Result<TaskExecutionLease, RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.actor)?;
+        let lease = self
+            .coordination_service()?
+            .claim_task(request, crate::session::now_secs())
+            .await
+            .map_err(coordination_error)?;
+        self.record_coordination(
+            &lease.session_id,
+            if lease.lease_epoch > 1 {
+                RuntimeCoordinationOutcome::TaskLeaseRecovered
+            } else {
+                RuntimeCoordinationOutcome::TaskClaimed
+            },
+        );
+        Ok(lease)
+    }
+
+    /// Commit a suspension or terminal boundary using the exact live lease.
+    pub async fn finish_agent_task(
+        &self,
+        actor: &AuthenticatedSession,
+        request: FinishClaimedTaskRequest,
+    ) -> Result<CoordinationTask, RuntimeError> {
+        validate_coordination_actor(actor, &request.lease.session_id, &request.lease.assignee)?;
+        let task = self
+            .coordination_service()?
+            .finish_claimed_task(request, crate::session::now_secs())
+            .await
+            .map_err(coordination_error)?;
+        self.record_coordination(
+            &task.session_id,
+            RuntimeCoordinationOutcome::TaskTransitioned,
+        );
+        Ok(task)
+    }
+
+    /// Fence a live executor and durably cancel unfinished work.
+    pub async fn cancel_agent_task(
+        &self,
+        actor: &AuthenticatedSession,
+        request: CancelTaskRequest,
+    ) -> Result<CoordinationTask, RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.actor)?;
+        let task = self
+            .coordination_service()?
+            .cancel_task(request, crate::session::now_secs())
+            .await
+            .map_err(coordination_error)?;
+        self.record_coordination(&task.session_id, RuntimeCoordinationOutcome::TaskCancelled);
+        Ok(task)
+    }
+
+    /// Inspect the durable Session DAG visible to this authenticated Agent.
+    pub async fn agent_task_graph(
+        &self,
+        actor: &AuthenticatedSession,
+    ) -> Result<Option<SessionTaskGraph>, RuntimeError> {
+        self.coordination_service()?
+            .task_graph(actor.id())
+            .await
+            .map_err(coordination_error)
+    }
+
+    fn coordination_service(
+        &self,
+    ) -> Result<&crate::coordination::service::CoordinationService<SqliteSessionStore>, RuntimeError>
+    {
+        self.storage
+            .coordination()
+            .ok_or_else(|| RuntimeError::Coordination("durable coordination is unavailable".into()))
+    }
+
+    fn record_coordination(&self, session_id: &SessionId, outcome: RuntimeCoordinationOutcome) {
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id: session_id.clone(),
+                outcome,
+            });
+    }
+
     /// Persist one authenticated wait-for edge for deadlock governance.
     pub async fn report_agent_wait(
         &self,
@@ -6210,6 +6333,10 @@ fn validate_coordination_actor(
             "coordination actor does not match authenticated Agent participant".into(),
         ))
     }
+}
+
+fn coordination_error(error: CoordinationServiceError) -> RuntimeError {
+    RuntimeError::Coordination(error.to_string())
 }
 
 #[derive(Debug, thiserror::Error)]

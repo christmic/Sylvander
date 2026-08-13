@@ -14,6 +14,26 @@ impl<S> CoordinationService<S>
 where
     S: AgentInstanceStore + CoordinationStore,
 {
+    /// Read the current durable task graph after validating its membership
+    /// revision. Absence is distinct from an empty initialized graph.
+    pub async fn task_graph(
+        &self,
+        session_id: &sylvander_api::SessionId,
+    ) -> Result<Option<SessionTaskGraph>, CoordinationServiceError> {
+        let membership = self
+            .store
+            .session_membership(session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingMembership(session_id.clone()))?;
+        let graph = self.store.task_graph(session_id).await?;
+        if let Some(graph) = &graph {
+            graph.validate(&membership).map_err(|error| {
+                CoordinationServiceError::InvalidDurableFacts(error.to_string())
+            })?;
+        }
+        Ok(graph)
+    }
+
     /// Validate and persist a bounded task authored by an active Agent.
     pub async fn create_task(
         &self,
