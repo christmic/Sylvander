@@ -44,6 +44,13 @@ pub struct CognitionActivationRecord {
     pub revoked_by: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CognitionActivationSummary {
+    pub proposed: u64,
+    pub approved: u64,
+    pub revoked: u64,
+}
+
 impl AgentRegistry {
     pub async fn propose_cognition_activation(
         &self,
@@ -178,6 +185,97 @@ impl AgentRegistry {
         }
         Ok(Some(record))
     }
+
+    pub async fn cognition_activation_summary(
+        &self,
+    ) -> Result<CognitionActivationSummary, CognitionActivationError> {
+        self.run_with(|connection| {
+            verify_cognition_activations(connection)?;
+            let counts = connection
+                .query_row(
+                    "SELECT COUNT(*) FILTER (WHERE state='proposed'),\
+                     COUNT(*) FILTER (WHERE state='approved'),\
+                     COUNT(*) FILTER (WHERE state='revoked') \
+                     FROM cognition_activation_proposals",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            Ok(CognitionActivationSummary {
+                proposed: decode_u64(counts.0)?,
+                approved: decode_u64(counts.1)?,
+                revoked: decode_u64(counts.2)?,
+            })
+        })
+        .await
+    }
+}
+
+pub(crate) fn verify_cognition_activations(
+    connection: &rusqlite::Connection,
+) -> Result<(), CognitionActivationError> {
+    let mut statement = connection
+        .prepare("SELECT proposal_id FROM cognition_activation_proposals ORDER BY proposal_id")
+        .map_err(AgentRegistryError::sqlite)?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(AgentRegistryError::sqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AgentRegistryError::sqlite)?;
+    for id in ids {
+        let record = load_record(connection, &id)?;
+        let stored: (String, String) = connection
+            .query_row(
+                "SELECT definition_json,digest FROM agent_definitions \
+                 WHERE agent_id=?1 AND revision=?2",
+                params![
+                    record.draft.agent_id.0,
+                    sql_u64(record.draft.agent_revision)?
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(AgentRegistryError::sqlite)?;
+        let definition: crate::config::AgentDefinitionConfig =
+            serde_json::from_str(&stored.0).map_err(AgentRegistryError::serde)?;
+        let binding = definition
+            .spec
+            .cognition
+            .binding(record.draft.role)
+            .ok_or(CognitionActivationError::Integrity)?;
+        if stored.1 != record.draft.agent_definition_sha256 || binding.model != record.draft.model {
+            return Err(CognitionActivationError::Integrity);
+        }
+        let (events, last_event, last_actor): (i64, String, String) = connection
+            .query_row(
+                "SELECT COUNT(*),\
+                 COALESCE((SELECT event FROM cognition_activation_events WHERE proposal_id=?1 \
+                    ORDER BY state_revision DESC LIMIT 1),''),\
+                 COALESCE((SELECT actor FROM cognition_activation_events WHERE proposal_id=?1 \
+                    ORDER BY state_revision DESC LIMIT 1),'') \
+                 FROM cognition_activation_events WHERE proposal_id=?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(AgentRegistryError::sqlite)?;
+        let expected_actor = match record.state {
+            CognitionActivationState::Proposed => Some(record.proposed_by.as_str()),
+            CognitionActivationState::Approved => record.approved_by.as_deref(),
+            CognitionActivationState::Revoked => record.revoked_by.as_deref(),
+        };
+        if events != sql_u64(record.state_revision)?
+            || last_event != state_str(record.state)
+            || Some(last_actor.as_str()) != expected_actor
+        {
+            return Err(CognitionActivationError::Integrity);
+        }
+    }
+    Ok(())
 }
 
 async fn transition(
@@ -338,6 +436,13 @@ fn parse_state(value: &str) -> Result<CognitionActivationState, CognitionActivat
         "approved" => Ok(CognitionActivationState::Approved),
         "revoked" => Ok(CognitionActivationState::Revoked),
         _ => Err(CognitionActivationError::Integrity),
+    }
+}
+const fn state_str(state: CognitionActivationState) -> &'static str {
+    match state {
+        CognitionActivationState::Proposed => "proposed",
+        CognitionActivationState::Approved => "approved",
+        CognitionActivationState::Revoked => "revoked",
     }
 }
 fn valid_sha256(value: &str) -> bool {

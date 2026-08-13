@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::config::{AgentDefinitionConfig, ServerConfig};
+use crate::registry::cognition_activation::verify_cognition_activations;
 use crate::registry::snapshot::{
     AgentRegistrySnapshotV3, AgentSnapshotSelectionV3, AgentSnapshotV3Error,
     stage_snapshot_v3_in_transaction,
@@ -129,6 +130,11 @@ impl AgentRegistry {
     pub(crate) async fn verify_health(&self) -> Result<(), AgentRegistryError> {
         self.run(|connection| {
             ensure_current_registry_schema(connection)?;
+            verify_cognition_activations(connection).map_err(|_| {
+                AgentRegistryError::Integrity(
+                    "cognition activation governance facts failed validation".into(),
+                )
+            })?;
             let quick_check = connection
                 .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
                 .map_err(AgentRegistryError::sqlite)?;

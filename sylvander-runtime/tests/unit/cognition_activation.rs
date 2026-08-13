@@ -133,6 +133,14 @@ async fn approval_is_exactly_bound_revocable_and_durable_across_restart() {
         .unwrap()
         .unwrap();
     assert_eq!(active.proposal_id, proposed.proposal_id);
+    assert_eq!(
+        registry.cognition_activation_summary().await.unwrap(),
+        CognitionActivationSummary {
+            proposed: 0,
+            approved: 1,
+            revoked: 0,
+        }
+    );
     registry
         .revoke_cognition_activation(Some(&owner), &active.proposal_id, 2)
         .await
@@ -144,4 +152,25 @@ async fn approval_is_exactly_bound_revocable_and_durable_across_restart() {
             .unwrap()
             .is_none()
     );
+    assert_eq!(
+        registry
+            .cognition_activation_summary()
+            .await
+            .unwrap()
+            .revoked,
+        1
+    );
+    registry
+        .run(|connection| {
+            connection
+                .execute(
+                    "UPDATE cognition_activation_proposals SET evidence_json='{}'",
+                    [],
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(registry.verify_health().await.is_err());
 }
