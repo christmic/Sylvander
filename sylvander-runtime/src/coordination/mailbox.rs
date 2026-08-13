@@ -83,7 +83,7 @@ pub struct MessageClaim {
 }
 
 /// Durable bridge from one delivered envelope to exactly one Agent turn.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentMessageTurn {
     pub message_id: CoordinationMessageId,
     pub session_id: SessionId,

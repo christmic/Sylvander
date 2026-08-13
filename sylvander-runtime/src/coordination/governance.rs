@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use sylvander_api::{AgentInstanceId, TaskId};
+use sylvander_api::{AgentInstanceId, CoordinationMessageId, TaskId};
 
 use crate::coordination::task::{CoordinationTaskState, SessionTaskGraph};
 use crate::coordination::topology::{AgentRelationKind, SessionTopology};
@@ -112,6 +112,10 @@ pub enum GovernanceFinding {
         task_id: TaskId,
         handoffs: usize,
     },
+    MailboxTurnUnresolved {
+        agent_instance_id: AgentInstanceId,
+        message_id: CoordinationMessageId,
+    },
 }
 
 impl GovernanceFinding {
@@ -123,7 +127,8 @@ impl GovernanceFinding {
             | Self::OwnershipFanout { .. }
             | Self::TaskConcurrency { .. }
             | Self::TokenBudgetExhausted { .. }
-            | Self::WaitCycle { .. } => FindingSeverity::HardStop,
+            | Self::WaitCycle { .. }
+            | Self::MailboxTurnUnresolved { .. } => FindingSeverity::HardStop,
             Self::StagnantProgress { .. } | Self::HandoffPingPong { .. } => {
                 FindingSeverity::ModeratorReview
             }

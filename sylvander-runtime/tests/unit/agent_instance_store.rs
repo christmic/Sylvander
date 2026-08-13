@@ -235,6 +235,59 @@ async fn automatic_delivery_persists_one_turn_before_execution() {
 }
 
 #[tokio::test]
+async fn unresolved_mailbox_turn_is_idempotently_escalated_to_moderator() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    service
+        .dispatch_message(dispatch_request("unresolved-message"), 20)
+        .await
+        .unwrap();
+    let claim = service
+        .claim_next_message(&AgentInstanceId::new("coordinator-1"), 21, 10)
+        .await
+        .unwrap()
+        .unwrap();
+    let (message, receipt) = service
+        .prepare_message_turn(&claim, "coordination:unresolved", 22)
+        .await
+        .unwrap();
+
+    let case = service
+        .escalate_mailbox_turn(&message, &receipt, 23)
+        .await
+        .unwrap();
+
+    assert!(case.has_hard_stop());
+    assert_eq!(
+        service
+            .escalate_mailbox_turn(&message, &receipt, 24)
+            .await
+            .unwrap(),
+        case
+    );
+    assert!(
+        store
+            .message(&CoordinationMessageId::new(format!(
+                "arbitration:{}",
+                case.case_id.0
+            )))
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn coordination_service_persists_moderator_case_before_blocking_dispatch() {
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     store.save(&stored_session()).await.unwrap();

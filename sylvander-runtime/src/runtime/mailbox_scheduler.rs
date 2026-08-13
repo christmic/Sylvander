@@ -63,11 +63,14 @@ async fn run_scheduler(
             let store = store.clone();
             let revisions = revisions.clone();
             active.spawn(async move {
-                if let Err(error) = Box::pin(drain_recipient(&store, &revisions, &recipient)).await
-                {
-                    warn!(%recipient, %error, "automatic Agent mailbox delivery paused");
-                }
-                recipient
+                let wake = match Box::pin(drain_recipient(&store, &revisions, &recipient)).await {
+                    Ok(wake) => wake,
+                    Err(error) => {
+                        warn!(%recipient, %error, "automatic Agent mailbox delivery paused");
+                        None
+                    }
+                };
+                (recipient, wake)
             });
         }
         tokio::select! {
@@ -79,11 +82,18 @@ async fn run_scheduler(
                 None => receiver_open = false,
             },
             completed = active.join_next(), if !active.is_empty() => {
-                if let Some(Ok(recipient)) = completed {
+                if let Some(Ok((recipient, wake))) = completed {
                     if rerun.remove(&recipient) {
                         queued.push_back(recipient);
                     } else {
                         known.remove(&recipient);
+                    }
+                    if let Some(wake) = wake {
+                        if known.insert(wake.clone()) {
+                            queued.push_back(wake);
+                        } else {
+                            rerun.insert(wake);
+                        }
                     }
                 }
             }
@@ -98,7 +108,7 @@ async fn drain_recipient(
     store: &Arc<SqliteSessionStore>,
     revisions: &Arc<RuntimeRevisionProvider>,
     recipient: &AgentInstanceId,
-) -> Result<(), RuntimeError> {
+) -> Result<Option<AgentInstanceId>, RuntimeError> {
     let service = CoordinationService::new(
         store.clone(),
         GovernancePolicy::default(),
@@ -121,7 +131,13 @@ async fn drain_recipient(
                     .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
             }
             None => execute_message_turn(store, revisions, &service, &message, &receipt).await?,
-            Some(_) => return Ok(()),
+            Some(_) => {
+                let case = service
+                    .escalate_mailbox_turn(&message, &receipt, crate::session::now_secs())
+                    .await
+                    .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+                return Ok(Some(case.moderator_instance_id));
+            }
         }
     }
     while let Some(claim) = service
@@ -139,7 +155,7 @@ async fn drain_recipient(
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
         execute_message_turn(store, revisions, &service, &message, &receipt).await?;
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn execute_message_turn(

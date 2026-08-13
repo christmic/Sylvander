@@ -13,8 +13,8 @@ use crate::agent::instance::{
 };
 use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
 use crate::coordination::governance::{
-    GovernanceAssessment, GovernancePolicy, GovernanceSnapshot, ProgressObservation,
-    WaitDependency, assess,
+    GovernanceAssessment, GovernanceFinding, GovernancePolicy, GovernanceSnapshot,
+    ProgressObservation, WaitDependency, assess,
 };
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
@@ -700,6 +700,81 @@ where
             .prepare_message_turn(claim, turn_id, now)
             .await
             .map_err(Into::into)
+    }
+
+    /// Persist a hard-stop case for a mailbox turn whose durable state cannot
+    /// be resumed automatically, then wake the fenced moderator mailbox.
+    pub async fn escalate_mailbox_turn(
+        &self,
+        message: &CoordinationMessage,
+        receipt: &AgentMessageTurn,
+        now: i64,
+    ) -> Result<ArbitrationCase, CoordinationServiceError> {
+        if message.message_id != receipt.message_id
+            || message.session_id != receipt.session_id
+            || message.recipient_instance_id != receipt.recipient_instance_id
+        {
+            return Err(CoordinationServiceError::InvalidDispatch(
+                "mailbox turn receipt mismatch".into(),
+            ));
+        }
+        let membership = self
+            .store
+            .session_membership(&message.session_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::MissingMembership(message.session_id.clone())
+            })?;
+        let topology = self
+            .store
+            .topology(&message.session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingTopology(message.session_id.clone()))?;
+        let case_id = governance_case_id(
+            "mailbox-turn",
+            &(message.message_id.clone(), receipt.turn_id.clone()),
+            membership.governance.membership_revision,
+            topology.topology_revision,
+        )?;
+        let case = if let Some(existing) = self.store.arbitration_case(&case_id).await? {
+            existing
+        } else {
+            let ttl = i64::try_from(self.arbitration_ttl_seconds)
+                .map_err(|_| CoordinationServiceError::InvalidConfiguration)?;
+            let case = ArbitrationCase {
+                case_id,
+                session_id: message.session_id.clone(),
+                moderator_instance_id: membership.governance.moderator_instance_id.clone(),
+                membership_revision: membership.governance.membership_revision,
+                topology_revision: topology.topology_revision,
+                moderator_lease_epoch: membership.governance.lease_epoch,
+                moderator_fencing_token: membership.governance.fencing_token,
+                findings: vec![GovernanceFinding::MailboxTurnUnresolved {
+                    agent_instance_id: message.recipient_instance_id.clone(),
+                    message_id: message.message_id.clone(),
+                }],
+                state: ArbitrationState::Open,
+                revision: 0,
+                expires_at: now
+                    .checked_add(ttl)
+                    .ok_or(CoordinationServiceError::InvalidConfiguration)?,
+                created_at: now,
+                updated_at: now,
+            };
+            self.store
+                .create_arbitration_case(&case, &membership, &topology, now)
+                .await?;
+            case
+        };
+        self.ensure_arbitration_notification(
+            &message.recipient_instance_id,
+            message.task_id.as_ref(),
+            &case,
+            &membership,
+            &topology,
+        )
+        .await?;
+        Ok(case)
     }
 
     /// Persist recipient acknowledgement using the delivered revision as a fence.
