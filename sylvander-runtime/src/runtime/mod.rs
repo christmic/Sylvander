@@ -4290,6 +4290,7 @@ impl Runtime {
         info!(
             discovered = recovery.discovered,
             classified = recovery.classified,
+            lease_deferred = recovery.lease_deferred,
             manual_reconciliation = recovery.manual_reconciliation,
             "classified interrupted tool executions"
         );
