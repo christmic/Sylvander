@@ -774,6 +774,100 @@ describe("Sylvander Work", () => {
     expect(screen.getByText("identity binding revision changed")).toBeTruthy();
   });
 
+  it("activates only an explicitly confirmed redacted Agent revision", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 6, capabilities: ["agent_administration"] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agents_discovered",
+      agents: [{
+        id: "agent-1",
+        revision: 4,
+        name: "Coding Agent",
+        provider_id: "openai",
+        default_model_id: "gpt-test",
+      }],
+    } }));
+    act(() => screen.getByRole("button", { name: "Agents" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "agent_admin",
+      request: { operation: "list_revisions", agent_id: "agent-1", limit: 50 },
+    }));
+    const definition = {
+      agent_id: "agent-1",
+      revision: 4,
+      name: "Coding Agent",
+      description: "Works on code",
+      provider_id: "openai",
+      default_model_id: "gpt-test",
+      allowed_models: [{ provider_id: "openai", model_id: "gpt-test" }],
+      system_prompt_sha256: "sha256:prompt-4",
+      tools: [{ type: "builtin" as const, name: "Read" }],
+      memory_store_types: ["sqlite"],
+      ui_commands: [],
+      hooks: [],
+      tool_presentations: [],
+      behavior: { max_iterations: 50, max_retries: 3 },
+      agent_workspace_configured: true,
+      workspace_mount_count: 1,
+      prompt_profiles: [],
+      allow_session_prompt: false,
+      access: { allow_authenticated: true, allowed_principal_count: 0, allowed_roles: [] },
+    };
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agent_admin",
+      response: {
+        status: "success",
+        result: {
+          operation: "revisions_listed",
+          agent_id: "agent-1",
+          active_revision: 4,
+          revisions: [{
+            definition,
+            digest_sha256: "sha256:definition-4",
+            created_at_unix_secs: 100,
+            active: true,
+          }, {
+            definition: { ...definition, revision: 5, system_prompt_sha256: "sha256:prompt-5" },
+            digest_sha256: "sha256:definition-5",
+            created_at_unix_secs: 200,
+            active: false,
+          }],
+        },
+      },
+    } }));
+    expect(await screen.findByRole("heading", { name: "Revision 4 · active" })).toBeTruthy();
+    expect(screen.getByText(/definition sha256:definition-5 · prompt sha256:prompt-5/)).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Make active…" }).click());
+    expect(gateway.commands.at(-1)).toEqual({
+      type: "agent_admin",
+      request: { operation: "list_revisions", agent_id: "agent-1", limit: 50 },
+    });
+    act(() => screen.getByRole("button", { name: "Confirm activation from revision 4" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "agent_admin",
+      request: {
+        operation: "activate_revision",
+        agent_id: "agent-1",
+        revision: 5,
+        expected_active_revision: 4,
+      },
+    }));
+    expect(screen.getByRole("heading", { name: "Revision 4 · active" })).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agent_admin",
+      response: {
+        status: "success",
+        result: { operation: "revision_activated", agent_id: "agent-1", active_revision: 5 },
+      },
+    } }));
+    expect(await screen.findByRole("heading", { name: "Revision 5 · active" })).toBeTruthy();
+  });
+
   it("requests interruption once and waits for the Runtime terminal", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);

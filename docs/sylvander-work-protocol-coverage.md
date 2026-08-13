@@ -33,7 +33,8 @@ execution, persistence, or policy ownership moved into Desktop.
 | `MemoryConfirmation` | complete | capability-gated latest-only list and explicit revision-bound decision |
 | `UserProfile` | complete | owner-scoped typed CRUD, privacy controls, export, and conflict reload |
 | `IdentityBinding` | complete | one-time challenge handling, confirm/resolve, and revision-bound unlink |
-| `AgentAdmin`, `RegistryAdmin` | designed | redacted inspection plus explicit revisioned mutation surfaces |
+| `AgentAdmin` | partial | redacted inspect/list and explicit activate/rollback complete; complete definition writer remains |
+| `RegistryAdmin` | designed | redacted inspection plus explicit revisioned mutation surfaces |
 | `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
 | `ForkSession` | complete end-to-end for checkpoints | completed-turn rewind editor |
 | `RestoreSession` | complete end-to-end | UI waits for `SessionUpdated` before refreshing active/archive lists |
@@ -67,7 +68,8 @@ execution, persistence, or policy ownership moved into Desktop.
 | memory responses | complete | pending replaces selected-Session queue; recorded settles matching candidate; conflict preserves and refreshes it |
 | profile responses | complete | owner-visible ephemeral projection; no transcript, diagnostics, or local persistence |
 | identity responses | complete | one-time secret lifecycle and binding revision projection |
-| admin responses | designed | redacted views, typed conflicts, and no optimistic activation/rollback |
+| Agent admin responses | partial | redacted revision projection and authoritative activation/rollback complete |
+| Registry admin responses | designed | redacted views, typed conflicts, and no optimistic mutation |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
 | workspace rollback lifecycle | complete | preview, restored files, and failure |
 | coding Session lifecycle | complete | diff, accepted, discarded, and operation failure |
