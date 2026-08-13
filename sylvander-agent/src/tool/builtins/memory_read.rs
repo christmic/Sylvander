@@ -69,7 +69,7 @@ impl ToolDefinition for MemoryReadTool {
          in the current conversation. \
          The results are returned as a JSON array of matching entries.",
             schema.schema,
-            crate::tool_invocation::ToolInvocationClass::Read,
+            crate::tool::invocation::ToolInvocationClass::Read,
         )
     }
 }
@@ -178,5 +178,5 @@ fn parse_importance(s: Option<&str>) -> Result<Option<Importance>, ToolError> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_memory_read.rs"]
+#[path = "../../../tests/unit/tools_memory_read.rs"]
 mod tests;

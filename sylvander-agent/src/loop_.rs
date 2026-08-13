@@ -1008,8 +1008,8 @@ struct ToolExecutionOutcome {
 
 struct RegisteredToolExecutionRequest {
     prepared_call: Result<crate::tool::PreparedToolCall, crate::tool::ToolPrepareError>,
-    invocation_gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
-    invocation_snapshot: crate::tool_invocation::ToolInvocationSnapshot,
+    invocation_gateway: Arc<dyn crate::tool::invocation::ToolInvocationGateway>,
+    invocation_snapshot: crate::tool::invocation::ToolInvocationSnapshot,
     tool_context: ToolContext,
     call_id: String,
     route: String,
@@ -1042,7 +1042,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
             };
         }
     };
-    let request = crate::tool_invocation::ToolInvocationRequest::new(
+    let request = crate::tool::invocation::ToolInvocationRequest::new(
         &call_id,
         &route,
         Some(prepared_call.spec().invocation_class),
@@ -1069,7 +1069,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
             timed_out_after: None,
         };
         if let Err(audit_error) = grant
-            .finish(crate::tool_invocation::ToolInvocationOutcome::Failed)
+            .finish(crate::tool::invocation::ToolInvocationOutcome::Failed)
             .await
         {
             outcome.output = audit_error.to_string();
@@ -1105,14 +1105,14 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                 is_error: true,
                 timed_out_after: Some(timeout),
             },
-            crate::tool_invocation::ToolInvocationOutcome::TimedOut,
+            crate::tool::invocation::ToolInvocationOutcome::TimedOut,
         ),
         (Some(Ok(output)), None) => {
             tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, is_error = output.is_error, "tool execution finished");
             let terminal = if output.is_error {
-                crate::tool_invocation::ToolInvocationOutcome::Failed
+                crate::tool::invocation::ToolInvocationOutcome::Failed
             } else {
-                crate::tool_invocation::ToolInvocationOutcome::Succeeded
+                crate::tool::invocation::ToolInvocationOutcome::Succeeded
             };
             (
                 ToolExecutionOutcome {
@@ -1131,7 +1131,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                     is_error: true,
                     timed_out_after: None,
                 },
-                crate::tool_invocation::ToolInvocationOutcome::Failed,
+                crate::tool::invocation::ToolInvocationOutcome::Failed,
             )
         }
         _ => unreachable!("timeout and execution result are mutually exclusive"),

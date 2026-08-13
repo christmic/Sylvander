@@ -51,7 +51,7 @@ impl ToolDefinition for ListTool {
             "additionalProperties": false
             }))
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Read,
+            crate::tool::invocation::ToolInvocationClass::Read,
         )
     }
 }
@@ -178,5 +178,5 @@ pub(super) fn parse_max_results(value: Option<&JsonValue>) -> Result<usize, Tool
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_list.rs"]
+#[path = "../../../tests/unit/tools_list.rs"]
 mod tests;

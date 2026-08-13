@@ -55,7 +55,7 @@ impl ToolDefinition for SearchTool {
             "additionalProperties": false
             }))
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Read,
+            crate::tool::invocation::ToolInvocationClass::Read,
         )
     }
 }
@@ -123,5 +123,5 @@ impl ToolExecutor for SearchTool {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_search.rs"]
+#[path = "../../../tests/unit/tools_search.rs"]
 mod tests;

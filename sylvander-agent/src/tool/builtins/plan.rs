@@ -35,7 +35,7 @@ impl ToolDefinition for PresentPlanTool {
                 &["steps"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Control,
+            crate::tool::invocation::ToolInvocationClass::Control,
         )
     }
 }

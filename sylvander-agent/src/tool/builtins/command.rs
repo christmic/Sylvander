@@ -61,7 +61,7 @@ impl ToolDefinition for CommandTool {
                 &["command"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Terminal,
+            crate::tool::invocation::ToolInvocationClass::Terminal,
         )
     }
 
@@ -281,5 +281,5 @@ fn model_text(bytes: &[u8]) -> (String, bool) {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_command.rs"]
+#[path = "../../../tests/unit/tools_command.rs"]
 mod tests;

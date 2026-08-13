@@ -61,7 +61,7 @@ impl ToolDefinition for EditTool {
                 &["file_path", "old_string", "new_string"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::FilesystemMutation,
+            crate::tool::invocation::ToolInvocationClass::FilesystemMutation,
         )
     }
 }
@@ -194,5 +194,5 @@ impl ToolExecutor for EditTool {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_edit.rs"]
+#[path = "../../../tests/unit/tools_edit.rs"]
 mod tests;

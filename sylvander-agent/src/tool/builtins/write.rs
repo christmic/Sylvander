@@ -51,7 +51,7 @@ impl ToolDefinition for WriteTool {
                 &["file_path", "content"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::FilesystemMutation,
+            crate::tool::invocation::ToolInvocationClass::FilesystemMutation,
         )
     }
 }
@@ -128,5 +128,5 @@ impl ToolExecutor for WriteTool {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_write.rs"]
+#[path = "../../../tests/unit/tools_write.rs"]
 mod tests;

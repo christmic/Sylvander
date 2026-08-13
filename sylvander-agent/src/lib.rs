@@ -114,12 +114,9 @@ pub use interaction::{
 };
 pub use memory::curated as curated_memory;
 pub use turn::{conversation, error, event, execution_context, identity, outcome, request, time};
-/// Tool registration, schemas, invocation, and normalized output.
+/// Tool contracts, authorization, registration, and built-in implementations.
 pub mod tool;
-/// Central actor-aware authorization and audit contract for tool execution.
-pub mod tool_invocation;
-/// Built-in filesystem, memory, plan, and task tools.
-pub mod tools;
+pub use tool::{builtins as tools, invocation as tool_invocation};
 
 #[cfg(test)]
 #[path = "../tests/unit/support.rs"]

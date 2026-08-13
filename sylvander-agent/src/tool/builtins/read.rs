@@ -55,7 +55,7 @@ impl ToolDefinition for ReadTool {
                 &["file_path"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Read,
+            crate::tool::invocation::ToolInvocationClass::Read,
         )
     }
 }
@@ -155,5 +155,5 @@ fn output_chunks(text: &str, max_chars: usize) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_read.rs"]
+#[path = "../../../tests/unit/tools_read.rs"]
 mod tests;

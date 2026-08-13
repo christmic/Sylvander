@@ -17,9 +17,9 @@ const KERNEL_MODULES: &[&str] = &[
     "turn/outcome.rs",
     "interaction/plan.rs",
     "turn/request.rs",
-    "tool.rs",
+    "tool/contract.rs",
     "execution/tool_context.rs",
-    "tool_invocation.rs",
+    "tool/invocation.rs",
 ];
 
 fn source_root() -> PathBuf {

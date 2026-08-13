@@ -32,7 +32,7 @@ impl ToolDefinition for UpdatePlanTool {
                 &["plan_id", "steps", "current"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Control,
+            crate::tool::invocation::ToolInvocationClass::Control,
         )
     }
 }

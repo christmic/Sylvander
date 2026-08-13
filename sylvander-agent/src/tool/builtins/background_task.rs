@@ -31,7 +31,7 @@ impl ToolDefinition for StartBackgroundTaskTool {
                 &["purpose", "prompt"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Control,
+            crate::tool::invocation::ToolInvocationClass::Control,
         )
     }
 }

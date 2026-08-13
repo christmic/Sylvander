@@ -50,7 +50,7 @@ impl ToolDefinition for AskUserTool {
                 &["question"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Control,
+            crate::tool::invocation::ToolInvocationClass::Control,
         )
     }
 }

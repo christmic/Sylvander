@@ -16,7 +16,7 @@ use crate::interaction::approval::ApprovalGate;
 use crate::interaction::ask_user::AskUserGate;
 use crate::interaction::background_task::TaskGate;
 use crate::interaction::plan::PlanGate;
-use crate::tool_invocation::{ToolInvocationGateway, ToolInvocationSnapshot};
+use crate::tool::invocation::{ToolInvocationGateway, ToolInvocationSnapshot};
 use crate::turn::error::AgentLoopError;
 use crate::turn::request::AgentTurnRequest;
 

@@ -2,10 +2,10 @@
 //!
 //! The model can suggest a tool name and JSON input, but it cannot authorize
 //! either. Every ordinary tool call passes through
-//! [`ToolInvocationGateway`](crate::tool_invocation::ToolInvocationGateway)
+//! [`ToolInvocationGateway`](crate::tool::invocation::ToolInvocationGateway)
 //! immediately before execution and reports one terminal outcome through the
 //! returned
-//! [`AuthorizedToolInvocation`](crate::tool_invocation::AuthorizedToolInvocation).
+//! [`AuthorizedToolInvocation`](crate::tool::invocation::AuthorizedToolInvocation).
 //! Runtime implementations bind the request to a trusted Worker identity and
 //! durable content-safe audit sink.
 
@@ -389,5 +389,5 @@ const fn invocation_class_code(class: ToolInvocationClass) -> u8 {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/tool_invocation.rs"]
+#[path = "../../tests/unit/tool_invocation.rs"]
 mod tests;

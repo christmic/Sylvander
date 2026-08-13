@@ -74,7 +74,7 @@ impl ToolDefinition for GitTool {
                 &["operation"],
             )
             .schema,
-            crate::tool_invocation::ToolInvocationClass::Terminal,
+            crate::tool::invocation::ToolInvocationClass::Terminal,
         )
     }
 
@@ -286,5 +286,5 @@ fn bounded_text(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_git.rs"]
+#[path = "../../../tests/unit/tools_git.rs"]
 mod tests;

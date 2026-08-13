@@ -86,7 +86,7 @@ impl ToolDefinition for MemoryWriteTool {
          and policy may reject the proposal or require user confirmation. \
          Each proposal can have optional categorization tags.",
             schema.schema,
-            crate::tool_invocation::ToolInvocationClass::MemoryCandidate,
+            crate::tool::invocation::ToolInvocationClass::MemoryCandidate,
         )
     }
 }
@@ -190,5 +190,5 @@ fn reject_unknown_fields(input: &JsonValue, allowed: &[&str]) -> Result<(), Tool
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../../tests/unit/tools_memory_write.rs"]
+#[path = "../../../tests/unit/tools_memory_write.rs"]
 mod tests;
