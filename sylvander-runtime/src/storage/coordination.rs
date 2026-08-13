@@ -6,7 +6,9 @@ use sylvander_api::{
     AgentInstanceId, CoordinationMessageId, GovernanceCaseId, HandoffId, SessionId, TaskId,
 };
 
-use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
+use crate::coordination::arbitration::{
+    ArbitrationCase, ArbitrationState, ModeratorDecision, ModeratorVerdict,
+};
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MAX_MESSAGE_LEASE_SECONDS, MessageClaim,
@@ -67,6 +69,20 @@ pub trait CoordinationStore: Send + Sync {
         &self,
         case_id: &GovernanceCaseId,
     ) -> Result<Option<ArbitrationCase>, SessionStoreError>;
+
+    async fn decide_arbitration(
+        &self,
+        decision: &ModeratorDecision,
+        membership: &SessionMembership,
+        tasks: &SessionTaskGraph,
+        topology_revision: u64,
+        now: i64,
+    ) -> Result<ArbitrationCase, SessionStoreError>;
+
+    async fn arbitration_decision(
+        &self,
+        case_id: &GovernanceCaseId,
+    ) -> Result<Option<ModeratorDecision>, SessionStoreError>;
 
     async fn create_handoff(
         &self,
@@ -621,6 +637,113 @@ impl CoordinationStore for SqliteSessionStore {
     ) -> Result<Option<ArbitrationCase>, SessionStoreError> {
         let case_id = case_id.clone();
         self.run(move |connection| load_arbitration_case(connection, &case_id))
+            .await
+    }
+
+    async fn decide_arbitration(
+        &self,
+        decision: &ModeratorDecision,
+        membership: &SessionMembership,
+        tasks: &SessionTaskGraph,
+        topology_revision: u64,
+        now: i64,
+    ) -> Result<ArbitrationCase, SessionStoreError> {
+        let decision = decision.clone();
+        let membership = membership.clone();
+        let tasks = tasks.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let Some(mut case) = load_arbitration_case(&transaction, &decision.case_id)? else {
+                return Err(SessionStoreError::Invalid(
+                    "arbitration case does not exist".into(),
+                ));
+            };
+            decision
+                .validate(&case, &membership, &tasks, topology_revision, now)
+                .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+            let durable_facts = transaction.query_row(
+                "SELECT g.moderator_instance_id,g.membership_revision,g.lease_epoch,
+                        g.fencing_token,t.topology_revision
+                 FROM session_governance g JOIN session_topology t ON t.session_id=g.session_id
+                 WHERE g.session_id=?1",
+                [&case.session_id.0],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )?;
+            if durable_facts.0 != case.moderator_instance_id.0
+                || checked_u64(durable_facts.1, "membership revision")? != case.membership_revision
+                || checked_u64(durable_facts.2, "moderator lease epoch")?
+                    != case.moderator_lease_epoch
+                || checked_u64(durable_facts.3, "moderator fencing token")?
+                    != case.moderator_fencing_token
+                || checked_u64(durable_facts.4, "topology revision")? != case.topology_revision
+            {
+                return Err(SessionStoreError::Invalid(
+                    "arbitration durable governance facts changed before decision".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO moderator_decisions \
+                 (case_id,decided_by_instance_id,moderator_lease_epoch,moderator_fencing_token,
+                  verdict_json,rationale,evidence_refs_json,decided_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    decision.case_id.0,
+                    decision.decided_by.0,
+                    checked_i64(decision.moderator_lease_epoch, "moderator lease epoch")?,
+                    checked_i64(decision.moderator_fencing_token, "moderator fencing token")?,
+                    serde_json::to_string(&decision.verdict).map_err(|error| {
+                        SessionStoreError::Store(format!(
+                            "failed to encode moderator verdict: {error}"
+                        ))
+                    })?,
+                    decision.rationale,
+                    serde_json::to_string(&decision.evidence_refs).map_err(|error| {
+                        SessionStoreError::Store(format!(
+                            "failed to encode moderator evidence references: {error}"
+                        ))
+                    })?,
+                    decision.decided_at,
+                ],
+            )?;
+            let changed = transaction.execute(
+                "UPDATE governance_cases SET state='decided',revision=revision+1,updated_at=?1 \
+                 WHERE case_id=?2 AND state='open' AND revision=?3",
+                params![
+                    decision.decided_at,
+                    case.case_id.0,
+                    checked_i64(case.revision, "arbitration revision")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "arbitration case changed before decision commit".into(),
+                ));
+            }
+            case.state = ArbitrationState::Decided;
+            case.revision = case.revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("arbitration revision overflow".into())
+            })?;
+            case.updated_at = decision.decided_at;
+            transaction.commit()?;
+            Ok(case)
+        })
+        .await
+    }
+
+    async fn arbitration_decision(
+        &self,
+        case_id: &GovernanceCaseId,
+    ) -> Result<Option<ModeratorDecision>, SessionStoreError> {
+        let case_id = case_id.clone();
+        self.run(move |connection| load_moderator_decision(connection, &case_id))
             .await
     }
 
@@ -1328,10 +1451,58 @@ fn load_arbitration_case(
         .transpose()
 }
 
+fn load_moderator_decision(
+    connection: &rusqlite::Connection,
+    case_id: &GovernanceCaseId,
+) -> Result<Option<ModeratorDecision>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT decided_by_instance_id,moderator_lease_epoch,moderator_fencing_token,
+                    verdict_json,rationale,evidence_refs_json,decided_at
+             FROM moderator_decisions WHERE case_id=?1",
+            [&case_id.0],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            Ok(ModeratorDecision {
+                case_id: case_id.clone(),
+                decided_by: AgentInstanceId::new(row.0),
+                moderator_lease_epoch: checked_u64(row.1, "moderator lease epoch")?,
+                moderator_fencing_token: checked_u64(row.2, "moderator fencing token")?,
+                verdict: serde_json::from_str::<ModeratorVerdict>(&row.3).map_err(|error| {
+                    SessionStoreError::Store(format!(
+                        "stored moderator verdict is invalid: {error}"
+                    ))
+                })?,
+                rationale: row.4,
+                evidence_refs: serde_json::from_str(&row.5).map_err(|error| {
+                    SessionStoreError::Store(format!(
+                        "stored moderator evidence references are invalid: {error}"
+                    ))
+                })?,
+                decided_at: row.6,
+            })
+        })
+        .transpose()
+}
+
 fn decode_arbitration_state(state: &str) -> Result<ArbitrationState, SessionStoreError> {
     match state {
         "open" => Ok(ArbitrationState::Open),
         "decided" => Ok(ArbitrationState::Decided),
+        "applying" => Ok(ArbitrationState::Applying),
+        "applied" => Ok(ArbitrationState::Applied),
         "expired" => Ok(ArbitrationState::Expired),
         _ => Err(SessionStoreError::Store(
             "stored arbitration state is invalid".into(),

@@ -14,6 +14,8 @@ use crate::session::membership::SessionMembership;
 pub enum ArbitrationState {
     Open,
     Decided,
+    Applying,
+    Applied,
     Expired,
 }
 
@@ -109,6 +111,7 @@ impl ModeratorDecision {
         case: &ArbitrationCase,
         membership: &SessionMembership,
         tasks: &SessionTaskGraph,
+        topology_revision: u64,
         now: i64,
     ) -> Result<(), ArbitrationError> {
         if case.state != ArbitrationState::Open || case.expires_at <= now {
@@ -125,6 +128,9 @@ impl ModeratorDecision {
             || self.moderator_lease_epoch != membership.governance.lease_epoch
             || self.moderator_fencing_token != membership.governance.fencing_token
             || case.membership_revision != membership.governance.membership_revision
+            || case.topology_revision != topology_revision
+            || tasks.membership_revision != case.membership_revision
+            || tasks.session_id != case.session_id
         {
             return Err(ArbitrationError::StaleGovernance);
         }

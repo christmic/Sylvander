@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstanceOrigin, ApprovalRoute, HistoryView, SessionAgentRole,
 };
-use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
+use crate::coordination::arbitration::{
+    ArbitrationCase, ArbitrationState, ModeratorDecision, ModeratorVerdict,
+};
 use crate::coordination::governance::GovernanceFinding;
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
@@ -416,6 +418,24 @@ async fn arbitration_case_is_durable_and_fenced_to_exact_governance_facts() {
         .save_topology(&topology, &membership, None)
         .await
         .unwrap();
+    let task = CoordinationTask {
+        task_id: TaskId::new("task-1"),
+        session_id: membership.session_id.clone(),
+        membership_revision: 0,
+        parent_task_id: None,
+        created_by: AgentInstanceId::new("moderator-1"),
+        assigned_to: Some(AgentInstanceId::new("worker-1")),
+        objective: "produce fresh evidence".into(),
+        state: CoordinationTaskState::Running,
+        token_budget: 1_000,
+        consumed_tokens: 200,
+        max_handoffs: 2,
+        handoff_count: 0,
+        revision: 0,
+        created_at: 11,
+        updated_at: 11,
+    };
+    store.create_task(&task).await.unwrap();
     let case = ArbitrationCase {
         case_id: GovernanceCaseId::new("case-1"),
         session_id: membership.session_id.clone(),
@@ -449,6 +469,41 @@ async fn arbitration_case_is_durable_and_fenced_to_exact_governance_facts() {
             .await
             .unwrap_err(),
         SessionStoreError::Invalid(reason) if reason.contains("already exists")
+    ));
+
+    let decision = ModeratorDecision {
+        case_id: case.case_id.clone(),
+        decided_by: AgentInstanceId::new("moderator-1"),
+        moderator_lease_epoch: 3,
+        moderator_fencing_token: 9,
+        verdict: ModeratorVerdict::Replan {
+            task_ids: vec![task.task_id],
+        },
+        rationale: "the current plan consumed tokens without new evidence".into(),
+        evidence_refs: vec!["progress:3".into()],
+        decided_at: 60,
+    };
+    let graph = store
+        .task_graph(&membership.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let decided = store
+        .decide_arbitration(&decision, &membership, &graph, 0, 60)
+        .await
+        .unwrap();
+    assert_eq!(decided.state, ArbitrationState::Decided);
+    assert_eq!(decided.revision, 1);
+    assert_eq!(
+        store.arbitration_decision(&case.case_id).await.unwrap(),
+        Some(decision.clone())
+    );
+    assert!(matches!(
+        store
+            .decide_arbitration(&decision, &membership, &graph, 0, 61)
+            .await
+            .unwrap_err(),
+        SessionStoreError::Invalid(_)
     ));
 
     let mut stale = case;

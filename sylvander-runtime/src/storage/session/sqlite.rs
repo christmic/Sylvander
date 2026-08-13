@@ -486,7 +486,7 @@ CREATE TABLE governance_cases (
     moderator_lease_epoch INTEGER NOT NULL CHECK(moderator_lease_epoch > 0),
     moderator_fencing_token INTEGER NOT NULL CHECK(moderator_fencing_token > 0),
     findings_json       TEXT NOT NULL,
-    state               TEXT NOT NULL CHECK(state IN ('open','decided','expired')),
+    state               TEXT NOT NULL CHECK(state IN ('open','decided','applying','applied','expired')),
     revision            INTEGER NOT NULL CHECK(revision >= 0),
     expires_at          INTEGER NOT NULL,
     created_at          INTEGER NOT NULL,

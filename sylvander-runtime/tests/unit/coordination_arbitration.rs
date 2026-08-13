@@ -113,7 +113,7 @@ fn only_the_fenced_session_moderator_can_decide() {
     });
 
     assert_eq!(
-        continue_decision("worker").validate(&case, &membership(), &task_graph(), 10),
+        continue_decision("worker").validate(&case, &membership(), &task_graph(), 5, 10),
         Err(ArbitrationError::UnauthorizedModerator)
     );
 }
@@ -128,7 +128,7 @@ fn hard_stops_cannot_be_overridden_by_ai_continuation() {
     });
 
     assert_eq!(
-        continue_decision("moderator").validate(&case, &membership(), &task_graph(), 10),
+        continue_decision("moderator").validate(&case, &membership(), &task_graph(), 5, 10),
         Err(ArbitrationError::HardStopCannotContinue)
     );
 }
@@ -143,6 +143,6 @@ fn moderator_may_conditionally_continue_a_heuristic_case() {
     case.validate_new(&membership, 5, 10).unwrap();
 
     continue_decision("moderator")
-        .validate(&case, &membership, &task_graph(), 10)
+        .validate(&case, &membership, &task_graph(), 5, 10)
         .unwrap();
 }
