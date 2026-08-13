@@ -72,11 +72,20 @@ class SylvanderAgent(BaseAgent):
             self._get_env("SYLVANDER_HARBOR_BASE_URL")
             or "https://api.minimaxi.com/v1"
         )
+        protocol = (
+            self._get_env("SYLVANDER_HARBOR_PROTOCOL")
+            or "openai_chat_completions"
+        )
+        provider_features = (
+            self._get_env("SYLVANDER_HARBOR_PROVIDER_FEATURES") or ""
+        )
         env = {
             "SYLVANDER_HARBOR_API_KEY": api_key,
             "SYLVANDER_HARBOR_PROVIDER_ID": provider_id,
             "SYLVANDER_HARBOR_MODEL_ID": model_id,
             "SYLVANDER_HARBOR_BASE_URL": base_url,
+            "SYLVANDER_HARBOR_PROTOCOL": protocol,
+            "SYLVANDER_HARBOR_PROVIDER_FEATURES": provider_features,
             "SYLVANDER_HARBOR_ISOLATED": "true",
         }
         prepare = await environment.exec(

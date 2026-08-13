@@ -107,3 +107,14 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-benchmark-agent --no-deps --lo
 
 External live runs additionally validate exported trajectories with Harbor's
 reference validator and retain the exact harness/dataset revision.
+
+After Harbor writes its per-trial result and ATIF trajectory, normalize the
+pair against one planned coordinate:
+
+```sh
+cargo run -p sylvander-benchmark-agent --bin sylvander-agent-bench -- \
+  ingest coordinate.json result.json trajectory.json harbor-ea2fee78517
+```
+
+The command emits one content-safe JSON result and exits non-zero for a failed
+verifier or infrastructure outcome.
