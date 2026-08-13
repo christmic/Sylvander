@@ -2,7 +2,8 @@
 
 > Status: active implementation ledger
 >
-> Verified against `sylvander-api/src/ui.rs` and Desktop commit `c44b41459`
+> Verified against `sylvander-api/src/ui.rs` and Desktop source after
+> `128a1cbca`
 > on 2026-08-13.
 
 ## Purpose
@@ -25,16 +26,16 @@ execution, persistence, or policy ownership moved into Desktop.
 | `CancelTask` | complete | none |
 | `DiscoverAgents` | complete | richer Agent selection metadata |
 | `CreateSession` | complete, sparse defaults | workspace/config editor |
-| `ListSessions`, `LoadSession` | complete end-to-end | live-turn recovery is separate |
+| `ListSessions`, `LoadSession` | complete end-to-end | archive-aware query is split by Runtime `archived` truth |
 | `RenameSession`, `ArchiveSession`, `DeleteSession` | complete end-to-end | none |
-| `GetRuntimeInfo` | UI complete, WebSocket missing | add transport dispatch and runtime snapshot |
+| `GetRuntimeInfo` | complete end-to-end | Agent-scoped Runtime snapshot; no transport-local assembly |
 | `GetSessionConfig`, `UpdateSessionConfig` | complete | revision-bound field patch preserves omitted write-only state |
 | `SubmitFeedback` | missing | terminal feedback surface |
 | `MemoryConfirmation` | missing | governed memory decision surface |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
 | `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
 | `ForkSession` | complete end-to-end for checkpoints | completed-turn rewind editor |
-| `RestoreSession` | WebSocket complete, discovery missing | public Session list cannot expose archived rows yet |
+| `RestoreSession` | complete end-to-end | UI waits for `SessionUpdated` before refreshing active/archive lists |
 | `GetContext`, `Compact` | complete end-to-end | none |
 | `PreviewWorkspaceRollback`, `RollbackWorkspace` | complete end-to-end | none |
 | `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | complete end-to-end | none |
@@ -56,7 +57,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `AskUser` | complete | none |
 | `PlanProposed`, `PlanUpdated` | complete | none |
 | task lifecycle | complete | none |
-| `RuntimeInfo` | partial | catalog/platform details and selectors |
+| `RuntimeInfo` | complete | qualified model, catalog, permissions, capabilities, request limit, and platform remain Runtime-owned |
 | `ModelRetry`, `InteractionTimeout` | complete | typed cause/kind/recovery projection and matching decision dismissal |
 | `IterationStart`, `IterationEnd` | complete | active state and cumulative usage/cost projection |
 | `SessionConfig` | complete | sparse overrides, effective values, revision, and provenance |
@@ -69,11 +70,9 @@ execution, persistence, or policy ownership moved into Desktop.
 
 ## Ordered implementation gates
 
-1. Define a Runtime-owned public snapshot source for WebSocket
-   `GetRuntimeInfo`; do not copy Unix adapter-local configuration.
-2. Integrate the authoritative Runtime lifecycle chain, including
+1. Integrate the authoritative Runtime lifecycle chain, including
    `TurnStarted`; do not infer it from local submission.
-3. Complete feedback, memory, identity, administration, attachments, and
+2. Complete feedback, memory, identity, administration, attachments, and
    liveness surfaces with protocol and accessibility tests.
 
 Every row moves to complete only with a typed command/event test and a product

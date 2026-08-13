@@ -22,6 +22,7 @@ export default function App({ gateway }: AppProps) {
   const [newSessionLabel, setNewSessionLabel] = useState("New session");
   const [newSessionAgentId, setNewSessionAgentId] = useState("");
   const [sessionActionsOpen, setSessionActionsOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [sessionLabel, setSessionLabel] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelIndex, setModelIndex] = useState("0");
@@ -166,6 +167,15 @@ export default function App({ gateway }: AppProps) {
     setSessionActionsOpen(false);
   }
 
+  function openArchive() {
+    setArchiveOpen(true);
+    void submit({ type: "list_sessions", include_archived: true });
+  }
+
+  async function restoreSession(sessionId: string) {
+    await submit({ type: "restore_session", session_id: sessionId });
+  }
+
   async function checkpointSession() {
     if (!selected) return;
     await submit({
@@ -264,7 +274,7 @@ export default function App({ gateway }: AppProps) {
         <input id="session-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a Session" autoComplete="off" />
         <kbd>⌘K</kbd>
       </label>
-      <div className="session-section-label"><span>Recent</span><span>{visibleSessions.length}</span></div>
+      <div className="session-section-label"><span>Recent</span><button type="button" onClick={openArchive}>Archived · {state.archivedSessions.length}</button></div>
       <div className="session-list">
         {visibleSessions.map((session) => <button
           key={session.id}
@@ -277,6 +287,7 @@ export default function App({ gateway }: AppProps) {
           <time>{session.recency}</time>
         </button>)}
       </div>
+      {archiveOpen && <section className="archive-panel" aria-labelledby="archive-title"><header><h2 id="archive-title">Archived Sessions</h2><button type="button" aria-label="Close archive" onClick={() => setArchiveOpen(false)}>×</button></header>{state.archivedSessions.length === 0 ? <p>No archived Sessions.</p> : state.archivedSessions.map((session) => <article key={session.id}><div><strong>{session.label}</strong><span>{session.workspace}</span></div><button type="button" className="secondary-button" onClick={() => void restoreSession(session.id)}>Restore</button></article>)}</section>}
       <footer className="runtime-card">
         <span className={`runtime-dot ${state.connection}`} />
         <div><strong>{state.protocol?.serverName ?? "Local Runtime"}</strong><span>{connectionLabel(state.connection)}{state.runtimeInfo ? ` · ${permissionLabel(state.runtimeInfo)}` : ""}</span></div>

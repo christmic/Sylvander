@@ -96,6 +96,8 @@ kbd, code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .session-search input::placeholder { color: var(--muted-2); }
 .session-search kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted-2); font-size: 9px; }
 .session-section-label { display: flex; justify-content: space-between; padding: 20px 7px 8px; color: var(--muted-2); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.session-section-label button { padding: 0; color: inherit; background: transparent; font: inherit; text-transform: inherit; }
+.session-section-label button:hover { color: var(--text); }
 .session-list { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 3px; overflow-y: auto; }
 .session-row {
   display: grid;
@@ -120,6 +122,15 @@ kbd, code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .runtime-card div { display: flex; flex-direction: column; gap: 2px; }
 .runtime-card strong { font-size: 11px; }.runtime-card span { color: var(--muted); font-size: 10px; }
 .runtime-card button { color: var(--muted); background: transparent; }
+.archive-panel { position: absolute; z-index: 6; top: 82px; left: 78px; width: 300px; max-height: calc(100vh - 110px); padding: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); box-shadow: 0 20px 60px #000c; }
+.archive-panel header, .archive-panel article { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.archive-panel h2, .archive-panel p { margin: 0; font-size: 12px; }
+.archive-panel header > button { color: var(--muted); background: transparent; font-size: 18px; }
+.archive-panel article { padding: 12px 0; border-top: 1px solid var(--line-soft); }
+.archive-panel article:first-of-type { margin-top: 12px; }
+.archive-panel article div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.archive-panel article strong, .archive-panel article span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-panel article strong { font-size: 11px; }.archive-panel article span, .archive-panel p { color: var(--muted); font-size: 10px; }
 
 .conversation { display: flex; min-width: 0; min-height: 0; flex-direction: column; background: #020203; }
 .conversation-header { min-height: 66px; padding: 0 24px; border-bottom: 1px solid var(--line-soft); background: #030304e8; }

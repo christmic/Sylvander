@@ -39,6 +39,10 @@ describe("Sylvander Work", () => {
       type: "connected",
       protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
     }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agents_discovered",
+      agents: [{ id: "agent-1", revision: 1, name: "Agent", provider_id: "openai", default_model_id: "gpt-test" }],
+    } }));
 
     await waitFor(() => expect(gateway.commands.map((command) => command.type)).toEqual([
       "discover_agents",
@@ -47,18 +51,21 @@ describe("Sylvander Work", () => {
     ]));
     act(() => gateway.emit({ type: "message", message: {
       type: "runtime_info",
-      model: { provider_id: "openai", model_id: "gpt-test" },
-      reasoning_effort: "medium",
-      models: [],
-      permissions: {
-        file_access: "workspace_write",
-        network_access: "denied",
-        approval_policy: "ask",
+      snapshot: {
+        agent_id: "agent-1",
+        model: { provider_id: "openai", model_id: "gpt-test" },
+        reasoning_effort: "medium",
+        models: [],
+        permissions: {
+          file_access: "workspace_write",
+          network_access: "denied",
+          approval_policy: "ask",
+        },
+        capabilities: 0,
+        approval_enabled: true,
+        max_request_bytes: 1_024,
+        platform: {},
       },
-      capabilities: 0,
-      approval_enabled: true,
-      max_attachment_bytes: 1_024,
-      platform: {},
     } }));
     expect(await screen.findByRole("button", { name: /openai\/gpt-test/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Medium reasoning/ })).toBeTruthy();
@@ -68,7 +75,8 @@ describe("Sylvander Work", () => {
       type: "message",
       message: {
         type: "sessions_list",
-        sessions: [{ id: "session-1", label: "Long-term desktop", workspace: "/workspace", last_seen_secs: 4 }],
+        include_archived: false,
+        sessions: [{ id: "session-1", label: "Long-term desktop", workspace: "/workspace", last_seen_secs: 4, archived: false }],
       },
     }));
 
@@ -167,7 +175,7 @@ describe("Sylvander Work", () => {
       type: "session_created", session_id: "session-new",
     } }));
     await waitFor(() => expect(gateway.commands.slice(-2)).toEqual([
-      { type: "list_sessions" },
+      { type: "list_sessions", include_archived: false },
       { type: "load_session", session_id: "session-new" },
     ]));
   });
@@ -182,7 +190,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Original", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Original", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     await screen.findByRole("heading", { name: "Original" });
 
@@ -213,7 +222,8 @@ describe("Sylvander Work", () => {
 
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-2", label: "Delete me", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-2", label: "Delete me", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     await screen.findByRole("heading", { name: "Delete me" });
     act(() => screen.getByRole("button", { name: "Session actions" }).click());
@@ -227,6 +237,55 @@ describe("Sylvander Work", () => {
     await screen.findByRole("heading", { name: "No Session selected" });
   });
 
+  it("restores an archived Session only after Runtime confirms the transition", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Recover me", workspace: "/workspace", last_seen_secs: 1, archived: false }],
+    } }));
+    await screen.findByRole("heading", { name: "Recover me" });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_updated", session_id: "session-1", archived: true,
+    } }));
+    await screen.findByRole("heading", { name: "No Session selected" });
+
+    act(() => screen.getByRole("button", { name: "Archived · 0" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "list_sessions", include_archived: true,
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      include_archived: true,
+      sessions: [{ id: "session-1", label: "Recover me", workspace: "/workspace", last_seen_secs: 2, archived: true }],
+    } }));
+    act(() => screen.getByRole("button", { name: "Restore" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "restore_session", session_id: "session-1",
+    }));
+    expect(screen.getByRole("heading", { name: "No Session selected" })).toBeTruthy();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_updated", session_id: "session-1", archived: false,
+    } }));
+    await waitFor(() => expect(gateway.commands.slice(-2)).toEqual([
+      { type: "list_sessions", include_archived: false },
+      { type: "list_sessions", include_archived: true },
+    ]));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Recover me", workspace: "/workspace", last_seen_secs: 0, archived: false }],
+    } }));
+    await screen.findByRole("heading", { name: "Recover me" });
+  });
+
   it("switches to a checkpoint branch only after Runtime returns its history", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);
@@ -237,7 +296,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Original", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Original", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     await screen.findByRole("heading", { name: "Original" });
 
@@ -257,6 +317,7 @@ describe("Sylvander Work", () => {
         label: "Original checkpoint",
         workspace: "/workspace",
         last_seen_secs: 0,
+        archived: false,
       },
       messages: [{ role: "user", text: "preserved" }],
       source_session_id: "session-1",
@@ -266,7 +327,7 @@ describe("Sylvander Work", () => {
     await screen.findByRole("heading", { name: "Original checkpoint" });
     expect(screen.getByText("preserved")).toBeTruthy();
     expect(screen.getByText("Conversation checkpoint branch created")).toBeTruthy();
-    expect(gateway.commands.at(-1)).toEqual({ type: "list_sessions" });
+    expect(gateway.commands.at(-1)).toEqual({ type: "list_sessions", include_archived: false });
   });
 
   it("locks duplicate chat submission until a Runtime terminal arrives", async () => {
@@ -279,7 +340,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Chat", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Chat", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     const composer = await screen.findByRole("textbox", { name: "Message Sylvander" });
     fireEvent.change(composer, { target: { value: "Run once" } });
@@ -309,7 +371,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Interrupt", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Interrupt", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     const composer = await screen.findByRole("textbox", { name: "Message Sylvander" });
     fireEvent.change(composer, { target: { value: "Long task" } });
@@ -341,11 +404,12 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Usage", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Usage", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     act(() => gateway.emit({ type: "message", message: {
       type: "session_history",
-      session: { id: "session-1", label: "Usage", workspace: "/workspace", last_seen_secs: 1 },
+      session: { id: "session-1", label: "Usage", workspace: "/workspace", last_seen_secs: 1, archived: false },
       messages: [],
       iterations: 4,
       input_tokens: 400,
@@ -378,7 +442,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Context", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Context", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     act(() => screen.getByRole("button", { name: /^Plan / }).click());
     act(() => screen.getByRole("tab", { name: "context" }).click());
@@ -443,21 +508,25 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Settings", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Settings", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     act(() => gateway.emit({ type: "message", message: {
       type: "runtime_info",
-      model: { provider_id: "alpha", model_id: "shared" },
-      reasoning_effort: "off",
-      models: [
-        { id: "shared", provider: "alpha", capabilities: 0, capability_names: [], reasoning_efforts: ["off"], lifecycle: { status: "active" } },
-        { id: "shared", provider: "beta", capabilities: 0, capability_names: [], reasoning_efforts: ["low", "high"], lifecycle: { status: "active" } },
-      ],
-      permissions: { file_access: "workspace_write", network_access: "denied", approval_policy: "allow" },
-      capabilities: 0,
-      approval_enabled: false,
-      max_attachment_bytes: 1_024,
-      platform: {},
+      snapshot: {
+        agent_id: "agent-1",
+        model: { provider_id: "alpha", model_id: "shared" },
+        reasoning_effort: "off",
+        models: [
+          { id: "shared", provider: "alpha", capabilities: 0, capability_names: [], reasoning_efforts: ["off"], lifecycle: { status: "active" } },
+          { id: "shared", provider: "beta", capabilities: 0, capability_names: [], reasoning_efforts: ["low", "high"], lifecycle: { status: "active" } },
+        ],
+        permissions: { file_access: "workspace_write", network_access: "denied", approval_policy: "allow" },
+        capabilities: 0,
+        approval_enabled: false,
+        max_request_bytes: 1_024,
+        platform: {},
+      },
     } }));
     act(() => screen.getByRole("button", { name: /alpha\/shared/ }).click());
     fireEvent.change(screen.getByRole("combobox", { name: "Runtime model" }), { target: { value: "1" } });
@@ -573,7 +642,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Coding", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Coding", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     act(() => screen.getByRole("button", { name: /^Plan / }).click());
     act(() => screen.getByRole("tab", { name: "changes" }).click());
@@ -629,7 +699,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Rollback", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Rollback", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     act(() => screen.getByRole("button", { name: /^Plan / }).click());
     act(() => screen.getByRole("tab", { name: "changes" }).click());
@@ -674,7 +745,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Chat", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Chat", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     const composer = await screen.findByRole("textbox", { name: "Message Sylvander" });
     fireEvent.change(composer, { target: { value: "Keep this draft" } });
@@ -695,7 +767,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     await screen.findByRole("heading", { name: "Recovery" });
     act(() => gateway.emit({ type: "message", message: {
@@ -759,7 +832,8 @@ describe("Sylvander Work", () => {
       }));
       act(() => gateway.emit({ type: "message", message: {
         type: "sessions_list",
-        sessions: [{ id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1 }],
+        include_archived: false,
+        sessions: [{ id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1, archived: false }],
       } }));
       expect(screen.getByRole("heading", { name: "Recovery" })).toBeTruthy();
       act(() => gateway.emit({ type: "disconnected", reason: "runtime_closed" }));
@@ -783,7 +857,7 @@ describe("Sylvander Work", () => {
       });
       act(() => gateway.emit({ type: "message", message: {
         type: "session_history",
-        session: { id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1 },
+        session: { id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1, archived: false },
         messages: [{ role: "assistant", text: "Recovered history" }],
         iterations: 3,
         input_tokens: 120,
@@ -813,7 +887,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Approvals", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Approvals", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     await waitFor(() => expect(gateway.commands.at(-1)?.type).toBe("load_session"));
 
@@ -873,7 +948,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Questions", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Questions", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     await waitFor(() => expect(gateway.commands.at(-1)?.type).toBe("load_session"));
     act(() => gateway.emit({ type: "message", message: {
@@ -911,7 +987,8 @@ describe("Sylvander Work", () => {
     }));
     act(() => gateway.emit({ type: "message", message: {
       type: "sessions_list",
-      sessions: [{ id: "session-1", label: "Plans", workspace: "/workspace", last_seen_secs: 1 }],
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Plans", workspace: "/workspace", last_seen_secs: 1, archived: false }],
     } }));
     await waitFor(() => expect(gateway.commands.at(-1)?.type).toBe("load_session"));
     act(() => gateway.emit({ type: "message", message: {
@@ -967,7 +1044,8 @@ describe("Sylvander Work", () => {
       type: "message",
       message: {
         type: "sessions_list",
-        sessions: [{ id: "session-1", label: "Tasks", workspace: "/workspace", last_seen_secs: 1 }],
+        include_archived: false,
+        sessions: [{ id: "session-1", label: "Tasks", workspace: "/workspace", last_seen_secs: 1, archived: false }],
       },
     }));
     await waitFor(() => expect(gateway.commands.at(-1)).toEqual({

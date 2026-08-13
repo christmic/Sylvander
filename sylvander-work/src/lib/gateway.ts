@@ -7,11 +7,12 @@ export type DesktopEvent =
 
 export type RuntimeCommand =
   | { type: "discover_agents" }
-  | { type: "list_sessions" }
+  | { type: "list_sessions"; include_archived: boolean }
   | { type: "load_session"; session_id: string }
   | { type: "reattach_session"; session_id: string }
   | { type: "rename_session"; session_id: string; label: string }
   | { type: "archive_session"; session_id: string }
+  | { type: "restore_session"; session_id: string }
   | { type: "fork_session"; session_id: string; completed_turns?: number; checkpoint: boolean }
   | { type: "delete_session"; session_id: string }
   | { type: "chat"; text: string; attachments: []; session_id?: string }
@@ -21,7 +22,7 @@ export type RuntimeCommand =
   | { type: "resolve_plan"; session_id: string; plan_id: string; decision: PlanDecision }
   | { type: "cancel_task"; session_id: string; task_id: string }
   | { type: "create_session"; request: { agent_id: string; label: string; channel_id?: string; overrides: Record<string, never> } }
-  | { type: "get_runtime_info" }
+  | { type: "get_runtime_info"; agent_id: string }
   | { type: "get_context"; session_id?: string }
   | { type: "compact"; session_id: string }
   | { type: "select_model"; session_id?: string; model: { provider_id: string; model_id: string }; reasoning_effort: ReasoningEffort }
@@ -105,6 +106,7 @@ export interface RuntimeSession {
   label: string;
   workspace: string;
   last_seen_secs: number;
+  archived: boolean;
 }
 
 export interface RuntimeHistoryMessage {
@@ -134,13 +136,14 @@ export interface RuntimeAgent {
 }
 
 export interface RuntimeInfo {
+  agent_id: string;
   model: { provider_id: string; model_id: string };
   reasoning_effort: ReasoningEffort;
   models: RuntimeModelDescriptor[];
   permissions: RuntimePermissionProfile;
   capabilities: number;
   approval_enabled: boolean;
-  max_attachment_bytes: number;
+  max_request_bytes: number;
   platform: unknown;
 }
 
@@ -188,9 +191,9 @@ interface RuntimeBoundaryError {
 }
 
 export type RuntimeMessage =
-  | { type: "sessions_list"; sessions: RuntimeSession[] }
+  | { type: "sessions_list"; include_archived: boolean; sessions: RuntimeSession[] }
   | { type: "agents_discovered"; agents: RuntimeAgent[] }
-  | ({ type: "runtime_info" } & RuntimeInfo)
+  | { type: "runtime_info"; snapshot: RuntimeInfo }
   | ({ type: "session_history" } & RuntimeSessionHistory)
   | { type: "text_delta"; session_id: string; delta: string }
   | { type: "thinking_delta"; session_id: string; delta: string }

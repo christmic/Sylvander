@@ -18,6 +18,7 @@ export interface RuntimeViewState {
   };
   agents: Array<{ id: string; name: string; providerId: string; modelId: string }>;
   sessions: SessionSummary[];
+  archivedSessions: SessionSummary[];
   selectedId?: string;
   sessionStats?: {
     iterations: number;
@@ -73,6 +74,7 @@ const initialState: RuntimeViewState = {
   connection: "starting",
   agents: [],
   sessions: [],
+  archivedSessions: [],
   transcript: [],
   plan: [],
   tasks: [],
@@ -149,32 +151,37 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
 
   const applyMessage = useCallback((message: RuntimeMessage) => {
     switch (message.type) {
-      case "agents_discovered":
+      case "agents_discovered": {
+        const agents = message.agents.map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          providerId: agent.provider_id,
+          modelId: agent.default_model_id,
+        }));
         setState((current) => ({
           ...current,
-          agents: message.agents.map((agent) => ({
-            id: agent.id,
-            name: agent.name,
-            providerId: agent.provider_id,
-            modelId: agent.default_model_id,
-          })),
+          agents,
         }));
+        if (agents[0]) void submit({ type: "get_runtime_info", agent_id: agents[0].id });
         break;
-      case "runtime_info":
+      }
+      case "runtime_info": {
+        const snapshot = message.snapshot;
         setState((current) => ({
           ...current,
           runtimeInfo: {
-            providerId: message.model.provider_id,
-            modelId: message.model.model_id,
-            reasoningEffort: message.reasoning_effort,
-            models: message.models,
-            fileAccess: message.permissions.file_access,
-            networkAccess: message.permissions.network_access,
-            approvalPolicy: message.permissions.approval_policy,
-            approvalEnabled: message.approval_enabled,
+            providerId: snapshot.model.provider_id,
+            modelId: snapshot.model.model_id,
+            reasoningEffort: snapshot.reasoning_effort,
+            models: snapshot.models,
+            fileAccess: snapshot.permissions.file_access,
+            networkAccess: snapshot.permissions.network_access,
+            approvalPolicy: snapshot.permissions.approval_policy,
+            approvalEnabled: snapshot.approval_enabled,
           },
         }));
         break;
+      }
       case "iteration_start":
         markSessionActive(message.session_id);
         break;
@@ -337,15 +344,26 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         setState((current) => ({ ...current, liveness: "healthy" }));
         break;
       case "sessions_list": {
-        const sessions = message.sessions.map((session) => ({
-          id: session.id,
-          label: session.label,
-          workspace: session.workspace,
-          recency: formatRecency(session.last_seen_secs),
-          state: "idle" as const,
-          draft: "",
+        const sessions: SessionSummary[] = [];
+        const archivedSessions: SessionSummary[] = [];
+        for (const session of message.sessions) {
+          const summary: SessionSummary = {
+            id: session.id,
+            label: session.label,
+            workspace: session.workspace,
+            recency: formatRecency(session.last_seen_secs),
+            state: "idle",
+            draft: "",
+          };
+          (session.archived ? archivedSessions : sessions).push(summary);
+        }
+        setState((current) => ({
+          ...current,
+          sessions,
+          archivedSessions: message.include_archived
+            ? archivedSessions
+            : current.archivedSessions,
         }));
-        setState((current) => ({ ...current, sessions }));
         if (!selectedRef.current && sessions[0]) {
           selectedRef.current = sessions[0].id;
           setState((current) => ({ ...current, selectedId: sessions[0].id }));
@@ -397,7 +415,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             })),
           ],
         }));
-        if (isFork) void submit({ type: "list_sessions" });
+        if (isFork) void submit({ type: "list_sessions", include_archived: false });
         break;
       }
       case "session_created":
@@ -417,7 +435,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           codingReview: undefined,
           rollback: undefined,
         }));
-        void submit({ type: "list_sessions" });
+        void submit({ type: "list_sessions", include_archived: false });
         void submit({ type: "load_session", session_id: message.session_id });
         break;
       case "session_updated":
@@ -446,11 +464,16 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         } else {
           setState((current) => ({
             ...current,
+            archivedSessions: current.archivedSessions.filter(
+              (session) => session.id !== message.session_id,
+            ),
             sessions: current.sessions.map((session) => session.id === message.session_id
               ? { ...session, label: message.label ?? session.label }
               : session),
           }));
         }
+        void submit({ type: "list_sessions", include_archived: false });
+        void submit({ type: "list_sessions", include_archived: true });
         break;
       case "session_deleted":
         if (selectedRef.current === message.session_id) {
@@ -768,8 +791,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           },
         }));
         void submit({ type: "discover_agents" });
-        void submit({ type: "list_sessions" });
-        void submit({ type: "get_runtime_info" });
+        void submit({ type: "list_sessions", include_archived: false });
         const selectedId = selectedRef.current;
         if (reconnected && selectedId) {
           void submit({ type: "reattach_session", session_id: selectedId });

@@ -140,7 +140,7 @@ defaults. Desktop never allocates a Session identifier or inserts an optimistic
 Session row. It selects and loads the Session only after `SessionCreated`, then
 refreshes Runtime's authoritative Session list.
 
-Rename, archive, and permanent delete send only their public Session commands.
+Rename, archive, restore, and permanent delete send only their public Session commands.
 The desktop does not mutate its Session list on button submission: label and
 membership change only on `SessionUpdated` or `SessionDeleted`. Removing the
 selected Session also clears its ephemeral transcript, plan, and task
@@ -233,10 +233,11 @@ persisted cumulative values.
 Checkpoint branching sends the public `ForkSession` command with
 `checkpoint=true`. Desktop keeps the source selected until Runtime returns a
 `SessionHistory` whose `source_session_id` matches it; only that fact selects
-and renders the new Session. Restore remains intentionally unavailable in the
-surface because the current public Session-list response excludes archived
-rows and carries no archive state. A client-side cache is not an ownership-safe
-substitute for Runtime discovery.
+and renders the new Session. The archive surface explicitly requests
+`ListSessions { include_archived: true }`, separates rows using Runtime's
+`archived` field, and sends `RestoreSession` without changing either list.
+Only `SessionUpdated { archived: false }` triggers fresh active and
+archive-aware queries; the restored row becomes active when Runtime returns it.
 
 An active or locally admitted turn replaces Send with Stop. Stop emits the
 public `Interrupt` command exactly once and remains pending until Runtime emits
