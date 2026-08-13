@@ -67,6 +67,9 @@ not an Agent capability baseline.
 Every live gate records exact code, harness, dataset, environment, and model
 coordinates. Missing infrastructure, credentials, verifier output, or terminal
 trajectory evidence is `not_run`/`infrastructure_error`, never a skip-pass.
+An upstream reward is retained verbatim even when post-run diagnostics find
+environment contamination; the scorecard marks that sample non-baseline rather
+than silently rewriting the benchmark's reward.
 The runner also checkpoints the public `AgentEvent` stream throughout the run;
 partial ATIF is retained after timeout or interruption and records request,
 retry, tool, usage/cache, and terminal lifecycle evidence without raw

@@ -176,6 +176,11 @@ Agent revision, provider, protocol, and model coordinate. Aggregation retains
 executed, failed, infrastructure, not-run, and not-applicable counts separately;
 it never turns missing runs into successful samples.
 
+Raw verifier reward and waterline eligibility are distinct. External-service
+failures, architecture-emulation crashes, or other environment contamination
+do not change the upstream reward, but they prevent that run from becoming a
+clean release or regression baseline.
+
 ```sh
 cargo run -p sylvander-benchmark-agent --bin sylvander-agent-bench -- \
   aggregate results.jsonl

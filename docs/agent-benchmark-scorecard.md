@@ -161,3 +161,24 @@ Consequently this run has:
 It proves that the real Sylvander Agent, production provider adapter, tools,
 sandbox, and observability path executed. It does not establish a Terminal-
 Bench capability baseline.
+
+## The 2026-08-13 SWE-bench smoke run
+
+The pinned SWE-bench Verified `psf__requests-2317` task ran the real Sylvander
+Agent with MiniMax/OpenAI Chat/`MiniMax-M2.7`. The successful Agent phase used
+46 ATIF steps and 43 Command calls and recorded 282,913 prompt, 4,823
+completion, and 106,887 cache-read tokens. Harbor then completed one scored
+trial with zero exceptions and retained the upstream verifier reward `0.0`.
+
+This result is environment-contaminated diagnostic evidence, not a clean
+capability baseline. The official test process reported 29 failures, including
+the target test: it received HTTP 503 from the external httpbin dependency;
+other unrelated tests received HTTP 503/504. Its final parser also terminated
+under amd64 QEMU with `SIGSEGV`. Sylvander preserves the raw upstream reward but
+does not use this sample to promote or demote the capability level.
+
+Accordingly, the currently certifiable level remains **L0**. This means the L1
+evidence gate has not yet been met; it does not mean the observed Agent is
+conversation-only. A clean passing Terminal-Bench regression task is still
+required for L1, and the four-suite portfolio is required for the requested
+final waterline.
