@@ -40,32 +40,53 @@ const initialState: RuntimeViewState = {
 // crosses the native gateway, which alone owns credentials and negotiation.
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
+const RUNNING_TOOL_PLACEHOLDER = "Running through Runtime";
+
+type PendingDelta =
+  | { kind: "assistant" | "thinking"; delta: string }
+  | { kind: "tool"; callId: string; delta: string };
 
 export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const nativeGateway = useMemo(() => new RuntimeGateway(), []);
   const gateway = injectedGateway ?? nativeGateway;
   const [state, setState] = useState(initialState);
   const selectedRef = useRef<string | undefined>(undefined);
-  const pendingDeltasRef = useRef(new Map<string, string>());
+  const pendingDeltasRef = useRef(new Map<string, PendingDelta[]>());
   const frameRef = useRef<number | undefined>(undefined);
+  const terminalSequenceRef = useRef(0);
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
 
-  const enqueueDelta = useCallback((sessionId: string, delta: string) => {
+  const flushPendingDeltas = useCallback((sessionId: string) => {
     const pending = pendingDeltasRef.current;
-    pending.set(sessionId, (pending.get(sessionId) ?? "") + delta);
+    const combined = pending.get(sessionId);
+    pending.delete(sessionId);
+    if (sessionId !== selectedRef.current || !combined || combined.length === 0) return;
+    setState((current) => ({
+      ...current,
+      transcript: combined.reduce(applyPendingDelta, current.transcript),
+    }));
+  }, []);
+
+  const enqueueDelta = useCallback((sessionId: string, delta: PendingDelta) => {
+    const pending = pendingDeltasRef.current;
+    const events = pending.get(sessionId) ?? [];
+    const last = events.at(-1);
+    if (last && sameDeltaTarget(last, delta)) {
+      last.delta += delta.delta;
+    } else {
+      events.push(delta);
+    }
+    pending.set(sessionId, events);
     if (frameRef.current !== undefined) return;
 
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = undefined;
       const selectedId = selectedRef.current;
-      const combined = selectedId ? pending.get(selectedId) : undefined;
+      if (selectedId) flushPendingDeltas(selectedId);
       pending.clear();
-      if (combined) {
-        setState((current) => ({ ...current, transcript: appendDelta(current.transcript, combined) }));
-      }
     });
-  }, []);
+  }, [flushPendingDeltas]);
 
   const applyMessage = useCallback((message: RuntimeMessage) => {
     switch (message.type) {
@@ -152,10 +173,21 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }));
         break;
       case "text_delta":
-        enqueueDelta(message.session_id, message.delta);
+        enqueueDelta(message.session_id, { kind: "assistant", delta: message.delta });
+        break;
+      case "thinking_delta":
+        enqueueDelta(message.session_id, { kind: "thinking", delta: message.delta });
+        break;
+      case "tool_output_delta":
+        enqueueDelta(message.session_id, {
+          kind: "tool",
+          callId: message.call_id,
+          delta: message.delta,
+        });
         break;
       case "tool_call":
         if (message.session_id === selectedRef.current) {
+          flushPendingDeltas(message.session_id);
           setState((current) => ({
             ...current,
             approval: settleApproval(current.approval, message.call_id),
@@ -163,7 +195,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
               id: `tool-${message.call_id}`,
               kind: "tool",
               title: message.tool_name,
-              body: "Running through Runtime",
+              body: RUNNING_TOOL_PLACEHOLDER,
               status: "running",
             }],
           }));
@@ -171,6 +203,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "tool_result":
         if (message.session_id === selectedRef.current) {
+          flushPendingDeltas(message.session_id);
           setState((current) => ({
             ...current,
             approval: settleApproval(current.approval, message.call_id),
@@ -267,11 +300,24 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "error":
       case "turn_interrupted":
         if (message.session_id === selectedRef.current) {
+          flushPendingDeltas(message.session_id);
+          terminalSequenceRef.current += 1;
+          const sequence = terminalSequenceRef.current;
+          const finalText = message.type === "done" ? message.text : undefined;
+          const notice = message.type === "error"
+            ? message.message
+            : message.type === "turn_interrupted" ? message.reason : undefined;
           setState((current) => ({
             ...current,
             approval: undefined,
             question: undefined,
             activePlan: undefined,
+            transcript: settleTurnTranscript(
+              current.transcript,
+              sequence,
+              finalText,
+              notice,
+            ),
             sessions: current.sessions.map((session) => session.id === message.session_id
               ? { ...session, state: message.type === "error" ? "failed" : "idle" }
               : session),
@@ -281,7 +327,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       default:
         break;
     }
-  }, [enqueueDelta, submit]);
+  }, [enqueueDelta, flushPendingDeltas, submit]);
 
   useEffect(() => {
     let stopped = false;
@@ -405,12 +451,63 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   return { state, submit, selectSession, answerQuestion, resolvePlan, cancelTask };
 }
 
-function appendDelta(entries: TranscriptEntry[], delta: string): TranscriptEntry[] {
-  const last = entries.at(-1);
-  if (last?.id === "streaming-assistant") {
-    return [...entries.slice(0, -1), { ...last, body: last.body + delta }];
+function sameDeltaTarget(left: PendingDelta, right: PendingDelta): boolean {
+  if (left.kind !== right.kind) return false;
+  return left.kind !== "tool" || (right.kind === "tool" && left.callId === right.callId);
+}
+
+function applyPendingDelta(entries: TranscriptEntry[], pending: PendingDelta): TranscriptEntry[] {
+  if (pending.kind === "tool") {
+    return entries.map((entry) => entry.id === `tool-${pending.callId}`
+      ? {
+          ...entry,
+          body: entry.body === RUNNING_TOOL_PLACEHOLDER
+            ? pending.delta
+            : entry.body + pending.delta,
+        }
+      : entry);
   }
-  return [...entries, { id: "streaming-assistant", kind: "assistant", body: delta }];
+  const id = `streaming-${pending.kind}`;
+  const index = entries.findLastIndex((entry) => entry.id === id);
+  if (index >= 0) {
+    return entries.map((entry, entryIndex) => entryIndex === index
+      ? { ...entry, body: entry.body + pending.delta }
+      : entry);
+  }
+  return [...entries, { id, kind: pending.kind, body: pending.delta }];
+}
+
+function settleTurnTranscript(
+  entries: TranscriptEntry[],
+  sequence: number,
+  finalText?: string,
+  notice?: string,
+): TranscriptEntry[] {
+  let foundAssistant = false;
+  const settled = entries.map((entry) => {
+    if (entry.id === "streaming-assistant") {
+      foundAssistant = true;
+      return {
+        ...entry,
+        id: `assistant-${sequence}`,
+        body: finalText ?? entry.body,
+      };
+    }
+    if (entry.id === "streaming-thinking") {
+      return { ...entry, id: `thinking-${sequence}` };
+    }
+    if (entry.kind === "tool" && entry.status === "running") {
+      return { ...entry, status: "failed" as const };
+    }
+    return entry;
+  });
+  if (!foundAssistant && finalText) {
+    settled.push({ id: `assistant-${sequence}`, kind: "assistant", body: finalText });
+  }
+  if (notice) {
+    settled.push({ id: `notice-${sequence}`, kind: "notice", body: notice, status: "failed" });
+  }
+  return settled;
 }
 
 /**

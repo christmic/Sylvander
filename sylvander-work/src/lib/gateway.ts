@@ -53,6 +53,7 @@ export type RuntimeMessage =
   | { type: "text_delta"; session_id: string; delta: string }
   | { type: "thinking_delta"; session_id: string; delta: string }
   | { type: "tool_call"; session_id: string; call_id: string; tool_name: string; input: unknown }
+  | { type: "tool_output_delta"; session_id: string; call_id: string; tool_name: string; delta: string }
   | { type: "tool_result"; session_id: string; call_id: string; tool_name: string; output: string; is_error: boolean }
   | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: string[] }
   | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }

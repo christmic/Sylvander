@@ -160,6 +160,18 @@ Streaming deltas are coalesced to at most one presentation update per animation
 frame. Terminal `Done`, `Error`, or `TurnInterrupted` events settle a turn;
 disconnect never implies completion.
 
+Assistant text, thinking, and tool-output deltas share one ordered per-Session
+animation-frame queue. Adjacent events for the same target are merged, while
+target changes preserve order. Replayed deltas for a non-selected Session are
+dropped from presentation state; authoritative history remains reloadable from
+Runtime. A final tool result replaces its streamed preview.
+
+A turn terminal flushes that queue and freezes presentation-only streaming
+identities so the next turn cannot append to the previous answer. `Done` uses
+Runtime's final text as authoritative, while `Error` and `TurnInterrupted`
+retain partial output and add their public reason. Any still-running tool row
+is settled as failed because no later event belongs to that terminal turn.
+
 After a transport or handshake failure, the React application coordinator
 reopens the native gateway with exponential backoff capped at ten seconds.
 Only the Rust gateway repeats authentication and protocol negotiation; the

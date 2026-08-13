@@ -1,6 +1,6 @@
 export type ConnectionState = "starting" | "connecting" | "live" | "reconnecting" | "offline";
 export type SessionState = "active" | "waiting" | "idle" | "failed";
-export type TranscriptKind = "user" | "assistant" | "tool" | "notice";
+export type TranscriptKind = "user" | "assistant" | "thinking" | "tool" | "notice";
 
 export interface SessionSummary {
   id: string;

@@ -61,6 +61,39 @@ describe("Sylvander Work", () => {
     });
 
     expect(await screen.findByText("Hello world")).toBeTruthy();
+    act(() => {
+      gateway.emit({ type: "message", message: { type: "thinking_delta", session_id: "session-1", delta: "Check " } });
+      gateway.emit({ type: "message", message: { type: "thinking_delta", session_id: "session-1", delta: "facts" } });
+      gateway.emit({ type: "message", message: {
+        type: "tool_call", session_id: "session-1", call_id: "call-1", tool_name: "Read", input: {},
+      } });
+      gateway.emit({ type: "message", message: {
+        type: "tool_output_delta", session_id: "session-1", call_id: "call-1", tool_name: "Read", delta: "line ",
+      } });
+      gateway.emit({ type: "message", message: {
+        type: "tool_output_delta", session_id: "session-1", call_id: "call-1", tool_name: "Read", delta: "one",
+      } });
+    });
+    expect(await screen.findByText("Check facts")).toBeTruthy();
+    expect(await screen.findByText("line one")).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "tool_result", session_id: "session-1", call_id: "call-1", tool_name: "Read", output: "verified output", is_error: false,
+    } }));
+    expect(await screen.findByText("verified output")).toBeTruthy();
+    expect(screen.queryByText("line one")).toBeNull();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "done", session_id: "session-1", text: "Hello world",
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "text_delta", session_id: "session-1", delta: "Second turn",
+    } }));
+    expect(await screen.findByText("Second turn")).toBeTruthy();
+    expect(screen.getByText("Hello world")).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "error", session_id: "session-1", message: "Provider unavailable",
+    } }));
+    expect(await screen.findByText("Provider unavailable")).toBeTruthy();
+    expect(screen.getByText("Second turn")).toBeTruthy();
   });
 
   it("keeps the production shell useful when Runtime is offline", async () => {
