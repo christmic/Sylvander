@@ -1,9 +1,10 @@
 //! Location-neutral workspace operations used by coding tools.
 //!
 //! This module defines Agent-owned values, routing, bounds, and the
-//! [`WorkspaceExecutor`] port. It deliberately contains no host filesystem or
+//! [`crate::workspace_executor::WorkspaceExecutor`] port. It deliberately contains no host filesystem or
 //! process adapter: Runtime selects and injects a concrete target for each
-//! turn. An unresolved target uses [`UnavailableExecutor`] and fails closed.
+//! turn. An unresolved target uses
+//! [`crate::workspace_executor::UnavailableExecutor`] and fails closed.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;

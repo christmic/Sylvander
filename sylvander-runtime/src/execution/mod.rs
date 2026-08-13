@@ -1,7 +1,7 @@
 //! Runtime-owned execution environment composition.
 //!
 //! Concrete adapters implement Agent's location-neutral workspace port, while
-//! [`RuntimeExecutionService`] owns the immutable mapping from trusted target
+//! `RuntimeExecutionService` owns the immutable mapping from trusted target
 //! identifiers to those adapters. Agent runs receive this closed service; they
 //! neither register infrastructure nor fall back to a different target.
 

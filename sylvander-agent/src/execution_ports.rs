@@ -1,6 +1,6 @@
 //! Immutable service-port snapshot for one Agent execution.
 //!
-//! [`AgentTurnRequest`](crate::request::AgentTurnRequest) contains domain data;
+//! [`crate::request::AgentTurnRequest`] contains domain data;
 //! this module contains the Runtime-selected implementations used to perform
 //! that data. Keeping them separate prevents a request from becoming a service
 //! locator and makes it impossible to deserialize client input into executable
