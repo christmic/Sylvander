@@ -587,9 +587,11 @@ async fn governed_fork_is_idempotent_and_reconciles_task_membership_revision() {
         panic!("bounded fork should not require arbitration");
     };
     assert_eq!(child.state, AgentInstanceState::Created);
+    let ready = service.mark_agent_ready(&child, 21).await.unwrap();
+    assert_eq!(ready.state, AgentInstanceState::Ready);
     assert_eq!(
-        service.fork_agent(request, 21).await.unwrap(),
-        ForkAgentOutcome::Created(child.clone())
+        service.fork_agent(request, 22).await.unwrap(),
+        ForkAgentOutcome::Created(ready.clone())
     );
     let restored = store
         .session_membership(&SessionId::new("multi-session"))
@@ -597,7 +599,7 @@ async fn governed_fork_is_idempotent_and_reconciles_task_membership_revision() {
         .unwrap()
         .unwrap();
     assert_eq!(restored.governance.membership_revision, 1);
-    assert_eq!(restored.participants.last(), Some(&child));
+    assert_eq!(restored.participants.last(), Some(&ready));
     assert_eq!(
         store
             .topology(&SessionId::new("multi-session"))

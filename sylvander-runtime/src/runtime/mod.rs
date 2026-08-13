@@ -67,7 +67,8 @@ use crate::config::{
 use crate::coordination::handoff::TaskHandoff;
 use crate::coordination::mailbox::{CoordinationMessage, MessageClaim};
 use crate::coordination::service::{
-    DispatchMessageOutcome, DispatchMessageRequest, ReportProgressRequest, ReportWaitRequest,
+    DispatchMessageOutcome, DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest,
+    ReportProgressRequest, ReportWaitRequest,
 };
 use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::credential::registry::CredentialSecretResolver;
@@ -4703,6 +4704,18 @@ impl Runtime {
                         )
                         .await
                         .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+                    if participant.state == AgentInstanceState::Created {
+                        agent_instance_store
+                            .transition_agent_instance(
+                                &session.id,
+                                &participant.instance_id,
+                                participant.lifecycle_revision,
+                                AgentInstanceState::Ready,
+                                recovery_observed_at,
+                            )
+                            .await
+                            .map_err(|error| RuntimeError::Store(error.to_string()))?;
+                    }
                     let replayed = configured
                         .run
                         .replay_classified_tool_calls(
@@ -4864,6 +4877,73 @@ impl Runtime {
             .dispatch_message(request, crate::session::now_secs())
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Fork, attach, and activate one child Agent through durable spawn boundaries.
+    pub async fn fork_agent_instance(
+        &self,
+        actor: &AuthenticatedSession,
+        request: ForkAgentRequest,
+    ) -> Result<ForkAgentOutcome, RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.parent_instance_id)?;
+        let outcome = self
+            .storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .fork_agent(request, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        let ForkAgentOutcome::Created(participant) = outcome else {
+            return Ok(outcome);
+        };
+        if participant.state != AgentInstanceState::Created {
+            return Ok(ForkAgentOutcome::Created(participant));
+        }
+        let session = self
+            .storage
+            .sessions()
+            .get(&participant.session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Coordination("fork Session disappeared".into()))?;
+        let configured = if let Some(provider) = &self.revision_provider {
+            provider
+                .configured_revision(
+                    &participant.definition.agent_id,
+                    participant.definition.revision,
+                )
+                .await?
+        } else {
+            self.configured_agents
+                .get(&participant.definition.agent_id)
+                .filter(|configured| {
+                    configured.definition.revision == participant.definition.revision
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    RuntimeError::Coordination(
+                        "fork Agent definition revision is unavailable".into(),
+                    )
+                })?
+        };
+        configured
+            .attach_agent_instance(
+                participant.session_id.clone(),
+                participant.instance_id.clone(),
+                session.metadata,
+            )
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        let ready = self
+            .storage
+            .coordination()
+            .expect("coordination availability was checked before fork")
+            .mark_agent_ready(&participant, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        Ok(ForkAgentOutcome::Created(ready))
     }
 
     /// Persist one authenticated wait-for edge for deadlock governance.

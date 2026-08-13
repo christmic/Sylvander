@@ -491,6 +491,27 @@ where
         Ok(ForkAgentOutcome::Created(participant))
     }
 
+    /// Commit completion of external attach/provision effects for one spawn intent.
+    pub async fn mark_agent_ready(
+        &self,
+        participant: &AgentInstance,
+        now: i64,
+    ) -> Result<AgentInstance, CoordinationServiceError> {
+        if participant.state != AgentInstanceState::Created {
+            return Ok(participant.clone());
+        }
+        self.store
+            .transition_agent_instance(
+                &participant.session_id,
+                &participant.instance_id,
+                participant.lifecycle_revision,
+                AgentInstanceState::Ready,
+                now,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
     /// Persist and route a task ownership transfer to its governed arbitrator.
     pub async fn propose_handoff(
         &self,
