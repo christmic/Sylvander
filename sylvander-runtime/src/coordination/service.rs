@@ -6,6 +6,7 @@ mod handoff;
 mod message;
 mod relation;
 mod spawn;
+mod task;
 
 use std::sync::Arc;
 
@@ -30,6 +31,7 @@ use crate::coordination::mailbox::{
     MessageDeliveryState,
 };
 use crate::coordination::task::SessionTaskGraph;
+use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::coordination::CoordinationStore;
@@ -179,6 +181,29 @@ pub struct ReportProgressRequest {
     pub agent_instance_id: AgentInstanceId,
     pub consumed_tokens: u64,
     pub evidence_digest: Option<String>,
+}
+
+/// Stable Agent-authored intent to add one bounded unit to the Session DAG.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateTaskRequest {
+    pub task_id: TaskId,
+    pub session_id: SessionId,
+    pub parent_task_id: Option<TaskId>,
+    pub created_by: AgentInstanceId,
+    pub assigned_to: AgentInstanceId,
+    pub objective: String,
+    pub token_budget: u64,
+    pub max_handoffs: u32,
+}
+
+/// Agent-authored lifecycle update. Runtime derives the revision fence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransitionTaskRequest {
+    pub task_id: TaskId,
+    pub session_id: SessionId,
+    pub actor: AgentInstanceId,
+    pub next_state: CoordinationTaskState,
+    pub consumed_tokens: u64,
 }
 
 /// Single policy-enforcing entry point above coordination repositories.
@@ -400,6 +425,10 @@ pub enum CoordinationServiceError {
     UnavailableAgent,
     #[error("coordination references an unknown task")]
     UnknownTask,
+    #[error("coordination task is invalid: {0}")]
+    InvalidTask(String),
+    #[error("coordination task is blocked by a hard governance finding")]
+    GovernanceBlocked,
     #[error("coordination references an unknown handoff")]
     UnknownHandoff,
     #[error("coordination references an unknown arbitration case")]

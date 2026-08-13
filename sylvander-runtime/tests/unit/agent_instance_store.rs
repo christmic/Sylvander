@@ -15,9 +15,10 @@ use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
 };
 use crate::coordination::service::{
-    CoordinationService, DefineAgentOutcome, DefineAgentRequest, DispatchMessageOutcome,
-    DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest, ProposeHandoffRequest,
-    RelateAgentsOutcome, RelateAgentsRequest, ReportWaitRequest,
+    CoordinationService, CreateTaskRequest, DefineAgentOutcome, DefineAgentRequest,
+    DispatchMessageOutcome, DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest,
+    ProposeHandoffRequest, RelateAgentsOutcome, RelateAgentsRequest, ReportWaitRequest,
+    TransitionTaskRequest,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -333,6 +334,109 @@ async fn coordination_service_derives_route_from_durable_topology() {
         .await
         .unwrap();
     assert_eq!(acknowledged.state, MessageDeliveryState::Acknowledged);
+}
+
+#[tokio::test]
+async fn agents_drive_durable_tasks_with_runtime_owned_revision_fences() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    let task = service
+        .create_task(
+            CreateTaskRequest {
+                task_id: TaskId::new("agent-owned-task"),
+                session_id: membership.session_id.clone(),
+                parent_task_id: None,
+                created_by: AgentInstanceId::new("moderator-1"),
+                assigned_to: AgentInstanceId::new("worker-1"),
+                objective: "Produce independently verifiable evidence".into(),
+                token_budget: 1_000,
+                max_handoffs: 2,
+            },
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(task.state, CoordinationTaskState::Ready);
+
+    let running = service
+        .transition_task(
+            TransitionTaskRequest {
+                task_id: task.task_id.clone(),
+                session_id: membership.session_id.clone(),
+                actor: AgentInstanceId::new("worker-1"),
+                next_state: CoordinationTaskState::Running,
+                consumed_tokens: 0,
+            },
+            21,
+        )
+        .await
+        .unwrap();
+    assert_eq!(running.revision, 1);
+    let completed = service
+        .transition_task(
+            TransitionTaskRequest {
+                task_id: task.task_id,
+                session_id: membership.session_id,
+                actor: AgentInstanceId::new("worker-1"),
+                next_state: CoordinationTaskState::Completed,
+                consumed_tokens: 240,
+            },
+            22,
+        )
+        .await
+        .unwrap();
+    assert_eq!(completed.revision, 2);
+    assert_eq!(completed.consumed_tokens, 240);
+    assert_eq!(
+        store.task(&completed.task_id).await.unwrap(),
+        Some(completed)
+    );
+}
+
+#[tokio::test]
+async fn ordinary_agent_cannot_assign_work_outside_its_owned_branch() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store, GovernancePolicy::default(), 30);
+    let error = service
+        .create_task(
+            CreateTaskRequest {
+                task_id: TaskId::new("unauthorized-task"),
+                session_id: membership.session_id,
+                parent_task_id: None,
+                created_by: AgentInstanceId::new("worker-1"),
+                assigned_to: AgentInstanceId::new("coordinator-1"),
+                objective: "Bypass governed ownership".into(),
+                token_budget: 100,
+                max_handoffs: 0,
+            },
+            20,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::coordination::service::CoordinationServiceError::UnauthorizedActor
+    ));
 }
 
 #[tokio::test]
