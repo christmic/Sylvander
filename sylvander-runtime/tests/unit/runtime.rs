@@ -13,10 +13,12 @@ use sylvander_agent::tools::{MemoryActorKind, MemoryAppend, MemoryProvenanceSour
 use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
 use sylvander_channel::BusError;
 
+use crate::coordination::mailbox::{CoordinationMessageKind, MessageDeliveryState};
 use crate::execution::LocalExecutor;
+use crate::storage::session::TurnState;
 use sylvander_api::{
-    SessionConfigFieldPatch, SessionConfigPatch, SessionWorkspaceBinding, SessionWorkspaceMount,
-    WorkspaceCapabilityPolicy, WorkspaceMountRole,
+    AgentInstanceId, CoordinationMessageId, SessionConfigFieldPatch, SessionConfigPatch,
+    SessionWorkspaceBinding, SessionWorkspaceMount, WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };
 use tokio::sync::Notify;
 use wiremock::matchers::{method, path};
@@ -1667,6 +1669,120 @@ async fn attach_memory_session(
         .attach_authenticated_session(created.session_id, stored.metadata)
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn configured_runtime_automatically_executes_a_fork_mailbox_turn() {
+    let model_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_agent_mailbox",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "mailbox completed"}],
+            "model": "model-a",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 4, "output_tokens": 2}
+        })))
+        .mount(&model_server)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = configured_memory_test_config(&directory, &["assistant"]);
+    config.model_providers[0].base_url = model_server.uri();
+    config.model_providers[0].models[0].capabilities = vec!["tool_use".into()];
+    let runtime = Runtime::boot_config(config).await.unwrap();
+    let moderator = attach_memory_session(&runtime, "assistant", "mailbox-user").await;
+    let session_id = moderator.id().clone();
+    let parent_instance_id = moderator.agent_instance_id().clone();
+    let child_instance_id = AgentInstanceId::new("mailbox-worker");
+    let fork = runtime
+        .fork_agent_instance(
+            &moderator,
+            ForkAgentRequest {
+                instance_id: child_instance_id.clone(),
+                session_id: session_id.clone(),
+                parent_instance_id: parent_instance_id.clone(),
+                branch_id: "mailbox-e2e".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(fork, ForkAgentOutcome::Created(_)));
+    let message_id = CoordinationMessageId::new("mailbox-e2e-message");
+    let now = crate::session::now_secs();
+    let outcome = runtime
+        .dispatch_agent_message(
+            &moderator,
+            DispatchMessageRequest {
+                message_id: message_id.clone(),
+                session_id: session_id.clone(),
+                sender_instance_id: parent_instance_id,
+                recipient_instance_id: child_instance_id,
+                task_id: None,
+                kind: CoordinationMessageKind::Task,
+                payload: "produce one bounded result".into(),
+                max_hops: 4,
+                expires_at: now + 60,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DispatchMessageOutcome::Enqueued(_)));
+
+    let turn_id = format!(
+        "agent-message:{:x}",
+        Sha256::digest(message_id.0.as_bytes())
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let message = runtime
+            .storage
+            .coordination()
+            .unwrap()
+            .coordination_message(&message_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if message.state == MessageDeliveryState::Acknowledged {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let turn = runtime
+                .storage
+                .sessions()
+                .turn(&session_id, &turn_id)
+                .await
+                .unwrap();
+            let request_count = model_server.received_requests().await.unwrap().len();
+            panic!(
+                "mailbox turn timed out in message state {:?}, turn {turn:?}, requests {request_count}",
+                message.state,
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        runtime
+            .storage
+            .sessions()
+            .turn(&session_id, &turn_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        TurnState::Completed
+    );
+    assert_eq!(
+        runtime
+            .operational_snapshot()
+            .await
+            .unwrap()
+            .observability
+            .coordination_enqueued,
+        1
+    );
+    runtime.shutdown().await.unwrap();
 }
 
 #[test]

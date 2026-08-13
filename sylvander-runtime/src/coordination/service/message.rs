@@ -15,6 +15,13 @@ impl<S> CoordinationService<S>
 where
     S: AgentInstanceStore + CoordinationStore,
 {
+    pub async fn coordination_message(
+        &self,
+        message_id: &sylvander_api::CoordinationMessageId,
+    ) -> Result<Option<CoordinationMessage>, CoordinationServiceError> {
+        self.store.message(message_id).await.map_err(Into::into)
+    }
+
     /// Resolve current durable facts, govern the dispatch, then persist its outcome.
     pub async fn dispatch_message(
         &self,

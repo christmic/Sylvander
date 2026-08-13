@@ -151,6 +151,21 @@ impl AgentInstanceStore for SqliteSessionStore {
                     membership.governance.updated_at,
                 ],
             )?;
+            if expected_revision.is_none() {
+                transaction.execute(
+                    "INSERT INTO session_topology \
+                     (session_id,membership_revision,topology_revision,updated_at) \
+                     VALUES (?1,?2,0,?3)",
+                    params![
+                        membership.session_id.0,
+                        checked_i64(
+                            membership.governance.membership_revision,
+                            "membership revision"
+                        )?,
+                        membership.governance.updated_at,
+                    ],
+                )?;
+            }
             transaction.commit()?;
             Ok(())
         })

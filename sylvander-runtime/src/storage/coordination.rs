@@ -248,7 +248,15 @@ impl CoordinationStore for SqliteSessionStore {
                 .optional()?
                 .map(|value| checked_u64(value, "topology revision"))
                 .transpose()?;
-            if actual_revision != expected_revision {
+            let replaces_empty_initial_topology = expected_revision.is_none()
+                && actual_revision == Some(0)
+                && topology.topology_revision == 0
+                && transaction.query_row(
+                    "SELECT COUNT(*) FROM agent_relations WHERE session_id=?1",
+                    [&topology.session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )? == 0;
+            if actual_revision != expected_revision && !replaces_empty_initial_topology {
                 return Err(SessionStoreError::TopologyConflict {
                     expected: expected_revision,
                     actual: actual_revision,
