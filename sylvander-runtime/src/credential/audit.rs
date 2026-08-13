@@ -564,5 +564,5 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/credential_audit.rs"]
+#[path = "../../tests/unit/credential_audit.rs"]
 mod tests;

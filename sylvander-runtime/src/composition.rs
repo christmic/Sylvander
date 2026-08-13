@@ -40,8 +40,8 @@ use crate::agent_run::{
 use crate::config::{AgentDefinitionConfig, ExecutionTransportConfig, ServerConfig};
 #[cfg(test)]
 use crate::config::{ModelDefinitionConfig, ModelProviderConfig, SecretResolver};
-use crate::credential_audit::CredentialOperationAuditLedger;
-use crate::credential_registry::CredentialSecretResolver;
+use crate::credential::audit::CredentialOperationAuditLedger;
+use crate::credential::registry::CredentialSecretResolver;
 use crate::execution::{
     ContainerExecutor, ContainerPersistentProcessEnvironment, ContainerResourcePolicy,
     ExecutionTargetRegistration, RuntimeExecutionService, SshExecutor,

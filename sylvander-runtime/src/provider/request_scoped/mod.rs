@@ -19,7 +19,7 @@ use sylvander_llm_openai::{
     OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
 };
 
-use crate::credential_registry::{CredentialRegistryError, ResolvedCredential};
+use crate::credential::registry::{CredentialRegistryError, ResolvedCredential};
 use crate::registry::domain::{
     CanonicalModelCapability, ModelCapabilityError, ModelDefinition, ProviderDefinition,
     parse_model_capabilities,

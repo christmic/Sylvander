@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use sylvander_api::{AgentId, ModelSelection};
 
 use crate::config::AgentDefinitionConfig;
-use crate::credential_registry::CredentialRegistryError;
+use crate::credential::registry::CredentialRegistryError;
 use crate::registry::agent::{AgentRegistry, AgentRegistryError};
 use crate::registry::domain::{ModelDefinition, ProviderDefinition};
 use crate::registry::snapshot::AgentSnapshotV3Error;

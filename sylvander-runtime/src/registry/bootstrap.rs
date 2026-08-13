@@ -3,7 +3,7 @@
 use sylvander_api::ModelLifecycle;
 
 use crate::config::{ConfigError, ServerConfig};
-use crate::credential_registry::CredentialRegistryError;
+use crate::credential::registry::CredentialRegistryError;
 use crate::provider::model_registry::ModelRegistryError;
 use crate::provider::registry::ProviderRegistryError;
 use crate::registry::agent::AgentRegistry;

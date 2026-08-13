@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::agent_definition::{McpServerConfig, McpWorkspaceAccess, SessionId};
 use crate::config::SecretRef;
-use crate::credential_registry::CredentialSecretResolver;
+use crate::credential::registry::CredentialSecretResolver;
 use crate::execution::{
     PersistentFilesystemAuthority, PersistentNetworkAuthority, PersistentProcessAuthority,
     PersistentProcessOwner, PersistentResourceLimits, RuntimeExecutionService,

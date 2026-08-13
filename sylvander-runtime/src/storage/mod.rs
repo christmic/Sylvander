@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use sylvander_agent::tools::MemoryStore;
 
-use crate::credential_audit::CredentialOperationAuditLedger;
+use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::evidence::EvidenceStore;
 use crate::guardian_runtime::GuardianStorageProbe;
 use crate::registry::agent::AgentRegistry;

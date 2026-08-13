@@ -58,10 +58,12 @@ pub mod coding_worktree;
 pub mod composition;
 /// Latest-version server configuration and secret-reference contracts.
 pub mod config;
+/// Runtime-owned credential resolution, revision state, and content-safe audit.
+mod credential;
 /// Durable, content-safe Provider and Channel credential operation audit.
-pub mod credential_audit;
-#[allow(dead_code)] // internal API consumed by credential administration batches
-mod credential_registry;
+pub use credential::audit as credential_audit;
+#[cfg(test)]
+use credential::registry as credential_registry;
 #[cfg(test)]
 #[path = "../tests/unit/credential_registry.rs"]
 mod credential_registry_tests;
@@ -204,8 +206,8 @@ use crate::composition::{
 use crate::config::{
     MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
 };
-use crate::credential_audit::CredentialOperationAuditLedger;
-use crate::credential_registry::CredentialSecretResolver;
+use crate::credential::audit::CredentialOperationAuditLedger;
+use crate::credential::registry::CredentialSecretResolver;
 use crate::evidence::{
     AdministrationAudit, AuthorizationDenial, EvidenceArtifactSink, EvidenceEncryption,
     EvidenceGovernance, EvidenceRecorder, EvidenceStore,

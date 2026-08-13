@@ -18,11 +18,11 @@ use super::{
     ActiveCredentialLease, ActiveCredentialSource, CredentialAccessError, CredentialLeaseFuture,
 };
 use crate::config::SecretRef;
-use crate::credential_audit::{
+use crate::credential::audit::{
     CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
     CredentialOperationAuditLedger,
 };
-use crate::credential_registry::CredentialSecretResolver;
+use crate::credential::registry::CredentialSecretResolver;
 use crate::registry::agent::AgentRegistry;
 
 /// Maximum lease lifetime accepted from an external provider.

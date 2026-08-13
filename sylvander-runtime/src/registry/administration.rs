@@ -12,11 +12,11 @@ use sylvander_api::{
 
 use crate::agent_admin::is_agent_administrator;
 use crate::config::SecretRef;
-use crate::credential_audit::{
+use crate::credential::audit::{
     CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
     CredentialOperationAuditLedger,
 };
-use crate::credential_registry::{CredentialRegistryError, CredentialSecretResolver};
+use crate::credential::registry::{CredentialRegistryError, CredentialSecretResolver};
 use crate::provider::model_registry::ModelRegistryError;
 use crate::provider::registry::ProviderRegistryError;
 use crate::provider::request_scoped::AnthropicProviderFactory;
