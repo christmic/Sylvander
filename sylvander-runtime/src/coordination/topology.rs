@@ -221,6 +221,14 @@ fn relation_key(relation: &AgentRelation) -> (AgentRelationKind, String, String)
     (relation.kind, source, target)
 }
 
+pub(crate) const fn encode_relation_kind(kind: AgentRelationKind) -> &'static str {
+    match kind {
+        AgentRelationKind::ParentOf => "parent_of",
+        AgentRelationKind::Peer => "peer",
+        AgentRelationKind::Reviews => "reviews",
+    }
+}
+
 fn parent_cycle_from(
     start: &AgentInstanceId,
     parent_by_child: &HashMap<AgentInstanceId, AgentInstanceId>,

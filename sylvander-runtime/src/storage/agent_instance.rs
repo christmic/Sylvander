@@ -7,6 +7,7 @@ use sylvander_api::{AgentId, AgentInstanceId, SessionId, SwarmId};
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstance, AgentInstanceState, SessionAgentRole,
 };
+use crate::coordination::topology::{SessionTopology, encode_relation_kind};
 use crate::session::membership::{SessionGovernance, SessionMembership};
 use crate::storage::session::{SessionStoreError, SqliteSessionStore};
 
@@ -25,6 +26,16 @@ pub trait AgentInstanceStore: Send + Sync {
         &self,
         session_id: &SessionId,
     ) -> Result<Option<SessionMembership>, SessionStoreError>;
+
+    /// Atomically append one participant and replace topology at the next revisions.
+    async fn add_session_participant(
+        &self,
+        participant: &AgentInstance,
+        next_membership: &SessionMembership,
+        next_topology: &SessionTopology,
+        expected_membership_revision: u64,
+        expected_topology_revision: u64,
+    ) -> Result<(), SessionStoreError>;
 }
 
 #[async_trait]
@@ -96,33 +107,7 @@ impl AgentInstanceStore for SqliteSessionStore {
 
             let mut definitions = std::collections::HashSet::new();
             for (ordinal, participant) in membership.participants.iter().enumerate() {
-                let (role, swarm_id) = encode_role(&participant.role);
-                transaction.execute(
-                    "INSERT INTO session_agent_instances \
-                     (instance_id,session_id,membership_ordinal,agent_id,definition_revision,origin_json,role,\
-                      role_swarm_id,history_view_json,approval_route_json,state,\
-                      capability_revision,lifecycle_revision,created_at,updated_at) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-                    params![
-                        participant.instance_id.0,
-                        participant.session_id.0,
-                        i64::try_from(ordinal).map_err(|_| SessionStoreError::Invalid(
-                            "Agent membership ordinal exceeds SQLite range".into()
-                        ))?,
-                        participant.definition.agent_id.0,
-                        checked_i64(participant.definition.revision, "Agent definition revision")?,
-                        encode_json(&participant.origin)?,
-                        role,
-                        swarm_id,
-                        encode_json(&participant.history_view)?,
-                        encode_json(&participant.approval_route)?,
-                        encode_state(participant.state),
-                        participant.capability_revision,
-                        checked_i64(participant.lifecycle_revision, "Agent lifecycle revision")?,
-                        participant.created_at,
-                        participant.updated_at,
-                    ],
-                )?;
+                insert_agent_instance(&transaction, participant, ordinal)?;
                 definitions.insert(participant.definition.agent_id.clone());
             }
             for definition in definitions {
@@ -235,6 +220,198 @@ impl AgentInstanceStore for SqliteSessionStore {
         })
         .await
     }
+
+    async fn add_session_participant(
+        &self,
+        participant: &AgentInstance,
+        next_membership: &SessionMembership,
+        next_topology: &SessionTopology,
+        expected_membership_revision: u64,
+        expected_topology_revision: u64,
+    ) -> Result<(), SessionStoreError> {
+        next_membership
+            .validate()
+            .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+        next_topology
+            .validate(next_membership)
+            .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+        let required_membership_revision = expected_membership_revision
+            .checked_add(1)
+            .ok_or_else(|| SessionStoreError::Invalid("membership revision overflow".into()))?;
+        let required_topology_revision = expected_topology_revision
+            .checked_add(1)
+            .ok_or_else(|| SessionStoreError::Invalid("topology revision overflow".into()))?;
+        if participant.session_id != next_membership.session_id
+            || next_membership.participants.last() != Some(participant)
+            || next_membership.governance.membership_revision != required_membership_revision
+            || next_topology.membership_revision != next_membership.governance.membership_revision
+            || next_topology.topology_revision != required_topology_revision
+        {
+            return Err(SessionStoreError::Invalid(
+                "participant append does not contain sequential exact facts".into(),
+            ));
+        }
+        let participant = participant.clone();
+        let membership = next_membership.clone();
+        let topology = next_topology.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let current = transaction
+                .query_row(
+                    "SELECT moderator_instance_id,governance_revision,membership_revision,
+                            lease_epoch,fencing_token FROM session_governance WHERE session_id=?1",
+                    [&membership.session_id.0],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some(current) = current else {
+                return Err(SessionStoreError::MembershipConflict {
+                    expected: Some(expected_membership_revision),
+                    actual: None,
+                });
+            };
+            let actual_membership = checked_u64(current.2, "membership revision")?;
+            let actual_topology = transaction
+                .query_row(
+                    "SELECT topology_revision FROM session_topology WHERE session_id=?1",
+                    [&membership.session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|value| checked_u64(value, "topology revision"))
+                .transpose()?;
+            if actual_membership != expected_membership_revision {
+                return Err(SessionStoreError::MembershipConflict {
+                    expected: Some(expected_membership_revision),
+                    actual: Some(actual_membership),
+                });
+            }
+            if actual_topology != Some(expected_topology_revision) {
+                return Err(SessionStoreError::TopologyConflict {
+                    expected: Some(expected_topology_revision),
+                    actual: actual_topology,
+                });
+            }
+            if current.0 != membership.governance.moderator_instance_id.0
+                || current.1 != membership.governance.governance_revision
+                || checked_u64(current.3, "moderator lease epoch")?
+                    != membership.governance.lease_epoch
+                || checked_u64(current.4, "moderator fencing token")?
+                    != membership.governance.fencing_token
+            {
+                return Err(SessionStoreError::Invalid(
+                    "participant append cannot change moderator governance".into(),
+                ));
+            }
+            let existing_count = transaction.query_row(
+                "SELECT COUNT(*) FROM session_agent_instances WHERE session_id=?1",
+                [&membership.session_id.0],
+                |row| row.get::<_, i64>(0),
+            )?;
+            if usize::try_from(existing_count).ok().and_then(|count| count.checked_add(1))
+                != Some(membership.participants.len())
+            {
+                return Err(SessionStoreError::Invalid(
+                    "participant append must add exactly one Agent".into(),
+                ));
+            }
+            insert_agent_instance(
+                &transaction,
+                &participant,
+                membership.participants.len().saturating_sub(1),
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO session_agents(session_id,agent_id,joined_at) VALUES (?1,?2,?3)",
+                params![membership.session_id.0, participant.definition.agent_id.0, participant.created_at],
+            )?;
+            transaction.execute(
+                "UPDATE session_governance SET membership_revision=?1,updated_at=?2 \
+                 WHERE session_id=?3 AND membership_revision=?4",
+                params![
+                    checked_i64(membership.governance.membership_revision, "membership revision")?,
+                    membership.governance.updated_at,
+                    membership.session_id.0,
+                    checked_i64(expected_membership_revision, "membership revision")?,
+                ],
+            )?;
+            transaction.execute(
+                "DELETE FROM session_topology WHERE session_id=?1",
+                [&topology.session_id.0],
+            )?;
+            transaction.execute(
+                "INSERT INTO session_topology(session_id,membership_revision,topology_revision,updated_at) \
+                 VALUES (?1,?2,?3,?4)",
+                params![
+                    topology.session_id.0,
+                    checked_i64(topology.membership_revision, "membership revision")?,
+                    checked_i64(topology.topology_revision, "topology revision")?,
+                    topology.updated_at,
+                ],
+            )?;
+            for (ordinal, relation) in topology.relations.iter().enumerate() {
+                transaction.execute(
+                    "INSERT INTO agent_relations(session_id,relation_ordinal,source_instance_id,
+                     target_instance_id,relation_kind,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![
+                        topology.session_id.0,
+                        i64::try_from(ordinal).map_err(|_| SessionStoreError::Invalid(
+                            "Agent relation ordinal exceeds SQLite range".into()
+                        ))?,
+                        relation.source.0,
+                        relation.target.0,
+                        encode_relation_kind(relation.kind),
+                        relation.created_at,
+                    ],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+}
+
+fn insert_agent_instance(
+    transaction: &rusqlite::Transaction<'_>,
+    participant: &AgentInstance,
+    ordinal: usize,
+) -> Result<(), SessionStoreError> {
+    let (role, swarm_id) = encode_role(&participant.role);
+    transaction.execute(
+        "INSERT INTO session_agent_instances \
+         (instance_id,session_id,membership_ordinal,agent_id,definition_revision,origin_json,role,
+          role_swarm_id,history_view_json,approval_route_json,state,capability_revision,
+          lifecycle_revision,created_at,updated_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        params![
+            participant.instance_id.0,
+            participant.session_id.0,
+            i64::try_from(ordinal).map_err(|_| SessionStoreError::Invalid(
+                "Agent membership ordinal exceeds SQLite range".into()
+            ))?,
+            participant.definition.agent_id.0,
+            checked_i64(participant.definition.revision, "Agent definition revision")?,
+            encode_json(&participant.origin)?,
+            role,
+            swarm_id,
+            encode_json(&participant.history_view)?,
+            encode_json(&participant.approval_route)?,
+            encode_state(participant.state),
+            participant.capability_revision,
+            checked_i64(participant.lifecycle_revision, "Agent lifecycle revision")?,
+            participant.created_at,
+            participant.updated_at,
+        ],
+    )?;
+    Ok(())
 }
 
 struct EncodedInstance {

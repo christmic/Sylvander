@@ -897,6 +897,25 @@ impl crate::storage::agent_instance::AgentInstanceStore for FailingSessionStore 
     > {
         self.inner.session_membership(session_id).await
     }
+
+    async fn add_session_participant(
+        &self,
+        participant: &crate::agent::instance::AgentInstance,
+        next_membership: &crate::session::membership::SessionMembership,
+        next_topology: &crate::coordination::topology::SessionTopology,
+        expected_membership_revision: u64,
+        expected_topology_revision: u64,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
+        self.inner
+            .add_session_participant(
+                participant,
+                next_membership,
+                next_topology,
+                expected_membership_revision,
+                expected_topology_revision,
+            )
+            .await
+    }
 }
 
 #[async_trait::async_trait]

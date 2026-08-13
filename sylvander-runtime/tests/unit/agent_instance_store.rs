@@ -701,6 +701,89 @@ async fn topology_is_durable_and_fenced_by_its_own_revision() {
 }
 
 #[tokio::test]
+async fn participant_append_updates_membership_and_topology_in_one_transaction() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    let topology = topology(&membership);
+    store
+        .save_topology(&topology, &membership, None)
+        .await
+        .unwrap();
+    let mut child = instance("fork-1", "researcher", SessionAgentRole::Worker);
+    child.origin = AgentInstanceOrigin::Forked {
+        parent_instance_id: AgentInstanceId::new("worker-1"),
+        fork_sequence: 1,
+    };
+    child.history_view = HistoryView::ForkSnapshot {
+        base_sequence: 12,
+        branch_id: "fork-1".into(),
+    };
+    child.approval_route = ApprovalRoute::Parent {
+        instance_id: AgentInstanceId::new("worker-1"),
+    };
+    child.state = AgentInstanceState::Created;
+    let mut participants = membership.participants.clone();
+    participants.push(child.clone());
+    let next_membership = SessionMembership::new(
+        membership.session_id.clone(),
+        participants,
+        SessionGovernance {
+            membership_revision: 1,
+            updated_at: 20,
+            ..membership.governance.clone()
+        },
+    )
+    .unwrap();
+    let mut relations = topology.relations.clone();
+    relations.push(AgentRelation {
+        source: AgentInstanceId::new("worker-1"),
+        target: child.instance_id.clone(),
+        kind: AgentRelationKind::ParentOf,
+        created_at: 20,
+    });
+    let next_topology = SessionTopology::new(
+        membership.session_id.clone(),
+        1,
+        1,
+        relations,
+        20,
+        &next_membership,
+    )
+    .unwrap();
+
+    store
+        .add_session_participant(&child, &next_membership, &next_topology, 0, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .session_membership(&membership.session_id)
+            .await
+            .unwrap(),
+        Some(next_membership.clone())
+    );
+    assert_eq!(
+        store.topology(&membership.session_id).await.unwrap(),
+        Some(next_topology.clone())
+    );
+    assert!(matches!(
+        store
+            .add_session_participant(&child, &next_membership, &next_topology, 0, 0)
+            .await
+            .unwrap_err(),
+        SessionStoreError::MembershipConflict {
+            expected: Some(0),
+            actual: Some(1)
+        }
+    ));
+}
+
+#[tokio::test]
 async fn task_creation_is_durable_and_duplicate_safe() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     store.save(&stored_session()).await.unwrap();
