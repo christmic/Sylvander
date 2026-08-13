@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, oneshot};
 
 use sylvander_agent::execution_ports::AgentExecutionPorts;
 use sylvander_agent::kernel::agent_loop::{self, AgentLoop};
-use sylvander_agent::task_gate::TaskGate;
+use sylvander_agent::task_gate::{BackgroundTaskRequest, TaskGate};
 use sylvander_agent::turn::conversation::ConversationSnapshot;
 use sylvander_agent::turn::request::AgentTurnRequest;
 use sylvander_api::{AgentId, BusMessage, SessionId, StreamEvent};
@@ -37,7 +37,12 @@ pub(super) struct BusTaskGate {
 
 #[async_trait::async_trait]
 impl TaskGate for BusTaskGate {
-    async fn start(&self, purpose: String, prompt: String) -> Result<String, String> {
+    async fn start(&self, request: BackgroundTaskRequest) -> Result<String, String> {
+        let BackgroundTaskRequest {
+            invocation_id: _,
+            purpose,
+            prompt,
+        } = request;
         if prompt.trim().is_empty() {
             return Err("background task prompt cannot be empty".into());
         }

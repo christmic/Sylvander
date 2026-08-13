@@ -716,7 +716,12 @@ pub fn run_stream(
                                     .unwrap_or("")
                                     .to_string();
                                 let result = if let Some(gate) = &ports.task_gate {
-                                    gate.start(purpose, prompt).await
+                                    gate.start(crate::task_gate::BackgroundTaskRequest {
+                                        invocation_id: tool_use.id.clone(),
+                                        purpose,
+                                        prompt,
+                                    })
+                                    .await
                                 } else {
                                     Err("background task runtime is unavailable".into())
                                 };
