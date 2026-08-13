@@ -213,6 +213,78 @@ impl SessionConfigOverrides {
     }
 }
 
+/// One explicit mutation of a sparse Session override.
+///
+/// `Inherit` removes the durable override, while `Set` replaces it. Omitting
+/// the containing patch field preserves its current value. The three states
+/// are intentionally distinct so write-only values are never cleared by a
+/// read-modify-write client that cannot observe them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SessionConfigFieldPatch<T> {
+    Inherit,
+    Set { value: T },
+}
+
+impl<T> SessionConfigFieldPatch<T> {
+    fn apply(self, target: &mut Option<T>) {
+        *target = match self {
+            Self::Inherit => None,
+            Self::Set { value } => Some(value),
+        };
+    }
+}
+
+/// Field-level update for durable Session overrides.
+///
+/// A missing field means “preserve”, not “inherit”. This makes optimistic
+/// updates safe even though public reads redact the write-only system prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionConfigPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<SessionConfigFieldPatch<ModelSelection>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<SessionConfigFieldPatch<ReasoningEffort>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<SessionConfigFieldPatch<PermissionProfile>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_profile: Option<SessionConfigFieldPatch<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<SessionConfigFieldPatch<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_workspace: Option<SessionConfigFieldPatch<SessionWorkspaceBinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_target: Option<SessionConfigFieldPatch<String>>,
+}
+
+impl SessionConfigPatch {
+    /// Apply only the fields present in this patch to the durable overrides.
+    pub fn apply_to(self, overrides: &mut SessionConfigOverrides) {
+        if let Some(patch) = self.model {
+            patch.apply(&mut overrides.model);
+        }
+        if let Some(patch) = self.reasoning_effort {
+            patch.apply(&mut overrides.reasoning_effort);
+        }
+        if let Some(patch) = self.permissions {
+            patch.apply(&mut overrides.permissions);
+        }
+        if let Some(patch) = self.prompt_profile {
+            patch.apply(&mut overrides.prompt_profile);
+        }
+        if let Some(patch) = self.system_prompt {
+            patch.apply(&mut overrides.system_prompt);
+        }
+        if let Some(patch) = self.user_workspace {
+            patch.apply(&mut overrides.user_workspace);
+        }
+        if let Some(patch) = self.execution_target {
+            patch.apply(&mut overrides.execution_target);
+        }
+    }
+}
+
 /// Per-field origin information for the resolved configuration. This keeps UI
 /// inspection and audit output honest when a session overrides Agent defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
