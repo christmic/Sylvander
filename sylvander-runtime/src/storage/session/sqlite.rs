@@ -260,7 +260,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 6;
+const SESSION_SCHEMA_VERSION: i64 = 7;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -270,6 +270,8 @@ const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "sessions",
     "session_agents",
+    "session_agent_instances",
+    "session_governance",
     "session_messages",
     "session_usage",
     "session_turns",
@@ -282,6 +284,9 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_sessions_user",
     "idx_sessions_updated",
     "idx_session_agents_agent",
+    "idx_agent_instances_definition",
+    "idx_agent_instances_state",
+    "idx_one_session_moderator",
     "idx_messages_session",
     "idx_messages_unsummarized",
     "idx_tool_calls_turn",
@@ -316,6 +321,45 @@ CREATE TABLE session_agents (
     agent_id        TEXT NOT NULL,
     joined_at       INTEGER NOT NULL,
     PRIMARY KEY (session_id, agent_id)
+);
+
+-- First-class running Agent participants. `agent_id` identifies the reusable
+-- definition while `instance_id` identifies one concrete Session actor.
+CREATE TABLE session_agent_instances (
+    instance_id        TEXT PRIMARY KEY,
+    session_id         TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    agent_id           TEXT NOT NULL,
+    definition_revision INTEGER NOT NULL CHECK(definition_revision > 0),
+    origin_json        TEXT NOT NULL,
+    role               TEXT NOT NULL CHECK(role IN ('moderator','coordinator','worker','reviewer','specialist','observer')),
+    role_swarm_id      TEXT,
+    history_view_json  TEXT NOT NULL,
+    approval_route_json TEXT NOT NULL,
+    state              TEXT NOT NULL CHECK(state IN ('created','ready','running','waiting_message','waiting_approval','completed','failed','cancelled','manual_reconciliation')),
+    capability_revision TEXT NOT NULL CHECK(length(trim(capability_revision)) > 0),
+    lifecycle_revision INTEGER NOT NULL DEFAULT 0 CHECK(lifecycle_revision >= 0),
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    CHECK((role = 'coordinator' AND role_swarm_id IS NOT NULL)
+       OR (role != 'coordinator' AND role_swarm_id IS NULL)),
+    UNIQUE(session_id, instance_id),
+    UNIQUE(session_id, instance_id, role)
+);
+
+-- Exactly one current root moderator signs final Session arbitration. The
+-- fixed role column makes the foreign key prove that the referenced instance
+-- really is the moderator rather than merely a participant.
+CREATE TABLE session_governance (
+    session_id          TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    moderator_instance_id TEXT NOT NULL,
+    moderator_role      TEXT NOT NULL DEFAULT 'moderator' CHECK(moderator_role = 'moderator'),
+    governance_revision TEXT NOT NULL CHECK(length(trim(governance_revision)) > 0),
+    lease_epoch         INTEGER NOT NULL CHECK(lease_epoch > 0),
+    fencing_token       INTEGER NOT NULL CHECK(fencing_token > 0),
+    updated_at          INTEGER NOT NULL,
+    FOREIGN KEY(session_id, moderator_instance_id, moderator_role)
+        REFERENCES session_agent_instances(session_id, instance_id, role)
+        ON DELETE CASCADE
 );
 
 -- Messages (one row per user/assistant/tool message)
@@ -443,6 +487,12 @@ CREATE INDEX idx_sessions_updated
     ON sessions(updated_at DESC);
 CREATE INDEX idx_session_agents_agent
     ON session_agents(agent_id);
+CREATE INDEX idx_agent_instances_definition
+    ON session_agent_instances(agent_id, definition_revision);
+CREATE INDEX idx_agent_instances_state
+    ON session_agent_instances(session_id, state, updated_at, instance_id);
+CREATE UNIQUE INDEX idx_one_session_moderator
+    ON session_agent_instances(session_id) WHERE role = 'moderator';
 CREATE INDEX idx_messages_session
     ON session_messages(session_id, seq);
 CREATE INDEX idx_messages_unsummarized
@@ -455,7 +505,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_session
     ON session_turns(session_id) WHERE state = 'running';
-PRAGMA user_version=6;
+PRAGMA user_version=7;
 COMMIT;
 ";
 
