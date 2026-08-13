@@ -1741,6 +1741,94 @@ async fn terminal_perception_failure_survives_restart_without_recovery_work() {
 }
 
 #[tokio::test]
+async fn cognition_budget_and_terminal_failure_are_durable_across_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cognition.sqlite3");
+    let store = SqliteSessionStore::open(&path).await.unwrap();
+    let session = running_perception_turn(&store, "turn-cognition").await;
+    let artifacts = perception_artifacts(
+        &directory.path().join("cognition-evidence.sqlite"),
+        "turn-cognition",
+    )
+    .await;
+    let invocation_id = CognitionInvocationId::from_uuid(uuid::Uuid::new_v4());
+    let start = CognitionInvocationStart {
+        session_id: session.id.clone(),
+        turn_id: "turn-cognition".into(),
+        agent_instance_id: turn_instance(),
+        invocation_id: invocation_id.clone(),
+        role: CognitiveRole::Deliberation,
+        provider_id: "test-provider".into(),
+        model_id: "deep-model".into(),
+        recovery_policy: CognitionRecoveryPolicy::RecoverFromReceipt,
+        capability_revision: format!("sha256:{}", "a".repeat(64)),
+        input_digest: format!("sha256:{}", "b".repeat(64)),
+        input_bytes: 12,
+        max_turn_calls: 1,
+    };
+    store.begin_cognition(start.clone()).await.unwrap();
+    let prompt = artifacts
+        .persist_exact(
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourcePrompt,
+            "text/plain; charset=utf-8",
+            b"think deeply".to_vec(),
+        )
+        .await
+        .unwrap();
+    let revision = store
+        .persist_cognition_prompt(CognitionPromptPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 0,
+            artifact_locator: prompt.locator,
+        })
+        .await
+        .unwrap();
+    let revision = store
+        .advance_cognition(CognitionAdvance {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            expected_position: CognitionExecutionPosition::PromptPersisted,
+            next_position: CognitionExecutionPosition::InferenceStarted,
+        })
+        .await
+        .unwrap();
+    store
+        .fail_cognition(CognitionFailurePersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            failure_kind: CognitionFailureKind::Provider,
+        })
+        .await
+        .unwrap();
+    let second = CognitionInvocationStart {
+        invocation_id: CognitionInvocationId::from_uuid(uuid::Uuid::new_v4()),
+        ..start
+    };
+    assert!(store.begin_cognition(second).await.is_err());
+    drop(store);
+
+    let reopened = SqliteSessionStore::open(path).await.unwrap();
+    let invocations = reopened
+        .cognition_invocations(&session.id, "turn-cognition")
+        .await
+        .unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].position, CognitionExecutionPosition::Failed);
+    assert_eq!(
+        invocations[0].failure_kind,
+        Some(CognitionFailureKind::Provider)
+    );
+    assert!(
+        reopened
+            .interrupted_cognition_invocations()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn specialist_execution_commits_receipt_artifact_and_model_visible_result() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(
