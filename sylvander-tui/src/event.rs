@@ -206,10 +206,6 @@ pub enum DomainEvent {
         output_tokens: u64,
         cost_nano_usd: Option<u64>,
     },
-    /// Runtime accepted the request and assigned its durable turn identity.
-    TurnStarted {
-        turn_id: String,
-    },
     /// The agent loop has emitted its final answer.
     AgentDone {
         final_text: String,
@@ -314,7 +310,6 @@ impl DomainEvent {
             Self::Connected
             | Self::ProtocolNegotiated { .. }
             | Self::ProtocolDiagnostic { .. }
-            | Self::TurnStarted { .. }
             | Self::Disconnected { .. } => DomainEventSource::Transport,
             Self::WorkspaceDiffLoaded { .. }
             | Self::WorkspaceDiffFailed { .. }

@@ -517,7 +517,9 @@ impl AppState {
                 )));
             }
             DomainEvent::TurnStarted { turn_id } => {
+                self.turn_pending = false;
                 self.turn_active = true;
+                self.active_turn_id = Some(turn_id.clone());
                 self.status = format!("Turn active · {}", compact_runtime_reason(&turn_id));
             }
             DomainEvent::RuntimeInfo {
@@ -952,11 +954,6 @@ impl AppState {
                 self.status.clone_from(&message);
                 self.messages
                     .push(ChatMessage::Info(format!("memory decision · {message}")));
-            }
-            DomainEvent::TurnStarted { turn_id } => {
-                self.turn_pending = false;
-                self.turn_active = true;
-                self.active_turn_id = Some(turn_id);
             }
             DomainEvent::TextChunk { delta } => {
                 self.streaming.push_str(&delta);
