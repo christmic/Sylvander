@@ -7,9 +7,7 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use super::{
-    RuntimeEvent, RuntimeFailureKind, RuntimePersistenceOperation, RuntimeToolFailureKind,
-};
+use super::{RuntimeEvent, RuntimeToolFailureKind};
 
 pub(crate) const DEBUG_OBSERVATION_LOG_MAX_BYTES: u64 = 16 * 1_024 * 1_024;
 const DEBUG_DIRECTORY: &str = "debug";
@@ -127,6 +125,7 @@ fn timestamped(mut record: Value) -> Value {
 }
 
 fn event_json(event: &RuntimeEvent) -> Value {
+    let event_name = event.as_str();
     match event {
         RuntimeEvent::ChatAdmitted {
             request_id,
@@ -134,7 +133,7 @@ fn event_json(event: &RuntimeEvent) -> Value {
             message_id,
             agent_id,
         } => json!({
-            "event": "chat_admitted", "request_id": request_id, "session_id": session_id.0,
+            "event": event_name, "request_id": request_id, "session_id": session_id.0,
             "message_id": message_id.0, "agent_id": agent_id.0,
         }),
         RuntimeEvent::ChatDispatchFinished {
@@ -142,7 +141,7 @@ fn event_json(event: &RuntimeEvent) -> Value {
             session_id,
             succeeded,
         } => json!({
-            "event": "chat_dispatch_finished", "request_id": request_id,
+            "event": event_name, "request_id": request_id,
             "session_id": session_id.0, "succeeded": succeeded,
         }),
         RuntimeEvent::TurnStarted {
@@ -152,7 +151,7 @@ fn event_json(event: &RuntimeEvent) -> Value {
             session_id,
             agent_id,
         } => json!({
-            "event": "turn_started", "request_id": request_id, "trace_id": trace_id,
+            "event": event_name, "request_id": request_id, "trace_id": trace_id,
             "turn_id": turn_id, "session_id": session_id.0, "agent_id": agent_id.0,
         }),
         RuntimeEvent::TurnTransitioned {
@@ -160,7 +159,7 @@ fn event_json(event: &RuntimeEvent) -> Value {
             session_id,
             transition,
         } => json!({
-            "event": "turn_transitioned", "turn_id": turn_id, "session_id": session_id.0,
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
             "sequence": transition.sequence, "iteration": transition.iteration,
             "from": transition.from.as_str(), "to": transition.to.as_str(),
             "reason": transition.reason.as_str(),
@@ -172,7 +171,7 @@ fn event_json(event: &RuntimeEvent) -> Value {
             session_id,
             attempt,
         } => json!({
-            "event": "model_retried", "turn_id": turn_id, "session_id": session_id.0,
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
             "attempt": attempt,
         }),
         RuntimeEvent::ToolStarted {
@@ -181,7 +180,7 @@ fn event_json(event: &RuntimeEvent) -> Value {
             tool_call_id,
             tool_name,
         } => json!({
-            "event": "tool_started", "turn_id": turn_id, "session_id": session_id.0,
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
             "tool_call_id": tool_call_id, "tool_name": tool_name,
         }),
         RuntimeEvent::ToolFinished {
@@ -192,9 +191,9 @@ fn event_json(event: &RuntimeEvent) -> Value {
             succeeded,
             failure_kind,
         } => json!({
-            "event": "tool_finished", "turn_id": turn_id, "session_id": session_id.0,
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
             "tool_call_id": tool_call_id, "tool_name": tool_name, "succeeded": succeeded,
-            "failure_kind": failure_kind.map(tool_failure_kind),
+            "failure_kind": failure_kind.map(RuntimeToolFailureKind::as_str),
         }),
         RuntimeEvent::PersistenceFinished {
             turn_id,
@@ -202,24 +201,24 @@ fn event_json(event: &RuntimeEvent) -> Value {
             operation,
             succeeded,
         } => json!({
-            "event": "persistence_finished", "turn_id": turn_id, "session_id": session_id.0,
-            "operation": persistence_operation(*operation), "succeeded": succeeded,
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
+            "operation": operation.as_str(), "succeeded": succeeded,
         }),
         RuntimeEvent::TurnCompleted {
             turn_id,
             session_id,
-        } => terminal("turn_completed", turn_id, session_id),
-        RuntimeEvent::TurnInterrupted {
+        }
+        | RuntimeEvent::TurnInterrupted {
             turn_id,
             session_id,
-        } => terminal("turn_interrupted", turn_id, session_id),
+        } => terminal(event_name, turn_id, session_id),
         RuntimeEvent::TurnFailed {
             turn_id,
             session_id,
             kind,
         } => json!({
-            "event": "turn_failed", "turn_id": turn_id, "session_id": session_id.0,
-            "failure_kind": failure_kind(*kind),
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
+            "failure_kind": kind.as_str(),
         }),
     }
 }
@@ -230,37 +229,4 @@ fn terminal(
     session_id: &crate::agent_definition::SessionId,
 ) -> Value {
     json!({"event": event, "turn_id": turn_id, "session_id": session_id.0})
-}
-
-const fn failure_kind(kind: RuntimeFailureKind) -> &'static str {
-    match kind {
-        RuntimeFailureKind::UnknownSession => "unknown_session",
-        RuntimeFailureKind::Authentication => "authentication",
-        RuntimeFailureKind::AgentLoop => "agent_loop",
-        RuntimeFailureKind::Configuration => "configuration",
-        RuntimeFailureKind::Persistence => "persistence",
-    }
-}
-
-const fn tool_failure_kind(kind: RuntimeToolFailureKind) -> &'static str {
-    match kind {
-        RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation => {
-            "filesystem_boundary_policy_violation"
-        }
-    }
-}
-
-const fn persistence_operation(operation: RuntimePersistenceOperation) -> &'static str {
-    match operation {
-        RuntimePersistenceOperation::InspectSession => "inspect_session",
-        RuntimePersistenceOperation::CreateSession => "create_session",
-        RuntimePersistenceOperation::RestoreHistory => "restore_history",
-        RuntimePersistenceOperation::BeginTurn => "begin_turn",
-        RuntimePersistenceOperation::BeginToolCall => "begin_tool_call",
-        RuntimePersistenceOperation::FinishToolCall => "finish_tool_call",
-        RuntimePersistenceOperation::RecordUsage => "record_usage",
-        RuntimePersistenceOperation::CompleteTurn => "complete_turn",
-        RuntimePersistenceOperation::FinishTurn => "finish_turn",
-        RuntimePersistenceOperation::ReplaceHistory => "replace_history",
-    }
 }

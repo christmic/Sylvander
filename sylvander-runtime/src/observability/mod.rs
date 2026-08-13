@@ -95,11 +95,40 @@ pub(crate) enum RuntimeFailureKind {
     Persistence,
 }
 
+impl RuntimeFailureKind {
+    const UNKNOWN_SESSION: &'static str = "unknown_session";
+    const AUTHENTICATION: &'static str = "authentication";
+    const AGENT_LOOP: &'static str = "agent_loop";
+    const CONFIGURATION: &'static str = "configuration";
+    const PERSISTENCE: &'static str = "persistence";
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnknownSession => Self::UNKNOWN_SESSION,
+            Self::Authentication => Self::AUTHENTICATION,
+            Self::AgentLoop => Self::AGENT_LOOP,
+            Self::Configuration => Self::CONFIGURATION,
+            Self::Persistence => Self::PERSISTENCE,
+        }
+    }
+}
+
 /// Content-safe classification for a trusted tool execution failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeToolFailureKind {
     /// The execution adapter explicitly rejected a filesystem boundary.
     FilesystemBoundaryPolicyViolation,
+}
+
+impl RuntimeToolFailureKind {
+    const FILESYSTEM_BOUNDARY_POLICY_VIOLATION: &'static str =
+        "filesystem_boundary_policy_violation";
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::FilesystemBoundaryPolicyViolation => Self::FILESYSTEM_BOUNDARY_POLICY_VIOLATION,
+        }
+    }
 }
 
 /// Durable operation represented by a persistence lifecycle fact.
@@ -125,6 +154,34 @@ pub(crate) enum RuntimePersistenceOperation {
     FinishTurn,
     /// Commit a compacted active history.
     ReplaceHistory,
+}
+
+impl RuntimePersistenceOperation {
+    const INSPECT_SESSION: &'static str = "inspect_session";
+    const CREATE_SESSION: &'static str = "create_session";
+    const RESTORE_HISTORY: &'static str = "restore_history";
+    const BEGIN_TURN: &'static str = "begin_turn";
+    const BEGIN_TOOL_CALL: &'static str = "begin_tool_call";
+    const FINISH_TOOL_CALL: &'static str = "finish_tool_call";
+    const RECORD_USAGE: &'static str = "record_usage";
+    const COMPLETE_TURN: &'static str = "complete_turn";
+    const FINISH_TURN: &'static str = "finish_turn";
+    const REPLACE_HISTORY: &'static str = "replace_history";
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::InspectSession => Self::INSPECT_SESSION,
+            Self::CreateSession => Self::CREATE_SESSION,
+            Self::RestoreHistory => Self::RESTORE_HISTORY,
+            Self::BeginTurn => Self::BEGIN_TURN,
+            Self::BeginToolCall => Self::BEGIN_TOOL_CALL,
+            Self::FinishToolCall => Self::FINISH_TOOL_CALL,
+            Self::RecordUsage => Self::RECORD_USAGE,
+            Self::CompleteTurn => Self::COMPLETE_TURN,
+            Self::FinishTurn => Self::FINISH_TURN,
+            Self::ReplaceHistory => Self::REPLACE_HISTORY,
+        }
+    }
 }
 
 /// Content-safe fact consumed by the built-in recorder.
@@ -198,6 +255,34 @@ pub(crate) enum RuntimeEvent {
 }
 
 impl RuntimeEvent {
+    const CHAT_ADMITTED: &'static str = "chat_admitted";
+    const CHAT_DISPATCH_FINISHED: &'static str = "chat_dispatch_finished";
+    const TURN_STARTED: &'static str = "turn_started";
+    const TURN_TRANSITIONED: &'static str = "turn_transitioned";
+    const MODEL_RETRIED: &'static str = "model_retried";
+    const TOOL_STARTED: &'static str = "tool_started";
+    const TOOL_FINISHED: &'static str = "tool_finished";
+    const PERSISTENCE_FINISHED: &'static str = "persistence_finished";
+    const TURN_COMPLETED: &'static str = "turn_completed";
+    const TURN_INTERRUPTED: &'static str = "turn_interrupted";
+    const TURN_FAILED: &'static str = "turn_failed";
+
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::ChatAdmitted { .. } => Self::CHAT_ADMITTED,
+            Self::ChatDispatchFinished { .. } => Self::CHAT_DISPATCH_FINISHED,
+            Self::TurnStarted { .. } => Self::TURN_STARTED,
+            Self::TurnTransitioned { .. } => Self::TURN_TRANSITIONED,
+            Self::ModelRetried { .. } => Self::MODEL_RETRIED,
+            Self::ToolStarted { .. } => Self::TOOL_STARTED,
+            Self::ToolFinished { .. } => Self::TOOL_FINISHED,
+            Self::PersistenceFinished { .. } => Self::PERSISTENCE_FINISHED,
+            Self::TurnCompleted { .. } => Self::TURN_COMPLETED,
+            Self::TurnInterrupted { .. } => Self::TURN_INTERRUPTED,
+            Self::TurnFailed { .. } => Self::TURN_FAILED,
+        }
+    }
+
     pub(crate) fn chat_admitted(
         request_id: String,
         session_id: SessionId,
@@ -353,6 +438,7 @@ impl RuntimeObservability {
     /// externally visible lifecycle state.
     pub(crate) fn record(&self, event: RuntimeEvent) {
         let observation = event.clone();
+        let event_name = event.as_str();
         self.record_timing(&event);
         self.inner.event_count.fetch_add(1, Ordering::Relaxed);
         match event {
@@ -364,7 +450,7 @@ impl RuntimeObservability {
             } => {
                 self.inner.chat_admitted.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
-                    event = "chat_admitted",
+                    event = event_name,
                     %request_id,
                     %session_id,
                     message_id = ?message_id,
@@ -385,7 +471,7 @@ impl RuntimeObservability {
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 tracing::info!(
-                    event = "chat_dispatch_finished",
+                    event = event_name,
                     %request_id,
                     %session_id,
                     succeeded,
@@ -401,7 +487,7 @@ impl RuntimeObservability {
             } => {
                 self.inner.turns_started.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
-                    event = "turn_started",
+                    event = event_name,
                     %request_id,
                     %trace_id,
                     %turn_id,
@@ -417,7 +503,7 @@ impl RuntimeObservability {
             } => {
                 self.inner.model_retries.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
-                    event = "model_retried",
+                    event = event_name,
                     %turn_id,
                     %session_id,
                     attempt,
@@ -430,7 +516,7 @@ impl RuntimeObservability {
                 transition,
             } => {
                 tracing::info!(
-                    event = "turn_transitioned",
+                    event = event_name,
                     %turn_id,
                     %session_id,
                     sequence = transition.sequence,
@@ -449,7 +535,7 @@ impl RuntimeObservability {
             } => {
                 self.inner.tools_started.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
-                    event = "tool_started",
+                    event = event_name,
                     %turn_id,
                     %session_id,
                     %tool_call_id,
@@ -479,7 +565,7 @@ impl RuntimeObservability {
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 tracing::info!(
-                    event = "tool_finished",
+                    event = event_name,
                     %turn_id,
                     %session_id,
                     %tool_call_id,
@@ -505,7 +591,7 @@ impl RuntimeObservability {
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 tracing::info!(
-                    event = "persistence_finished",
+                    event = event_name,
                     %turn_id,
                     %session_id,
                     operation = ?operation,
@@ -519,7 +605,7 @@ impl RuntimeObservability {
             } => {
                 self.inner.turns_completed.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
-                    event = "turn_completed",
+                    event = event_name,
                     %turn_id,
                     %session_id,
                     "runtime lifecycle fact"
@@ -531,7 +617,7 @@ impl RuntimeObservability {
             } => {
                 self.inner.turns_interrupted.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
-                    event = "turn_interrupted",
+                    event = event_name,
                     %turn_id,
                     %session_id,
                     "runtime lifecycle fact"
@@ -544,7 +630,7 @@ impl RuntimeObservability {
             } => {
                 self.inner.turns_failed.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
-                    event = "turn_failed",
+                    event = event_name,
                     %turn_id,
                     %session_id,
                     kind = ?kind,
