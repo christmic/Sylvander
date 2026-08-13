@@ -9,7 +9,9 @@ use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MAX_MESSAGE_LEASE_SECONDS, MessageClaim,
     MessageDeliveryState,
 };
-use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
+use crate::coordination::task::{
+    CoordinationTask, CoordinationTaskState, SessionTaskGraph, TaskDependency,
+};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::membership::SessionMembership;
 use crate::storage::session::{SessionStoreError, SqliteSessionStore};
@@ -37,6 +39,18 @@ pub trait CoordinationStore: Send + Sync {
     ) -> Result<(), SessionStoreError>;
 
     async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError>;
+
+    async fn add_task_dependency(
+        &self,
+        dependency: &TaskDependency,
+        membership: &SessionMembership,
+        created_at: i64,
+    ) -> Result<(), SessionStoreError>;
+
+    async fn task_graph(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<SessionTaskGraph>, SessionStoreError>;
 
     async fn create_handoff(
         &self,
@@ -417,6 +431,82 @@ impl CoordinationStore for SqliteSessionStore {
     async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError> {
         let task_id = task_id.clone();
         self.run(move |connection| load_task(connection, &task_id))
+            .await
+    }
+
+    async fn add_task_dependency(
+        &self,
+        dependency: &TaskDependency,
+        membership: &SessionMembership,
+        created_at: i64,
+    ) -> Result<(), SessionStoreError> {
+        let dependency = dependency.clone();
+        let membership = membership.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let graph =
+                load_task_graph(&transaction, &membership.session_id)?.ok_or_else(|| {
+                    SessionStoreError::Invalid("task dependency requires durable membership".into())
+                })?;
+            graph
+                .validate(&membership)
+                .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+            if !graph
+                .tasks
+                .iter()
+                .any(|task| task.task_id == dependency.prerequisite)
+                || !graph
+                    .tasks
+                    .iter()
+                    .any(|task| task.task_id == dependency.dependent)
+            {
+                return Err(SessionStoreError::Invalid(
+                    "task dependency references an unknown task".into(),
+                ));
+            }
+            let exists = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM task_dependencies WHERE session_id=?1 \
+                 AND prerequisite_task_id=?2 AND dependent_task_id=?3)",
+                params![
+                    membership.session_id.0,
+                    dependency.prerequisite.0,
+                    dependency.dependent.0,
+                ],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if exists {
+                return Err(SessionStoreError::Invalid(
+                    "task dependency already exists".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO task_dependencies \
+                 (session_id,prerequisite_task_id,dependent_task_id,created_at) \
+                 VALUES (?1,?2,?3,?4)",
+                params![
+                    membership.session_id.0,
+                    dependency.prerequisite.0,
+                    dependency.dependent.0,
+                    created_at,
+                ],
+            )?;
+            let next_graph = load_task_graph(&transaction, &membership.session_id)?
+                .expect("durable membership remains present in transaction");
+            next_graph
+                .validate(&membership)
+                .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn task_graph(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<SessionTaskGraph>, SessionStoreError> {
+        let session_id = session_id.clone();
+        self.run(move |connection| load_task_graph(connection, &session_id))
             .await
     }
 
@@ -1069,6 +1159,60 @@ fn decode_handoff_state(state: &str) -> Result<HandoffState, SessionStoreError> 
             "stored handoff state is invalid".into(),
         )),
     }
+}
+
+fn load_task_graph(
+    connection: &rusqlite::Connection,
+    session_id: &SessionId,
+) -> Result<Option<SessionTaskGraph>, SessionStoreError> {
+    let membership_revision = connection
+        .query_row(
+            "SELECT membership_revision FROM session_governance WHERE session_id=?1",
+            [&session_id.0],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|value| checked_u64(value, "membership revision"))
+        .transpose()?;
+    let Some(membership_revision) = membership_revision else {
+        return Ok(None);
+    };
+    let task_ids = {
+        let mut statement = connection.prepare(
+            "SELECT task_id FROM coordination_tasks WHERE session_id=?1 ORDER BY task_id",
+        )?;
+        statement
+            .query_map([&session_id.0], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let tasks = task_ids
+        .into_iter()
+        .map(|task_id| {
+            load_task(connection, &TaskId::new(task_id))?.ok_or_else(|| {
+                SessionStoreError::Store("task disappeared while loading graph".into())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let dependencies = {
+        let mut statement = connection.prepare(
+            "SELECT prerequisite_task_id,dependent_task_id FROM task_dependencies \
+             WHERE session_id=?1 ORDER BY prerequisite_task_id,dependent_task_id",
+        )?;
+        statement
+            .query_map([&session_id.0], |row| {
+                Ok(TaskDependency {
+                    prerequisite: TaskId::new(row.get::<_, String>(0)?),
+                    dependent: TaskId::new(row.get::<_, String>(1)?),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    Ok(Some(SessionTaskGraph {
+        session_id: session_id.clone(),
+        membership_revision,
+        tasks,
+        dependencies,
+    }))
 }
 
 fn load_task(

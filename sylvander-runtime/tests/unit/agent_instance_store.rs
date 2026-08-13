@@ -7,7 +7,7 @@ use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
 };
-use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
+use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::SessionMetadata;
 use crate::storage::coordination::CoordinationStore;
@@ -305,6 +305,76 @@ async fn task_creation_is_durable_and_duplicate_safe() {
         store.update_task(&illicit_assignment, 1).await.unwrap_err(),
         SessionStoreError::Invalid(_)
     ));
+}
+
+#[tokio::test]
+async fn task_dependencies_are_durable_and_cycles_roll_back_atomically() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    let first = CoordinationTask {
+        task_id: TaskId::new("task-first"),
+        session_id: membership.session_id.clone(),
+        membership_revision: 0,
+        parent_task_id: None,
+        created_by: AgentInstanceId::new("moderator-1"),
+        assigned_to: Some(AgentInstanceId::new("worker-1")),
+        objective: "collect evidence".into(),
+        state: CoordinationTaskState::Ready,
+        token_budget: 1_000,
+        consumed_tokens: 0,
+        max_handoffs: 1,
+        handoff_count: 0,
+        revision: 0,
+        created_at: 12,
+        updated_at: 12,
+    };
+    let mut second = first.clone();
+    second.task_id = TaskId::new("task-second");
+    second.assigned_to = Some(AgentInstanceId::new("coordinator-1"));
+    second.objective = "synthesize evidence".into();
+    store.create_task(&first).await.unwrap();
+    store.create_task(&second).await.unwrap();
+
+    let forward = TaskDependency {
+        prerequisite: first.task_id.clone(),
+        dependent: second.task_id.clone(),
+    };
+    store
+        .add_task_dependency(&forward, &membership, 13)
+        .await
+        .unwrap();
+    let graph = store
+        .task_graph(&membership.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(graph.dependencies, std::slice::from_ref(&forward));
+
+    let reverse = TaskDependency {
+        prerequisite: second.task_id,
+        dependent: first.task_id,
+    };
+    assert!(matches!(
+        store
+            .add_task_dependency(&reverse, &membership, 14)
+            .await
+            .unwrap_err(),
+        SessionStoreError::Invalid(reason) if reason.contains("cycle")
+    ));
+    assert_eq!(
+        store
+            .task_graph(&membership.session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .dependencies,
+        [forward]
+    );
 }
 
 #[tokio::test]
