@@ -396,8 +396,25 @@ async fn governance_wait_and_progress_facts_are_revision_fenced_and_idempotent()
             .await
             .is_err()
     );
+    let observations = store
+        .governance_observations(&task.session_id, 4)
+        .await
+        .unwrap();
+    assert_eq!(observations.waits.len(), 1);
+    assert_eq!(observations.waits[0], wait);
+    assert_eq!(observations.progress.len(), 1);
+    assert_eq!(observations.progress[0].observation_id, "progress-1");
+    assert!(observations.handoffs.is_empty());
     store.clear_wait(&task.session_id, &wait).await.unwrap();
     store.clear_wait(&task.session_id, &wait).await.unwrap();
+    assert!(
+        store
+            .governance_observations(&task.session_id, 4)
+            .await
+            .unwrap()
+            .waits
+            .is_empty()
+    );
 }
 
 #[tokio::test]

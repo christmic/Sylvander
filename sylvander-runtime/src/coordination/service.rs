@@ -129,15 +129,25 @@ where
             return Err(CoordinationServiceError::UnknownTask);
         }
 
+        let observation_window = self
+            .policy
+            .stagnation_window
+            .max(self.policy.handoff_ping_pong_window)
+            .max(1);
+        let observations = self
+            .store
+            .governance_observations(&request.session_id, observation_window)
+            .await?;
+
         let assessment = assess(
             &self.policy,
             &GovernanceSnapshot {
                 membership: &membership,
                 topology: &topology,
                 tasks: &tasks,
-                waits: &[],
-                progress: &[],
-                handoffs: &[],
+                waits: &observations.waits,
+                progress: &observations.progress,
+                handoffs: &observations.handoffs,
             },
         );
         if !assessment.permits_automatic_progress() {

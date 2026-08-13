@@ -9,7 +9,7 @@ use sylvander_api::{
 use crate::coordination::arbitration::{
     ArbitrationCase, ArbitrationState, ModeratorDecision, ModeratorVerdict,
 };
-use crate::coordination::governance::{ProgressObservation, WaitDependency};
+use crate::coordination::governance::{HandoffObservation, ProgressObservation, WaitDependency};
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MAX_MESSAGE_LEASE_SECONDS, MessageClaim,
@@ -21,6 +21,13 @@ use crate::coordination::task::{
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::membership::SessionMembership;
 use crate::storage::session::{SessionStoreError, SqliteSessionStore};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GovernanceObservations {
+    pub waits: Vec<WaitDependency>,
+    pub progress: Vec<ProgressObservation>,
+    pub handoffs: Vec<HandoffObservation>,
+}
 
 #[async_trait]
 pub trait CoordinationStore: Send + Sync {
@@ -78,6 +85,12 @@ pub trait CoordinationStore: Send + Sync {
         session_id: &SessionId,
         observation: &ProgressObservation,
     ) -> Result<(), SessionStoreError>;
+
+    async fn governance_observations(
+        &self,
+        session_id: &SessionId,
+        samples_per_task: usize,
+    ) -> Result<GovernanceObservations, SessionStoreError>;
 
     async fn create_arbitration_case(
         &self,
@@ -710,6 +723,106 @@ impl CoordinationStore for SqliteSessionStore {
             )?;
             transaction.commit()?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn governance_observations(
+        &self,
+        session_id: &SessionId,
+        samples_per_task: usize,
+    ) -> Result<GovernanceObservations, SessionStoreError> {
+        if samples_per_task == 0 || samples_per_task > 64 {
+            return Err(SessionStoreError::Invalid(
+                "governance observation window is outside the bounded range".into(),
+            ));
+        }
+        let session_id = session_id.clone();
+        self.run(move |connection| {
+            let mut waits_statement = connection.prepare(
+                "SELECT w.task_id,w.waiter_instance_id,w.awaited_instance_id \
+                 FROM coordination_waits w \
+                 JOIN coordination_tasks task ON task.task_id=w.task_id \
+                 JOIN session_topology topology ON topology.session_id=w.session_id \
+                 WHERE w.session_id=?1 AND w.task_revision=task.revision \
+                   AND w.topology_revision=topology.topology_revision \
+                   AND task.state NOT IN ('completed','failed','cancelled') \
+                 ORDER BY w.task_id,w.waiter_instance_id,w.awaited_instance_id",
+            )?;
+            let waits = waits_statement
+                .query_map([&session_id.0], |row| {
+                    Ok(WaitDependency {
+                        task_id: TaskId::new(row.get::<_, String>(0)?),
+                        waiter: AgentInstanceId::new(row.get::<_, String>(1)?),
+                        awaited: AgentInstanceId::new(row.get::<_, String>(2)?),
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let limit = i64::try_from(samples_per_task).map_err(|_| {
+                SessionStoreError::Invalid("governance observation window overflow".into())
+            })?;
+            let mut progress_statement = connection.prepare(
+                "WITH ranked AS ( \
+                   SELECT progress.*,ROW_NUMBER() OVER (PARTITION BY progress.task_id \
+                     ORDER BY progress.observed_at DESC,progress.observation_id DESC) AS sample_rank \
+                   FROM coordination_progress progress \
+                   JOIN coordination_tasks task ON task.task_id=progress.task_id \
+                   WHERE progress.session_id=?1 AND progress.task_revision=task.revision \
+                     AND task.state NOT IN ('completed','failed','cancelled') \
+                 ) SELECT observation_id,task_id,agent_instance_id,task_revision,consumed_tokens,
+                          evidence_digest,observed_at FROM ranked WHERE sample_rank<=?2 \
+                   ORDER BY task_id,observed_at,observation_id",
+            )?;
+            let progress = progress_statement
+                .query_map(params![session_id.0, limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                })?
+                .map(|row| {
+                    let row = row?;
+                    Ok(ProgressObservation {
+                        observation_id: row.0,
+                        task_id: TaskId::new(row.1),
+                        agent_instance_id: AgentInstanceId::new(row.2),
+                        task_revision: checked_u64(row.3, "progress task revision")?,
+                        consumed_tokens: checked_u64(row.4, "progress token count")?,
+                        evidence_digest: row.5,
+                        observed_at: row.6,
+                    })
+                })
+                .collect::<Result<Vec<_>, SessionStoreError>>()?;
+
+            let mut handoff_statement = connection.prepare(
+                "WITH ranked AS ( \
+                   SELECT handoff.*,ROW_NUMBER() OVER (PARTITION BY handoff.task_id \
+                     ORDER BY handoff.updated_at DESC,handoff.handoff_id DESC) AS sample_rank \
+                   FROM task_handoffs handoff WHERE handoff.session_id=?1 AND handoff.state='accepted' \
+                 ) SELECT task_id,from_instance_id,to_instance_id,updated_at \
+                   FROM ranked WHERE sample_rank<=?2 ORDER BY task_id,updated_at,handoff_id",
+            )?;
+            let handoffs = handoff_statement
+                .query_map(params![session_id.0, limit], |row| {
+                    Ok(HandoffObservation {
+                        task_id: TaskId::new(row.get::<_, String>(0)?),
+                        from: AgentInstanceId::new(row.get::<_, String>(1)?),
+                        to: AgentInstanceId::new(row.get::<_, String>(2)?),
+                        accepted_at: row.get(3)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(GovernanceObservations {
+                waits,
+                progress,
+                handoffs,
+            })
         })
         .await
     }
