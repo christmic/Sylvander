@@ -74,6 +74,7 @@ async fn executes_a_command_in_the_harness_workspace_and_records_trajectory() {
             max_iterations: 4,
             max_output_tokens: 128,
             timeout: Duration::from_secs(10),
+            environment_isolated: true,
         },
     )
     .await
@@ -85,4 +86,32 @@ async fn executes_a_command_in_the_harness_workspace_and_records_trajectory() {
     );
     assert_eq!(trajectory.steps.len(), 4);
     assert_eq!(trajectory.final_metrics.unwrap().total_prompt_tokens, 20);
+}
+
+#[tokio::test]
+async fn rejects_execution_without_harness_isolation_attestation() {
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::new()),
+    });
+    let result = run_harbor_task(
+        provider,
+        HarborRunConfig {
+            session_id: "session".into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            workspace: workspace.path().into(),
+            instruction: "task".into(),
+            max_iterations: 1,
+            max_output_tokens: 16,
+            timeout: Duration::from_secs(1),
+            environment_isolated: false,
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(sylvander_testbench_agent::RecorderError::HarnessNotIsolated)
+    ));
 }

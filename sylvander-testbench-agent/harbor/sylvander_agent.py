@@ -64,6 +64,7 @@ class SylvanderAgent(BaseAgent):
             "SYLVANDER_HARBOR_PROVIDER_ID": provider_id,
             "SYLVANDER_HARBOR_MODEL_ID": model_id,
             "SYLVANDER_HARBOR_BASE_URL": base_url,
+            "SYLVANDER_HARBOR_ISOLATED": "true",
         }
         prepare = await environment.exec(
             "mkdir -p /logs/agent /tmp/sylvander-harbor && "

@@ -21,6 +21,7 @@ async fn run() -> Result<(), String> {
     let arguments = Arguments::parse(env::args().skip(1))?;
     let api_key = env::var("SYLVANDER_HARBOR_API_KEY")
         .map_err(|_| "SYLVANDER_HARBOR_API_KEY is required".to_string())?;
+    let environment_isolated = env::var("SYLVANDER_HARBOR_ISOLATED").as_deref() == Ok("true");
     let provider_id =
         env::var("SYLVANDER_HARBOR_PROVIDER_ID").unwrap_or_else(|_| "minimax-cn".into());
     let model_id = env::var("SYLVANDER_HARBOR_MODEL_ID").unwrap_or_else(|_| "MiniMax-M2.7".into());
@@ -58,6 +59,7 @@ async fn run() -> Result<(), String> {
             max_iterations: arguments.max_iterations,
             max_output_tokens: arguments.max_output_tokens,
             timeout: Duration::from_secs(arguments.timeout_secs),
+            environment_isolated,
         },
     )
     .await

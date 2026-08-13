@@ -36,12 +36,16 @@ pub struct HarborRunConfig {
     pub max_iterations: u32,
     pub max_output_tokens: u32,
     pub timeout: Duration,
+    pub environment_isolated: bool,
 }
 
 pub async fn run_harbor_task(
     provider: Arc<dyn ModelProvider>,
     config: HarborRunConfig,
 ) -> Result<Trajectory, RecorderError> {
+    if !config.environment_isolated {
+        return Err(RecorderError::HarnessNotIsolated);
+    }
     let model_ref = ModelRef::new(&config.provider_id, &config.model_id);
     let model = ModelInfo {
         reference: model_ref,

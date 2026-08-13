@@ -20,6 +20,8 @@ pub enum RecorderError {
     AgentFailed,
     #[error("trajectory is incomplete")]
     Incomplete,
+    #[error("Harbor task isolation was not attested")]
+    HarnessNotIsolated,
     #[error("generated trajectory violates ATIF: {0}")]
     InvalidAtif(&'static str),
 }
