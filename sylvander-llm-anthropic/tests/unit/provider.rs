@@ -125,6 +125,48 @@ async fn reasoning_and_tool_call_are_preserved_in_completion() {
 }
 
 #[tokio::test]
+async fn compatible_thinking_stream_may_deliver_signature_after_block_start() {
+    let server = MockServer::start().await;
+    let body = TEXT_STREAM
+        .replace(
+            "{\"type\":\"text\",\"text\":\"\"}",
+            "{\"type\":\"thinking\",\"thinking\":\"\"}",
+        )
+        .replace(
+            "{\"type\":\"text_delta\",\"text\":\"hello\"}",
+            "{\"type\":\"thinking_delta\",\"thinking\":\"think\"}",
+        )
+        .replace(
+            "event: content_block_stop",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"late-signature\"}}\n\nevent: content_block_stop",
+        );
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let events = provider(&server)
+        .complete_stream(request())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(matches!(&events[0], Ok(ModelStreamEvent::ReasoningDelta(text)) if text == "think"));
+    let Ok(ModelStreamEvent::Completed(response)) = events.last().unwrap() else {
+        panic!("expected completion");
+    };
+    let sylvander_llm_core::ContentBlock::Reasoning {
+        opaque_state: Some(state),
+        ..
+    } = &response.content[0]
+    else {
+        panic!("expected reasoning block");
+    };
+    assert_eq!(state.data["signature"], "late-signature");
+}
+
+#[tokio::test]
 async fn open_error_is_redacted_and_not_retried() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

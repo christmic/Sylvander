@@ -107,3 +107,29 @@ async fn eof_without_done_is_a_protocol_error() {
         .expect_err("protocol error");
     assert_eq!(error.kind, ProviderErrorKind::Protocol);
 }
+
+#[tokio::test]
+async fn compatible_eof_after_finish_and_usage_tail_completes() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            concat!(
+                "data: {\"id\":\"chat_1\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+                "data: {\"id\":\"chat_1\",\"model\":\"gpt-4.1\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n"
+            ),
+            "text/event-stream",
+        ))
+        .mount(&server)
+        .await;
+    let mut stream = provider(&server)
+        .complete_stream(request())
+        .await
+        .expect("open stream");
+    let _ = stream.next().await.expect("text").expect("delta");
+    let completed = stream.next().await.expect("terminal").expect("completion");
+    assert!(matches!(
+        completed,
+        sylvander_llm_core::ModelStreamEvent::Completed(_)
+    ));
+    assert!(stream.next().await.is_none());
+}

@@ -96,6 +96,7 @@ pub struct ThinkingBlock {
     /// you want to preserve the reasoning chain.
     pub thinking: String,
     /// Signature for the thinking block — required for re-feed.
+    #[serde(default)]
     pub signature: String,
     /// Optional cache control breakpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]

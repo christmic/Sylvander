@@ -65,7 +65,13 @@ impl ChatCompletionStream {
             }
             parser.finish()?;
             if !terminal {
-                Err(OpenAiError::Protocol("Chat stream ended before [DONE]".into()))?;
+                let current = state
+                    .take()
+                    .ok_or_else(|| OpenAiError::Protocol("Chat stream state is missing".into()))?;
+                if !current.has_compatible_terminal_evidence() {
+                    Err(OpenAiError::Protocol("Chat stream ended before [DONE] or a complete usage tail".into()))?;
+                }
+                yield ChatStreamEvent::Completed(Box::new(current.finish()?));
             }
         };
         Self {
@@ -105,6 +111,10 @@ struct ToolState {
 }
 
 impl ChatState {
+    fn has_compatible_terminal_evidence(&self) -> bool {
+        self.finish_reason.is_some() && self.usage.is_some()
+    }
+
     fn push(&mut self, chunk: ChatCompletionChunk) -> Result<Vec<ChatStreamEvent>, OpenAiError> {
         self.id = Some(chunk.id);
         self.model = Some(chunk.model);

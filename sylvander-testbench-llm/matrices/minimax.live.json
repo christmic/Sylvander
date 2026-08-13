@@ -2,7 +2,7 @@
   "schema_version": 1,
   "repetitions": 1,
   "request_timeout_ms": 60000,
-  "max_output_tokens": 16,
+  "max_output_tokens": 128,
   "max_retries": 0,
   "scenarios": ["connectivity", "usage"],
   "bindings": [
