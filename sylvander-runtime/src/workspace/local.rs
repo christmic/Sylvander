@@ -41,6 +41,13 @@ pub struct PreparedChange {
     pub candidate_commit: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreparedMergePosition {
+    Ready,
+    Applied { merge_commit: String },
+    Diverged,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorktreeReconciliation {
     pub retained: usize,
@@ -321,6 +328,45 @@ impl GitWorktreeManager {
         })
     }
 
+    /// Recover an exact prepared merge without guessing from worktree dirt.
+    /// A bounded first-parent scan recognizes the merge even if later reviewed
+    /// integrations have advanced the source branch.
+    pub fn prepared_merge_position(
+        &self,
+        lease: &WorkspaceLease,
+        prepared: &PreparedChange,
+    ) -> Result<PreparedMergePosition, String> {
+        validate_commit_id(&prepared.previous_commit)?;
+        validate_commit_id(&prepared.candidate_commit)?;
+        let source = self.source_commit(lease)?;
+        if source == prepared.previous_commit {
+            return Ok(PreparedMergePosition::Ready);
+        }
+        let history = git_text(
+            &lease.source_root,
+            &[
+                "log",
+                "--first-parent",
+                "--merges",
+                "-n",
+                "256",
+                "--format=%H %P",
+            ],
+        )?;
+        for line in history.lines() {
+            let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+            if fields.len() >= 3
+                && fields[1] == prepared.previous_commit
+                && fields[2..].contains(&prepared.candidate_commit.as_str())
+            {
+                return Ok(PreparedMergePosition::Applied {
+                    merge_commit: fields[0].to_owned(),
+                });
+            }
+        }
+        Ok(PreparedMergePosition::Diverged)
+    }
+
     /// Revert only the still-current reviewed merge. If source has advanced,
     /// stop for a human instead of reverting unrelated later work.
     pub fn rollback_reviewed(
@@ -413,6 +459,14 @@ impl GitWorktreeManager {
             return Err("refusing to remove an unmanaged worktree branch".into());
         }
         remove_worktree_and_branch(source_root, worktree, &branch)
+    }
+}
+
+fn validate_commit_id(value: &str) -> Result<(), String> {
+    if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err("prepared workspace revision is invalid".into())
     }
 }
 

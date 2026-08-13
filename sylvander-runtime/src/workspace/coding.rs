@@ -8,7 +8,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::workspace::local::{GitWorktreeManager, WorkspaceDiff, WorktreeReconciliation};
+use tokio::sync::Mutex;
+
+use crate::workspace::local::{
+    GitWorktreeManager, PreparedChange, PreparedMergePosition, WorkspaceDiff,
+    WorktreeReconciliation,
+};
 use crate::workspace::remote::RemoteGitWorktreeManager;
 
 /// Metadata Runtime persists with a session after creating an isolated branch.
@@ -28,12 +33,27 @@ pub struct ActiveCodingWorkspace {
     pub target_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedWorkspaceChange {
+    pub target_revision: String,
+    pub candidate_revision: String,
+    pub diff: WorkspaceDiff,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceMergePosition {
+    Ready,
+    Applied { merge_revision: String },
+    Diverged,
+}
+
 /// Aggregates server-local and executor-backed worktree managers.
 #[derive(Clone)]
 pub struct CodingWorktreeService {
     local: Arc<GitWorktreeManager>,
     local_targets: HashSet<String>,
     remote: HashMap<String, Arc<RemoteGitWorktreeManager>>,
+    integration_lock: Arc<Mutex<()>>,
 }
 
 impl CodingWorktreeService {
@@ -43,6 +63,7 @@ impl CodingWorktreeService {
             local,
             local_targets: HashSet::new(),
             remote: HashMap::new(),
+            integration_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -179,6 +200,100 @@ impl CodingWorktreeService {
         .map_err(|_| "worktree inspection stopped".to_string())?
     }
 
+    /// Freeze the exact candidate commit and the reviewed patch before
+    /// moderator approval. The source branch is not modified.
+    pub async fn prepare_integration(
+        &self,
+        lease_id: &str,
+        target_id: Option<&str>,
+    ) -> Result<PreparedWorkspaceChange, String> {
+        let _guard = self.integration_lock.lock().await;
+        if let Some(manager) = self.remote_manager(target_id)? {
+            let lease = manager.open(lease_id)?;
+            let diff = manager.inspect(&lease).await?;
+            let prepared = manager
+                .prepare_reviewed(&lease)
+                .await?
+                .ok_or_else(|| "workspace candidate has no changes".to_owned())?;
+            return Ok(prepared_workspace_change(prepared, diff));
+        }
+        let manager = self.local.clone();
+        let lease_id = lease_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&lease_id)?;
+            let diff = manager.inspect(&lease)?;
+            let prepared = manager
+                .prepare_reviewed(&lease)?
+                .ok_or_else(|| "workspace candidate has no changes".to_owned())?;
+            Ok(prepared_workspace_change(prepared, diff))
+        })
+        .await
+        .map_err(|_| "worktree candidate preparation stopped".to_string())?
+    }
+
+    /// Locate the exact reviewed merge effect after a restart.
+    pub async fn integration_position(
+        &self,
+        lease_id: &str,
+        target_id: Option<&str>,
+        target_revision: &str,
+        candidate_revision: &str,
+    ) -> Result<WorkspaceMergePosition, String> {
+        let prepared = PreparedChange {
+            previous_commit: target_revision.to_owned(),
+            candidate_commit: candidate_revision.to_owned(),
+        };
+        if let Some(manager) = self.remote_manager(target_id)? {
+            let lease = manager.open(lease_id)?;
+            return manager
+                .prepared_merge_position(&lease, &prepared)
+                .await
+                .map(project_merge_position);
+        }
+        let manager = self.local.clone();
+        let lease_id = lease_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&lease_id)?;
+            manager
+                .prepared_merge_position(&lease, &prepared)
+                .map(project_merge_position)
+        })
+        .await
+        .map_err(|_| "worktree merge reconciliation stopped".to_string())?
+    }
+
+    /// Merge only the exact candidate commit that was reviewed.
+    pub async fn merge_integration(
+        &self,
+        lease_id: &str,
+        target_id: Option<&str>,
+        target_revision: &str,
+        candidate_revision: &str,
+    ) -> Result<String, String> {
+        let _guard = self.integration_lock.lock().await;
+        let prepared = PreparedChange {
+            previous_commit: target_revision.to_owned(),
+            candidate_commit: candidate_revision.to_owned(),
+        };
+        if let Some(manager) = self.remote_manager(target_id)? {
+            let lease = manager.open(lease_id)?;
+            return manager
+                .merge_prepared(&lease, &prepared)
+                .await
+                .map(|receipt| receipt.merge_commit);
+        }
+        let manager = self.local.clone();
+        let lease_id = lease_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&lease_id)?;
+            manager
+                .merge_prepared(&lease, &prepared)
+                .map(|receipt| receipt.merge_commit)
+        })
+        .await
+        .map_err(|_| "worktree prepared merge stopped".to_string())?
+    }
+
     /// Commit and merge one reviewed candidate into its source checkout.
     pub async fn accept(&self, session_id: &str, target_id: Option<&str>) -> Result<(), String> {
         if let Some(manager) = self.remote_manager(target_id)? {
@@ -292,6 +407,27 @@ impl CodingWorktreeService {
             .get(target_id)
             .map(Some)
             .ok_or_else(|| format!("unknown remote worktree target {target_id}"))
+    }
+}
+
+fn prepared_workspace_change(
+    prepared: PreparedChange,
+    diff: WorkspaceDiff,
+) -> PreparedWorkspaceChange {
+    PreparedWorkspaceChange {
+        target_revision: prepared.previous_commit,
+        candidate_revision: prepared.candidate_commit,
+        diff,
+    }
+}
+
+fn project_merge_position(position: PreparedMergePosition) -> WorkspaceMergePosition {
+    match position {
+        PreparedMergePosition::Ready => WorkspaceMergePosition::Ready,
+        PreparedMergePosition::Applied { merge_commit } => WorkspaceMergePosition::Applied {
+            merge_revision: merge_commit,
+        },
+        PreparedMergePosition::Diverged => WorkspaceMergePosition::Diverged,
     }
 }
 

@@ -12,7 +12,9 @@ use std::sync::Arc;
 use sylvander_agent::workspace_executor::WorkspaceExecutor;
 use tokio::sync::Mutex;
 
-use crate::workspace::local::{WorkspaceDiff, WorktreeReconciliation};
+use crate::workspace::local::{
+    PreparedChange, PreparedMergePosition, ReviewedMerge, WorkspaceDiff, WorktreeReconciliation,
+};
 
 mod manifest;
 mod transport;
@@ -180,6 +182,13 @@ impl RemoteGitWorktreeManager {
             .await
     }
 
+    pub async fn worktree_commit(&self, lease: &RemoteWorkspaceLease) -> Result<String, String> {
+        self.validate_remote(lease).await?;
+        self.git
+            .text(&lease.worktree_root, &["rev-parse", "HEAD"])
+            .await
+    }
+
     /// Produce a bounded binary patch, including untracked files.
     pub async fn inspect(&self, lease: &RemoteWorkspaceLease) -> Result<WorkspaceDiff, String> {
         self.validate_remote(lease).await?;
@@ -236,6 +245,125 @@ impl RemoteGitWorktreeManager {
             }
         }
         Ok(WorkspaceDiff { status, patch })
+    }
+
+    /// Commit the exact remote candidate before approval, without touching the
+    /// source branch.
+    pub async fn prepare_reviewed(
+        &self,
+        lease: &RemoteWorkspaceLease,
+    ) -> Result<Option<PreparedChange>, String> {
+        let _guard = self.mutation_lock.lock().await;
+        self.validate_remote(lease).await?;
+        self.git
+            .ok(&lease.worktree_root, &["add", "-A"], true)
+            .await?;
+        if self
+            .git
+            .status(&lease.worktree_root, &["diff", "--cached", "--quiet"])
+            .await?
+            == 0
+        {
+            return Ok(None);
+        }
+        let previous_commit = self.source_commit(lease).await?;
+        self.git
+            .ok(
+                &lease.worktree_root,
+                &[
+                    "-c",
+                    "user.name=Sylvander",
+                    "-c",
+                    "user.email=sylvander@localhost",
+                    "commit",
+                    "-m",
+                    &format!("chore: prepare session {}", lease.session_id),
+                ],
+                true,
+            )
+            .await?;
+        Ok(Some(PreparedChange {
+            previous_commit,
+            candidate_commit: self.worktree_commit(lease).await?,
+        }))
+    }
+
+    pub async fn merge_prepared(
+        &self,
+        lease: &RemoteWorkspaceLease,
+        prepared: &PreparedChange,
+    ) -> Result<ReviewedMerge, String> {
+        let _guard = self.mutation_lock.lock().await;
+        self.validate_remote(lease).await?;
+        if self.source_commit(lease).await? != prepared.previous_commit {
+            return Err("source workspace advanced after candidate evaluation".into());
+        }
+        if self.worktree_commit(lease).await? != prepared.candidate_commit {
+            return Err("worktree candidate changed after evaluation".into());
+        }
+        if !self
+            .git
+            .text(&lease.worktree_root, &["status", "--porcelain"])
+            .await?
+            .is_empty()
+        {
+            return Err("worktree changed after candidate evaluation".into());
+        }
+        let command = format!(
+            "test \"$(git rev-parse HEAD)\" = {} || exit 42\n\
+             if ! git merge --no-ff --no-edit {}; then\n\
+               git merge --abort >/dev/null 2>&1 || true\n\
+               exit 1\n\
+             fi",
+            shell_quote(&prepared.previous_commit),
+            shell_quote(&prepared.candidate_commit),
+        );
+        self.git
+            .command_ok(&lease.source_root, &command, true)
+            .await?;
+        Ok(ReviewedMerge {
+            previous_commit: prepared.previous_commit.clone(),
+            candidate_commit: prepared.candidate_commit.clone(),
+            merge_commit: self.source_commit(lease).await?,
+        })
+    }
+
+    pub async fn prepared_merge_position(
+        &self,
+        lease: &RemoteWorkspaceLease,
+        prepared: &PreparedChange,
+    ) -> Result<PreparedMergePosition, String> {
+        self.validate_remote(lease).await?;
+        let source = self.source_commit(lease).await?;
+        if source == prepared.previous_commit {
+            return Ok(PreparedMergePosition::Ready);
+        }
+        let history = self
+            .git
+            .text(
+                &lease.source_root,
+                &[
+                    "log",
+                    "--first-parent",
+                    "--merges",
+                    "-n",
+                    "256",
+                    "--format=%H %P",
+                ],
+            )
+            .await?;
+        for line in history.lines() {
+            let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+            if fields.len() >= 3
+                && fields[1] == prepared.previous_commit
+                && fields[2..].contains(&prepared.candidate_commit.as_str())
+            {
+                return Ok(PreparedMergePosition::Applied {
+                    merge_commit: fields[0].to_owned(),
+                });
+            }
+        }
+        Ok(PreparedMergePosition::Diverged)
     }
 
     /// Commit and merge the current remote candidate into its source checkout.

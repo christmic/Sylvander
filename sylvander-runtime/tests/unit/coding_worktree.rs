@@ -82,6 +82,85 @@ async fn local_target_lifecycle_uses_one_transport_neutral_contract() {
 }
 
 #[tokio::test]
+async fn prepared_integration_is_exact_and_recoverable_after_source_advances() {
+    let repository = repository();
+    let state = tempfile::tempdir().expect("state");
+    let mut service = CodingWorktreeService::new(Arc::new(GitWorktreeManager::new(state.path())));
+    service.register_local("local").expect("local target");
+    let lease = service
+        .create("prepared", "local", repository.path())
+        .await
+        .unwrap()
+        .unwrap();
+    fs::write(lease.effective_workspace.join("tracked.txt"), "reviewed\n").unwrap();
+
+    let prepared = service.prepare_integration("prepared", None).await.unwrap();
+    assert!(prepared.diff.patch.contains("+reviewed"));
+    assert_eq!(
+        service
+            .integration_position(
+                "prepared",
+                None,
+                &prepared.target_revision,
+                &prepared.candidate_revision,
+            )
+            .await
+            .unwrap(),
+        WorkspaceMergePosition::Ready
+    );
+    let merge_revision = service
+        .merge_integration(
+            "prepared",
+            None,
+            &prepared.target_revision,
+            &prepared.candidate_revision,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .integration_position(
+                "prepared",
+                None,
+                &prepared.target_revision,
+                &prepared.candidate_revision,
+            )
+            .await
+            .unwrap(),
+        WorkspaceMergePosition::Applied {
+            merge_revision: merge_revision.clone()
+        }
+    );
+
+    fs::write(repository.path().join("later.txt"), "later\n").unwrap();
+    git(repository.path(), &["add", "."]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "later integration",
+        ],
+    );
+    assert_eq!(
+        service
+            .integration_position(
+                "prepared",
+                None,
+                &prepared.target_revision,
+                &prepared.candidate_revision,
+            )
+            .await
+            .unwrap(),
+        WorkspaceMergePosition::Applied { merge_revision }
+    );
+}
+
+#[tokio::test]
 async fn unknown_target_never_falls_back_to_server_filesystem() {
     let repository = repository();
     let state = tempfile::tempdir().expect("state");
