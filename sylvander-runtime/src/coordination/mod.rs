@@ -4,6 +4,7 @@ pub mod arbitration;
 pub mod governance;
 pub mod handoff;
 pub mod mailbox;
+pub mod service;
 pub mod task;
 pub mod topology;
 pub mod workspace;

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstanceOrigin, ApprovalRoute, HistoryView, SessionAgentRole,
@@ -6,10 +7,13 @@ use crate::agent::instance::{
 use crate::coordination::arbitration::{
     ArbitrationCase, ArbitrationState, ModeratorDecision, ModeratorVerdict,
 };
-use crate::coordination::governance::GovernanceFinding;
+use crate::coordination::governance::{GovernanceFinding, GovernancePolicy};
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
+};
+use crate::coordination::service::{
+    CoordinationService, DispatchMessageOutcome, DispatchMessageRequest,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -81,6 +85,128 @@ fn membership() -> SessionMembership {
         },
     )
     .unwrap()
+}
+
+fn topology(membership: &SessionMembership) -> SessionTopology {
+    SessionTopology::new(
+        SessionId::new("multi-session"),
+        0,
+        0,
+        vec![
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("worker-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("coordinator-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+        ],
+        11,
+        membership,
+    )
+    .unwrap()
+}
+
+fn dispatch_request(id: &str) -> DispatchMessageRequest {
+    DispatchMessageRequest {
+        message_id: CoordinationMessageId::new(id),
+        session_id: SessionId::new("multi-session"),
+        sender_instance_id: AgentInstanceId::new("worker-1"),
+        recipient_instance_id: AgentInstanceId::new("coordinator-1"),
+        task_id: None,
+        kind: CoordinationMessageKind::Evidence,
+        payload: "sha256:evidence".into(),
+        max_hops: 4,
+        expires_at: 100,
+    }
+}
+
+#[tokio::test]
+async fn coordination_service_derives_route_from_durable_topology() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+
+    let DispatchMessageOutcome::Enqueued(message) = service
+        .dispatch_message(dispatch_request("governed-message"), 20)
+        .await
+        .unwrap()
+    else {
+        panic!("healthy dispatch must not require arbitration");
+    };
+
+    assert_eq!(
+        message.route,
+        ["worker-1", "moderator-1", "coordinator-1"].map(AgentInstanceId::new)
+    );
+    assert_eq!(
+        store.message(&message.message_id).await.unwrap(),
+        Some(message.clone())
+    );
+    let repeated = service
+        .dispatch_message(dispatch_request("governed-message"), 21)
+        .await
+        .unwrap();
+    assert_eq!(repeated, DispatchMessageOutcome::Enqueued(message));
+}
+
+#[tokio::test]
+async fn coordination_service_persists_moderator_case_before_blocking_dispatch() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let policy = GovernancePolicy {
+        max_agents: 2,
+        ..GovernancePolicy::default()
+    };
+    let service = CoordinationService::new(store.clone(), policy, 30);
+
+    let DispatchMessageOutcome::RequiresArbitration { case, assessment } = service
+        .dispatch_message(dispatch_request("blocked-message"), 20)
+        .await
+        .unwrap()
+    else {
+        panic!("hard stop must require moderator arbitration");
+    };
+
+    assert!(assessment.has_hard_stop());
+    assert_eq!(
+        case.case_id.0,
+        "message:blocked-message:membership:0:topology:0"
+    );
+    assert_eq!(
+        store.arbitration_case(&case.case_id).await.unwrap(),
+        Some(case)
+    );
+    assert!(
+        store
+            .message(&CoordinationMessageId::new("blocked-message"))
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
