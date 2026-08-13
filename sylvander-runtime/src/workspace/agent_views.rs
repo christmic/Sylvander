@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use sylvander_api::{AgentInstanceId, WorkspaceViewId};
 
 use crate::coordination::workspace::{
@@ -46,7 +47,11 @@ impl AgentWorkspaceCoordinator {
     ) -> Result<AgentWorkspaceView, AgentWorkspaceCoordinatorError> {
         let lease = self
             .worktrees
-            .create(&view_id.0, target_id, requested_workspace)
+            .create(
+                &workspace_lease_id(&view_id),
+                target_id,
+                requested_workspace,
+            )
             .await
             .map_err(AgentWorkspaceCoordinatorError::Worktree)?
             .ok_or_else(|| {
@@ -68,7 +73,10 @@ impl AgentWorkspaceCoordinator {
         if let Err(source) = self.store.create_workspace_view(&view, membership).await {
             let cleanup = self
                 .worktrees
-                .discard_if_present(&view.view_id.0, lease.target_id.as_deref())
+                .discard_if_present(
+                    &workspace_lease_id(&view.view_id),
+                    lease.target_id.as_deref(),
+                )
                 .await;
             return match cleanup {
                 Ok(()) => Err(AgentWorkspaceCoordinatorError::Store(source)),
@@ -77,6 +85,111 @@ impl AgentWorkspaceCoordinator {
                 }
             };
         }
+        self.activate(&view).await
+    }
+
+    /// Provision or recover the deterministic isolated view for one Agent spawn.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ensure_isolated(
+        &self,
+        view_id: WorkspaceViewId,
+        membership: &SessionMembership,
+        agent_instance_id: AgentInstanceId,
+        access: WorkspaceAccess,
+        target_id: &str,
+        requested_workspace: &Path,
+        lease_epoch: u64,
+        fencing_token: u64,
+        now: i64,
+    ) -> Result<AgentWorkspaceView, AgentWorkspaceCoordinatorError> {
+        if let Some(existing) = self
+            .store
+            .workspace_view(&view_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?
+        {
+            if existing.agent_instance_id != agent_instance_id
+                || existing.source_workspace != requested_workspace
+                || existing.access != access
+                || existing.isolation != WorkspaceIsolation::IsolatedWorktree
+                || (self.worktrees.is_remote_target(target_id)
+                    && existing.target_id.as_deref() != Some(target_id))
+                || (!self.worktrees.is_remote_target(target_id) && existing.target_id.is_some())
+            {
+                return Err(AgentWorkspaceCoordinatorError::ReceiptMismatch);
+            }
+            return match existing.state {
+                WorkspaceViewState::Provisioning => self.recover_provisioning(&existing).await,
+                WorkspaceViewState::Active => Ok(existing),
+                _ => Err(AgentWorkspaceCoordinatorError::InvalidRecoveryPosition),
+            };
+        }
+        self.provision(
+            view_id,
+            membership,
+            agent_instance_id,
+            access,
+            target_id,
+            requested_workspace,
+            lease_epoch,
+            fencing_token,
+            now,
+        )
+        .await
+    }
+
+    /// Persist an idempotent read-only shared view without creating a worktree.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ensure_shared_read_only(
+        &self,
+        view_id: WorkspaceViewId,
+        membership: &SessionMembership,
+        agent_instance_id: AgentInstanceId,
+        workspace: &Path,
+        lease_epoch: u64,
+        fencing_token: u64,
+        now: i64,
+    ) -> Result<AgentWorkspaceView, AgentWorkspaceCoordinatorError> {
+        if let Some(existing) = self
+            .store
+            .workspace_view(&view_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?
+        {
+            if existing.agent_instance_id == agent_instance_id
+                && existing.source_workspace == workspace
+                && existing.effective_workspace == workspace
+                && existing.access == WorkspaceAccess::ReadOnly
+                && existing.isolation == WorkspaceIsolation::Shared
+                && existing.state == WorkspaceViewState::Active
+            {
+                return Ok(existing);
+            }
+            return Err(AgentWorkspaceCoordinatorError::ReceiptMismatch);
+        }
+        let view = AgentWorkspaceView {
+            view_id,
+            session_id: membership.session_id.clone(),
+            agent_instance_id,
+            membership_revision: membership.governance.membership_revision,
+            access: WorkspaceAccess::ReadOnly,
+            isolation: WorkspaceIsolation::Shared,
+            source_workspace: workspace.to_owned(),
+            effective_workspace: workspace.to_owned(),
+            target_id: None,
+            branch: None,
+            base_revision: None,
+            state: WorkspaceViewState::Provisioning,
+            lease_epoch,
+            fencing_token,
+            revision: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        self.store
+            .create_workspace_view(&view, membership)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?;
         self.activate(&view).await
     }
 
@@ -90,7 +203,10 @@ impl AgentWorkspaceCoordinator {
         }
         let receipt = self
             .worktrees
-            .open(&view.view_id.0, view.target_id.as_deref())
+            .open(
+                &workspace_lease_id(&view.view_id),
+                view.target_id.as_deref(),
+            )
             .await
             .map_err(AgentWorkspaceCoordinatorError::Worktree)?;
         if !receipt_matches(view, &receipt) {
@@ -114,7 +230,10 @@ impl AgentWorkspaceCoordinator {
             .ok_or(AgentWorkspaceCoordinatorError::MissingWorkspaceView)?;
         let receipt = self
             .worktrees
-            .open(&view.view_id.0, view.target_id.as_deref())
+            .open(
+                &workspace_lease_id(&view.view_id),
+                view.target_id.as_deref(),
+            )
             .await
             .map_err(AgentWorkspaceCoordinatorError::Worktree)?;
         if approval.target_revision != receipt.base_revision {
@@ -172,12 +291,18 @@ impl AgentWorkspaceCoordinator {
         }
         let target = self
             .worktrees
-            .open(&view.view_id.0, view.target_id.as_deref())
+            .open(
+                &workspace_lease_id(&view.view_id),
+                view.target_id.as_deref(),
+            )
             .await
             .map_err(AgentWorkspaceCoordinatorError::Worktree)?;
         let merge = if target.base_revision == integration.approval.target_revision {
             self.worktrees
-                .accept(&view.view_id.0, view.target_id.as_deref())
+                .accept(
+                    &workspace_lease_id(&view.view_id),
+                    view.target_id.as_deref(),
+                )
                 .await
         } else {
             Err("workspace integration target advanced after approval".into())
@@ -234,6 +359,22 @@ impl AgentWorkspaceCoordinator {
             .await
             .map_err(AgentWorkspaceCoordinatorError::Store)
     }
+}
+
+/// Derive the stable worktree key for a durable logical view identifier.
+///
+/// Logical identifiers may contain topology-friendly separators such as `:`;
+/// Git branch names accept a narrower alphabet in the worktree backends.
+pub(crate) fn workspace_lease_id(view_id: &WorkspaceViewId) -> String {
+    if !view_id.0.is_empty()
+        && view_id
+            .0
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return view_id.0.clone();
+    }
+    format!("view-{:x}", Sha256::digest(view_id.0.as_bytes()))
 }
 
 #[allow(clippy::too_many_arguments)]

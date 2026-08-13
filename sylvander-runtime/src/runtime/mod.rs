@@ -29,7 +29,7 @@ use sylvander_api::{
     SessionRevisionPinError, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage as ClientMessage,
     UiHistoryMessage, UiSessionHistory, UiSessionInfo, UserId, UserProfileAction,
     UserProfileCapabilities, UserProfileError, UserProfileErrorCode, UserProfileOperation,
-    UserProfileRequest, UserProfileResponse,
+    UserProfileRequest, UserProfileResponse, WorkspaceViewId,
 };
 use sylvander_api::{BusMessage, Recipient};
 use sylvander_channel::{
@@ -70,6 +70,7 @@ use crate::coordination::service::{
     DispatchMessageOutcome, DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest,
     ReportProgressRequest, ReportWaitRequest,
 };
+use crate::coordination::workspace::WorkspaceAccess;
 use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::credential::registry::CredentialSecretResolver;
 use crate::evidence::{
@@ -107,8 +108,10 @@ use crate::storage::session::{
     MessageRole, SESSION_SCHEMA_OBJECT_NAMES, SessionLifetime, SessionMetadataPatch, SessionStore,
     SqliteSessionStore, StoredMessage, StoredSession,
 };
+use crate::storage::workspace_coordination::AgentWorkspaceStore;
 use crate::storage::{RuntimeStorage, RuntimeStorageSnapshot, RuntimeStorageStatus};
 use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
+use crate::workspace::agent_views::{AgentWorkspaceCoordinator, workspace_lease_id};
 use crate::workspace::{
     coding as coding_worktree, local as git_worktree, remote as remote_git_worktree,
 };
@@ -269,6 +272,8 @@ pub struct Runtime {
     observation_debug_log: Option<RuntimeObservationDebugLog>,
     /// Immutable concrete execution environments shared by Agent revisions.
     execution_service: RuntimeExecutionService,
+    /// Agent-instance workspace isolation and recovery.
+    agent_workspaces: Option<Arc<AgentWorkspaceCoordinator>>,
     /// Owned background probes for configured SSH and OCI targets.
     execution_health: Option<ExecutionHealthTask>,
     /// Shared message bus.
@@ -4117,6 +4122,7 @@ impl Runtime {
             observability,
             observation_debug_log: None,
             execution_service,
+            agent_workspaces: None,
             execution_health: None,
             bus,
             configured_agents,
@@ -4222,7 +4228,7 @@ impl Runtime {
         );
         let storage_session_probe = (*sqlite_session_store).clone();
         let session_store: Arc<dyn SessionStore> = sqlite_session_store.clone();
-        let agent_instance_store: Arc<dyn AgentInstanceStore> = sqlite_session_store;
+        let agent_instance_store: Arc<dyn AgentInstanceStore> = sqlite_session_store.clone();
         let agent_registry = AgentRegistry::open_shared(session_db, SESSION_SCHEMA_OBJECT_NAMES)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
@@ -4466,6 +4472,10 @@ impl Runtime {
                 storage_credential_audit_probe,
             )
             .with_artifact_service(artifact_service);
+        let agent_workspaces = Arc::new(AgentWorkspaceCoordinator::new(
+            worktrees.clone(),
+            sqlite_session_store.clone(),
+        ));
         let artifact_service = storage.artifact_service();
         let identity_bindings = open_identity_binding_service(&config).await?;
         let evidence = Some(
@@ -4597,7 +4607,7 @@ impl Runtime {
             turns_completed = recovery.turns_completed,
             "recovered interrupted agent executions"
         );
-        let active_worktrees = persistent_sessions
+        let mut active_worktrees = persistent_sessions
             .iter()
             .filter(|session| session.external_meta.contains_key("git_worktree"))
             .map(|session| {
@@ -4609,6 +4619,21 @@ impl Runtime {
             })
             .collect::<Result<Vec<_>, String>>()
             .map_err(RuntimeError::Store)?;
+        for session in &persistent_sessions {
+            let views = sqlite_session_store
+                .active_workspace_views(&session.id)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?;
+            active_worktrees.extend(views.into_iter().filter_map(|view| {
+                (view.isolation
+                    == crate::coordination::workspace::WorkspaceIsolation::IsolatedWorktree)
+                    .then_some(coding_worktree::ActiveCodingWorkspace {
+                        session_id: workspace_lease_id(&view.view_id),
+                        effective_workspace: view.effective_workspace,
+                        target_id: view.target_id,
+                    })
+            }));
+        }
         let reconciliation = worktrees
             .reconcile(&active_worktrees)
             .await
@@ -4696,6 +4721,27 @@ impl Runtime {
                         recovery_observed_at,
                     )
                     .await?;
+                    let mut participant_metadata = session.metadata.clone();
+                    if let Some(view) = sqlite_session_store
+                        .workspace_view(&WorkspaceViewId::new(format!(
+                            "agent:{}",
+                            participant.instance_id.0
+                        )))
+                        .await
+                        .map_err(|error| RuntimeError::Store(error.to_string()))?
+                    {
+                        let view = if view.state
+                            == crate::coordination::workspace::WorkspaceViewState::Provisioning
+                        {
+                            agent_workspaces
+                                .recover_provisioning(&view)
+                                .await
+                                .map_err(|error| RuntimeError::Store(error.to_string()))?
+                        } else {
+                            view
+                        };
+                        participant_metadata.workspace = view.effective_workspace;
+                    }
                     let configured = revision_provider
                         .configured_revision(
                             &participant.definition.agent_id,
@@ -4706,7 +4752,7 @@ impl Runtime {
                         .attach_agent_instance(
                             session.id.clone(),
                             participant.instance_id.clone(),
-                            session.metadata.clone(),
+                            participant_metadata,
                         )
                         .await
                         .map_err(|error| RuntimeError::Engine(error.to_string()))?;
@@ -4837,6 +4883,7 @@ impl Runtime {
             observability,
             observation_debug_log,
             execution_service,
+            agent_workspaces: Some(agent_workspaces),
             execution_health,
             bus,
             configured_agents,
@@ -4904,10 +4951,7 @@ impl Runtime {
         let ForkAgentOutcome::Created(participant) = outcome else {
             return Ok(outcome);
         };
-        if participant.state != AgentInstanceState::Created {
-            return Ok(ForkAgentOutcome::Created(participant));
-        }
-        let session = self
+        let mut session = self
             .storage
             .sessions()
             .get(&participant.session_id)
@@ -4920,6 +4964,58 @@ impl Runtime {
             crate::session::now_secs(),
         )
         .await?;
+        if let Some(coordinator) = &self.agent_workspaces {
+            let membership = self
+                .storage
+                .sessions()
+                .session_membership(&participant.session_id)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?
+                .ok_or_else(|| RuntimeError::Coordination("fork membership disappeared".into()))?;
+            let binding = session.effective_config.as_ref().and_then(|effective| {
+                effective
+                    .user_workspace
+                    .as_ref()
+                    .or(effective.agent_workspace.as_ref())
+            });
+            let view_id = WorkspaceViewId::new(format!("agent:{}", participant.instance_id.0));
+            let view = if let Some(binding) = binding {
+                let provisioned = if binding.read_only {
+                    coordinator
+                        .ensure_shared_read_only(
+                            view_id,
+                            &membership,
+                            participant.instance_id.clone(),
+                            &session.metadata.workspace,
+                            1,
+                            membership.governance.fencing_token,
+                            crate::session::now_secs(),
+                        )
+                        .await
+                } else {
+                    coordinator
+                        .ensure_isolated(
+                            view_id,
+                            &membership,
+                            participant.instance_id.clone(),
+                            WorkspaceAccess::ReadWrite,
+                            &binding.execution_target,
+                            &session.metadata.workspace,
+                            1,
+                            membership.governance.fencing_token,
+                            crate::session::now_secs(),
+                        )
+                        .await
+                }
+                .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+                Some(provisioned)
+            } else {
+                None
+            };
+            if let Some(view) = view {
+                session.metadata.workspace = view.effective_workspace;
+            }
+        }
         let configured = if let Some(provider) = &self.revision_provider {
             provider
                 .configured_revision(

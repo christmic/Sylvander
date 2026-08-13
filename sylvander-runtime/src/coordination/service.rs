@@ -310,6 +310,7 @@ where
             .iter()
             .find(|participant| participant.instance_id == request.instance_id)
         {
+            ensure_available(&membership, &existing.instance_id)?;
             return if same_fork_intent(existing, parent, &request) {
                 Ok(ForkAgentOutcome::Created(existing.clone()))
             } else {

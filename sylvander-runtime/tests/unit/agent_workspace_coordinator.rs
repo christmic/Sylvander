@@ -245,6 +245,85 @@ async fn durable_provisioning_position_recovers_from_matching_receipt() {
 }
 
 #[tokio::test]
+async fn deterministic_isolated_view_is_idempotent() {
+    let repository = repository();
+    let state = tempfile::tempdir().unwrap();
+    let store = store(repository.path()).await;
+    let coordinator = AgentWorkspaceCoordinator::new(worktrees(state.path()), store);
+    let view_id = WorkspaceViewId::new("agent:worker");
+
+    let first = coordinator
+        .ensure_isolated(
+            view_id.clone(),
+            &membership(),
+            AgentInstanceId::new("worker"),
+            WorkspaceAccess::ReadWrite,
+            "local",
+            repository.path(),
+            2,
+            3,
+            10,
+        )
+        .await
+        .unwrap();
+    let replay = coordinator
+        .ensure_isolated(
+            view_id,
+            &membership(),
+            AgentInstanceId::new("worker"),
+            WorkspaceAccess::ReadWrite,
+            "local",
+            repository.path(),
+            2,
+            3,
+            11,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(replay, first);
+}
+
+#[tokio::test]
+async fn shared_read_only_view_is_durable_and_idempotent() {
+    let repository = repository();
+    let state = tempfile::tempdir().unwrap();
+    let store = store(repository.path()).await;
+    let coordinator = AgentWorkspaceCoordinator::new(worktrees(state.path()), store.clone());
+    let view_id = WorkspaceViewId::new("agent:reader");
+
+    let first = coordinator
+        .ensure_shared_read_only(
+            view_id.clone(),
+            &membership(),
+            AgentInstanceId::new("worker"),
+            repository.path(),
+            2,
+            3,
+            10,
+        )
+        .await
+        .unwrap();
+    let replay = coordinator
+        .ensure_shared_read_only(
+            view_id.clone(),
+            &membership(),
+            AgentInstanceId::new("worker"),
+            repository.path(),
+            2,
+            3,
+            11,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(first.state, WorkspaceViewState::Active);
+    assert_eq!(first.effective_workspace, repository.path());
+    assert_eq!(replay, first);
+    assert_eq!(store.workspace_view(&view_id).await.unwrap(), Some(first));
+}
+
+#[tokio::test]
 async fn target_advance_after_review_is_fenced_as_conflict_without_merge() {
     let repository = repository();
     let state = tempfile::tempdir().unwrap();
