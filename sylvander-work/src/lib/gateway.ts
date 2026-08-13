@@ -12,6 +12,7 @@ export type RuntimeCommand =
   | { type: "reattach_session"; session_id: string }
   | { type: "rename_session"; session_id: string; label: string }
   | { type: "archive_session"; session_id: string }
+  | { type: "fork_session"; session_id: string; completed_turns?: number; checkpoint: boolean }
   | { type: "delete_session"; session_id: string }
   | { type: "chat"; text: string; attachments: []; session_id?: string }
   | { type: "approve"; session_id: string; call_id: string; approved: boolean; scope: ApprovalScope; reason?: string }

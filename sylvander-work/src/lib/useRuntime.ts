@@ -353,10 +353,29 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }
         break;
       }
-      case "session_history":
-        if (message.session.id !== selectedRef.current) break;
+      case "session_history": {
+        const selectedId = selectedRef.current;
+        const isSelected = message.session.id === selectedId;
+        const isFork = message.source_session_id === selectedId
+          && message.session.id !== selectedId;
+        if (!isSelected && !isFork) break;
+        if (isFork) {
+          selectedRef.current = message.session.id;
+          contextRequestSessionRef.current = undefined;
+        }
         setState((current) => ({
           ...current,
+          selectedId: isFork ? message.session.id : current.selectedId,
+          sessions: isFork && !current.sessions.some((session) => session.id === message.session.id)
+            ? [{
+              id: message.session.id,
+              label: message.session.label,
+              workspace: message.session.workspace,
+              recency: formatRecency(message.session.last_seen_secs),
+              state: "idle" as const,
+              draft: "",
+            }, ...current.sessions]
+            : current.sessions,
           sessionStats: {
             iterations: message.iterations ?? 0,
             inputTokens: message.input_tokens ?? 0,
@@ -378,7 +397,9 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             })),
           ],
         }));
+        if (isFork) void submit({ type: "list_sessions" });
         break;
+      }
       case "session_created":
         selectedRef.current = message.session_id;
         contextRequestSessionRef.current = undefined;

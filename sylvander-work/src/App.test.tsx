@@ -227,6 +227,48 @@ describe("Sylvander Work", () => {
     await screen.findByRole("heading", { name: "No Session selected" });
   });
 
+  it("switches to a checkpoint branch only after Runtime returns its history", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Original", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    await screen.findByRole("heading", { name: "Original" });
+
+    act(() => screen.getByRole("button", { name: "Session actions" }).click());
+    act(() => screen.getByRole("button", { name: "Create checkpoint branch" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "fork_session",
+      session_id: "session-1",
+      checkpoint: true,
+    }));
+    expect(screen.getByRole("heading", { name: "Original" })).toBeTruthy();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_history",
+      session: {
+        id: "session-2",
+        label: "Original checkpoint",
+        workspace: "/workspace",
+        last_seen_secs: 0,
+      },
+      messages: [{ role: "user", text: "preserved" }],
+      source_session_id: "session-1",
+      notice: "Conversation checkpoint branch created",
+    } }));
+
+    await screen.findByRole("heading", { name: "Original checkpoint" });
+    expect(screen.getByText("preserved")).toBeTruthy();
+    expect(screen.getByText("Conversation checkpoint branch created")).toBeTruthy();
+    expect(gateway.commands.at(-1)).toEqual({ type: "list_sessions" });
+  });
+
   it("locks duplicate chat submission until a Runtime terminal arrives", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);

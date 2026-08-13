@@ -166,6 +166,16 @@ export default function App({ gateway }: AppProps) {
     setSessionActionsOpen(false);
   }
 
+  async function checkpointSession() {
+    if (!selected) return;
+    await submit({
+      type: "fork_session",
+      session_id: selected.id,
+      checkpoint: true,
+    });
+    setSessionActionsOpen(false);
+  }
+
   async function deleteSession() {
     if (!selected) return;
     await submit({ type: "delete_session", session_id: selected.id });
@@ -310,7 +320,7 @@ export default function App({ gateway }: AppProps) {
       </section>
 
       <div className="interaction-zone">
-        {sessionActionsOpen && selected && <form className="decision-dock" aria-labelledby="session-actions-title" onSubmit={(event) => void renameSession(event)}><div className="decision-icon" aria-hidden="true">···</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="session-actions-title">Manage {selected.label}</h3><label>Name<input aria-label="Session label" value={sessionLabel} onChange={(event) => setSessionLabel(event.target.value)} /></label><p>Archive hides the Session from active work. Delete permanently removes it through Runtime policy.</p></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void archiveSession()}>Archive</button><button type="button" className="secondary-button" onClick={() => void deleteSession()}>Delete permanently</button><button className="primary-button" disabled={!sessionLabel.trim()}>Rename</button></div></form>}
+        {sessionActionsOpen && selected && <form className="decision-dock" aria-labelledby="session-actions-title" onSubmit={(event) => void renameSession(event)}><div className="decision-icon" aria-hidden="true">···</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="session-actions-title">Manage {selected.label}</h3><label>Name<input aria-label="Session label" value={sessionLabel} onChange={(event) => setSessionLabel(event.target.value)} /></label><p>A checkpoint branches conversation history without changing the source Session or workspace files. Archive hides active work; delete is permanent.</p></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void checkpointSession()}>Create checkpoint branch</button><button type="button" className="secondary-button" onClick={() => void archiveSession()}>Archive</button><button type="button" className="secondary-button" onClick={() => void deleteSession()}>Delete permanently</button><button className="primary-button" disabled={!sessionLabel.trim()}>Rename</button></div></form>}
         {createOpen && <form className="decision-dock" aria-labelledby="create-session-title" onSubmit={(event) => void createSession(event)}><div className="decision-icon" aria-hidden="true">＋</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="create-session-title">Create Session</h3><label>Name<input aria-label="Session name" value={newSessionLabel} onChange={(event) => setNewSessionLabel(event.target.value)} /></label><label>Agent<select aria-label="Session Agent" value={newSessionAgentId} onChange={(event) => setNewSessionAgentId(event.target.value)}>{state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.providerId}/{agent.modelId}</option>)}</select></label></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-button" disabled={!newSessionLabel.trim() || !newSessionAgentId}>Create</button></div></form>}
         {settingsOpen && state.runtimeInfo && <section className="decision-dock" aria-labelledby="runtime-settings-title"><div className="decision-icon" aria-hidden="true">⚙</div><div className="decision-copy"><span className="eyebrow">Runtime validated</span><h3 id="runtime-settings-title">Model and permissions</h3><label>Model<select aria-label="Runtime model" value={modelIndex} onChange={(event) => {
           const nextIndex = event.target.value;
