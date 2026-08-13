@@ -43,6 +43,8 @@ use sylvander_llm_core::{
     ReasoningEffort as ProviderReasoningEffort,
 };
 
+#[cfg(test)]
+use super::AgentRun;
 use super::background::BusTaskGate;
 use super::error::prompt_integrity_error;
 use super::interaction::{
@@ -2001,6 +2003,29 @@ impl AgentRunInner {
             }
         }
         ChatMessage::user_blocks(blocks)
+    }
+}
+
+#[cfg(test)]
+impl AgentRun {
+    pub(crate) async fn inspect_runtime_environment(
+        &self,
+        session_id: &SessionId,
+        agent_instance_id: &AgentInstanceId,
+    ) -> Result<sylvander_agent::doctor_gate::DoctorReport, AgentRunError> {
+        use sylvander_agent::doctor_gate::DoctorGate as _;
+
+        let store = self.inner.workflow_store.clone().ok_or_else(|| {
+            AgentRunError::Configuration("runtime inspection is unavailable".into())
+        })?;
+        crate::runtime::doctor::RuntimeDoctorGate {
+            store,
+            session_id: session_id.clone(),
+            agent_instance_id: agent_instance_id.clone(),
+        }
+        .inspect()
+        .await
+        .map_err(AgentRunError::Configuration)
     }
 }
 
