@@ -1,5 +1,6 @@
 use sylvander_testbench_llm::{
-    BenchResult, BenchScenario, BenchStatus, PassMetrics, RepositoryState, endpoint_origin,
+    Applicability, BenchObservation, BenchResult, BenchScenario, BenchStatus, MatrixCell,
+    MatrixCoordinate, PassMetrics, RepositoryState, endpoint_origin,
 };
 use url::Url;
 
@@ -36,6 +37,41 @@ fn passed_result_is_versioned_complete_and_content_safe() {
     assert!(!json.contains("credential"));
     assert!(!json.contains("authorization"));
     assert!(!json.contains("response_text"));
+}
+
+#[test]
+fn recorded_result_uses_the_complete_matrix_coordinate() {
+    let cell = MatrixCell {
+        coordinate: MatrixCoordinate {
+            provider_id: "provider-a".into(),
+            protocol: "openai_responses".into(),
+            model_id: "model-a".into(),
+            scenario: BenchScenario::Usage,
+            run_ordinal: 3,
+        },
+        applicability: Applicability::Required,
+    };
+    let result = BenchResult::recorded(
+        &cell,
+        1,
+        BenchStatus::Failed,
+        "https://api.example.test",
+        1_800_000_000_000,
+        42,
+        RepositoryState {
+            sylvander_commit: "0123456789abcdef".into(),
+            worktree_dirty: false,
+        },
+        BenchObservation {
+            failure_kind: Some("timeout".into()),
+            failure_phase: Some("open".into()),
+            ..BenchObservation::default()
+        },
+    );
+
+    assert_eq!(result.case_id, "usage");
+    assert_eq!(result.run_ordinal, 3);
+    assert!(result.run_id.contains("openai_responses-model-a-usage-3"));
 }
 
 #[test]

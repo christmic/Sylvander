@@ -5,7 +5,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::BenchScenario;
+use crate::{BenchScenario, MatrixCell};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +44,13 @@ pub struct PassMetrics {
     pub counted_input_tokens: Option<u64>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BenchObservation {
+    pub metrics: PassMetrics,
+    pub failure_kind: Option<String>,
+    pub failure_phase: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BenchResult {
     pub schema_version: u32,
@@ -74,6 +81,57 @@ pub struct BenchResult {
 }
 
 impl BenchResult {
+    #[allow(clippy::too_many_arguments)]
+    pub fn recorded(
+        cell: &MatrixCell,
+        case_revision: u32,
+        status: BenchStatus,
+        endpoint_origin: impl Into<String>,
+        started_at_unix_ms: u64,
+        duration_ms: u64,
+        repository: RepositoryState,
+        observation: BenchObservation,
+    ) -> Self {
+        let coordinate = &cell.coordinate;
+        let case_id = coordinate.scenario.as_str().to_owned();
+        let run_id = format!(
+            "{}-{}-{}-{}-{}-{started_at_unix_ms}",
+            coordinate.provider_id,
+            coordinate.protocol,
+            coordinate.model_id,
+            case_id,
+            coordinate.run_ordinal
+        );
+        let metrics = observation.metrics;
+        Self {
+            schema_version: 1,
+            run_id,
+            case_id,
+            case_revision,
+            scenario: coordinate.scenario,
+            run_ordinal: coordinate.run_ordinal,
+            status,
+            sylvander_commit: repository.sylvander_commit,
+            worktree_dirty: repository.worktree_dirty,
+            provider_id: coordinate.provider_id.clone(),
+            protocol: coordinate.protocol.clone(),
+            model_id: coordinate.model_id.clone(),
+            endpoint_origin: endpoint_origin.into(),
+            started_at_unix_ms,
+            duration_ms,
+            attempts: metrics.attempts,
+            input_tokens: metrics.input_tokens,
+            output_tokens: metrics.output_tokens,
+            cache_write_tokens: metrics.cache_write_tokens,
+            cache_read_tokens: metrics.cache_read_tokens,
+            reasoning_tokens: metrics.reasoning_tokens,
+            reported_total_tokens: metrics.reported_total_tokens,
+            counted_input_tokens: metrics.counted_input_tokens,
+            failure_kind: observation.failure_kind,
+            failure_phase: observation.failure_phase,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn passed(
         case_id: impl Into<String>,

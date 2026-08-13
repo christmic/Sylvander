@@ -11,4 +11,6 @@ pub use matrix::{
     Applicability, BenchMatrix, BenchScenario, MatrixCell, MatrixCoordinate, ModelBinding,
     ProtocolBinding,
 };
-pub use result::{BenchResult, BenchStatus, PassMetrics, RepositoryState, endpoint_origin};
+pub use result::{
+    BenchObservation, BenchResult, BenchStatus, PassMetrics, RepositoryState, endpoint_origin,
+};

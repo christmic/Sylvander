@@ -17,6 +17,22 @@ pub enum BenchScenario {
     ProcessInterruption,
 }
 
+impl BenchScenario {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Connectivity => "connectivity",
+            Self::Usage => "usage",
+            Self::RemoteTokenCount => "remote_token_count",
+            Self::CacheWriteRead => "cache_write_read",
+            Self::OpenTimeout => "open_timeout",
+            Self::TransientRetry => "transient_retry",
+            Self::TruncatedStream => "truncated_stream",
+            Self::ProcessInterruption => "process_interruption",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelBinding {
     pub model_id: String,
