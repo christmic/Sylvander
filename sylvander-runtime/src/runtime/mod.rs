@@ -1,5 +1,5 @@
 //! Runtime lifecycle orchestration and protocol-channel hosting.
-mod doctor;
+pub(crate) mod doctor;
 mod mailbox_scheduler;
 mod recovery_operator;
 mod swarm;

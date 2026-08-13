@@ -1868,6 +1868,21 @@ async fn runtime_workflow_control_plane_uses_durable_fenced_tasks() {
     assert_eq!(doctor.governance.open_arbitrations, 0);
     assert_eq!(doctor.recovery.interrupted_models, 0);
     assert_eq!(doctor.recovery.interrupted_tools, 0);
+    let agent_report = runtime
+        .configured_agent(&AgentId::new("assistant"))
+        .unwrap()
+        .run
+        .inspect_runtime_environment(&session_id, &agent_instance_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        agent_report.attention,
+        sylvander_agent::doctor_gate::DoctorAttention::Active
+    );
+    assert_eq!(agent_report.active_agents, 1);
+    assert_eq!(agent_report.ready_tasks, 1);
+    assert_eq!(agent_report.remaining_token_budget, 1_000);
+    assert_eq!(agent_report.operator_recoveries, 0);
 
     let forged = runtime
         .configured_agent(&AgentId::new("assistant"))
@@ -1878,6 +1893,15 @@ async fn runtime_workflow_control_plane_uses_durable_fenced_tasks() {
             AgentInstanceId::new("not-a-session-member"),
         );
     assert!(runtime.session_doctor(&forged).await.is_err());
+    assert!(
+        runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run
+            .inspect_runtime_environment(&session_id, forged.agent_instance_id())
+            .await
+            .is_err()
+    );
 
     let lease = runtime
         .claim_agent_task(

@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use sylvander_agent::doctor_gate::{DoctorAttention, DoctorGate, DoctorReport};
 use sylvander_api::{AgentInstanceId, SessionId};
 
 use super::{Runtime, RuntimeError};
@@ -6,6 +8,121 @@ use crate::agent::instance::AgentInstanceState;
 use crate::agent::run::AuthenticatedSession;
 use crate::coordination::task::CoordinationTaskState;
 use crate::coordination::workspace::WorkspaceViewState;
+use crate::storage::agent_instance::AgentInstanceStore;
+use crate::storage::coordination::CoordinationStore;
+use crate::storage::session::{SessionStore, SqliteSessionStore};
+use crate::storage::workspace_coordination::AgentWorkspaceStore;
+
+pub(crate) struct RuntimeDoctorGate {
+    pub(crate) store: Arc<SqliteSessionStore>,
+    pub(crate) session_id: SessionId,
+    pub(crate) agent_instance_id: AgentInstanceId,
+}
+
+#[async_trait::async_trait]
+impl DoctorGate for RuntimeDoctorGate {
+    async fn inspect(&self) -> Result<DoctorReport, String> {
+        let membership = self
+            .store
+            .session_membership(&self.session_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Agent membership does not exist".to_owned())?;
+        if !membership
+            .participants
+            .iter()
+            .any(|participant| participant.instance_id == self.agent_instance_id)
+        {
+            return Err("Agent is not a member of this Session".into());
+        }
+        let topology = self
+            .store
+            .topology(&self.session_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Session topology does not exist".to_owned())?;
+        let tasks = self
+            .store
+            .task_graph(&self.session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let arbitrations = self
+            .store
+            .active_arbitration_cases(&self.session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let workspaces = self
+            .store
+            .active_workspace_views(&self.session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let models = self
+            .store
+            .interrupted_model_iterations()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|iteration| iteration.session_id == self.session_id)
+            .collect::<Vec<_>>();
+        let tools = self
+            .store
+            .interrupted_tool_calls()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|call| call.session_id == self.session_id)
+            .collect::<Vec<_>>();
+        let agents = summarize_agents(&membership.participants);
+        let tasks = summarize_tasks(tasks.as_ref());
+        let workspaces = summarize_workspaces(&workspaces);
+        let recovery = SessionRecoverySummary {
+            interrupted_models: models.len() as u64,
+            interrupted_tools: tools.len() as u64,
+            operator_models: models
+                .iter()
+                .filter(|iteration| iteration.operator_action_required)
+                .count() as u64,
+            operator_tools: tools
+                .iter()
+                .filter(|call| call.operator_action_required)
+                .count() as u64,
+        };
+        let governance = SessionGovernanceSummary {
+            topology_relations: topology.relations.len() as u64,
+            open_arbitrations: arbitrations.len() as u64,
+        };
+        let attention = attention(&agents, &tasks, &workspaces, &recovery, &governance);
+        Ok(DoctorReport {
+            attention: doctor_attention(attention),
+            active_agents: agents.active,
+            waiting_agents: agents.waiting,
+            manual_agents: agents.manual_reconciliation,
+            ready_tasks: tasks.ready,
+            running_tasks: tasks.running,
+            blocked_tasks: tasks.blocked,
+            review_tasks: tasks.awaiting_review,
+            remaining_token_budget: tasks.remaining_token_budget,
+            integrating_workspaces: workspaces.integrating,
+            conflicted_workspaces: workspaces.conflicted,
+            manual_workspaces: workspaces.manual_reconciliation,
+            interrupted_models: recovery.interrupted_models,
+            interrupted_tools: recovery.interrupted_tools,
+            operator_recoveries: recovery.operator_models + recovery.operator_tools,
+            open_arbitrations: governance.open_arbitrations,
+        })
+    }
+}
+
+const fn doctor_attention(attention: SessionAttentionState) -> DoctorAttention {
+    match attention {
+        SessionAttentionState::Healthy => DoctorAttention::Healthy,
+        SessionAttentionState::Active => DoctorAttention::Active,
+        SessionAttentionState::Waiting => DoctorAttention::Waiting,
+        SessionAttentionState::Recovering => DoctorAttention::Recovering,
+        SessionAttentionState::NeedsReview => DoctorAttention::NeedsReview,
+        SessionAttentionState::ManualActionRequired => DoctorAttention::ManualActionRequired,
+    }
+}
 
 /// Highest-priority durable condition currently visible to an operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

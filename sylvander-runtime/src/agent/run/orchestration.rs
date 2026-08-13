@@ -1136,6 +1136,13 @@ impl AgentRunInner {
                 observability: self.observability.clone(),
             });
             ports = ports.with_workflow_gate(workflow_gate);
+            let doctor_gate: Arc<dyn sylvander_agent::doctor_gate::DoctorGate> =
+                Arc::new(crate::runtime::doctor::RuntimeDoctorGate {
+                    store: store.clone(),
+                    session_id: session_id.clone(),
+                    agent_instance_id: agent_instance_id.clone(),
+                });
+            ports = ports.with_doctor_gate(doctor_gate);
         }
         if let Some(gate) = approval_gate {
             ports = ports.with_approval_gate(gate);

@@ -513,6 +513,27 @@ fn validate_identity_component(
 }
 
 impl AgentRun {
+    #[cfg(test)]
+    pub(crate) async fn inspect_runtime_environment(
+        &self,
+        session_id: &SessionId,
+        agent_instance_id: &AgentInstanceId,
+    ) -> Result<sylvander_agent::doctor_gate::DoctorReport, AgentRunError> {
+        use sylvander_agent::doctor_gate::DoctorGate as _;
+
+        let store = self.inner.workflow_store.clone().ok_or_else(|| {
+            AgentRunError::Configuration("runtime inspection is unavailable".into())
+        })?;
+        crate::runtime::doctor::RuntimeDoctorGate {
+            store,
+            session_id: session_id.clone(),
+            agent_instance_id: agent_instance_id.clone(),
+        }
+        .inspect()
+        .await
+        .map_err(AgentRunError::Configuration)
+    }
+
     pub(crate) fn authenticated_session_handle(
         &self,
         session_id: SessionId,
