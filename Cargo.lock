@@ -4940,6 +4940,7 @@ dependencies = [
  "sha2",
  "sylvander-agent",
  "sylvander-api",
+ "sylvander-benchmark-runtime",
  "sylvander-channel",
  "sylvander-llm-anthropic",
  "sylvander-llm-core",

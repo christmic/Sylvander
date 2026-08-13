@@ -33,6 +33,9 @@ use sylvander_api::{
     AgentId, AgentInstanceId, CoordinationMessageId, GovernanceCaseId, HandoffId, SwarmId, TaskId,
     WorkspaceViewId,
 };
+use sylvander_benchmark_runtime::{
+    FailurePoint, FaultController, FaultDecision, FaultInjectionSpec,
+};
 
 use super::*;
 
@@ -647,6 +650,85 @@ async fn expired_task_lease_is_recovered_and_fences_the_old_executor() {
 }
 
 #[tokio::test]
+async fn fault_harness_reopens_and_fences_an_interrupted_task_executor() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fault-task-lease.db");
+    let store = Arc::new(SqliteSessionStore::open(&path).await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    let task = service
+        .create_task(
+            CreateTaskRequest {
+                task_id: TaskId::new("fault-task"),
+                session_id: membership.session_id,
+                parent_task_id: None,
+                created_by: AgentInstanceId::new("moderator-1"),
+                assigned_to: AgentInstanceId::new("worker-1"),
+                objective: "Recover one interrupted execution".into(),
+                token_budget: 1_000,
+                max_handoffs: 1,
+            },
+            10,
+        )
+        .await
+        .unwrap();
+    let stale = store
+        .claim_task(
+            &task.task_id,
+            &AgentInstanceId::new("worker-1"),
+            "turn-before-crash",
+            20,
+            10,
+        )
+        .await
+        .unwrap();
+    let mut faults = FaultController::new(FaultInjectionSpec {
+        point: FailurePoint::WorkflowTransitioned,
+        occurrence: 1,
+    })
+    .unwrap();
+    assert!(matches!(
+        faults.checkpoint(FailurePoint::WorkflowTransitioned),
+        FaultDecision::Interrupt(_)
+    ));
+    drop(service);
+    drop(store);
+
+    let recovered_store = SqliteSessionStore::open(path).await.unwrap();
+    let recovered = recovered_store
+        .claim_task(
+            &task.task_id,
+            &AgentInstanceId::new("worker-1"),
+            "turn-after-crash",
+            30,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(recovered.lease_epoch, stale.lease_epoch + 1);
+    assert!(
+        recovered_store
+            .finish_task_lease(&stale, CoordinationTaskState::Completed, 50, 31)
+            .await
+            .is_err()
+    );
+    let completed = recovered_store
+        .finish_task_lease(&recovered, CoordinationTaskState::Completed, 50, 31)
+        .await
+        .unwrap();
+    assert_eq!(completed.state, CoordinationTaskState::Completed);
+}
+
+#[tokio::test]
 async fn automatic_delivery_persists_one_turn_before_execution() {
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     store.save(&stored_session()).await.unwrap();
@@ -694,6 +776,64 @@ async fn automatic_delivery_persists_one_turn_before_execution() {
             .await
             .unwrap(),
         (delivered, receipt)
+    );
+}
+
+#[tokio::test]
+async fn fault_harness_reopens_one_prepared_mailbox_turn_without_redelivery() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fault-mailbox.db");
+    let store = Arc::new(SqliteSessionStore::open(&path).await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    service
+        .dispatch_message(dispatch_request("fault-mailbox"), 20)
+        .await
+        .unwrap();
+    let claim = service
+        .claim_next_message(&AgentInstanceId::new("coordinator-1"), 21, 10)
+        .await
+        .unwrap()
+        .unwrap();
+    let expected = service
+        .prepare_message_turn(&claim, "coordination:fault-mailbox", 22)
+        .await
+        .unwrap();
+    let mut faults = FaultController::new(FaultInjectionSpec {
+        point: FailurePoint::MailboxDelivered,
+        occurrence: 1,
+    })
+    .unwrap();
+    assert!(matches!(
+        faults.checkpoint(FailurePoint::MailboxDelivered),
+        FaultDecision::Interrupt(_)
+    ));
+    drop(service);
+    drop(store);
+
+    let recovered = SqliteSessionStore::open(path).await.unwrap();
+    assert_eq!(
+        recovered
+            .recoverable_message_turns(&AgentInstanceId::new("coordinator-1"))
+            .await
+            .unwrap(),
+        vec![expected]
+    );
+    assert!(
+        recovered
+            .claim_message(&AgentInstanceId::new("coordinator-1"), 23, 10)
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 
