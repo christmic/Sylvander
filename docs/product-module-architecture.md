@@ -263,12 +263,13 @@ Implementation status: the closed typed `RuntimeEvent` recorder now covers
 authorized chat admission, message-bus dispatch, turn and tool terminals,
 model retries, and Session persistence outcomes. Runtime shares one recorder
 with every Agent revision, feeding content-safe counters, structured tracing,
-and the operational snapshot. The Session turn record is the authoritative
+active-work gauges, bounded lifecycle latency histograms, unmatched-terminal
+diagnostics, and the operational snapshot. The Session turn record is the authoritative
 durable terminal; Runtime records the matching in-process terminal and only
 then publishes the public terminal. Evidence recording remains a separate,
 asynchronous governance projection of bus traffic and is never used to decide
-whether a turn committed. Durable metric aggregation, resource histograms,
-and sink-failure health remain incomplete.
+whether a turn committed. Cross-restart metric aggregation, CPU/memory/network
+resource histograms, and sink-failure health remain incomplete.
 
 ## Service and presentation layers
 

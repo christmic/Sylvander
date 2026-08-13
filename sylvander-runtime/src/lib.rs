@@ -156,7 +156,10 @@ use tracing::{info, warn};
 use crate::agent_definition::AgentSpec;
 use crate::agent_definition::{AgentId, SessionId};
 use crate::mcp_stdio::McpResultArtifactSink;
-pub use crate::observability::RuntimeObservabilitySnapshot;
+pub use crate::observability::{
+    RUNTIME_DURATION_BUCKET_UPPER_BOUNDS_MICROS, RuntimeDurationHistogramSnapshot,
+    RuntimeObservabilitySnapshot,
+};
 use crate::observability::{RuntimeEvent, RuntimeObservability};
 #[cfg(test)]
 use sylvander_agent::tools::InMemoryMemoryStore;
@@ -1804,13 +1807,25 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             let feedback_target = self.evidence_run_id.as_ref().map(|run_id| {
                 crate::evidence::feedback_target(run_id, &format!("turn:{}", message.id.0))
             });
-            self.bus.publish(message).await.map_err(|_| {
-                boundary_failure(boundary, "submit_chat", "message dispatch failed")
-            })?;
-            self.observability.record(RuntimeEvent::chat_dispatched(
-                boundary.request_id.clone(),
-                session_id.clone(),
-            ));
+            if self.bus.publish(message).await.is_err() {
+                self.observability
+                    .record(RuntimeEvent::chat_dispatch_finished(
+                        boundary.request_id.clone(),
+                        session_id.clone(),
+                        false,
+                    ));
+                return Err(boundary_failure(
+                    boundary,
+                    "submit_chat",
+                    "message dispatch failed",
+                ));
+            }
+            self.observability
+                .record(RuntimeEvent::chat_dispatch_finished(
+                    boundary.request_id.clone(),
+                    session_id.clone(),
+                    true,
+                ));
             Ok(sylvander_channel::SubmittedChat {
                 session_id: session_id.clone(),
                 feedback_target,

@@ -124,12 +124,14 @@ Current implementation status: the closed `RuntimeObservability` recorder
 consumes typed, content-free ingress, turn, retry, tool, persistence, and
 terminal facts. One recorder is composed at Runtime boot and injected into
 every current and lazily recomposed Agent revision. It updates built-in
-counters, emits structured tracing, and exposes the counters through the
+counters, active dispatch/turn/tool gauges, bounded dispatch/turn/tool latency
+histograms, and unmatched-terminal diagnostics; all are exposed through the
 operational snapshot. Existing durable evidence remains a separate path;
 it is an asynchronous governance projection rather than Session commit
 authority. The durable Session terminal commits before the matching built-in
-terminal fact and public event. Durable metric aggregation, sink-failure
-health, and resource histograms remain incomplete.
+terminal fact and public event. Cross-restart metric aggregation,
+sink-failure health, and CPU/memory/network resource histograms remain
+incomplete.
 
 ### Design evidence
 
