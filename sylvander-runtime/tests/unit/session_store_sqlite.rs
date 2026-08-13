@@ -11,6 +11,9 @@ use sylvander_llm_core::{
 
 use crate::agent::cognition::CognitiveRole;
 use crate::agent::cognition_artifact::{CognitionArtifactKind, CognitionArtifactStore};
+use crate::agent::cognition_execution::{
+    CognitionExecutionRequest, execute_cognition, recover_cognition_receipt,
+};
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute,
     HistoryView, SessionAgentRole,
@@ -141,6 +144,15 @@ fn audio_model() -> ModelInfo {
         context_window: 8_192,
         max_output_tokens: 512,
         capabilities: ModelCapabilities::AUDIO_INPUT,
+    }
+}
+
+fn text_cognition_model() -> ModelInfo {
+    ModelInfo {
+        reference: ModelRef::new("test-provider", "text-specialist"),
+        context_window: 8_192,
+        max_output_tokens: 512,
+        capabilities: ModelCapabilities::empty(),
     }
 }
 
@@ -1913,6 +1925,139 @@ async fn cognition_recovery_classification_and_lease_survive_restart() {
     );
     assert_eq!(interrupted[0].recovery_owner.as_deref(), Some("boot-1"));
     assert_eq!(interrupted[0].recovery_lease_expires_at, Some(130));
+}
+
+#[tokio::test]
+async fn cognition_receipt_recovery_finishes_without_provider_replay() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteSessionStore::open(directory.path().join("cognition-receipt.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let session = running_perception_turn(&store, "turn-cognition-receipt").await;
+    let artifacts = perception_artifacts(
+        &directory.path().join("cognition-receipt-evidence.sqlite"),
+        "turn-cognition-receipt",
+    )
+    .await;
+    let invocation_id = CognitionInvocationId::from_uuid(uuid::Uuid::new_v4());
+    store
+        .begin_cognition(CognitionInvocationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-cognition-receipt".into(),
+            agent_instance_id: turn_instance(),
+            invocation_id: invocation_id.clone(),
+            role: CognitiveRole::Deliberation,
+            provider_id: "test-provider".into(),
+            model_id: "text-specialist".into(),
+            recovery_policy: CognitionRecoveryPolicy::RecoverFromReceipt,
+            capability_revision: format!("sha256:{}", "e".repeat(64)),
+            input_digest: format!("sha256:{}", "f".repeat(64)),
+            input_bytes: 7,
+            max_turn_calls: 2,
+        })
+        .await
+        .unwrap();
+    let prompt = artifacts
+        .persist_exact(
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourcePrompt,
+            "text/plain; charset=utf-8",
+            b"analyze".to_vec(),
+        )
+        .await
+        .unwrap();
+    let revision = store
+        .persist_cognition_prompt(CognitionPromptPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 0,
+            artifact_locator: prompt.locator,
+        })
+        .await
+        .unwrap();
+    store
+        .advance_cognition(CognitionAdvance {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            expected_position: CognitionExecutionPosition::PromptPersisted,
+            next_position: CognitionExecutionPosition::InferenceStarted,
+        })
+        .await
+        .unwrap();
+    let response = ModelResponse {
+        id: "durable-cognition-receipt".into(),
+        model: text_cognition_model().reference,
+        content: vec![ContentBlock::Text {
+            text: "recovered advice".into(),
+        }],
+        stop_reason: StopReason::EndTurn,
+        usage: TokenUsage::default(),
+    };
+    artifacts
+        .persist_exact(
+            invocation_id.as_str(),
+            CognitionArtifactKind::ProviderReceipt,
+            "application/json",
+            serde_json::to_vec(&response).unwrap(),
+        )
+        .await
+        .unwrap();
+    let snapshot = store
+        .cognition_invocations(&session.id, "turn-cognition-receipt")
+        .await
+        .unwrap()
+        .remove(0);
+    let recovered = recover_cognition_receipt(store.clone(), artifacts, snapshot)
+        .await
+        .unwrap();
+    assert_eq!(recovered.text, "recovered advice");
+    assert_eq!(
+        store
+            .cognition_invocations(&session.id, "turn-cognition-receipt")
+            .await
+            .unwrap()[0]
+            .position,
+        CognitionExecutionPosition::ResultPersisted
+    );
+}
+
+#[tokio::test]
+async fn cognition_executor_persists_full_lifecycle() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    let session = running_perception_turn(&store, "turn-cognition-execute").await;
+    let directory = tempfile::tempdir().unwrap();
+    let artifacts = perception_artifacts(
+        &directory.path().join("cognition-execute-evidence.sqlite"),
+        "turn-cognition-execute",
+    )
+    .await;
+    let result = execute_cognition(
+        store.clone(),
+        artifacts,
+        Arc::new(SuccessfulPerceptionProvider),
+        CognitionExecutionRequest {
+            session_id: session.id.clone(),
+            turn_id: "turn-cognition-execute".into(),
+            agent_instance_id: turn_instance(),
+            invocation_id: CognitionInvocationId::from_uuid(uuid::Uuid::new_v4()),
+            role: CognitiveRole::Critic,
+            model: text_cognition_model(),
+            prompt: "review this".into(),
+            max_turn_calls: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.text, "spoken words");
+    assert_eq!(
+        store
+            .cognition_invocations(&session.id, "turn-cognition-execute")
+            .await
+            .unwrap()[0]
+            .position,
+        CognitionExecutionPosition::ResultPersisted
+    );
 }
 
 #[tokio::test]

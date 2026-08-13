@@ -18,9 +18,9 @@ use super::cognition_artifact::{CognitionArtifactKind, CognitionArtifactStore};
 use crate::agent_definition::SessionId;
 use crate::storage::session::{
     CognitionAdvance, CognitionExecutionPosition, CognitionFailureKind,
-    CognitionFailurePersistence, CognitionInvocationId, CognitionInvocationStart,
-    CognitionOutputPersistence, CognitionPromptPersistence, CognitionReceiptPersistence,
-    CognitionRecoveryPolicy, SessionStore,
+    CognitionFailurePersistence, CognitionInvocationId, CognitionInvocationSnapshot,
+    CognitionInvocationStart, CognitionOutputPersistence, CognitionPromptPersistence,
+    CognitionReceiptPersistence, CognitionRecoveryPolicy, SessionStore,
 };
 
 const COGNITION_TIMEOUT: Duration = Duration::from_mins(2);
@@ -136,6 +136,75 @@ pub async fn execute_cognition(
         }
     };
     finish_from_response(store, artifacts, request.invocation_id, revision, response).await
+}
+
+/// Complete a post-inference crash window from durable artifacts. This path
+/// never invokes the provider and fails closed when its receipt is absent.
+pub async fn recover_cognition_receipt(
+    store: Arc<dyn SessionStore>,
+    artifacts: Arc<dyn CognitionArtifactStore>,
+    snapshot: CognitionInvocationSnapshot,
+) -> Result<CognitionExecutionResult, CognitionExecutionError> {
+    if snapshot.recovery_policy != CognitionRecoveryPolicy::RecoverFromReceipt
+        || !matches!(
+            snapshot.position,
+            CognitionExecutionPosition::InferenceStarted
+                | CognitionExecutionPosition::InferenceCompleted
+                | CognitionExecutionPosition::ArtifactPersisted
+                | CognitionExecutionPosition::ResultPersisted
+        )
+    {
+        return Err(CognitionExecutionError::InvalidRequest);
+    }
+    let receipt = artifacts
+        .load_exact(
+            snapshot.invocation_id.as_str(),
+            CognitionArtifactKind::ProviderReceipt,
+        )
+        .await
+        .map_err(|_| CognitionExecutionError::Artifact)?
+        .ok_or(CognitionExecutionError::ReceiptMissing)?;
+    let response: ModelResponse = serde_json::from_slice(&receipt.payload)
+        .map_err(|_| CognitionExecutionError::InvalidResponse)?;
+    if response.model.provider != snapshot.provider_id || response.model.model != snapshot.model_id
+    {
+        return Err(CognitionExecutionError::InvalidResponse);
+    }
+    match snapshot.position {
+        CognitionExecutionPosition::InferenceStarted => {
+            finish_from_receipt(
+                store,
+                artifacts,
+                snapshot.invocation_id,
+                snapshot.ledger_revision,
+                response,
+                receipt.locator,
+            )
+            .await
+        }
+        CognitionExecutionPosition::InferenceCompleted => {
+            persist_output(
+                store,
+                artifacts,
+                snapshot.invocation_id,
+                snapshot.ledger_revision,
+                response,
+            )
+            .await
+        }
+        CognitionExecutionPosition::ArtifactPersisted => {
+            let result = load_result(&artifacts, &snapshot, response).await?;
+            store
+                .complete_cognition(&snapshot.invocation_id, snapshot.ledger_revision)
+                .await
+                .map_err(|_| CognitionExecutionError::Persistence)?;
+            Ok(result)
+        }
+        CognitionExecutionPosition::ResultPersisted => {
+            load_result(&artifacts, &snapshot, response).await
+        }
+        _ => Err(CognitionExecutionError::InvalidRequest),
+    }
 }
 
 async fn call_specialist(
@@ -288,6 +357,43 @@ async fn persist_output(
         .map_err(|_| CognitionExecutionError::Persistence)?;
     Ok(CognitionExecutionResult {
         invocation_id,
+        provider_response_id: response.id,
+        text: output.text,
+        artifact_locator: artifact.locator,
+        output_digest: artifact.digest,
+        usage: response.usage,
+    })
+}
+
+async fn load_result(
+    artifacts: &Arc<dyn CognitionArtifactStore>,
+    snapshot: &CognitionInvocationSnapshot,
+    response: ModelResponse,
+) -> Result<CognitionExecutionResult, CognitionExecutionError> {
+    let artifact = artifacts
+        .load_exact(
+            snapshot.invocation_id.as_str(),
+            CognitionArtifactKind::NormalizedOutput,
+        )
+        .await
+        .map_err(|_| CognitionExecutionError::Artifact)?
+        .ok_or(CognitionExecutionError::Artifact)?;
+    if snapshot.output_artifact_locator.as_deref() != Some(artifact.locator.as_str())
+        || snapshot.output_digest.as_deref() != Some(artifact.digest.as_str())
+    {
+        return Err(CognitionExecutionError::InvalidResponse);
+    }
+    let output: NormalizedCognitionOutput = serde_json::from_slice(&artifact.payload)
+        .map_err(|_| CognitionExecutionError::InvalidResponse)?;
+    if output.schema_version != 1
+        || output.invocation_id != snapshot.invocation_id.as_str()
+        || output.provider_response_id != response.id
+        || output.text.trim().is_empty()
+    {
+        return Err(CognitionExecutionError::InvalidResponse);
+    }
+    Ok(CognitionExecutionResult {
+        invocation_id: snapshot.invocation_id.clone(),
         provider_response_id: response.id,
         text: output.text,
         artifact_locator: artifact.locator,

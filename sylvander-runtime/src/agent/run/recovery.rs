@@ -9,10 +9,11 @@ use uuid::Uuid;
 
 use crate::observability::{RuntimeEvent, RuntimeObservability};
 use crate::storage::session::{
-    ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryWrite,
-    PerceptionRecoveryClassification, PerceptionRecoveryWrite, PersistedTurnCompletion,
-    RecoveryClassification, SessionStore, SessionStoreError, ToolCallAdvance,
-    ToolExecutionPosition, ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
+    CognitionRecoveryClassification, CognitionRecoveryWrite, ModelRecoveryClassification,
+    ModelRecoveryDecision, ModelRecoveryWrite, PerceptionRecoveryClassification,
+    PerceptionRecoveryWrite, PersistedTurnCompletion, RecoveryClassification, SessionStore,
+    SessionStoreError, ToolCallAdvance, ToolExecutionPosition, ToolRecoveryDecision,
+    ToolRecoveryReason, ToolRecoveryWrite,
 };
 use crate::storage::workspace_journal::{WorkspaceJournal, WorkspaceMutationRecovery};
 
@@ -29,6 +30,8 @@ pub(crate) struct BootRecoverySummary {
     pub model_classified: u64,
     pub perception_discovered: u64,
     pub perception_classified: u64,
+    pub cognition_discovered: u64,
+    pub cognition_classified: u64,
     pub turns_completed: u64,
     pub recovery_owner: Option<String>,
 }
@@ -59,6 +62,14 @@ pub(crate) async fn classify_interrupted_tool_calls(
     recover_interrupted_perceptions(
         store.clone(),
         observability,
+        &owner,
+        observed_at,
+        lease_expires_at,
+        &mut summary,
+    )
+    .await?;
+    recover_interrupted_cognition(
+        store.clone(),
         &owner,
         observed_at,
         lease_expires_at,
@@ -176,6 +187,42 @@ pub(crate) async fn classify_interrupted_tool_calls(
         });
     }
     Ok(summary)
+}
+
+async fn recover_interrupted_cognition(
+    store: Arc<dyn SessionStore>,
+    owner: &str,
+    observed_at: i64,
+    lease_expires_at: i64,
+    summary: &mut BootRecoverySummary,
+) -> Result<(), SessionStoreError> {
+    let invocations = store.interrupted_cognition_invocations().await?;
+    summary.cognition_discovered = invocations.len() as u64;
+    for invocation in invocations {
+        if active_lease_decision(
+            invocation.recovery_decision,
+            invocation.recovery_lease_expires_at,
+            observed_at,
+        )
+        .is_some()
+        {
+            summary.lease_deferred = summary.lease_deferred.saturating_add(1);
+            continue;
+        }
+        let classification = CognitionRecoveryClassification::for_interrupted(invocation.position);
+        store
+            .classify_cognition_recovery(CognitionRecoveryWrite {
+                invocation_id: invocation.invocation_id,
+                expected_revision: invocation.ledger_revision,
+                recovery_owner: owner.to_owned(),
+                observed_at,
+                lease_expires_at,
+                classification,
+            })
+            .await?;
+        summary.cognition_classified = summary.cognition_classified.saturating_add(1);
+    }
+    Ok(())
 }
 
 async fn recover_interrupted_perceptions(
