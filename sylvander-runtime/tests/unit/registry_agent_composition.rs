@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
-use crate::storage::session::{SessionLifetime, SessionStore, SqliteSessionStore, StoredSession};
+use crate::storage::session::{SessionStore, SqliteSessionStore};
 use serde_json::json;
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_api::{
@@ -184,15 +184,11 @@ async fn persisted_session_with_overrides(
         .attach_authenticated_session(session_id.clone(), metadata.clone())
         .await
         .expect("attach authenticated session");
-    let mut stored = StoredSession::new(
-        session_id.clone(),
-        name,
-        SessionLifetime::Persistent,
-        metadata,
-        vec![agent.spec.id.clone()],
-    );
-    stored.effective_config = Some(resolve_session_config(agent, &overrides, None, None).unwrap());
-    store.save(&stored).await.unwrap();
+    let effective = resolve_session_config(agent, &overrides, None, None).unwrap();
+    store
+        .update_config(&session_id, 0, overrides, effective)
+        .await
+        .unwrap();
     session_id
 }
 

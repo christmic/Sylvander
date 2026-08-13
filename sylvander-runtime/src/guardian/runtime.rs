@@ -2301,12 +2301,18 @@ fn create_parent(path: &Path) -> Result<(), GuardianRuntimeError> {
 }
 
 fn owner_from_session(session: &StoredSession) -> Result<RuntimeOwnerScope, GuardianRuntimeError> {
-    let agent_id = session
-        .effective_config
-        .as_ref()
-        .map(|effective| &effective.agent_id)
-        .filter(|agent_id| session.agents.contains(agent_id))
-        .ok_or(GuardianRuntimeError::InvalidConfiguration)?;
+    let agent_id = if let Some(effective) = &session.effective_config {
+        session
+            .agents
+            .contains(&effective.agent_id)
+            .then_some(&effective.agent_id)
+            .ok_or(GuardianRuntimeError::InvalidConfiguration)?
+    } else {
+        let [agent_id] = session.agents.as_slice() else {
+            return Err(GuardianRuntimeError::InvalidConfiguration);
+        };
+        agent_id
+    };
     if session.metadata.user_id.trim().is_empty() {
         return Err(GuardianRuntimeError::InvalidConfiguration);
     }

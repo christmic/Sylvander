@@ -2057,6 +2057,15 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
         }
         stored.effective_config = Some(effective);
         store.save(&stored).await.expect("save tampered session");
+        let membership = crate::runtime::initial_session_membership(
+            &stored,
+            stored.effective_config.as_ref().unwrap(),
+        )
+        .unwrap();
+        store
+            .save_session_membership(&membership, None)
+            .await
+            .unwrap();
 
         let error = run
             .handle_message(BusMessage::user_chat(
