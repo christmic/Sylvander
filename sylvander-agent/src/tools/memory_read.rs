@@ -10,12 +10,12 @@ use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_core::InputSchema;
 
+use crate::execution::tool_context::{Cap, ToolContext};
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
-use crate::tool_context::ToolContext;
 
 use super::memory::MemoryStore;
 
@@ -82,7 +82,7 @@ impl ToolExecutor for MemoryReadTool {
         call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         let input = call.input();
-        if !ctx.has_cap(crate::tool_context::Cap::MemoryRead) {
+        if !ctx.has_cap(Cap::MemoryRead) {
             return Ok(ToolOutput::err("memory read capability not granted"));
         }
         reject_unknown_fields(input, &["query", "limit", "kind", "min_importance"])?;

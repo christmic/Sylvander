@@ -7,14 +7,14 @@ use async_trait::async_trait;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
+use crate::execution::tool_context::{Cap, ToolContext};
+use crate::execution::workspace::WorkspaceExecutorError;
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutionMode, ToolExecutionPolicy,
     ToolExecutor, ToolOutput, ToolPreparation, ToolPrepareError, ToolSpec,
 };
-use crate::tool_context::{Cap, ToolContext};
-use crate::workspace_executor::WorkspaceExecutorError;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;

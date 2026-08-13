@@ -3,11 +3,11 @@
 //! Worker tools can propose typed candidates, but they cannot choose owners,
 //! issue Guardian authority, or write canonical stores. The Runtime implements
 //! these traits and derives all ownership from
-//! [`ToolContext`](crate::tool_context::ToolContext).
+//! [`ToolContext`](crate::execution::tool_context::ToolContext).
 
 use async_trait::async_trait;
 
-use crate::tool_context::ToolContext;
+use crate::execution::tool_context::ToolContext;
 use crate::turn::identity::{AgentId, SessionId, UserId};
 
 /// Governed destination proposed by a Worker.

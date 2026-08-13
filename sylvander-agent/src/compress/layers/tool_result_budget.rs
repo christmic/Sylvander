@@ -10,10 +10,10 @@ use std::pin::Pin;
 
 use sylvander_llm_core::{ContentBlock, ToolResultContent};
 
-use crate::artifact::{ArtifactStoreError, ArtifactWrite};
 use crate::compress::CompressContext;
 use crate::compress::error::{CompactionError, CompactionFailureCode};
 use crate::compress::layer::{CompressionLayer, LayerReport};
+use crate::execution::artifact::{ArtifactStoreError, ArtifactWrite};
 
 /// Default maximum inline characters before plain text is retained externally.
 pub const DEFAULT_MAX_INLINE_CHARS: usize = 5_000;

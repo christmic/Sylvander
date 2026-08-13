@@ -11,12 +11,12 @@ use serde_json::{Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
 use crate::curated_memory::{CuratedMemoryScope, MemoryCandidateSink, MemoryCandidateSubmission};
+use crate::execution::tool_context::{Cap, ToolContext};
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
-use crate::tool_context::ToolContext;
 
 use super::memory::{MemoryAppend, MemoryStore};
 
@@ -100,7 +100,7 @@ impl ToolExecutor for MemoryWriteTool {
         call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
         let input = call.input();
-        if !ctx.has_cap(crate::tool_context::Cap::MemoryWrite) {
+        if !ctx.has_cap(Cap::MemoryWrite) {
             return Ok(ToolOutput::err("memory write capability not granted"));
         }
         reject_unknown_fields(input, &["content", "tags", "scope"])?;

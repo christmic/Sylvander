@@ -1,7 +1,7 @@
 //! Location-neutral retention port for artifacts produced during one turn.
 //!
 //! Runtime binds an implementation to the authenticated user, Agent, Session,
-//! and turn before constructing [`AgentExecutionPorts`](crate::execution_ports::AgentExecutionPorts).
+//! and turn before constructing [`AgentExecutionPorts`](crate::execution::ports::AgentExecutionPorts).
 //! Agent can submit content and correlation metadata, but it cannot select a
 //! backend, path, tenant, retention rule, or encryption key.
 
@@ -49,5 +49,5 @@ pub trait TurnArtifactStore: Send + Sync {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/artifact.rs"]
+#[path = "../../tests/unit/artifact.rs"]
 mod tests;

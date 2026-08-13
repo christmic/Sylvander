@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+use crate::execution::workspace::{
+    WorkspaceExecutor, WorkspaceQueryLimits, WorkspaceSearchRequest, WorkspaceTarget,
+};
 use crate::tools::memory::{
     Importance, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
-};
-use crate::workspace_executor::{
-    WorkspaceExecutor, WorkspaceQueryLimits, WorkspaceSearchRequest, WorkspaceTarget,
 };
 
 pub const TURN_CONTEXT_SCHEMA_VERSION: u16 = 1;

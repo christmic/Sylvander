@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use sylvander_llm_core::InputSchema;
 
+use crate::execution::tool_context::ToolContext;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
-use crate::tool_context::ToolContext;
 
 #[derive(Default)]
 pub struct StartBackgroundTaskTool;

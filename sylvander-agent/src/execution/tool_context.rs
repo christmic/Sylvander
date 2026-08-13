@@ -8,7 +8,7 @@
 //!   — Runtime-validated actor, logical workspace, capabilities, timeout, and
 //!   correlation for one Agent execution. It is deliberately not a wire type.
 //!
-//! - [`ToolContext`](crate::tool_context::ToolContext) (this struct) — "everything a single tool
+//! - [`ToolContext`](crate::execution::tool_context::ToolContext) (this struct) — "everything a single tool
 //!   invocation needs": owns an `AgentExecutionContext` for authority +
 //!   tool-specific concerns (execution budget, surface capabilities).
 //!   Short-lived: created per tool call by the agent loop.
@@ -33,9 +33,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::execution::mutation_journal::WorkspaceMutationJournal;
+use crate::execution::workspace::{
+    UnavailableExecutor, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceTarget,
+};
 use crate::turn::execution_context::AgentExecutionContext;
-use crate::workspace_executor::{UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget};
-use crate::workspace_journal::WorkspaceMutationJournal;
 
 #[cfg(test)]
 fn default_workspace_executor() -> Arc<dyn WorkspaceExecutor> {
@@ -168,20 +170,16 @@ impl ToolContext {
     /// fails closed.
     pub(crate) fn require_execution_target(
         &self,
-    ) -> Result<&WorkspaceTarget, crate::workspace_executor::WorkspaceExecutorError> {
+    ) -> Result<&WorkspaceTarget, WorkspaceExecutorError> {
         if self.execution_target.id.trim().is_empty() {
-            return Err(
-                crate::workspace_executor::WorkspaceExecutorError::InvalidRequest(
-                    "execution target id is required".into(),
-                ),
-            );
+            return Err(WorkspaceExecutorError::InvalidRequest(
+                "execution target id is required".into(),
+            ));
         }
         if self.execution_target.workspace_path.as_os_str().is_empty() {
-            return Err(
-                crate::workspace_executor::WorkspaceExecutorError::InvalidPath(
-                    "workspace path is required".into(),
-                ),
-            );
+            return Err(WorkspaceExecutorError::InvalidPath(
+                "workspace path is required".into(),
+            ));
         }
         Ok(&self.execution_target)
     }
@@ -365,5 +363,5 @@ pub mod defaults {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../tests/unit/tool_context.rs"]
+#[path = "../../tests/unit/tool_context.rs"]
 mod tests;

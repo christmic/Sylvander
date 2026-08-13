@@ -9,14 +9,16 @@ use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
+use crate::execution::tool_context::{Cap, ToolContext};
+use crate::execution::workspace::{
+    WorkspaceCommandProgressSink, WorkspaceCommandStream, WorkspaceExecutorError,
+};
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolProgressSink,
     ToolSpec,
 };
-use crate::tool_context::{Cap, ToolContext};
-use crate::workspace_executor::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 // Tool results enter both the model context and the TUI transcript. Keep the
@@ -157,7 +159,7 @@ impl CommandTool {
         }
         let output = match result {
             Ok(output) => output,
-            Err(crate::workspace_executor::WorkspaceExecutorError::Timeout(timeout)) => {
+            Err(WorkspaceExecutorError::Timeout(timeout)) => {
                 return Err(ToolError::Timeout(timeout));
             }
             Err(error) => return Ok(ToolOutput::err(error.to_string())),

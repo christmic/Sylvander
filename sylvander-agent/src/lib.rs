@@ -86,13 +86,12 @@
 
 #![doc(html_root_url = "https://docs.rs/sylvander-agent/0.1.0")]
 
-/// Turn-bound, location-neutral artifact retention port.
-pub mod artifact;
 /// Context-window compaction contracts and pipeline implementations.
 pub mod compress;
 /// Runtime-owned Guardian candidate and curated-context contracts.
 pub mod curated_memory;
-pub mod execution_ports;
+/// Runtime-injected execution capabilities for one bounded Agent turn.
+pub mod execution;
 /// User decisions and bounded background-work boundaries for one turn.
 pub mod interaction;
 /// Provider-compatible iterative model/tool execution loop.
@@ -104,14 +103,16 @@ pub mod turn;
 
 // Public facade for the established crate API. Internal code uses `turn::*`
 // paths so the physical ownership remains visible during development.
+pub use execution::{
+    artifact, mutation_journal as workspace_journal, ports as execution_ports, tool_context,
+    workspace as workspace_executor,
+};
 pub use interaction::{
     approval, ask_user as ask_user_gate, background_task as task_gate, plan as plan_gate,
 };
 pub use turn::{conversation, error, event, execution_context, identity, outcome, request, time};
 /// Tool registration, schemas, invocation, and normalized output.
 pub mod tool;
-/// Runtime-derived capability, identity, workspace, and execution budget context.
-pub mod tool_context;
 /// Central actor-aware authorization and audit contract for tool execution.
 pub mod tool_invocation;
 /// Built-in filesystem, memory, plan, and task tools.
@@ -124,10 +125,6 @@ pub mod user_profile;
 pub mod user_profile_prompt;
 /// Runtime abstraction for retrieving authorized user profiles.
 pub mod user_profile_provider;
-/// Location-neutral filesystem and command execution contract.
-pub mod workspace_executor;
-/// Durable workspace-change journal used for review and recovery.
-pub mod workspace_journal;
 
 #[cfg(test)]
 #[path = "../tests/unit/support.rs"]

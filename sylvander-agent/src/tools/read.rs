@@ -17,13 +17,14 @@ use serde_json::{Value, json};
 
 use sylvander_llm_core::InputSchema;
 
+use crate::execution::tool_context::{Cap, ToolContext};
+use crate::execution::workspace::WorkspaceExecutorError;
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolProgressSink,
     ToolSpec,
 };
-use crate::tool_context::ToolContext;
 
 const MAX_READ_FILE_BYTES: usize = 1024 * 1024;
 
@@ -66,7 +67,7 @@ impl ToolExecutor for ReadTool {
         ctx: &ToolContext,
         call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
-        if !ctx.has_cap(crate::tool_context::Cap::Read) {
+        if !ctx.has_cap(Cap::Read) {
             return Ok(ToolOutput::err(
                 "read capability not granted for this invocation",
             ));
@@ -88,12 +89,12 @@ impl ToolExecutor for ReadTool {
             .await
         {
             Ok(read) => read,
-            Err(crate::workspace_executor::WorkspaceExecutorError::InvalidPath(_)) => {
+            Err(WorkspaceExecutorError::InvalidPath(_)) => {
                 return Err(ToolError::Other(format!(
                     "path `{path_str}` escapes workspace"
                 )));
             }
-            Err(crate::workspace_executor::WorkspaceExecutorError::Io(error)) => {
+            Err(WorkspaceExecutorError::Io(error)) => {
                 return Ok(ToolOutput::err(format!(
                     "cannot resolve `{path_str}`: {error}"
                 )));

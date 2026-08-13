@@ -17,7 +17,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::tool_context::ToolContext;
+use crate::execution::tool_context::ToolContext;
 
 /// Security-relevant execution class declared by a tool implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

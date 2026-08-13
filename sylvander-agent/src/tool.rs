@@ -18,9 +18,9 @@ use thiserror::Error;
 
 use sylvander_llm_core::{CacheHint, InputSchema, ToolDefinition as LlmToolDefinition};
 
-use crate::tool_context::ToolContext;
+use crate::execution::tool_context::ToolContext;
+use crate::execution::workspace::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 use crate::tool_invocation::{ToolInvocationClass, ToolInvocationDescriptor};
-use crate::workspace_executor::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 
 pub(crate) const TOOL_PROGRESS_CHANNEL_CAPACITY: usize = 64;
 pub(crate) const TOOL_PROGRESS_OMITTED_MARKER: &str =

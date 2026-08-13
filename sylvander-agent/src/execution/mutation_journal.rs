@@ -63,5 +63,5 @@ pub trait WorkspaceMutationJournal: Debug + Send + Sync {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/workspace_journal.rs"]
+#[path = "../../tests/unit/workspace_journal.rs"]
 mod tests;

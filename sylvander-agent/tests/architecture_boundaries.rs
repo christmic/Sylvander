@@ -1,9 +1,8 @@
 //! Executable negative-dependency rules for the Agent execution kernel.
 //!
-//! Cargo cannot express dependencies for a subset of one crate. Until the
-//! remaining Runtime-owned modules leave `sylvander-agent`, this test prevents
-//! the already-neutral kernel from regaining API, Runtime, or provider-adapter
-//! imports during ordinary refactoring.
+//! Cargo cannot express dependencies for a subset of one crate. This test
+//! prevents the neutral execution kernel and its immediate contracts from
+//! gaining API, Runtime, or provider-adapter imports during refactoring.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,13 +12,13 @@ const KERNEL_MODULES: &[&str] = &[
     "turn/error.rs",
     "turn/event.rs",
     "turn/execution_context.rs",
-    "execution_ports.rs",
+    "execution/ports.rs",
     "loop_.rs",
     "turn/outcome.rs",
-    "plan_gate.rs",
+    "interaction/plan.rs",
     "turn/request.rs",
     "tool.rs",
-    "tool_context.rs",
+    "execution/tool_context.rs",
     "tool_invocation.rs",
 ];
 

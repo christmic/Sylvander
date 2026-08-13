@@ -13,12 +13,12 @@ use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_core::InputSchema;
 
+use crate::execution::tool_context::{Cap, ToolContext};
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
-use crate::tool_context::ToolContext;
 
 const MAX_EDIT_FILE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -73,7 +73,7 @@ impl ToolExecutor for EditTool {
         ctx: &ToolContext,
         call: &PreparedToolCall,
     ) -> Result<ToolOutput, ToolError> {
-        if !ctx.has_cap(crate::tool_context::Cap::Write) {
+        if !ctx.has_cap(Cap::Write) {
             return Ok(ToolOutput::err(
                 "write capability not granted for this invocation",
             ));

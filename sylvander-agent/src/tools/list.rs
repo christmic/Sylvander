@@ -4,14 +4,14 @@ use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 use sylvander_llm_core::InputSchema;
 
+use crate::execution::tool_context::{Cap, ToolContext};
+use crate::execution::workspace::{
+    MAX_QUERY_RESULTS, WorkspaceEntryKind, WorkspaceListRequest, WorkspaceQueryLimits,
+};
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
-};
-use crate::tool_context::{Cap, ToolContext};
-use crate::workspace_executor::{
-    MAX_QUERY_RESULTS, WorkspaceEntryKind, WorkspaceListRequest, WorkspaceQueryLimits,
 };
 
 /// List files and directories through the invocation's workspace executor.

@@ -26,8 +26,8 @@ pub use auto_compact_llm::{AutoCompactLlm, DEFAULT_SUMMARY_PROMPT};
 
 use sylvander_llm_core::{ChatMessage, ModelInfo, TokenUsage};
 
-use crate::artifact::TurnArtifactStore;
 use crate::compress::pipeline::CompressionPipeline;
+use crate::execution::artifact::TurnArtifactStore;
 
 /// Context passed to each layer in a pipeline.
 ///

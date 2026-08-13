@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use sylvander_llm_core::ModelProvider;
 
-use crate::artifact::TurnArtifactStore;
+use crate::execution::artifact::TurnArtifactStore;
+use crate::execution::tool_context::ToolContext;
 use crate::interaction::approval::ApprovalGate;
 use crate::interaction::ask_user::AskUserGate;
 use crate::interaction::background_task::TaskGate;
 use crate::interaction::plan::PlanGate;
-use crate::tool_context::ToolContext;
 use crate::tool_invocation::{ToolInvocationGateway, ToolInvocationSnapshot};
 use crate::turn::error::AgentLoopError;
 use crate::turn::request::AgentTurnRequest;
@@ -161,5 +161,5 @@ impl std::fmt::Debug for AgentExecutionPorts {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/execution_ports.rs"]
+#[path = "../../tests/unit/execution_ports.rs"]
 mod tests;

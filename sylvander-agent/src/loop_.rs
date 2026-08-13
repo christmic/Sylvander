@@ -31,8 +31,9 @@ use sylvander_llm_core::{
     ModelRequest, ModelResponse, ProviderErrorKind, StopReason, TokenUsage,
 };
 
-use super::execution_ports::AgentExecutionPorts;
 use super::tool::{AgentHookPhase, ToolRegistry};
+use crate::execution::ports::AgentExecutionPorts;
+use crate::execution::tool_context::ToolContext;
 use crate::interaction::approval::{ApprovalDecision, ToolUseRequest};
 use crate::interaction::plan::PlanDecision;
 use crate::turn::conversation::ConversationSnapshot;
@@ -1004,7 +1005,7 @@ struct RegisteredToolExecutionRequest {
     prepared_call: Result<crate::tool::PreparedToolCall, crate::tool::ToolPrepareError>,
     invocation_gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
     invocation_snapshot: crate::tool_invocation::ToolInvocationSnapshot,
-    tool_context: crate::tool_context::ToolContext,
+    tool_context: ToolContext,
     call_id: String,
     route: String,
     timeout: Option<std::time::Duration>,

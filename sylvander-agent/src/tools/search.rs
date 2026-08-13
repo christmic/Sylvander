@@ -4,13 +4,15 @@ use async_trait::async_trait;
 use serde_json::json;
 use sylvander_llm_core::InputSchema;
 
+use crate::execution::tool_context::{Cap, ToolContext};
+use crate::execution::workspace::{
+    MAX_QUERY_RESULTS, WorkspaceQueryLimits, WorkspaceSearchRequest,
+};
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
-use crate::tool_context::{Cap, ToolContext};
-use crate::workspace_executor::{MAX_QUERY_RESULTS, WorkspaceQueryLimits, WorkspaceSearchRequest};
 
 use super::list::{optional_string, parse_max_results, strict_object};
 
