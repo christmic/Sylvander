@@ -398,6 +398,7 @@ impl AgentWorkspaceCoordinator {
             )
             .await
             .map_err(AgentWorkspaceCoordinatorError::Worktree)?;
+        let recovered = matches!(position, WorkspaceMergePosition::Applied { .. });
         let merge = match position {
             WorkspaceMergePosition::Ready => {
                 self.worktrees
@@ -443,7 +444,10 @@ impl AgentWorkspaceCoordinator {
             .await
             .map_err(AgentWorkspaceCoordinatorError::Store)?;
         match merge {
-            Ok(_) => Ok(WorkspaceIntegrationOutcome::Applied(finished)),
+            Ok(_) => Ok(WorkspaceIntegrationOutcome::Applied {
+                integration: finished,
+                recovered,
+            }),
             Err(reason) => Ok(WorkspaceIntegrationOutcome::Conflicted {
                 integration: finished,
                 reason,
@@ -579,7 +583,10 @@ pub enum AgentWorkspaceCoordinatorError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceIntegrationOutcome {
-    Applied(WorkspaceIntegration),
+    Applied {
+        integration: WorkspaceIntegration,
+        recovered: bool,
+    },
     Conflicted {
         integration: WorkspaceIntegration,
         reason: String,

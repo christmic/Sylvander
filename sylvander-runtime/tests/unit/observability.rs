@@ -36,6 +36,11 @@ fn coordination_facts_reduce_to_low_cardinality_counters() {
         RuntimeCoordinationOutcome::ModeratorRejected,
         RuntimeCoordinationOutcome::ArbitrationApplied,
         RuntimeCoordinationOutcome::MailboxEscalated,
+        RuntimeCoordinationOutcome::WorkspaceReviewPrepared,
+        RuntimeCoordinationOutcome::WorkspaceApproved,
+        RuntimeCoordinationOutcome::WorkspaceApplied,
+        RuntimeCoordinationOutcome::WorkspaceMergeRecovered,
+        RuntimeCoordinationOutcome::WorkspaceConflicted,
     ] {
         recorder.record(RuntimeEvent::CoordinationTransition {
             session_id: session_id.clone(),
@@ -45,7 +50,7 @@ fn coordination_facts_reduce_to_low_cardinality_counters() {
     assert_eq!(
         recorder.snapshot(),
         RuntimeObservabilitySnapshot {
-            event_count: 12,
+            event_count: 17,
             coordination_enqueued: 1,
             coordination_tasks_created: 1,
             coordination_tasks_transitioned: 1,
@@ -58,6 +63,11 @@ fn coordination_facts_reduce_to_low_cardinality_counters() {
             coordination_moderator_rejected: 1,
             coordination_arbitration_applied: 1,
             coordination_mailbox_escalated: 1,
+            workspace_reviews_prepared: 1,
+            workspace_integrations_approved: 1,
+            workspace_integrations_applied: 1,
+            workspace_merges_recovered: 1,
+            workspace_integrations_conflicted: 1,
             ..RuntimeObservabilitySnapshot::default()
         }
     );

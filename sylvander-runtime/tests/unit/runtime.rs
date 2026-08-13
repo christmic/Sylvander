@@ -1011,10 +1011,14 @@ async fn moderator_approves_and_applies_the_exact_agent_workspace_revision() {
         .apply_agent_workspace(&actor, &integration_id)
         .await
         .unwrap();
-    let crate::workspace::agent_views::WorkspaceIntegrationOutcome::Applied(applied) = outcome
+    let crate::workspace::agent_views::WorkspaceIntegrationOutcome::Applied {
+        integration: applied,
+        recovered,
+    } = outcome
     else {
         panic!("approved exact workspace revision must apply");
     };
+    assert!(!recovered);
     assert!(applied.merge_revision.is_some());
     assert_eq!(
         std::fs::read_to_string(session_workspace.join("tracked.txt")).unwrap(),
@@ -1025,6 +1029,12 @@ async fn moderator_approves_and_applies_the_exact_agent_workspace_revision() {
         "before\n",
         "the Session target remains isolated from the user's source checkout"
     );
+    let observed = runtime.operational_snapshot().await.unwrap().observability;
+    assert_eq!(observed.workspace_reviews_prepared, 1);
+    assert_eq!(observed.workspace_integrations_approved, 1);
+    assert_eq!(observed.workspace_integrations_applied, 1);
+    assert_eq!(observed.workspace_merges_recovered, 0);
+    assert_eq!(observed.workspace_integrations_conflicted, 0);
 
     runtime.shutdown().await.unwrap();
 }

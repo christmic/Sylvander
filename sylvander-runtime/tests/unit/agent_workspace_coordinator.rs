@@ -181,7 +181,10 @@ async fn provisioning_commits_exact_worktree_receipt_before_activation() {
             .apply_integration(&integration.approval.integration_id, 12)
             .await
             .unwrap(),
-        WorkspaceIntegrationOutcome::Applied(_)
+        WorkspaceIntegrationOutcome::Applied {
+            recovered: false,
+            ..
+        }
     ));
     assert_eq!(
         fs::read_to_string(repository.path().join("tracked.txt")).unwrap(),
@@ -458,7 +461,11 @@ async fn applying_position_recovers_an_exact_merge_receipt_after_restart() {
         .apply_integration(&integration.approval.integration_id, 13)
         .await
         .unwrap();
-    let WorkspaceIntegrationOutcome::Applied(recovered) = recovered else {
+    let WorkspaceIntegrationOutcome::Applied {
+        integration: recovered,
+        recovered: true,
+    } = recovered
+    else {
         panic!("exact merge receipt must recover as applied");
     };
     assert_eq!(applying.state, WorkspaceIntegrationState::Applying);

@@ -30,10 +30,16 @@ impl Runtime {
         super::validate_coordination_actor(actor, &view.session_id, actor.agent_instance_id())?;
         self.authorize_workspace_reviewer(actor.agent_instance_id(), &view)
             .await?;
-        coordinator
+        let review = coordinator
             .prepare_review(view_id)
             .await
-            .map_err(workspace_error)
+            .map_err(workspace_error)?;
+        self.observability
+            .record(crate::observability::RuntimeEvent::CoordinationTransition {
+                session_id: review.session_id.clone(),
+                outcome: crate::observability::RuntimeCoordinationOutcome::WorkspaceReviewPrepared,
+            });
+        Ok(review)
     }
 
     /// Persist moderator approval only if Runtime recomputes the same review.
@@ -65,7 +71,7 @@ impl Runtime {
             .topology(&view.session_id)
             .await
             .map_err(super::coordination_error)?;
-        coordinator
+        let integration = coordinator
             .approve_integration(
                 request.integration_id,
                 &request.view_id,
@@ -76,7 +82,13 @@ impl Runtime {
                 crate::session::now_secs(),
             )
             .await
-            .map_err(workspace_error)
+            .map_err(workspace_error)?;
+        self.observability
+            .record(crate::observability::RuntimeEvent::CoordinationTransition {
+                session_id: integration.approval.session_id.clone(),
+                outcome: crate::observability::RuntimeCoordinationOutcome::WorkspaceApproved,
+            });
+        Ok(integration)
     }
 
     /// Apply or recover an exact approved merge under moderator authority.
@@ -98,10 +110,27 @@ impl Runtime {
             &integration.approval.session_id,
             &integration.approval.approved_by,
         )?;
-        coordinator
+        let outcome = coordinator
             .apply_integration(integration_id, crate::session::now_secs())
             .await
-            .map_err(workspace_error)
+            .map_err(workspace_error)?;
+        let observation = match &outcome {
+            WorkspaceIntegrationOutcome::Applied {
+                recovered: true, ..
+            } => crate::observability::RuntimeCoordinationOutcome::WorkspaceMergeRecovered,
+            WorkspaceIntegrationOutcome::Applied {
+                recovered: false, ..
+            } => crate::observability::RuntimeCoordinationOutcome::WorkspaceApplied,
+            WorkspaceIntegrationOutcome::Conflicted { .. } => {
+                crate::observability::RuntimeCoordinationOutcome::WorkspaceConflicted
+            }
+        };
+        self.observability
+            .record(crate::observability::RuntimeEvent::CoordinationTransition {
+                session_id: integration.approval.session_id,
+                outcome: observation,
+            });
+        Ok(outcome)
     }
 
     fn workspace_coordinator(

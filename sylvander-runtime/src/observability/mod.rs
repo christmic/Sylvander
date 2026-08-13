@@ -144,6 +144,11 @@ pub(crate) enum RuntimeCoordinationOutcome {
     ModeratorRejected,
     ArbitrationApplied,
     MailboxEscalated,
+    WorkspaceReviewPrepared,
+    WorkspaceApproved,
+    WorkspaceApplied,
+    WorkspaceMergeRecovered,
+    WorkspaceConflicted,
 }
 
 impl RuntimeCoordinationOutcome {
@@ -163,6 +168,11 @@ impl RuntimeCoordinationOutcome {
             Self::ModeratorRejected => "moderator_rejected",
             Self::ArbitrationApplied => "arbitration_applied",
             Self::MailboxEscalated => "mailbox_escalated",
+            Self::WorkspaceReviewPrepared => "workspace_review_prepared",
+            Self::WorkspaceApproved => "workspace_approved",
+            Self::WorkspaceApplied => "workspace_applied",
+            Self::WorkspaceMergeRecovered => "workspace_merge_recovered",
+            Self::WorkspaceConflicted => "workspace_conflicted",
         }
     }
 }
@@ -455,6 +465,11 @@ pub struct RuntimeObservabilitySnapshot {
     pub coordination_moderator_rejected: u64,
     pub coordination_arbitration_applied: u64,
     pub coordination_mailbox_escalated: u64,
+    pub workspace_reviews_prepared: u64,
+    pub workspace_integrations_approved: u64,
+    pub workspace_integrations_applied: u64,
+    pub workspace_merges_recovered: u64,
+    pub workspace_integrations_conflicted: u64,
     /// Chat envelopes admitted but not yet accepted by the message bus.
     pub active_dispatches: u64,
     /// Turns with a start fact and no terminal fact yet.
@@ -520,6 +535,11 @@ struct RuntimeObservabilityInner {
     coordination_moderator_rejected: AtomicU64,
     coordination_arbitration_applied: AtomicU64,
     coordination_mailbox_escalated: AtomicU64,
+    workspace_reviews_prepared: AtomicU64,
+    workspace_integrations_approved: AtomicU64,
+    workspace_integrations_applied: AtomicU64,
+    workspace_merges_recovered: AtomicU64,
+    workspace_integrations_conflicted: AtomicU64,
 }
 
 /// Cloneable handle to the mandatory built-in Runtime recorder.
@@ -573,6 +593,11 @@ impl RuntimeObservability {
                 coordination_moderator_rejected: AtomicU64::new(0),
                 coordination_arbitration_applied: AtomicU64::new(0),
                 coordination_mailbox_escalated: AtomicU64::new(0),
+                workspace_reviews_prepared: AtomicU64::new(0),
+                workspace_integrations_approved: AtomicU64::new(0),
+                workspace_integrations_applied: AtomicU64::new(0),
+                workspace_merges_recovered: AtomicU64::new(0),
+                workspace_integrations_conflicted: AtomicU64::new(0),
             }),
         }
     }
@@ -670,6 +695,21 @@ impl RuntimeObservability {
                     }
                     RuntimeCoordinationOutcome::MailboxEscalated => {
                         &self.inner.coordination_mailbox_escalated
+                    }
+                    RuntimeCoordinationOutcome::WorkspaceReviewPrepared => {
+                        &self.inner.workspace_reviews_prepared
+                    }
+                    RuntimeCoordinationOutcome::WorkspaceApproved => {
+                        &self.inner.workspace_integrations_approved
+                    }
+                    RuntimeCoordinationOutcome::WorkspaceApplied => {
+                        &self.inner.workspace_integrations_applied
+                    }
+                    RuntimeCoordinationOutcome::WorkspaceMergeRecovered => {
+                        &self.inner.workspace_merges_recovered
+                    }
+                    RuntimeCoordinationOutcome::WorkspaceConflicted => {
+                        &self.inner.workspace_integrations_conflicted
                     }
                 }
                 .fetch_add(1, Ordering::Relaxed);
@@ -1093,6 +1133,26 @@ impl RuntimeObservability {
             coordination_mailbox_escalated: self
                 .inner
                 .coordination_mailbox_escalated
+                .load(Ordering::Relaxed),
+            workspace_reviews_prepared: self
+                .inner
+                .workspace_reviews_prepared
+                .load(Ordering::Relaxed),
+            workspace_integrations_approved: self
+                .inner
+                .workspace_integrations_approved
+                .load(Ordering::Relaxed),
+            workspace_integrations_applied: self
+                .inner
+                .workspace_integrations_applied
+                .load(Ordering::Relaxed),
+            workspace_merges_recovered: self
+                .inner
+                .workspace_merges_recovered
+                .load(Ordering::Relaxed),
+            workspace_integrations_conflicted: self
+                .inner
+                .workspace_integrations_conflicted
                 .load(Ordering::Relaxed),
             active_dispatches: timing.dispatch_started.len() as u64,
             active_turns: timing.turn_started.len() as u64,
