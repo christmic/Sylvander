@@ -53,6 +53,10 @@ Expansion emits every selected scenario and repetition for every
 filtered or counted as passes. Duplicate provider/protocol/model coordinates
 and empty dimensions are invalid input.
 
+The runner separates review from execution. `plan` expands and emits only
+content-safe coordinates without resolving credentials or dispatching network
+requests. `run` is the explicit, potentially billable operation.
+
 ## Dependency boundary
 
 The crate may depend on `sylvander-llm-core`, current provider adapters, and the

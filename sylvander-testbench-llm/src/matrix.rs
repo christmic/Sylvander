@@ -28,7 +28,8 @@ pub struct ModelBinding {
 pub struct ProtocolBinding {
     pub provider_id: String,
     pub protocol: String,
-    pub endpoint_origin: String,
+    /// Full adapter base URL; result evidence reduces it to a content-safe origin.
+    pub base_url: String,
     /// Name of the environment variable containing the credential, never its value.
     pub credential_env: String,
     pub supported_scenarios: BTreeSet<BenchScenario>,
@@ -85,7 +86,7 @@ impl BenchMatrix {
         for binding in &self.bindings {
             if binding.provider_id.is_empty()
                 || binding.protocol.is_empty()
-                || binding.endpoint_origin.is_empty()
+                || binding.base_url.is_empty()
                 || binding.credential_env.is_empty()
             {
                 return Err("protocol binding identifiers must not be empty");

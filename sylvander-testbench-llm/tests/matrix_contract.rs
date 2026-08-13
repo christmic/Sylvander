@@ -18,7 +18,7 @@ fn expands_protocol_provider_model_scenario_and_run_dimensions() {
             ProtocolBinding {
                 provider_id: "provider-a".into(),
                 protocol: "openai_responses".into(),
-                endpoint_origin: "https://a.example".into(),
+                base_url: "https://a.example/v1".into(),
                 credential_env: "PROVIDER_A_KEY".into(),
                 supported_scenarios: scenarios(&[BenchScenario::Connectivity]),
                 models: vec![
@@ -35,7 +35,7 @@ fn expands_protocol_provider_model_scenario_and_run_dimensions() {
             ProtocolBinding {
                 provider_id: "provider-b".into(),
                 protocol: "anthropic_messages".into(),
-                endpoint_origin: "https://b.example".into(),
+                base_url: "https://b.example".into(),
                 credential_env: "PROVIDER_B_KEY".into(),
                 supported_scenarios: scenarios(&[
                     BenchScenario::Connectivity,
@@ -81,7 +81,7 @@ fn rejects_duplicate_provider_protocol_model_coordinates() {
     let binding = ProtocolBinding {
         provider_id: "provider-a".into(),
         protocol: "openai_chat_completions".into(),
-        endpoint_origin: "https://a.example".into(),
+        base_url: "https://a.example/v1".into(),
         credential_env: "PROVIDER_A_KEY".into(),
         supported_scenarios: scenarios(&[BenchScenario::Connectivity]),
         models: vec![ModelBinding {
