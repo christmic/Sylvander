@@ -43,6 +43,8 @@ src/
 │       ├── projection.rs  # Agent/storage facts mapped to public Runtime APIs
 │       ├── recovery.rs    # boot classification of interrupted tool effects
 │       └── error.rs       # run failures and persistence operation context
+├── coordination/          # multi-Agent topology, tasks, messaging, governance
+│   └── service/           # message, spawn, handoff, arbitration applications
 ├── session/               # context, authenticated boundary, identity binding
 ├── registry/              # Agent/model/provider revision governance
 ├── provider/              # catalogs and request-scoped provider routing
@@ -82,6 +84,10 @@ classifications, and records content-free facts. It does not execute or replay
 a tool; concrete reconciliation and continuation are separate gates.
 `agent/run.rs` retains the shared run/Session state and coordinates these
 services but does not implement their protocols or construction.
+A Session may contain multiple first-class Agent instances. Their identity,
+history, topology, mailbox, moderator fencing, crash recovery, and isolated
+workspace contract is specified in
+[`multi-agent-runtime.md`](multi-agent-runtime.md).
 A directory containing only a renamed former file does not satisfy this
 physical-layout rule.
 
