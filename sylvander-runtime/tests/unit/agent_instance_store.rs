@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstanceOrigin, ApprovalRoute, HistoryView, SessionAgentRole,
 };
+use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::SessionMetadata;
 use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{SessionLifetime, SessionStore, StoredSession};
-use sylvander_api::{AgentId, AgentInstanceId, SwarmId, TaskId};
+use sylvander_api::{AgentId, AgentInstanceId, HandoffId, SwarmId, TaskId};
 
 use super::*;
 
@@ -300,5 +301,97 @@ async fn task_creation_is_durable_and_duplicate_safe() {
     assert!(matches!(
         store.update_task(&illicit_assignment, 1).await.unwrap_err(),
         SessionStoreError::Invalid(_)
+    ));
+}
+
+#[tokio::test]
+async fn handoff_proposal_is_validated_persisted_and_deduplicated() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    let topology = SessionTopology::new(
+        SessionId::new("multi-session"),
+        0,
+        0,
+        vec![
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("worker-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("coordinator-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+        ],
+        11,
+        &membership,
+    )
+    .unwrap();
+    store
+        .save_topology(&topology, &membership, None)
+        .await
+        .unwrap();
+    let task = CoordinationTask {
+        task_id: TaskId::new("task-handoff"),
+        session_id: SessionId::new("multi-session"),
+        membership_revision: 0,
+        parent_task_id: None,
+        created_by: AgentInstanceId::new("moderator-1"),
+        assigned_to: Some(AgentInstanceId::new("worker-1")),
+        objective: "transfer governed work".into(),
+        state: CoordinationTaskState::Running,
+        token_budget: 2_000,
+        consumed_tokens: 100,
+        max_handoffs: 2,
+        handoff_count: 0,
+        revision: 0,
+        created_at: 12,
+        updated_at: 12,
+    };
+    store.create_task(&task).await.unwrap();
+    let handoff = TaskHandoff {
+        handoff_id: HandoffId::new("handoff-1"),
+        session_id: task.session_id.clone(),
+        task_id: task.task_id.clone(),
+        from_instance_id: AgentInstanceId::new("worker-1"),
+        to_instance_id: AgentInstanceId::new("coordinator-1"),
+        requested_by: AgentInstanceId::new("worker-1"),
+        arbitrator_instance_id: AgentInstanceId::new("moderator-1"),
+        task_revision: 0,
+        topology_revision: 0,
+        reason: "coordinator owns the next stage".into(),
+        state: HandoffState::Proposed,
+        revision: 0,
+        expires_at: 100,
+        created_at: 13,
+        updated_at: 13,
+    };
+
+    store
+        .create_handoff(&handoff, &membership, &topology, 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.handoff(&handoff.handoff_id).await.unwrap(),
+        Some(handoff.clone())
+    );
+    assert!(matches!(
+        store
+            .create_handoff(&handoff, &membership, &topology, 50)
+            .await
+            .unwrap_err(),
+        SessionStoreError::HandoffConflict {
+            expected: None,
+            actual: Some(0),
+            ..
+        }
     ));
 }

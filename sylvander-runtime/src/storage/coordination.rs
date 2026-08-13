@@ -2,8 +2,9 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, params};
-use sylvander_api::{AgentInstanceId, SessionId, TaskId};
+use sylvander_api::{AgentInstanceId, HandoffId, SessionId, TaskId};
 
+use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::membership::SessionMembership;
@@ -32,6 +33,19 @@ pub trait CoordinationStore: Send + Sync {
     ) -> Result<(), SessionStoreError>;
 
     async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError>;
+
+    async fn create_handoff(
+        &self,
+        handoff: &TaskHandoff,
+        membership: &SessionMembership,
+        topology: &SessionTopology,
+        now: i64,
+    ) -> Result<(), SessionStoreError>;
+
+    async fn handoff(
+        &self,
+        handoff_id: &HandoffId,
+    ) -> Result<Option<TaskHandoff>, SessionStoreError>;
 }
 
 #[async_trait]
@@ -362,6 +376,179 @@ impl CoordinationStore for SqliteSessionStore {
         let task_id = task_id.clone();
         self.run(move |connection| load_task(connection, &task_id))
             .await
+    }
+
+    async fn create_handoff(
+        &self,
+        handoff: &TaskHandoff,
+        membership: &SessionMembership,
+        topology: &SessionTopology,
+        now: i64,
+    ) -> Result<(), SessionStoreError> {
+        let handoff = handoff.clone();
+        let membership = membership.clone();
+        let topology = topology.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let actual_revision = transaction
+                .query_row(
+                    "SELECT revision FROM task_handoffs WHERE handoff_id=?1",
+                    [&handoff.handoff_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|value| checked_u64(value, "handoff revision"))
+                .transpose()?;
+            if actual_revision.is_some() {
+                return Err(SessionStoreError::HandoffConflict {
+                    handoff_id: handoff.handoff_id,
+                    expected: None,
+                    actual: actual_revision,
+                });
+            }
+            let task = load_task(&transaction, &handoff.task_id)?.ok_or_else(|| {
+                SessionStoreError::Invalid("handoff task does not exist".into())
+            })?;
+            handoff
+                .validate_proposal(&task, &topology, &membership, now)
+                .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+            let durable_facts = transaction
+                .query_row(
+                    "SELECT g.membership_revision,t.topology_revision \
+                     FROM session_governance g JOIN session_topology t ON t.session_id=g.session_id \
+                     WHERE g.session_id=?1",
+                    [&handoff.session_id.0],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()?;
+            let Some((membership_revision, topology_revision)) = durable_facts else {
+                return Err(SessionStoreError::Invalid(
+                    "handoff requires durable membership and topology".into(),
+                ));
+            };
+            if checked_u64(membership_revision, "membership revision")?
+                != membership.governance.membership_revision
+                || checked_u64(topology_revision, "topology revision")?
+                    != handoff.topology_revision
+            {
+                return Err(SessionStoreError::Invalid(
+                    "handoff durable facts changed before commit".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO task_handoffs \
+                 (handoff_id,session_id,task_id,from_instance_id,to_instance_id,
+                  requested_by_instance_id,arbitrator_instance_id,task_revision,
+                  topology_revision,reason,state,revision,expires_at,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,0,?12,?13,?14)",
+                params![
+                    handoff.handoff_id.0,
+                    handoff.session_id.0,
+                    handoff.task_id.0,
+                    handoff.from_instance_id.0,
+                    handoff.to_instance_id.0,
+                    handoff.requested_by.0,
+                    handoff.arbitrator_instance_id.0,
+                    checked_i64(handoff.task_revision, "handoff task revision")?,
+                    checked_i64(handoff.topology_revision, "handoff topology revision")?,
+                    handoff.reason,
+                    encode_handoff_state(handoff.state),
+                    handoff.expires_at,
+                    handoff.created_at,
+                    handoff.updated_at,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn handoff(
+        &self,
+        handoff_id: &HandoffId,
+    ) -> Result<Option<TaskHandoff>, SessionStoreError> {
+        let handoff_id = handoff_id.clone();
+        self.run(move |connection| load_handoff(connection, &handoff_id))
+            .await
+    }
+}
+
+fn load_handoff(
+    connection: &rusqlite::Connection,
+    handoff_id: &HandoffId,
+) -> Result<Option<TaskHandoff>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT session_id,task_id,from_instance_id,to_instance_id,
+                    requested_by_instance_id,arbitrator_instance_id,task_revision,
+                    topology_revision,reason,state,revision,expires_at,created_at,updated_at
+             FROM task_handoffs WHERE handoff_id=?1",
+            [&handoff_id.0],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, i64>(12)?,
+                    row.get::<_, i64>(13)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            Ok(TaskHandoff {
+                handoff_id: handoff_id.clone(),
+                session_id: SessionId::new(row.0),
+                task_id: TaskId::new(row.1),
+                from_instance_id: AgentInstanceId::new(row.2),
+                to_instance_id: AgentInstanceId::new(row.3),
+                requested_by: AgentInstanceId::new(row.4),
+                arbitrator_instance_id: AgentInstanceId::new(row.5),
+                task_revision: checked_u64(row.6, "handoff task revision")?,
+                topology_revision: checked_u64(row.7, "handoff topology revision")?,
+                reason: row.8,
+                state: decode_handoff_state(&row.9)?,
+                revision: checked_u64(row.10, "handoff revision")?,
+                expires_at: row.11,
+                created_at: row.12,
+                updated_at: row.13,
+            })
+        })
+        .transpose()
+}
+
+const fn encode_handoff_state(state: HandoffState) -> &'static str {
+    match state {
+        HandoffState::Proposed => "proposed",
+        HandoffState::AwaitingArbitration => "awaiting_arbitration",
+        HandoffState::Accepted => "accepted",
+        HandoffState::Rejected => "rejected",
+        HandoffState::Expired => "expired",
+        HandoffState::Cancelled => "cancelled",
+    }
+}
+
+fn decode_handoff_state(state: &str) -> Result<HandoffState, SessionStoreError> {
+    match state {
+        "proposed" => Ok(HandoffState::Proposed),
+        "awaiting_arbitration" => Ok(HandoffState::AwaitingArbitration),
+        "accepted" => Ok(HandoffState::Accepted),
+        "rejected" => Ok(HandoffState::Rejected),
+        "expired" => Ok(HandoffState::Expired),
+        "cancelled" => Ok(HandoffState::Cancelled),
+        _ => Err(SessionStoreError::Store(
+            "stored handoff state is invalid".into(),
+        )),
     }
 }
 

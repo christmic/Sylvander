@@ -32,7 +32,7 @@ use sylvander_agent::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy}
 use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
 use sylvander_api::session::{SessionConfigOverrides, SessionEffectiveConfig};
-use sylvander_api::{TaskId, UserId};
+use sylvander_api::{HandoffId, TaskId, UserId};
 
 // ---------------------------------------------------------------------------
 // SessionLifetime
@@ -786,6 +786,12 @@ pub enum SessionStoreError {
     #[error("task {task_id} revision conflict: expected {expected:?}, actual {actual:?}")]
     TaskConflict {
         task_id: TaskId,
+        expected: Option<u64>,
+        actual: Option<u64>,
+    },
+    #[error("handoff {handoff_id:?} revision conflict: expected {expected:?}, actual {actual:?}")]
+    HandoffConflict {
+        handoff_id: HandoffId,
         expected: Option<u64>,
         actual: Option<u64>,
     },
