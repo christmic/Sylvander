@@ -2,6 +2,7 @@ use super::*;
 use crate::execution_context::AgentExecutionContext;
 use crate::test_support::MockTool;
 use crate::tool_context::ToolContext;
+use crate::tools::{ReadTool, WriteTool};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
@@ -236,6 +237,39 @@ fn execution_mode_defaults_are_conservative_for_side_effects() {
 }
 
 #[test]
+fn prompt_guidelines_follow_only_the_visible_frozen_tool_set() {
+    let registry = ToolRegistry::new()
+        .register(crate::tools::WriteTool::new())
+        .register(crate::tools::ReadTool::new());
+    let guidelines = registry.prompt_guidelines().expect("active guidelines");
+    assert!(guidelines.contains("[Read]"));
+    assert!(guidelines.contains("[Write]"));
+    assert!(guidelines.find("[Read]").unwrap() < guidelines.find("[Write]").unwrap());
+
+    let read_only = registry.retain_named(&["Read"]);
+    let guidelines = read_only.prompt_guidelines().expect("read guideline");
+    assert!(guidelines.contains("[Read]"));
+    assert!(!guidelines.contains("[Write]"));
+    assert_ne!(
+        registry.capability_revision(),
+        read_only.capability_revision()
+    );
+}
+
+#[test]
+fn restricted_catalog_uses_stable_builtin_names() {
+    let registry = ToolRegistry::new()
+        .register(ReadTool::new())
+        .register(WriteTool::new());
+
+    let restricted = registry.retain_named(&[ReadTool::NAME]);
+
+    assert!(restricted.get(ReadTool::NAME).is_some());
+    assert!(restricted.get("read").is_none());
+    assert!(restricted.get("Write").is_none());
+}
+
+#[test]
 fn process_tools_fail_closed_without_an_enforcing_sandbox() {
     let command = ToolRegistry::new()
         .register(crate::tools::CommandTool::new())
@@ -340,6 +374,10 @@ fn capability_revision_tracks_tool_contract_and_hooks() {
         "Read a different contract",
         ToolOutput::ok(""),
     ));
+    let changed_guideline = ToolRegistry::new().register(
+        MockTool::new("Read", "Read a file", ToolOutput::ok(""))
+            .with_prompt_guidelines(["Read before editing."]),
+    );
     let hooked = base.clone().with_hooks(vec![ToolHookConfig {
         name: "policy".into(),
         phase: AgentHookPhase::BeforeTool,
@@ -359,6 +397,10 @@ fn capability_revision_tracks_tool_contract_and_hooks() {
     assert_ne!(
         base.capability_revision(),
         changed_schema.capability_revision()
+    );
+    assert_ne!(
+        base.capability_revision(),
+        changed_guideline.capability_revision()
     );
     assert_ne!(base.capability_revision(), hooked.capability_revision());
     assert_ne!(

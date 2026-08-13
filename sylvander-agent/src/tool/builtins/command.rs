@@ -63,6 +63,9 @@ impl ToolDefinition for CommandTool {
             .schema,
             crate::tool::invocation::ToolInvocationClass::Terminal,
         )
+        .with_prompt_guidelines([
+            "Use the dedicated Read, List, Search, Edit, Write, and Git tools instead of shell equivalents when available.",
+        ])
     }
 
     fn prepare(

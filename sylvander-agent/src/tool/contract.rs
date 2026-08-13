@@ -181,6 +181,9 @@ pub struct ToolSpec {
     pub input_schema: JsonValue,
     pub exposure: ToolExposure,
     pub search_hint: String,
+    /// Trusted instructions contributed only while this tool is visible to
+    /// the model. Runtime composes them from the frozen turn registry.
+    pub prompt_guidelines: Vec<String>,
     pub invocation_class: ToolInvocationClass,
 }
 
@@ -199,6 +202,7 @@ impl ToolSpec {
             description,
             input_schema,
             exposure: ToolExposure::Immediate,
+            prompt_guidelines: Vec::new(),
             invocation_class,
         }
     }
@@ -218,6 +222,20 @@ impl ToolSpec {
                 .or_insert(JsonValue::Bool(false));
         }
         Self::immediate(name, description, input_schema, invocation_class)
+    }
+
+    /// Attach usage rules that must track this tool's actual turn exposure.
+    #[must_use]
+    pub fn with_prompt_guidelines(
+        mut self,
+        guidelines: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.prompt_guidelines = guidelines
+            .into_iter()
+            .map(Into::into)
+            .filter(|guideline| !guideline.trim().is_empty())
+            .collect();
+        self
     }
 }
 

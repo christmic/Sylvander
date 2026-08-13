@@ -64,6 +64,10 @@ impl ToolDefinition for EditTool {
             .schema,
             crate::tool::invocation::ToolInvocationClass::FilesystemMutation,
         )
+        .with_prompt_guidelines([
+            "Use Edit for bounded changes to existing text; use the exact text most recently observed.",
+            "If Edit reports a revision conflict, read the file again before retrying.",
+        ])
     }
 }
 

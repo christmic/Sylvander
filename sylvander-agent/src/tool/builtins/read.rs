@@ -33,6 +33,9 @@ const MAX_READ_FILE_BYTES: usize = 1024 * 1024;
 pub struct ReadTool;
 
 impl ReadTool {
+    /// Stable tool name used by Runtime when deriving restricted catalogs.
+    pub const NAME: &'static str = "Read";
+
     /// Create a stateless read tool.
     #[must_use]
     pub const fn new() -> Self {
@@ -43,7 +46,7 @@ impl ReadTool {
 impl ToolDefinition for ReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::strict(
-            "Read",
+            Self::NAME,
             "Read the contents of a file at the given path (relative to the current workspace). Returns the file's text content. Rejects paths that escape the workspace.",
             InputSchema::new_with_properties(
                 json!({
@@ -57,6 +60,9 @@ impl ToolDefinition for ReadTool {
             .schema,
             crate::tool::invocation::ToolInvocationClass::Read,
         )
+        .with_prompt_guidelines([
+            "Use Read for file content instead of invoking a shell command.",
+        ])
     }
 }
 

@@ -30,6 +30,9 @@ pub struct MemoryReadTool {
 }
 
 impl MemoryReadTool {
+    /// Stable tool name used by Runtime when deriving restricted catalogs.
+    pub const NAME: &'static str = "read_memory";
+
     /// Create a new `read_memory` tool backed by the given store.
     #[must_use]
     pub fn new(store: Arc<dyn MemoryStore>) -> Self {
@@ -62,7 +65,7 @@ impl ToolDefinition for MemoryReadTool {
         );
         schema.schema["additionalProperties"] = JsonValue::Bool(false);
         ToolSpec::strict(
-            "read_memory",
+            Self::NAME,
             "Search your long-term memory for relevant information. \
          Use this when you need to recall user preferences, \
          project-specific context, or past decisions that are not \
@@ -71,6 +74,9 @@ impl ToolDefinition for MemoryReadTool {
             schema.schema,
             crate::tool::invocation::ToolInvocationClass::Read,
         )
+        .with_prompt_guidelines([
+            "Use read_memory only when relevant context is absent from the current conversation.",
+        ])
     }
 }
 

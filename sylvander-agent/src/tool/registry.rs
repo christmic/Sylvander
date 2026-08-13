@@ -300,6 +300,35 @@ impl ToolRegistry {
         descriptors
     }
 
+    /// Build deterministic prompt guidance for only the tools whose complete
+    /// definitions are visible in this frozen turn.
+    #[must_use]
+    pub fn prompt_guidelines(&self) -> Option<String> {
+        let mut tools = self
+            .snapshot()
+            .into_values()
+            .map(|tool| tool.spec())
+            .filter(|spec| {
+                spec.exposure == ToolExposure::Immediate && !spec.prompt_guidelines.is_empty()
+            })
+            .collect::<Vec<_>>();
+        tools.sort_by(|left, right| left.name.cmp(&right.name));
+        let mut lines = Vec::new();
+        for spec in tools {
+            lines.extend(
+                spec.prompt_guidelines
+                    .into_iter()
+                    .map(|guideline| format!("- [{}] {guideline}", spec.name)),
+            );
+        }
+        (!lines.is_empty()).then(|| {
+            format!(
+                "Tool usage guidelines for the active tool set:\n{}",
+                lines.join("\n")
+            )
+        })
+    }
+
     /// Return the content-addressed revision of the executable tool surface.
     ///
     /// The revision covers the current dynamic snapshot, schemas,
@@ -322,6 +351,7 @@ impl ToolRegistry {
                         ToolExposure::Deferred => "deferred",
                     },
                     "search_hint": spec.search_hint,
+                    "prompt_guidelines": spec.prompt_guidelines,
                 })
             })
             .collect::<Vec<_>>();

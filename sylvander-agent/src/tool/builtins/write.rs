@@ -53,6 +53,9 @@ impl ToolDefinition for WriteTool {
             .schema,
             crate::tool::invocation::ToolInvocationClass::FilesystemMutation,
         )
+        .with_prompt_guidelines([
+            "Use Write only when replacing the complete file or creating a new file; prefer Edit for bounded changes.",
+        ])
     }
 }
 

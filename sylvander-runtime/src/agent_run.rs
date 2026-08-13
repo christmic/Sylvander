@@ -85,7 +85,7 @@ use sylvander_agent::tool::{
     RegisteredTool, ToolRegistry, ToolSourceFeature, ToolSourceKind, ToolSourceStatus,
 };
 use sylvander_agent::tool_context::{Cap, NetworkPolicy, ToolContext};
-use sylvander_agent::tools::MemoryReadTool;
+use sylvander_agent::tools::{MemoryReadTool, ReadTool};
 use sylvander_agent::turn::conversation::ConversationSnapshot;
 use sylvander_agent::turn::error::AgentLoopError;
 use sylvander_agent::turn::event::ModelRetryCause;
@@ -171,6 +171,28 @@ fn public_tool_feature(feature: ToolSourceFeature) -> PlatformFeature {
         capabilities: feature.capabilities,
         reloadable: feature.reloadable,
     }
+}
+
+fn turn_system_instructions(
+    system_prompt: &str,
+    model: &ModelInfo,
+    tools: &ToolRegistry,
+) -> Vec<SystemInstruction> {
+    let cache_hint = model
+        .capabilities
+        .contains(ModelCapabilities::PROMPT_CACHING)
+        .then_some(CacheHint::Ephemeral);
+    let mut instructions = vec![SystemInstruction {
+        text: system_prompt.to_owned(),
+        cache_hint,
+    }];
+    if let Some(tool_guidelines) = tools.prompt_guidelines() {
+        instructions.push(SystemInstruction {
+            text: tool_guidelines,
+            cache_hint,
+        });
+    }
+    instructions
 }
 
 // ---------------------------------------------------------------------------
@@ -2871,13 +2893,8 @@ impl AgentRunInner {
                     }
                 }),
             });
-        let system_instructions = vec![SystemInstruction {
-            text: system_prompt,
-            cache_hint: selected_exact_model
-                .capabilities
-                .contains(ModelCapabilities::PROMPT_CACHING)
-                .then_some(CacheHint::Ephemeral),
-        }];
+        let system_instructions =
+            turn_system_instructions(&system_prompt, &selected_exact_model, &turn_tools);
         let request = AgentTurnRequest {
             conversation: ConversationSnapshot::new(history),
             model: selected_exact_model,
@@ -2890,7 +2907,12 @@ impl AgentRunInner {
         background_request.conversation = ConversationSnapshot::default();
         background_request.tools = background_request
             .tools
-            .retain_named(&["read", "memory_read"]);
+            .retain_named(&[ReadTool::NAME, MemoryReadTool::NAME]);
+        background_request.system_instructions = turn_system_instructions(
+            &system_prompt,
+            &background_request.model,
+            &background_request.tools,
+        );
         let mut background_ports = AgentExecutionPorts::new(
             self.model_provider.clone(),
             tool_context.clone(),
