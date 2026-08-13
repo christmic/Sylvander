@@ -455,12 +455,23 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
-async fn run_local_command(
+pub(super) async fn run_local_command(
     target: &WorkspaceTarget,
     command: &str,
     timeout: Duration,
     environment: &BTreeMap<String, String>,
     progress: Option<WorkspaceCommandProgressSink>,
+) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+    run_local_command_with_profile(target, command, timeout, environment, progress, None).await
+}
+
+pub(super) async fn run_local_command_with_profile(
+    target: &WorkspaceTarget,
+    command: &str,
+    timeout: Duration,
+    environment: &BTreeMap<String, String>,
+    progress: Option<WorkspaceCommandProgressSink>,
+    sandbox_profile: Option<&str>,
 ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
     let root = tokio::fs::canonicalize(&target.workspace_path).await?;
     if !root.is_dir() {
@@ -469,7 +480,16 @@ async fn run_local_command(
             root.display()
         )));
     }
-    let mut process = shell_command(command);
+    let mut process = match sandbox_profile {
+        Some(profile) => {
+            let mut process = tokio::process::Command::new("/usr/bin/sandbox-exec");
+            process.args(["-p", profile, "/bin/sh", "-lc", command]);
+            #[cfg(unix)]
+            process.as_std_mut().process_group(0);
+            process
+        }
+        None => shell_command(command),
+    };
     process
         .current_dir(root)
         .envs(environment)
