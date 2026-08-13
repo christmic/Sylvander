@@ -16,8 +16,8 @@ pub enum RecorderError {
     EventOrder(&'static str),
     #[error("tool call arguments must be a JSON object")]
     NonObjectToolArguments,
-    #[error("Agent execution failed")]
-    AgentFailed,
+    #[error("Agent execution failed: {0}")]
+    AgentFailed(String),
     #[error("trajectory is incomplete")]
     Incomplete,
     #[error("Harbor task isolation was not attested")]
@@ -131,7 +131,9 @@ impl TrajectoryRecorder {
                 });
                 self.completed = true;
             }
-            AgentEvent::Error(_) => return Err(RecorderError::AgentFailed),
+            AgentEvent::Error(error) => {
+                return Err(RecorderError::AgentFailed(error.to_string()));
+            }
             AgentEvent::ModelRetry { .. }
             | AgentEvent::ToolCallOutputDelta { .. }
             | AgentEvent::ToolTimedOut { .. }

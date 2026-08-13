@@ -15,6 +15,15 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
 
+def _bounded_diagnostic(stderr: str | None, stdout: str | None, secret: str) -> str:
+    output = "\n".join(
+        value.strip() for value in (stderr, stdout) if value and value.strip()
+    )
+    if secret:
+        output = output.replace(secret, "[REDACTED]")
+    return f"{output[:2_000]}…" if len(output) > 2_000 else output
+
+
 class SylvanderAgent(BaseAgent):
     """Run Sylvander inside the task environment and emit native ATIF v1.7."""
 
@@ -51,6 +60,15 @@ class SylvanderAgent(BaseAgent):
         if result.return_code != 0:
             raise RuntimeError(
                 "Sylvander benchmark binary is absent from the task image"
+            )
+        probe = await environment.exec(
+            f"{shlex.quote(self.BINARY)} --self-check", timeout_sec=10
+        )
+        if probe.return_code != 0:
+            output = _bounded_diagnostic(probe.stderr, probe.stdout, "")
+            detail = f": {output}" if output else ""
+            raise RuntimeError(
+                f"Sylvander benchmark binary cannot execute in the task image{detail}"
             )
 
     @override
@@ -107,7 +125,11 @@ class SylvanderAgent(BaseAgent):
             env=env,
         )
         if result.return_code != 0:
-            raise RuntimeError("Sylvander benchmark runner exited non-zero")
+            output = _bounded_diagnostic(result.stderr, result.stdout, api_key)
+            detail = f": {output}" if output else ""
+            raise RuntimeError(
+                f"Sylvander benchmark runner exited {result.return_code}{detail}"
+            )
         metrics_result = await environment.exec(
             "python3 -c \"import json; "
             "m=json.load(open('/logs/agent/trajectory.json'))['final_metrics']; "

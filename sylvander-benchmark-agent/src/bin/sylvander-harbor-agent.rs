@@ -7,6 +7,10 @@ use sylvander_benchmark_agent::provider::{AgentProtocol, AgentProviderBinding, b
 
 #[tokio::main]
 async fn main() {
+    if env::args().any(|argument| argument == "--self-check") {
+        println!("sylvander-harbor-agent ready");
+        return;
+    }
     if let Err(error) = run().await {
         eprintln!("sylvander Harbor adapter failed: {error}");
         std::process::exit(1);

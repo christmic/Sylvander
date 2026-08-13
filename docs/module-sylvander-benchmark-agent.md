@@ -115,10 +115,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-benchmark-agent --no-deps --lo
 External live runs additionally validate exported trajectories with Harbor's
 reference validator and retain the exact harness/dataset revision.
 
-The Podman/Harbor installation gate is separate from a scored benchmark. Its
-first pinned Terminal-Bench 2.0 task completed environment startup, Agent
-binary upload, and cleanup with zero exceptions; it made no model call and is
-not recorded as task-performance evidence.
+The Podman/Harbor installation gate is separate from a scored benchmark. The
+effective pinned Terminal-Bench 2.0 gate uses an architecture-matched static
+musl runner and executes its self-check after upload. Environment startup,
+runner execution, and cleanup completed with zero exceptions; the superseded
+file-presence-only gate is not accepted as executable evidence. Install-only
+makes no model call and is not recorded as task-performance evidence.
 
 After Harbor writes its per-trial result and ATIF trajectory, normalize the
 pair against one planned coordinate:

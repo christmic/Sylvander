@@ -24,6 +24,11 @@ Provider-specific compatibility switches are a comma-separated
 `SYLVANDER_HARBOR_PROVIDER_FEATURES` value and are validated by that selected
 protocol adapter, never inferred from the model name.
 
+The uploaded runner must match the task image architecture and should be a
+static musl executable. During `setup`, Harbor executes `--self-check`; an
+install-only gate therefore fails before scoring if the image cannot load the
+binary.
+
 Add `sylvander-benchmark-agent/harbor` to Python's import path. Credentials are
 passed through Harbor's Agent environment mechanism and never appear in the
 command, trajectory, final answer, or aggregate evidence.
@@ -32,6 +37,14 @@ The adapter writes the files Harbor expects:
 
 - `/logs/agent/trajectory.json` — ATIF v1.7;
 - `/logs/agent/final_answer.txt` — final user-visible Agent message.
+
+If the runner exits non-zero, the adapter retains a bounded stdout/stderr
+diagnostic in Harbor's exception artifact and replaces the active API key with
+`[REDACTED]` before persistence.
+
+Agent terminal errors retain their provider-neutral error chain rather than
+collapsing every failure to one generic message. This is diagnostic evidence,
+not a verifier result.
 
 Harbor owns environment isolation and verifier reward. The Rust runner owns the
 Agent execution and trajectory. This Python layer owns only lifecycle bridging.
@@ -55,8 +68,10 @@ The Sylvander custom Agent path does not use LiteLLM. A minimal Harbor install
 may omit it: provider requests are made by `sylvander-harbor-agent` through the
 same production protocol adapters exercised elsewhere in this repository.
 
-The 2026-08-13 install-only gate completed the Terminal-Bench 2.0
-`gpt2-codegolf` task with zero exceptions in 65 seconds. It pulled the task
-image, started the Podman container, uploaded the Linux arm64 Agent binary via
-Harbor's tar fallback, and cleaned the environment. Install-only does not call
-a model or produce a verifier score.
+The effective 2026-08-13 install-only gate used a static x86-64 musl runner and
+completed the Terminal-Bench 2.0 `gpt2-codegolf` task with zero exceptions in
+18 seconds. It started the Podman container, uploaded the runner via Harbor's
+tar fallback, executed the setup self-check, and cleaned the environment. An
+earlier 65-second gate only checked file presence and did not prove its arm64
+runner could execute in the amd64 task image; it is superseded. Install-only
+does not call a model or produce a verifier score.
