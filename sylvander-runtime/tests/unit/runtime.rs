@@ -1203,6 +1203,7 @@ fn channel_host_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> Runtime
         user_profiles: runtime.channel_host.user_profiles.clone(),
         worktrees: runtime.channel_host.worktrees.clone(),
         boundary: runtime.channel_host.boundary.clone(),
+        execution_service: runtime.channel_host.execution_service.clone(),
     }
 }
 

@@ -897,7 +897,11 @@ fn validate_local_workspace_root(
     let target = targets.get(&workspace.execution_target).ok_or_else(|| {
         CompositionError::MissingExecutionTarget(workspace.execution_target.clone())
     })?;
-    let ExecutionTransportConfig::Local { root: Some(root) } = target else {
+    let (ExecutionTransportConfig::Local { root: Some(root) }
+    | ExecutionTransportConfig::MacosSeatbelt {
+        root: Some(root), ..
+    }) = target
+    else {
         return Ok(());
     };
     if !workspace.path.is_absolute() || !workspace.path.starts_with(root) {
@@ -996,11 +1000,55 @@ pub(crate) fn build_execution_service(
             ExecutionTransportConfig::Local { .. } => {
                 ExecutionTargetRegistration::local(target.id.clone())
             }
+            ExecutionTransportConfig::MacosSeatbelt {
+                allow_local_fallback,
+                ..
+            } => select_macos_execution_target(
+                &target.id,
+                *allow_local_fallback,
+                macos_seatbelt_available(),
+            )?,
+            ExecutionTransportConfig::ClientWorker {
+                channel_instance_id,
+            } => ExecutionTargetRegistration::client_worker(
+                target.id.clone(),
+                channel_instance_id,
+                Arc::new(crate::execution::WorkspaceWorkerExecutor::new(
+                    target.id.clone(),
+                )),
+            ),
         };
         executors.insert(target.id.clone(), registration);
     }
     RuntimeExecutionService::new(executors.into_values())
         .map_err(|_| CompositionError::ExecutionTarget("registry".into()))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_seatbelt_available() -> bool {
+    crate::execution::MacosSeatbeltExecutor::available()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_seatbelt_available() -> bool {
+    false
+}
+
+fn select_macos_execution_target(
+    target_id: &str,
+    allow_local_fallback: bool,
+    seatbelt_available: bool,
+) -> Result<ExecutionTargetRegistration, CompositionError> {
+    if seatbelt_available {
+        #[cfg(target_os = "macos")]
+        return Ok(ExecutionTargetRegistration::macos_seatbelt(target_id));
+    }
+    if allow_local_fallback {
+        return Ok(ExecutionTargetRegistration::trusted_local_fallback(
+            target_id,
+        ));
+    }
+    Err(CompositionError::ExecutionTarget(target_id.to_owned()))
 }
 
 fn versioned_registry_revision_bindings(

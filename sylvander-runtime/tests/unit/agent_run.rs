@@ -2087,6 +2087,7 @@ async fn approval_timeout_rejects_and_clears_the_pending_request() {
             ToolInvocationClass::FilesystemMutation,
             ToolExecutionMode::Exclusive,
             ToolExecutionPolicy::workspace_write(),
+            sylvander_agent::risk::CommandRiskAssessment::routine(),
         ),
     };
     let task = tokio::spawn(async move { gate.check_batch(&[request]).await });
@@ -2819,6 +2820,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
                 ToolInvocationClass::FilesystemMutation,
                 ToolExecutionMode::Exclusive,
                 ToolExecutionPolicy::workspace_write(),
+                sylvander_agent::risk::CommandRiskAssessment::routine(),
             ),
         });
         run.inner.pending_approvals.lock().await.insert(

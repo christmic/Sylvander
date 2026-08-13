@@ -134,6 +134,51 @@ server-host workspace, clean writable Git workspaces receive the same default
 session worktree isolation as the local execution target before being mounted
 into the container.
 
+A native macOS target runs command processes through Seatbelt. Filesystem
+writes are restricted to the selected workspace, network access is denied, and
+descendants inherit the sandbox. Seatbelt does not claim container CPU or
+memory ceilings:
+
+```toml
+[[execution_targets]]
+id = "macos-native"
+
+[execution_targets.transport]
+kind = "macos_seatbelt"
+root = "/Users/operator/projects"
+allow_local_fallback = false
+```
+
+For a server-hosted Agent using a workspace on a user's Mac, configure an
+outbound worker target. The server stores no client path and never substitutes
+a server directory when the worker is offline:
+
+```toml
+[[execution_targets]]
+id = "alice-mac"
+
+[execution_targets.transport]
+kind = "client_worker"
+channel_instance_id = "alice-worker"
+```
+
+The server must also expose an authenticated `websocket` channel. On the Mac,
+start the built-in worker with a WSS endpoint ending in `/workspace-worker`:
+
+```sh
+SYLVANDER_WORKER_ENDPOINT=wss://agent.example.com/workspace-worker \
+SYLVANDER_WORKER_TOKEN='...' \
+SYLVANDER_WORKER_TARGET=alice-mac \
+SYLVANDER_WORKER_ROOT="$HOME/projects" \
+sylvander-workspace-worker
+```
+
+Workspace bindings use normalized paths relative to the worker root, such as
+`my-project`. The worker provides typed bounded Read/List/Search/Write/Edit/
+Git/Command operations, executes commands through Seatbelt, streams output,
+and cancels the local process tree when the server cancels or disconnects. It
+requires WSS and rejects local fallback so sandbox health stays truthful.
+
 Every operation is also started with a read-only root filesystem, a private
 64 MiB `/tmp`, no added capabilities, `no-new-privileges`, and explicit
 memory, CPU, and process ceilings. Resource values are validated at startup;

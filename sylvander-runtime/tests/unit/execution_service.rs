@@ -26,6 +26,8 @@ fn target_registry_rejects_blank_and_duplicate_identifiers() {
             executor: local.clone(),
             persistent_processes: unavailable("blank"),
             probe: None,
+            local_fallback: false,
+            worker_channel_instance: None,
         }]),
         Err(ExecutionServiceError::InvalidTargetId)
     ));
@@ -38,6 +40,8 @@ fn target_registry_rejects_blank_and_duplicate_identifiers() {
                 executor: local.clone(),
                 persistent_processes: unavailable("local"),
                 probe: None,
+                local_fallback: false,
+                worker_channel_instance: None,
             },
             ExecutionTargetRegistration {
                 target_id: "local".into(),
@@ -46,6 +50,8 @@ fn target_registry_rejects_blank_and_duplicate_identifiers() {
                 executor: local,
                 persistent_processes: unavailable("local"),
                 probe: None,
+                local_fallback: false,
+                worker_channel_instance: None,
             },
         ]),
         Err(ExecutionServiceError::DuplicateTargetId)
@@ -62,6 +68,8 @@ fn health_is_sorted_and_never_calls_unconfined_targets_sandboxes() {
             executor: Arc::new(LocalExecutor),
             persistent_processes: unavailable("ssh:build"),
             probe: None,
+            local_fallback: false,
+            worker_channel_instance: None,
         },
         ExecutionTargetRegistration {
             target_id: "container:review".into(),
@@ -70,6 +78,8 @@ fn health_is_sorted_and_never_calls_unconfined_targets_sandboxes() {
             executor: Arc::new(ContainerExecutor::new("docker", "review:latest").unwrap()),
             persistent_processes: unavailable("container:review"),
             probe: None,
+            local_fallback: false,
+            worker_channel_instance: None,
         },
         ExecutionTargetRegistration {
             target_id: "local".into(),
@@ -78,6 +88,8 @@ fn health_is_sorted_and_never_calls_unconfined_targets_sandboxes() {
             executor: Arc::new(LocalExecutor),
             persistent_processes: unavailable("local"),
             probe: None,
+            local_fallback: false,
+            worker_channel_instance: None,
         },
     ])
     .unwrap();

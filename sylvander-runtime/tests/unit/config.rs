@@ -496,6 +496,16 @@ fn local_execution_root_must_be_absolute_and_normalized() {
 }
 
 #[test]
+fn client_worker_requires_an_exact_websocket_channel_instance() {
+    let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+    config.execution_targets[0].transport = ExecutionTransportConfig::ClientWorker {
+        channel_instance_id: "missing-worker-channel".into(),
+    };
+    let errors = config.validate().unwrap_err().errors.join("\n");
+    assert!(errors.contains("requires WebSocket channel instance missing-worker-channel"));
+}
+
+#[test]
 fn container_runtime_and_image_are_single_non_option_arguments() {
     for (runtime, image) in [
         ("-runtime", "image"),

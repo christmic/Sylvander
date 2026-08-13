@@ -191,7 +191,8 @@ shape is that scalar plus five configured objects/collections:
 - `[[model_providers]]` — Anthropic-compatible (or other) provider
   definitions with credential references and per-model capability
   catalogs.
-- `[[execution_targets]]` — `local`, `ssh`, `container`, or `sandbox`
+- `[[execution_targets]]` — `local`, `macos_seatbelt`, `client_worker`, `ssh`,
+  or `container`
   backends with bounded resource ceilings.
 - `[[agents]]` — versioned Agent definitions: persona, model,
   permissions, workspace mounts, prompt profiles.

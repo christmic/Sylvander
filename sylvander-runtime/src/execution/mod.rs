@@ -23,13 +23,18 @@ mod coordinated;
 #[path = "../../tests/unit/execution_coordination.rs"]
 mod coordinated_tests;
 mod local;
+#[cfg(target_os = "macos")]
+mod macos_seatbelt;
 mod persistent;
 mod persistent_container;
 pub mod ssh;
+mod workspace_worker;
 
 pub use container::{ContainerExecutor, ContainerResourcePolicy};
 use coordinated::CoordinatedWorkspaceExecutor;
 pub(crate) use local::LocalExecutor;
+#[cfg(target_os = "macos")]
+pub(crate) use macos_seatbelt::MacosSeatbeltExecutor;
 #[cfg(test)]
 pub(crate) use persistent::PersistentProcessIsolation;
 pub(crate) use persistent::{
@@ -40,11 +45,14 @@ pub(crate) use persistent::{
 };
 pub(crate) use persistent_container::ContainerPersistentProcessEnvironment;
 pub use ssh::SshExecutor;
+pub(crate) use workspace_worker::{WorkspaceWorkerExecutor, WorkspaceWorkerHub};
 
 /// Concrete adapter family selected by trusted Runtime configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutionTargetKind {
     Local,
+    MacosSeatbelt,
+    ClientWorker,
     Ssh,
     Container,
 }
@@ -68,6 +76,7 @@ pub struct ExecutionTargetHealth {
     pub resource_limits: bool,
     pub process_tree: bool,
     pub sandbox_enforced: bool,
+    pub local_fallback: bool,
     pub probe_failures: u64,
     pub last_probe_succeeded: Option<bool>,
 }
@@ -95,6 +104,8 @@ pub(crate) struct ExecutionTargetRegistration {
     pub(crate) executor: Arc<dyn WorkspaceExecutor>,
     persistent_processes: Arc<dyn PersistentProcessEnvironment>,
     probe: Option<ExecutionTargetProbe>,
+    pub(crate) local_fallback: bool,
+    worker_channel_instance: Option<String>,
 }
 
 impl ExecutionTargetRegistration {
@@ -109,6 +120,34 @@ impl ExecutionTargetRegistration {
             status: ExecutionTargetStatus::Ready,
             executor: Arc::new(LocalExecutor),
             probe: None,
+            local_fallback: false,
+            worker_channel_instance: None,
+        }
+    }
+
+    pub(crate) fn trusted_local_fallback(target_id: impl Into<String>) -> Self {
+        let mut registration = Self::local(target_id);
+        registration.local_fallback = true;
+        registration
+    }
+
+    pub(crate) fn client_worker(
+        target_id: impl Into<String>,
+        channel_instance: impl Into<String>,
+        executor: Arc<WorkspaceWorkerExecutor>,
+    ) -> Self {
+        let target_id = target_id.into();
+        Self {
+            persistent_processes: Arc::new(UnavailablePersistentProcessEnvironment::new(
+                target_id.clone(),
+            )),
+            target_id,
+            kind: ExecutionTargetKind::ClientWorker,
+            status: ExecutionTargetStatus::Unverified,
+            executor,
+            probe: None,
+            local_fallback: false,
+            worker_channel_instance: Some(channel_instance.into()),
         }
     }
 
@@ -123,6 +162,25 @@ impl ExecutionTargetRegistration {
             status: ExecutionTargetStatus::Unverified,
             executor: executor.clone(),
             probe: Some(ExecutionTargetProbe::Ssh(executor)),
+            local_fallback: false,
+            worker_channel_instance: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn macos_seatbelt(target_id: impl Into<String>) -> Self {
+        let target_id = target_id.into();
+        Self {
+            persistent_processes: Arc::new(UnavailablePersistentProcessEnvironment::new(
+                target_id.clone(),
+            )),
+            target_id,
+            kind: ExecutionTargetKind::MacosSeatbelt,
+            status: ExecutionTargetStatus::Ready,
+            executor: Arc::new(MacosSeatbeltExecutor),
+            probe: None,
+            local_fallback: false,
+            worker_channel_instance: None,
         }
     }
 
@@ -138,6 +196,8 @@ impl ExecutionTargetRegistration {
             executor: executor.clone(),
             persistent_processes,
             probe: Some(ExecutionTargetProbe::Container(executor)),
+            local_fallback: false,
+            worker_channel_instance: None,
         }
     }
 }
@@ -147,6 +207,7 @@ struct ExecutionTargetEntry {
     persistent_processes: Arc<dyn PersistentProcessEnvironment>,
     probe: Option<ExecutionTargetProbe>,
     health: RwLock<ExecutionTargetHealth>,
+    worker_channel_instance: Option<String>,
 }
 
 /// Immutable Runtime registry for concrete execution environments.
@@ -181,10 +242,12 @@ impl RuntimeExecutionService {
                     network_denied: isolation.network_denied,
                     resource_limits: isolation.resource_limits,
                     process_tree: isolation.process_tree,
-                    sandbox_enforced: isolation.enforces_sandbox(),
+                    sandbox_enforced: isolation.enforces_process_sandbox(),
+                    local_fallback: registration.local_fallback,
                     probe_failures: 0,
                     last_probe_succeeded: None,
                 }),
+                worker_channel_instance: registration.worker_channel_instance,
             };
             if exact.insert(target_id, entry).is_some() {
                 return Err(ExecutionServiceError::DuplicateTargetId);
@@ -198,6 +261,18 @@ impl RuntimeExecutionService {
     /// Resolve one exact target without an implicit local fallback.
     pub(crate) fn resolve(&self, target_id: &str) -> Option<&Arc<dyn WorkspaceExecutor>> {
         self.targets.get(target_id).map(|entry| &entry.executor)
+    }
+
+    pub(crate) fn accepts_workspace_worker(&self, target_id: &str, channel_instance: &str) -> bool {
+        self.targets.get(target_id).is_some_and(|entry| {
+            entry
+                .health
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .kind
+                == ExecutionTargetKind::ClientWorker
+                && entry.worker_channel_instance.as_deref() == Some(channel_instance)
+        })
     }
 
     /// Resolve the persistent-process adapter for one exact target.
@@ -287,6 +362,8 @@ impl RuntimeExecutionService {
                     status: ExecutionTargetStatus::Unverified,
                     executor,
                     probe: None,
+                    local_fallback: false,
+                    worker_channel_instance: None,
                 }),
         )
     }
@@ -303,6 +380,8 @@ impl RuntimeExecutionService {
             executor: Arc::new(LocalExecutor),
             persistent_processes: environment,
             probe: None,
+            local_fallback: false,
+            worker_channel_instance: None,
         }
     }
 }

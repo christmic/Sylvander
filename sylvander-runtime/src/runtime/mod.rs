@@ -400,6 +400,7 @@ pub(crate) struct RuntimeChannelHost {
     user_profiles: Option<UserProfileStore>,
     worktrees: Option<Arc<coding_worktree::CodingWorktreeService>>,
     boundary: BoundaryGuard,
+    execution_service: RuntimeExecutionService,
 }
 
 pub(crate) struct RuntimeRevisionProvider {
@@ -676,6 +677,56 @@ impl RevisionedAgentRunProvider for RuntimeRevisionProvider {
 
 #[async_trait::async_trait]
 impl sylvander_channel::ChannelHost for RuntimeChannelHost {
+    async fn attach_workspace_worker(
+        &self,
+        boundary: &sylvander_api::BoundaryContext,
+        hello: &sylvander_api::WorkspaceWorkerHello,
+    ) -> Result<
+        (
+            String,
+            tokio::sync::mpsc::Receiver<sylvander_api::WorkspaceWorkerServerMessage>,
+        ),
+        sylvander_api::BoundaryError,
+    > {
+        require_principal(boundary, "attach_workspace_worker")?;
+        if !self
+            .execution_service
+            .accepts_workspace_worker(&hello.target_id, &boundary.channel_instance_id)
+        {
+            return Err(sylvander_api::BoundaryError::forbidden(
+                boundary,
+                "attach_workspace_worker",
+            ));
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let generation = crate::execution::WorkspaceWorkerHub::global()
+            .connect(hello, tx)
+            .await
+            .map_err(|()| {
+                sylvander_api::BoundaryError::forbidden(boundary, "attach_workspace_worker")
+            })?;
+        Ok((generation, rx))
+    }
+
+    async fn workspace_worker_event(
+        &self,
+        boundary: &sylvander_api::BoundaryContext,
+        generation: &str,
+        event: sylvander_api::WorkspaceWorkerEvent,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        require_principal(boundary, "workspace_worker_event")?;
+        crate::execution::WorkspaceWorkerHub::global()
+            .event(generation, event)
+            .await;
+        Ok(())
+    }
+
+    async fn detach_workspace_worker(&self, target_id: &str, generation: &str) {
+        crate::execution::WorkspaceWorkerHub::global()
+            .disconnect(target_id, generation)
+            .await;
+    }
+
     async fn reject_authentication(
         &self,
         boundary: &sylvander_api::BoundaryContext,
@@ -2974,6 +3025,8 @@ fn execution_target_supports_host_worktree(
         targets.get(target_id),
         Some(
             config::ExecutionTransportConfig::Local { .. }
+                | config::ExecutionTransportConfig::MacosSeatbelt { .. }
+                | config::ExecutionTransportConfig::ClientWorker { .. }
                 | config::ExecutionTransportConfig::Container { .. }
         )
     )
@@ -3055,6 +3108,8 @@ fn build_coding_worktree_service(
                     .map_err(RuntimeError::Config)?;
             }
             config::ExecutionTransportConfig::Local { .. }
+            | config::ExecutionTransportConfig::MacosSeatbelt { .. }
+            | config::ExecutionTransportConfig::ClientWorker { .. }
             | config::ExecutionTransportConfig::Container { .. } => {
                 explicit_local |= target.id == "local";
                 service
@@ -3891,6 +3946,7 @@ impl Runtime {
             user_profiles: None,
             worktrees: None,
             boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
+            execution_service: execution_service.clone(),
         });
         Ok(Self {
             engine,
@@ -4475,6 +4531,7 @@ impl Runtime {
             user_profiles: Some(user_profiles),
             worktrees: Some(worktrees),
             boundary: BoundaryGuard::new(config.server.boundary.clone()),
+            execution_service: execution_service.clone(),
         });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         let memory_maintenance = Some(MemoryMaintenanceTask::start(
