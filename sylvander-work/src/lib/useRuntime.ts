@@ -688,12 +688,24 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         const response = message.response;
         if (response.status === "error") {
           agentAdminRequestRef.current = undefined;
+          const agentId = response.error.agent_id;
+          if (response.error.code === "revision_conflict" && agentId) {
+            void requestAgentAdministration({
+              operation: "list_revisions",
+              agent_id: agentId,
+              limit: 50,
+            });
+          }
           setState((current) => ({
             ...current,
             agentAdministration: {
               ...current.agentAdministration,
-              status: "error",
-              pendingOperation: undefined,
+              status: response.error.code === "revision_conflict" && agentId
+                ? "loading"
+                : "error",
+              pendingOperation: response.error.code === "revision_conflict" && agentId
+                ? "list_revisions"
+                : undefined,
               notice: response.error.message,
             },
           }));

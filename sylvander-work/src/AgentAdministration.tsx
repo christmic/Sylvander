@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { AgentDefinitionEditor } from "./AgentDefinitionEditor";
 import type { RuntimeAgentAdminRequest } from "./lib/gateway";
 import type { RuntimeViewState } from "./lib/useRuntime";
 
@@ -13,6 +14,7 @@ interface AgentAdministrationProps {
 export function AgentAdministration({ agents, state, onClose, onRequest }: AgentAdministrationProps) {
   const [agentId, setAgentId] = useState(state.agentId ?? agents[0]?.id ?? "");
   const [armedRevision, setArmedRevision] = useState<number>();
+  const [definitionOpen, setDefinitionOpen] = useState(false);
   const busy = state.status === "loading" || state.status === "submitting";
 
   function load(selectedAgentId = agentId, beforeRevision?: number) {
@@ -51,6 +53,7 @@ export function AgentAdministration({ agents, state, onClose, onRequest }: Agent
       <p>Runtime authorizes every operation. This surface renders only redacted views and digests; it cannot recover prompts, paths, principal names, or MCP commands.</p>
       <label>Agent<select aria-label="Administrative Agent" value={agentId} onChange={(event) => load(event.target.value)}><option value="">Select an Agent</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
       <button type="button" className="secondary-button" disabled={!agentId || busy} onClick={() => load()}>Load revisions</button>
+      <button type="button" className="primary-button" disabled={!state.agentId || state.activeRevision === undefined || busy} onClick={() => setDefinitionOpen(true)}>Stage new definition</button>
       {state.notice && <p role={state.status === "error" ? "alert" : "status"}>{state.notice}</p>}
       {state.status === "loading" && <p role="status">Loading redacted revisions…</p>}
       {state.revisions.map((revision) => {
@@ -65,6 +68,7 @@ export function AgentAdministration({ agents, state, onClose, onRequest }: Agent
         </article>;
       })}
       {state.nextBeforeRevision !== undefined && <button type="button" className="secondary-button" disabled={busy} onClick={() => load(state.agentId, state.nextBeforeRevision)}>Load older revisions</button>}
+      {definitionOpen && state.agentId && state.activeRevision !== undefined && <AgentDefinitionEditor agentId={state.agentId} activeRevision={state.activeRevision} onCancel={() => setDefinitionOpen(false)} onSubmit={(definition) => onRequest({ operation: "update_definition", expected_active_revision: state.activeRevision!, definition })} />}
     </section>
   </aside>;
 }

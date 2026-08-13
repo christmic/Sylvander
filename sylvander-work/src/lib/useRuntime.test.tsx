@@ -360,6 +360,33 @@ describe("useRuntime user profile", () => {
     expect(view.result.current.state.agentAdministration.revisions.find(
       (candidate) => candidate.definition.revision === 3,
     )?.active).toBe(true);
+
+    await act(async () => {
+      expect(await view.result.current.requestAgentAdministration({
+        operation: "activate_revision",
+        agent_id: "agent-1",
+        revision: 5,
+        expected_active_revision: 3,
+      })).toBe(true);
+    });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agent_admin",
+      response: {
+        status: "error",
+        error: {
+          code: "revision_conflict",
+          message: "active revision changed",
+          agent_id: "agent-1",
+          expected_active_revision: 3,
+          actual_active_revision: 4,
+        },
+      },
+    } }));
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "agent_admin",
+      request: { operation: "list_revisions", agent_id: "agent-1", limit: 50 },
+    }));
+    expect(view.result.current.state.agentAdministration.notice).toBe("active revision changed");
     view.unmount();
   });
 });
