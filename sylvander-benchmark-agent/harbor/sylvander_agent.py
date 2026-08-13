@@ -29,8 +29,14 @@ def _last_json_line(output: str) -> dict[str, object]:
 
     for line in reversed(output.splitlines()):
         candidate = line.strip()
-        if candidate:
-            return json.loads(candidate)
+        if not candidate:
+            continue
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict):
+            return decoded
     raise ValueError("metrics command returned no JSON line")
 
 

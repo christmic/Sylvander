@@ -21,6 +21,7 @@ class BoundedDiagnosticTest(unittest.TestCase):
         metrics = _last_json_line(
             '>>>> Executing external compose provider "podman-compose".\n'
             '{"total_prompt_tokens": 42, "total_completion_tokens": 7}\n'
+            '<<<< compose provider exited successfully\n'
         )
 
         self.assertEqual(metrics["total_prompt_tokens"], 42)
