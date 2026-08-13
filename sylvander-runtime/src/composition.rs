@@ -46,7 +46,7 @@ use crate::execution::{
     ContainerExecutor, ContainerPersistentProcessEnvironment, ContainerResourcePolicy,
     ExecutionTargetRegistration, RuntimeExecutionService, SshExecutor,
 };
-use crate::guardian_runtime::WorkerToolGatewayFactory;
+use crate::guardian::runtime::WorkerToolGatewayFactory;
 use crate::provider::request_scoped::{
     AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
     RegistryCredentialSource, RenewableExternalSecretProvider,

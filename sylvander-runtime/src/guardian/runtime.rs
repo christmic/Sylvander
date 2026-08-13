@@ -38,7 +38,7 @@ use crate::capability_runtime::{
     CapabilityRegistry, CapabilityRuntimeError, GuardianServiceIdentity, RuntimeCapability,
     RuntimeOwnerScope, value_digest,
 };
-use crate::guardian_curation::{
+use crate::guardian::curation::{
     CandidateClassification, CandidateDraft, CandidateOrigin, CandidateScope, CandidateState,
     ClaimedCuratorRun, ClaimedMutation, CuratorRunState, EvidenceReference, GuardianCurationError,
     GuardianCurationStore, GuardianEvent, GuardianEventKind, MutationAction, MutationDeliveryState,
@@ -1679,7 +1679,7 @@ impl GuardianCanonicalStore {
 
     async fn payload_for_candidate(
         &self,
-        candidate: &crate::guardian_curation::MemoryCandidate,
+        candidate: &crate::guardian::curation::MemoryCandidate,
     ) -> Result<StagedCandidatePayload, GuardianRuntimeError> {
         let reference = candidate
             .evidence

@@ -46,7 +46,7 @@ use sylvander_llm_core::{
 };
 
 use crate::agent_definition::{AgentId, AgentSpec, SessionId};
-use crate::approval_store::{
+use crate::agent::approval::{
     ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory, approval_policy_revision,
 };
 use crate::execution::RuntimeExecutionService;

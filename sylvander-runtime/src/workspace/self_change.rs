@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sylvander_api::EvidenceReference;
 
-use crate::EvidenceStore;
+use crate::evidence::EvidenceStore;
 use crate::evidence::{
     EvaluationComparison, ExperimentEvidenceSigner, ExperimentPhase, ExperimentTransition,
     MetricMeasurement, RecordExperimentEvidence, RequiredEvaluation, SelfChangeExperiment,

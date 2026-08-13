@@ -10,7 +10,7 @@ use sylvander_agent::tools::MemoryStore;
 
 use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::evidence::EvidenceStore;
-use crate::guardian_runtime::GuardianStorageProbe;
+use crate::guardian::runtime::GuardianStorageProbe;
 use crate::registry::agent::AgentRegistry;
 use crate::user_profile_store::UserProfileStore;
 
