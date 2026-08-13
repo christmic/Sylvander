@@ -62,6 +62,13 @@ already hosts Terminal-Bench-style datasets. A Sylvander Harbor adapter owns
 only setup and invocation inside the harness-selected environment; Harbor owns
 task lifecycle and verifier execution.
 
+For local evidence, Harbor's Docker-compatible environment contract is backed
+by rootless Podman. The benchmark-owned compatibility entrypoint forwards the
+contract to Podman and translates only Compose's `--project-directory` into a
+working-directory change required by podman-compose. It does not alter task
+images, verifier commands, rewards, or Agent output. LiteLLM is outside this
+path: the custom Agent invokes Sylvander's production provider adapters.
+
 The initial benchmark families are:
 
 1. Harbor/Terminal-Bench for end-to-end terminal work in reproducible task
@@ -107,6 +114,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-benchmark-agent --no-deps --lo
 
 External live runs additionally validate exported trajectories with Harbor's
 reference validator and retain the exact harness/dataset revision.
+
+The Podman/Harbor installation gate is separate from a scored benchmark. Its
+first pinned Terminal-Bench 2.0 task completed environment startup, Agent
+binary upload, and cleanup with zero exceptions; it made no model call and is
+not recorded as task-performance evidence.
 
 After Harbor writes its per-trial result and ATIF trajectory, normalize the
 pair against one planned coordinate:
