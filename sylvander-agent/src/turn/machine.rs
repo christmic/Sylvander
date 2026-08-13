@@ -146,6 +146,7 @@ pub struct TurnTransition {
     pub from: TurnPhase,
     pub to: TurnPhase,
     pub reason: TurnTransitionReason,
+    pub continuation: Option<TurnContinuationReason>,
 }
 
 /// Content-free current-state view for Runtime observation.
@@ -234,6 +235,7 @@ impl TurnMachine {
             from: self.phase,
             to,
             reason,
+            continuation: self.continuation,
         };
         self.phase = to;
         Ok(transition)
