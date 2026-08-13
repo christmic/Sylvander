@@ -8,7 +8,8 @@ use serde_json::json;
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_api::{
     AgentId, AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, BusMessage,
-    SessionConfigOverrides, SessionConfigUpdateRequest, SessionCreateRequest, SessionMetadata,
+    SessionConfigFieldPatch, SessionConfigOverrides, SessionConfigPatch,
+    SessionConfigUpdateRequest, SessionCreateRequest, SessionMetadata,
 };
 use sylvander_channel::{InProcessMessageBus, MessageBus};
 use tempfile::tempdir;
@@ -574,11 +575,17 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
             expected_revision: created.revision,
-            overrides: SessionConfigOverrides {
-                model: Some(beta_selection.clone()),
-                prompt_profile: Some("beta-restart".into()),
-                system_prompt: Some(SESSION_PROMPT.into()),
-                ..SessionConfigOverrides::default()
+            patch: SessionConfigPatch {
+                model: Some(SessionConfigFieldPatch::Set {
+                    value: beta_selection.clone(),
+                }),
+                prompt_profile: Some(SessionConfigFieldPatch::Set {
+                    value: "beta-restart".into(),
+                }),
+                system_prompt: Some(SessionConfigFieldPatch::Set {
+                    value: SESSION_PROMPT.into(),
+                }),
+                ..SessionConfigPatch::default()
             },
         },
     )
