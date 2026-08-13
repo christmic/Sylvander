@@ -4,12 +4,15 @@ use crate::agent::instance::{
     AgentDefinitionKey, AgentInstanceOrigin, ApprovalRoute, HistoryView, SessionAgentRole,
 };
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
+use crate::coordination::mailbox::{
+    CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
+};
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::SessionMetadata;
 use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{SessionLifetime, SessionStore, StoredSession};
-use sylvander_api::{AgentId, AgentInstanceId, HandoffId, SwarmId, TaskId};
+use sylvander_api::{AgentId, AgentInstanceId, CoordinationMessageId, HandoffId, SwarmId, TaskId};
 
 use super::*;
 
@@ -438,6 +441,86 @@ async fn handoff_proposal_is_validated_persisted_and_deduplicated() {
         SessionStoreError::HandoffConflict {
             expected: Some(1),
             actual: Some(2),
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn mailbox_message_is_durable_and_deduplicated_before_delivery() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    let topology = SessionTopology::new(
+        SessionId::new("multi-session"),
+        0,
+        0,
+        vec![
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("worker-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("coordinator-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+        ],
+        11,
+        &membership,
+    )
+    .unwrap();
+    store
+        .save_topology(&topology, &membership, None)
+        .await
+        .unwrap();
+    let message = CoordinationMessage {
+        message_id: CoordinationMessageId::new("message-1"),
+        session_id: SessionId::new("multi-session"),
+        sender_instance_id: AgentInstanceId::new("worker-1"),
+        recipient_instance_id: AgentInstanceId::new("coordinator-1"),
+        task_id: None,
+        kind: CoordinationMessageKind::Evidence,
+        payload: "content-free result digest".into(),
+        topology_revision: 0,
+        route: topology
+            .route_between(
+                &AgentInstanceId::new("worker-1"),
+                &AgentInstanceId::new("coordinator-1"),
+            )
+            .unwrap(),
+        max_hops: 4,
+        state: MessageDeliveryState::Pending,
+        delivery_attempts: 0,
+        revision: 0,
+        expires_at: 100,
+        created_at: 12,
+        updated_at: 12,
+    };
+
+    store
+        .enqueue_message(&message, &membership, &topology, 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.message(&message.message_id).await.unwrap(),
+        Some(message.clone())
+    );
+    assert!(matches!(
+        store
+            .enqueue_message(&message, &membership, &topology, 50)
+            .await
+            .unwrap_err(),
+        SessionStoreError::MessageConflict {
+            expected: None,
+            actual: Some(0),
             ..
         }
     ));

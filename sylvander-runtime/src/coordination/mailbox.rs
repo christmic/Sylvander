@@ -23,6 +23,7 @@ pub enum CoordinationMessageKind {
 #[serde(rename_all = "snake_case")]
 pub enum MessageDeliveryState {
     Pending,
+    Claimed,
     Delivered,
     Acknowledged,
     Expired,
@@ -39,6 +40,9 @@ impl MessageDeliveryState {
             (self, next),
             (
                 Self::Pending,
+                Self::Claimed | Self::Expired | Self::DeadLetter
+            ) | (
+                Self::Claimed,
                 Self::Delivered | Self::Expired | Self::DeadLetter
             ) | (
                 Self::Delivered,

@@ -453,12 +453,17 @@ CREATE TABLE coordination_messages (
     topology_revision   INTEGER NOT NULL CHECK(topology_revision >= 0),
     route_json          TEXT NOT NULL,
     max_hops            INTEGER NOT NULL CHECK(max_hops > 0),
-    state               TEXT NOT NULL CHECK(state IN ('pending','delivered','acknowledged','expired','dead_letter')),
+    state               TEXT NOT NULL CHECK(state IN ('pending','claimed','delivered','acknowledged','expired','dead_letter')),
     delivery_attempts   INTEGER NOT NULL CHECK(delivery_attempts >= 0),
+    lease_owner_instance_id TEXT,
+    lease_epoch         INTEGER NOT NULL DEFAULT 0 CHECK(lease_epoch >= 0),
+    lease_expires_at    INTEGER,
     revision            INTEGER NOT NULL CHECK(revision >= 0),
     expires_at          INTEGER NOT NULL,
     created_at          INTEGER NOT NULL,
-    updated_at          INTEGER NOT NULL
+    updated_at          INTEGER NOT NULL,
+    CHECK((state = 'claimed' AND lease_owner_instance_id IS NOT NULL AND lease_expires_at IS NOT NULL)
+       OR (state != 'claimed' AND lease_owner_instance_id IS NULL AND lease_expires_at IS NULL))
 );
 
 CREATE INDEX idx_tasks_assignee_state

@@ -2,9 +2,12 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, params};
-use sylvander_api::{AgentInstanceId, HandoffId, SessionId, TaskId};
+use sylvander_api::{AgentInstanceId, CoordinationMessageId, HandoffId, SessionId, TaskId};
 
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
+use crate::coordination::mailbox::{
+    CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
+};
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::membership::SessionMembership;
@@ -55,6 +58,19 @@ pub trait CoordinationStore: Send + Sync {
         expected_revision: u64,
         now: i64,
     ) -> Result<TaskHandoff, SessionStoreError>;
+
+    async fn enqueue_message(
+        &self,
+        message: &CoordinationMessage,
+        membership: &SessionMembership,
+        topology: &SessionTopology,
+        now: i64,
+    ) -> Result<(), SessionStoreError>;
+
+    async fn message(
+        &self,
+        message_id: &CoordinationMessageId,
+    ) -> Result<Option<CoordinationMessage>, SessionStoreError>;
 }
 
 #[async_trait]
@@ -609,6 +625,191 @@ impl CoordinationStore for SqliteSessionStore {
         })
         .await
     }
+
+    async fn enqueue_message(
+        &self,
+        message: &CoordinationMessage,
+        membership: &SessionMembership,
+        topology: &SessionTopology,
+        now: i64,
+    ) -> Result<(), SessionStoreError> {
+        message
+            .validate_new(topology, membership, now)
+            .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+        let message = message.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let actual_revision = transaction
+                .query_row(
+                    "SELECT revision FROM coordination_messages WHERE message_id=?1",
+                    [&message.message_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|value| checked_u64(value, "message revision"))
+                .transpose()?;
+            if actual_revision.is_some() {
+                return Err(SessionStoreError::MessageConflict {
+                    message_id: message.message_id,
+                    expected: None,
+                    actual: actual_revision,
+                });
+            }
+            let topology_revision = transaction
+                .query_row(
+                    "SELECT topology_revision FROM session_topology WHERE session_id=?1",
+                    [&message.session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            if topology_revision
+                .map(|value| checked_u64(value, "topology revision"))
+                .transpose()?
+                != Some(message.topology_revision)
+            {
+                return Err(SessionStoreError::Invalid(
+                    "message topology revision is not current".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO coordination_messages \
+                 (message_id,session_id,sender_instance_id,recipient_instance_id,task_id,
+                  message_kind,payload,topology_revision,route_json,max_hops,state,
+                  delivery_attempts,lease_owner_instance_id,lease_epoch,lease_expires_at,
+                  revision,expires_at,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'pending',0,NULL,0,NULL,0,?11,?12,?13)",
+                params![
+                    message.message_id.0,
+                    message.session_id.0,
+                    message.sender_instance_id.0,
+                    message.recipient_instance_id.0,
+                    message.task_id.as_ref().map(|id| &id.0),
+                    encode_message_kind(message.kind),
+                    message.payload,
+                    checked_i64(message.topology_revision, "message topology revision")?,
+                    serde_json::to_string(&message.route)
+                        .map_err(|error| SessionStoreError::Store(error.to_string()))?,
+                    i64::from(message.max_hops),
+                    message.expires_at,
+                    message.created_at,
+                    message.updated_at,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn message(
+        &self,
+        message_id: &CoordinationMessageId,
+    ) -> Result<Option<CoordinationMessage>, SessionStoreError> {
+        let message_id = message_id.clone();
+        self.run(move |connection| load_message(connection, &message_id))
+            .await
+    }
+}
+
+fn load_message(
+    connection: &rusqlite::Connection,
+    message_id: &CoordinationMessageId,
+) -> Result<Option<CoordinationMessage>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT session_id,sender_instance_id,recipient_instance_id,task_id,message_kind,
+                    payload,topology_revision,route_json,max_hops,state,delivery_attempts,
+                    revision,expires_at,created_at,updated_at
+             FROM coordination_messages WHERE message_id=?1",
+            [&message_id.0],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, i64>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, i64>(14)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            Ok(CoordinationMessage {
+                message_id: message_id.clone(),
+                session_id: SessionId::new(row.0),
+                sender_instance_id: AgentInstanceId::new(row.1),
+                recipient_instance_id: AgentInstanceId::new(row.2),
+                task_id: row.3.map(TaskId::new),
+                kind: decode_message_kind(&row.4)?,
+                payload: row.5,
+                topology_revision: checked_u64(row.6, "message topology revision")?,
+                route: serde_json::from_str(&row.7)
+                    .map_err(|error| SessionStoreError::Store(error.to_string()))?,
+                max_hops: checked_u16(row.8, "message maximum hops")?,
+                state: decode_message_state(&row.9)?,
+                delivery_attempts: checked_u32(row.10, "message delivery attempts")?,
+                revision: checked_u64(row.11, "message revision")?,
+                expires_at: row.12,
+                created_at: row.13,
+                updated_at: row.14,
+            })
+        })
+        .transpose()
+}
+
+const fn encode_message_kind(kind: CoordinationMessageKind) -> &'static str {
+    match kind {
+        CoordinationMessageKind::Task => "task",
+        CoordinationMessageKind::Progress => "progress",
+        CoordinationMessageKind::Evidence => "evidence",
+        CoordinationMessageKind::Question => "question",
+        CoordinationMessageKind::Decision => "decision",
+        CoordinationMessageKind::Control => "control",
+    }
+}
+
+fn decode_message_kind(kind: &str) -> Result<CoordinationMessageKind, SessionStoreError> {
+    match kind {
+        "task" => Ok(CoordinationMessageKind::Task),
+        "progress" => Ok(CoordinationMessageKind::Progress),
+        "evidence" => Ok(CoordinationMessageKind::Evidence),
+        "question" => Ok(CoordinationMessageKind::Question),
+        "decision" => Ok(CoordinationMessageKind::Decision),
+        "control" => Ok(CoordinationMessageKind::Control),
+        _ => Err(SessionStoreError::Store(
+            "stored message kind is invalid".into(),
+        )),
+    }
+}
+
+fn decode_message_state(state: &str) -> Result<MessageDeliveryState, SessionStoreError> {
+    match state {
+        "pending" => Ok(MessageDeliveryState::Pending),
+        "claimed" => Ok(MessageDeliveryState::Claimed),
+        "delivered" => Ok(MessageDeliveryState::Delivered),
+        "acknowledged" => Ok(MessageDeliveryState::Acknowledged),
+        "expired" => Ok(MessageDeliveryState::Expired),
+        "dead_letter" => Ok(MessageDeliveryState::DeadLetter),
+        _ => Err(SessionStoreError::Store(
+            "stored message state is invalid".into(),
+        )),
+    }
+}
+
+fn checked_u16(value: i64, label: &str) -> Result<u16, SessionStoreError> {
+    value
+        .try_into()
+        .map_err(|_| SessionStoreError::Store(format!("stored {label} is outside u16 range")))
 }
 
 fn load_handoff(
