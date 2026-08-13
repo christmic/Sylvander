@@ -162,6 +162,17 @@ async fn coordination_service_derives_route_from_durable_topology() {
         .await
         .unwrap();
     assert_eq!(repeated, DispatchMessageOutcome::Enqueued(message));
+    let claim = service
+        .claim_next_message(&AgentInstanceId::new("coordinator-1"), 22, 10)
+        .await
+        .unwrap()
+        .unwrap();
+    let delivered = service.mark_message_delivered(&claim, 23).await.unwrap();
+    let acknowledged = service
+        .acknowledge_message(&delivered, &AgentInstanceId::new("coordinator-1"), 24)
+        .await
+        .unwrap();
+    assert_eq!(acknowledged.state, MessageDeliveryState::Acknowledged);
 }
 
 #[tokio::test]
@@ -958,4 +969,31 @@ async fn mailbox_message_is_durable_and_deduplicated_before_delivery() {
     assert_eq!(delivered.state, MessageDeliveryState::Delivered);
     assert_eq!(delivered.delivery_attempts, 2);
     assert_eq!(delivered.revision, 3);
+    let acknowledged = store
+        .acknowledge_message(
+            &message.message_id,
+            &AgentInstanceId::new("coordinator-1"),
+            delivered.revision,
+            62,
+        )
+        .await
+        .unwrap();
+    assert_eq!(acknowledged.state, MessageDeliveryState::Acknowledged);
+    assert_eq!(acknowledged.revision, 4);
+    assert!(matches!(
+        store
+            .acknowledge_message(
+                &message.message_id,
+                &AgentInstanceId::new("worker-1"),
+                delivered.revision,
+                63,
+            )
+            .await
+            .unwrap_err(),
+        SessionStoreError::MessageConflict {
+            expected: Some(3),
+            actual: Some(4),
+            ..
+        }
+    ));
 }

@@ -12,7 +12,7 @@ use crate::coordination::governance::{
 };
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
-    CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
+    CoordinationMessage, CoordinationMessageKind, MessageClaim, MessageDeliveryState,
 };
 use crate::coordination::task::SessionTaskGraph;
 use crate::storage::agent_instance::AgentInstanceStore;
@@ -294,6 +294,50 @@ where
                 .map_err(Into::into);
         }
         Ok(durable)
+    }
+
+    /// Lease one durable envelope. Expired claims are recoverable by a later worker.
+    pub async fn claim_next_message(
+        &self,
+        recipient: &AgentInstanceId,
+        now: i64,
+        lease_seconds: u64,
+    ) -> Result<Option<MessageClaim>, CoordinationServiceError> {
+        self.store
+            .claim_message(recipient, now, lease_seconds)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Commit delivery under the exact claim epoch before exposing its payload.
+    pub async fn mark_message_delivered(
+        &self,
+        claim: &MessageClaim,
+        now: i64,
+    ) -> Result<CoordinationMessage, CoordinationServiceError> {
+        self.store
+            .finish_message_claim(
+                &claim.message.message_id,
+                &claim.message.recipient_instance_id,
+                claim.lease_epoch,
+                MessageDeliveryState::Delivered,
+                now,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Persist recipient acknowledgement using the delivered revision as a fence.
+    pub async fn acknowledge_message(
+        &self,
+        message: &CoordinationMessage,
+        recipient: &AgentInstanceId,
+        now: i64,
+    ) -> Result<CoordinationMessage, CoordinationServiceError> {
+        self.store
+            .acknowledge_message(&message.message_id, recipient, message.revision, now)
+            .await
+            .map_err(Into::into)
     }
 }
 

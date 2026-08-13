@@ -134,6 +134,14 @@ pub trait CoordinationStore: Send + Sync {
         next_state: MessageDeliveryState,
         now: i64,
     ) -> Result<CoordinationMessage, SessionStoreError>;
+
+    async fn acknowledge_message(
+        &self,
+        message_id: &CoordinationMessageId,
+        recipient: &AgentInstanceId,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<CoordinationMessage, SessionStoreError>;
 }
 
 #[async_trait]
@@ -1201,6 +1209,72 @@ impl CoordinationStore for SqliteSessionStore {
             }
             let message = load_message(&transaction, &message_id)?
                 .ok_or_else(|| SessionStoreError::Store("finished message disappeared".into()))?;
+            transaction.commit()?;
+            Ok(message)
+        })
+        .await
+    }
+
+    async fn acknowledge_message(
+        &self,
+        message_id: &CoordinationMessageId,
+        recipient: &AgentInstanceId,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<CoordinationMessage, SessionStoreError> {
+        let message_id = message_id.clone();
+        let recipient = recipient.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let Some(current) = load_message(&transaction, &message_id)? else {
+                return Err(SessionStoreError::MessageConflict {
+                    message_id,
+                    expected: Some(expected_revision),
+                    actual: None,
+                });
+            };
+            if current.revision != expected_revision {
+                return Err(SessionStoreError::MessageConflict {
+                    message_id,
+                    expected: Some(expected_revision),
+                    actual: Some(current.revision),
+                });
+            }
+            if current.recipient_instance_id != recipient
+                || !current
+                    .state
+                    .can_transition_to(MessageDeliveryState::Acknowledged)
+            {
+                return Err(SessionStoreError::Invalid(
+                    "only the recipient may acknowledge a delivered message".into(),
+                ));
+            }
+            let next_revision = current
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Invalid("message revision overflow".into()))?;
+            let changed = transaction.execute(
+                "UPDATE coordination_messages SET state='acknowledged',revision=?1,updated_at=?2 \
+                 WHERE message_id=?3 AND recipient_instance_id=?4 AND state='delivered' \
+                 AND revision=?5",
+                params![
+                    checked_i64(next_revision, "message revision")?,
+                    now,
+                    current.message_id.0,
+                    recipient.0,
+                    checked_i64(current.revision, "message revision")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::MessageConflict {
+                    message_id: current.message_id,
+                    expected: Some(current.revision),
+                    actual: None,
+                });
+            }
+            let message = load_message(&transaction, &message_id)?.ok_or_else(|| {
+                SessionStoreError::Store("acknowledged message disappeared".into())
+            })?;
             transaction.commit()?;
             Ok(message)
         })
