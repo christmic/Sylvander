@@ -194,6 +194,12 @@ source = "env"
 name = "SECONDARY_TOKEN"
 [[model_providers.models]]
 id = "sonnet"
+
+[[execution_targets]]
+id = "sandbox"
+[execution_targets.transport]
+kind = "local"
+root = "/tmp"
 "#,
     )
     .unwrap()
@@ -452,7 +458,7 @@ fn registry_storage_errors_do_not_expose_internal_details() {
 }
 
 #[tokio::test]
-async fn dynamic_qualified_update_is_a_plan_and_does_not_write_the_registry() {
+async fn unknown_qualified_update_is_rejected_without_writing_the_registry() {
     let catalog = ServerConfig::from_toml(
         r#"
 schema_version = 1
@@ -495,13 +501,10 @@ allowed_models = [{ provider_id = "primary", model_id = "sonnet" }]
             },
         )
         .await;
-    assert!(matches!(
-        dispatch,
-        AgentAdminDispatch::Update {
-            expected_active_revision: 1,
-            ..
-        }
-    ));
+    let AgentAdminDispatch::Response(AgentAdminResponse::Error { error }) = dispatch else {
+        panic!("unknown catalog entries must fail before producing an update plan");
+    };
+    assert_eq!(error.code, AgentAdminErrorCode::InvalidDefinition);
     assert!(
         registry
             .inspect(&AgentId::new("oraculo"))
