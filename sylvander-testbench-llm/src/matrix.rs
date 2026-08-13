@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub enum BenchScenario {
     Connectivity,
     Usage,
+    ImageInput,
     RemoteTokenCount,
     CacheWriteRead,
     OpenTimeout,
@@ -23,6 +24,7 @@ impl BenchScenario {
         match self {
             Self::Connectivity => "connectivity",
             Self::Usage => "usage",
+            Self::ImageInput => "image_input",
             Self::RemoteTokenCount => "remote_token_count",
             Self::CacheWriteRead => "cache_write_read",
             Self::OpenTimeout => "open_timeout",

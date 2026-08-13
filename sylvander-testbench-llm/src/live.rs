@@ -17,9 +17,9 @@ use sylvander_llm_anthropic::api::error::AnthropicError;
 use sylvander_llm_anthropic::api::request::CreateMessageRequest;
 use sylvander_llm_anthropic::api::types::MessageParam;
 use sylvander_llm_core::{
-    CacheHint, ChatMessage, ModelCapabilities, ModelInfo, ModelProvider, ModelRef, ModelRequest,
-    ModelResponse, ModelStreamEvent, ProviderError, ProviderErrorKind, ProviderErrorPhase,
-    StopReason, SystemInstruction, TokenUsage,
+    CacheHint, ChatMessage, ContentBlock, ImageContent, MediaSource, ModelCapabilities, ModelInfo,
+    ModelProvider, ModelRef, ModelRequest, ModelResponse, ModelStreamEvent, ProviderError,
+    ProviderErrorKind, ProviderErrorPhase, StopReason, SystemInstruction, TokenUsage,
 };
 use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
 use sylvander_llm_openai::{
@@ -94,6 +94,9 @@ pub async fn run_live_cell(
     let outcome = match cell.coordinate.scenario {
         BenchScenario::Connectivity | BenchScenario::Usage => {
             run_single(provider.as_ref(), cell, limits.max_output_tokens).await
+        }
+        BenchScenario::ImageInput => {
+            run_image_input(provider.as_ref(), cell, limits.max_output_tokens).await
         }
         BenchScenario::CacheWriteRead => {
             run_cache(
@@ -406,6 +409,35 @@ async fn run_single(
         && (response.usage.input_tokens == 0 || response.usage.output_tokens == 0)
     {
         return Err(protocol_error("completion omitted required token usage"));
+    }
+    Ok(metrics(response.usage, 1))
+}
+
+async fn run_image_input(
+    provider: &dyn ModelProvider,
+    cell: &MatrixCell,
+    max_output_tokens: u32,
+) -> Result<PassMetrics, ProviderError> {
+    const DIGIT_SEVEN_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAADaUlEQVR42u3TwREAIAzDsO6/NEzBo1geIRfNkcKNCQSABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgNQCMCoFAAAAAAAAAAAAAAAAAAAAgAAAQAAAIAAAEAAACAAABAAAAgAAAQCAAABAAAAgAAAQAAAIAAAEAAACAAABAIAAAEAAACAAABAAAAgAAAQAAAIAAAEAgAAAQAAAIAAAEAAACAAABAAAAgAAAQCAAABAAAAgAPR5AMj7AZD3AyAAAJD3AyDvB0Dev/T9ACj9fgCUfj8ASr8fAKXfD4AAkKrvB0Dp9wOg9PsBUPr9AHh/+v0AeH/6/QB4f/r9AAAAgLy/+n4AvD/9fgC8P/1+ALw//X4AvD/9fgC8P/1+ALw//X4AAABA3l99PwDen34/AN6ffj8A3p9+PwDen34/AN6ffj8AAAAg76++HwDvT78fAO9Pvx8A70+/HwDvT78fAO9Pvx8A70+/HwAAAJD3V98PgPen3w+A96ffD4D3p98PgPen3w+A96ffD4D3p98PAAAAyPur7wfA+9PvB8D70+8HwPvT7wfA++sHAMD7AZD3AyAAAJD3AyDvB0DeD4C8HwB5PwDyfgAEAADyfgDk/QDI+wGQ9wMg7wdA3g+AvB8AAQCAvB8AeT8A3u/9AHi/9wPg/d4PgPd7PwDe7/0AAAAAAN7v/QB4v/cD4P3eD4D3ez8A3u/9AHi/9wPg/d4PAAAAAOD9AsD7BYD3CwDvFwDeLwC8XwAAIAC8XwB4vwDwfgHg/QLA+wWA9wsA7xcAAAgA7xcA3i8AvB8AeT8A8n4AvN/7AfB+7wcAAAAA8H7vB8D7vR8A7/d+ALzf+wHwfu8HwPu9HwDv934AAAAAAO/3fgC83/sB8H7vB8D7BYD3CwDvFwAACADvFwDeLwC8XwB4vwBYDsB1AOgC8BsAugCcBgAABEASgMcA0AXgLgB0AfgKAF0AjgJAF4CXANAF4CIAdAH4BwAACIAkAOcAoAvAMwDoAnALALoAfAKALgCHAKALwBsAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkF51AVyosshXmseWAAAAAElFTkSuQmCC";
+    let mut value = request(cell, "", None, max_output_tokens);
+    value.messages = vec![ChatMessage::user_blocks(vec![
+        ContentBlock::Image {
+            image: ImageContent {
+                source: MediaSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: DIGIT_SEVEN_PNG.into(),
+                },
+                alt_text: Some("benchmark digit image".into()),
+            },
+        },
+        ContentBlock::Text {
+            text: "Identify the single black digit in the image. Reply with only that digit."
+                .into(),
+        },
+    ])];
+    let response = complete(provider, value).await?;
+    if response.text().trim() != "7" {
+        return Err(protocol_error("image answer did not match the fixture"));
     }
     Ok(metrics(response.usage, 1))
 }

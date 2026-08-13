@@ -52,6 +52,7 @@ result fields.
 | --- | --- | --- | --- |
 | connectivity | required | no | stream opens, emits exactly one completion, and returns non-empty text |
 | usage | required | no | input and output usage are positive and all reported optional dimensions are preserved |
+| image input | required when selected by the provider protocol binding | no | a fixed inline PNG is decoded and its concealed digit is identified exactly |
 | token count | required when the protocol exposes a count operation | no | remote count is positive and recorded separately from generated-response usage |
 | cache write/read | required for an advertised cache-capable model | no | first call reports creation or establishes an implicit prefix; a bounded repeated call reports positive cache-read tokens |
 | open timeout | no | required | the configured deadline yields `Timeout` in the `Open` phase |
