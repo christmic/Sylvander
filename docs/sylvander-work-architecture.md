@@ -110,6 +110,12 @@ item only after Runtime publishes its tool start/result or rejection. A turn
 terminal clears any remaining presentation prompt; the client does not infer
 execution from a button click.
 
+`AskUser` uses the same answer encoding already proven by the TUI: one choice
+is sent verbatim, multiple choices use `, `, and optional free text follows
+selected choices after `; `. The desktop sends only the public `Answer`
+command. It owns temporary form selection and clears that form after submission
+or a turn terminal; Runtime owns whether and how execution resumes.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem

@@ -11,6 +11,7 @@ export type RuntimeCommand =
   | { type: "chat"; text: string; attachments: []; session_id?: string }
   | { type: "approve"; session_id: string; call_id: string; approved: boolean; scope: "once"; reason?: string }
   | { type: "interrupt"; session_id: string }
+  | { type: "answer"; session_id: string; call_id: string; answer: string }
   | { type: "get_runtime_info" };
 
 export interface RuntimeSession {
@@ -34,6 +35,7 @@ export type RuntimeMessage =
   | { type: "tool_result"; session_id: string; call_id: string; tool_name: string; output: string; is_error: boolean }
   | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: string[] }
   | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }
+  | { type: "ask_user"; session_id: string; call_id: string; question: string; options: string[]; multi_select: boolean }
   | { type: "plan_proposed" | "plan_updated"; session_id: string; plan_id: string; steps: string[]; current: number }
   | { type: "task_started"; session_id: string; task_id: string; owner: string; purpose: string }
   | { type: "task_progress"; session_id: string; task_id: string; message: string }

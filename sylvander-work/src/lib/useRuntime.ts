@@ -15,6 +15,13 @@ export interface RuntimeViewState {
     batchId: string;
     tools: Array<{ callId: string; toolName: string }>;
   };
+  question?: {
+    sessionId: string;
+    callId: string;
+    prompt: string;
+    options: string[];
+    multiSelect: boolean;
+  };
   diagnostic?: string;
 }
 
@@ -133,6 +140,17 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           }));
         }
         break;
+      case "ask_user":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({ ...current, question: {
+            sessionId: message.session_id,
+            callId: message.call_id,
+            prompt: message.question,
+            options: message.options,
+            multiSelect: message.multi_select,
+          } }));
+        }
+        break;
       case "plan_proposed":
       case "plan_updated":
         if (message.session_id === selectedRef.current) {
@@ -191,6 +209,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           setState((current) => ({
             ...current,
             approval: undefined,
+            question: undefined,
             sessions: current.sessions.map((session) => session.id === message.session_id
               ? { ...session, state: message.type === "error" ? "failed" : "idle" }
               : session),
@@ -276,11 +295,26 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       plan: [],
       tasks: [],
       approval: undefined,
+      question: undefined,
     }));
     return submit({ type: "load_session", session_id: sessionId });
   }, [submit]);
 
-  return { state, submit, selectSession };
+  const answerQuestion = useCallback(async (callId: string, answer: string) => {
+    const question = state.question;
+    if (!question || question.callId !== callId) return;
+    await submit({
+      type: "answer",
+      session_id: question.sessionId,
+      call_id: question.callId,
+      answer,
+    });
+    setState((current) => current.question?.callId === callId
+      ? { ...current, question: undefined }
+      : current);
+  }, [state.question, submit]);
+
+  return { state, submit, selectSession, answerQuestion };
 }
 
 function appendDelta(entries: TranscriptEntry[], delta: string): TranscriptEntry[] {

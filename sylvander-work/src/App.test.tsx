@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -152,6 +152,44 @@ describe("Sylvander Work", () => {
       type: "tool_rejected", session_id: "session-1", tool_name: "Write", reason: "Denied",
     } }));
     expect(screen.queryByRole("heading", { name: "Allow Write?" })).toBeNull();
+  });
+
+  it("answers Runtime questions with the established multi-select encoding", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Questions", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    await waitFor(() => expect(gateway.commands.at(-1)?.type).toBe("load_session"));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "ask_user",
+      session_id: "session-1",
+      call_id: "ask-1",
+      question: "Which constraints apply?",
+      options: ["urgent", "feature"],
+      multi_select: true,
+    } }));
+
+    expect(await screen.findByRole("heading", { name: "Which constraints apply?" })).toBeTruthy();
+    act(() => screen.getByRole("checkbox", { name: "urgent" }).click());
+    act(() => screen.getByRole("checkbox", { name: "feature" }).click());
+    fireEvent.change(screen.getByRole("textbox", { name: "Other answer" }), {
+      target: { value: "smaller" },
+    });
+    act(() => screen.getByRole("button", { name: "Answer" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "answer",
+      session_id: "session-1",
+      call_id: "ask-1",
+      answer: "urgent, feature; smaller",
+    }));
+    expect(screen.queryByRole("heading", { name: "Which constraints apply?" })).toBeNull();
   });
 
   it("projects the complete Runtime task lifecycle by task identity", async () => {

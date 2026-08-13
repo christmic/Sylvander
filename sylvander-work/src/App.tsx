@@ -9,12 +9,14 @@ export interface AppProps {
 }
 
 export default function App({ gateway }: AppProps) {
-  const { state, selectSession, submit } = useRuntime(gateway);
+  const { state, selectSession, submit, answerQuestion } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [inspector, setInspector] = useState<"plan" | "tasks" | "changes">("plan");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [questionSelections, setQuestionSelections] = useState<string[]>([]);
+  const [questionText, setQuestionText] = useState("");
   const [compactLayout, setCompactLayout] = useState(() =>
     typeof matchMedia === "function" && matchMedia("(max-width: 860px)").matches);
   const selected = state.sessions.find((session) => session.id === state.selectedId);
@@ -60,6 +62,28 @@ export default function App({ gateway }: AppProps) {
       approved,
       scope: "once",
     });
+  }
+
+  function toggleQuestionOption(option: string) {
+    if (!state.question?.multiSelect) {
+      setQuestionSelections([option]);
+      return;
+    }
+    setQuestionSelections((current) => current.includes(option)
+      ? current.filter((candidate) => candidate !== option)
+      : [...current, option]);
+  }
+
+  async function submitQuestion(event: FormEvent) {
+    event.preventDefault();
+    if (!state.question) return;
+    const selected = questionSelections.join(", ");
+    const detail = questionText.trim();
+    const answer = selected && detail ? `${selected}; ${detail}` : selected || detail;
+    if (!answer) return;
+    await answerQuestion(state.question.callId, answer);
+    setQuestionSelections([]);
+    setQuestionText("");
   }
 
   return <div className="app-shell">
@@ -144,6 +168,11 @@ export default function App({ gateway }: AppProps) {
       </section>
 
       <div className="interaction-zone">
+        {state.question && <form className="decision-dock" aria-labelledby="question-title" onSubmit={(event) => void submitQuestion(event)}>
+          <div className="decision-icon" aria-hidden="true">?</div>
+          <div className="decision-copy"><span className="eyebrow">Agent asks</span><h3 id="question-title">{state.question.prompt}</h3><div className="question-options">{state.question.options.map((option) => <label key={option}><input type={state.question!.multiSelect ? "checkbox" : "radio"} name="agent-question" checked={questionSelections.includes(option)} onChange={() => toggleQuestionOption(option)} /> {option}</label>)}</div><input aria-label="Other answer" value={questionText} onChange={(event) => setQuestionText(event.target.value)} placeholder={state.question.options.length > 0 ? "Other or additional context" : "Your answer"} /></div>
+          <div className="decision-actions"><button className="primary-button" disabled={questionSelections.length === 0 && !questionText.trim()}>Answer</button></div>
+        </form>}
         {state.approval && state.approval.tools[0] && <section className="decision-dock" aria-labelledby="approval-title">
           <div className="decision-icon" aria-hidden="true">◇</div>
           <div className="decision-copy"><span className="eyebrow">Approval · {state.approval.tools.length} pending</span><h3 id="approval-title">Allow {state.approval.tools[0].toolName}?</h3><p>Runtime is waiting for the least-authorizing decision.</p></div>
