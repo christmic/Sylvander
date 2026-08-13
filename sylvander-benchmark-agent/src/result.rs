@@ -11,6 +11,7 @@ use crate::matrix::AgentMatrixCoordinate;
 pub enum AgentBenchStatus {
     Passed,
     Failed,
+    AgentError,
     NotRun,
     NotApplicable,
     InfrastructureError,

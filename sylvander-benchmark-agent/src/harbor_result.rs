@@ -81,9 +81,20 @@ pub fn normalize_harbor_result(
         .map_err(|_| HarborResultError::InvalidTrajectory)?;
     let duration_ms = duration_ms(trial)?;
     let reward = primary_reward(trial)?;
+    let trajectory_failed = trajectory
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("sylvander_observability"))
+        .and_then(|value| value.get("status"))
+        .and_then(serde_json::Value::as_str)
+        == Some("failed");
     let (status, failure_kind) = match reward {
         Some(value) if value >= 1.0 => (AgentBenchStatus::Passed, None),
         Some(_) => (AgentBenchStatus::Failed, None),
+        None if trajectory_failed => (
+            AgentBenchStatus::AgentError,
+            Some("agent_execution_error".to_owned()),
+        ),
         None => (
             AgentBenchStatus::InfrastructureError,
             Some(if trial.exception_info.is_some() {
@@ -93,13 +104,14 @@ pub fn normalize_harbor_result(
             }),
         ),
     };
-    let final_metrics = trajectory
-        .final_metrics
-        .ok_or(HarborResultError::InvalidTrajectory)?;
+    let metrics = trajectory_metrics(trajectory)?;
     if let Some(context) = trial.agent_result
-        && (context.n_input_tokens != Some(final_metrics.total_prompt_tokens)
-            || context.n_output_tokens != Some(final_metrics.total_completion_tokens)
-            || context.n_cache_tokens != final_metrics.total_cached_tokens)
+        && (context.n_input_tokens.is_some()
+            || context.n_output_tokens.is_some()
+            || context.n_cache_tokens.is_some())
+        && (context.n_input_tokens != Some(metrics.0)
+            || context.n_output_tokens != Some(metrics.1)
+            || context.n_cache_tokens != metrics.2)
     {
         return Err(HarborResultError::MetricsMismatch);
     }
@@ -127,12 +139,44 @@ pub fn normalize_harbor_result(
         duration_ms,
         iterations,
         tool_calls,
-        final_metrics.total_prompt_tokens,
-        final_metrics.total_completion_tokens,
-        final_metrics.total_cached_tokens,
+        metrics.0,
+        metrics.1,
+        metrics.2,
         failure_kind,
     )
     .map_err(|_| HarborResultError::InvalidNormalizedResult)
+}
+
+fn trajectory_metrics(
+    trajectory: &Trajectory,
+) -> Result<(u64, u64, Option<u64>), HarborResultError> {
+    if let Some(metrics) = trajectory.final_metrics {
+        return Ok((
+            metrics.total_prompt_tokens,
+            metrics.total_completion_tokens,
+            metrics.total_cached_tokens,
+        ));
+    }
+    let mut prompt = 0_u64;
+    let mut completion = 0_u64;
+    let mut cached = None;
+    for metrics in trajectory.steps.iter().filter_map(|step| step.metrics) {
+        prompt = prompt
+            .checked_add(metrics.prompt_tokens)
+            .ok_or(HarborResultError::InvalidTrajectory)?;
+        completion = completion
+            .checked_add(metrics.completion_tokens)
+            .ok_or(HarborResultError::InvalidTrajectory)?;
+        if let Some(tokens) = metrics.cached_tokens {
+            cached = Some(
+                cached
+                    .unwrap_or(0_u64)
+                    .checked_add(tokens)
+                    .ok_or(HarborResultError::InvalidTrajectory)?,
+            );
+        }
+    }
+    Ok((prompt, completion, cached))
 }
 
 fn validate_coordinate(

@@ -109,6 +109,13 @@ interactive user/tool bridge and follows separately. Browser, desktop, voice,
 and multimodal benchmarks are not claimed until Sylvander exposes the matching
 production capability.
 
+The portfolio and score semantics are documented in
+`docs/agent-benchmark-scorecard.md`. This module must never present an exception
+as a zero verifier score or present an adapter smoke as a general Agent score.
+Capability, reliability, efficiency, coverage, and repeated-run stability are
+separate scorecard sections; unrelated suite rewards are not averaged into a
+synthetic universal score.
+
 ## Evidence and secrets
 
 Every normalized result must include the Sylvander commit and dirty state,

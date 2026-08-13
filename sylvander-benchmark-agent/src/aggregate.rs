@@ -27,6 +27,7 @@ pub struct AgentAggregate {
     pub executed_cells: u32,
     pub passed_cells: u32,
     pub failed_cells: u32,
+    pub agent_errors: u32,
     pub infrastructure_errors: u32,
     pub not_run_cells: u32,
     pub not_applicable_cells: u32,
@@ -77,6 +78,7 @@ struct Accumulator {
     executed: u32,
     passed: u32,
     failed: u32,
+    agent_error: u32,
     infrastructure: u32,
     not_run: u32,
     not_applicable: u32,
@@ -99,6 +101,7 @@ impl Accumulator {
                 self.executed = increment(self.executed)?;
                 self.failed = increment(self.failed)?;
             }
+            AgentBenchStatus::AgentError => self.agent_error = increment(self.agent_error)?,
             AgentBenchStatus::InfrastructureError => {
                 self.infrastructure = increment(self.infrastructure)?;
             }
@@ -129,6 +132,7 @@ impl Accumulator {
             executed_cells: self.executed,
             passed_cells: self.passed,
             failed_cells: self.failed,
+            agent_errors: self.agent_error,
             infrastructure_errors: self.infrastructure,
             not_run_cells: self.not_run,
             not_applicable_cells: self.not_applicable,
