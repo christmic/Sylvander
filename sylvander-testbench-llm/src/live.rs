@@ -6,6 +6,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use futures_util::StreamExt as _;
 use sylvander_llm_anthropic::AnthropicProvider;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
+use sylvander_llm_anthropic::api::error::AnthropicError;
+use sylvander_llm_anthropic::api::request::CreateMessageRequest;
+use sylvander_llm_anthropic::api::types::MessageParam;
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ModelProvider, ModelRef, ModelRequest, ModelResponse, ModelStreamEvent,
     ProviderError, ProviderErrorKind, ProviderErrorPhase, SystemInstruction, TokenUsage,
@@ -65,7 +68,7 @@ pub async fn run_live_cell(
             failure("missing_configuration", None),
         );
     };
-    let provider = match build_provider(binding, credential, limits.request_timeout) {
+    let provider = match build_provider(binding, credential.clone(), limits.request_timeout) {
         Ok(provider) => provider,
         Err(kind) => {
             return record(
@@ -88,9 +91,15 @@ pub async fn run_live_cell(
                 provider.as_ref(),
                 cell,
                 limits.max_output_tokens,
-                binding.protocol == "anthropic_messages",
+                matches!(
+                    binding.protocol.as_str(),
+                    "anthropic_messages" | "anthropic_compatible"
+                ),
             )
             .await
+        }
+        BenchScenario::RemoteTokenCount => {
+            run_remote_token_count(binding, cell, &credential, limits).await
         }
         _ => Err(ProviderError::new(
             ProviderErrorKind::Unsupported,
@@ -119,6 +128,87 @@ pub async fn run_live_cell(
         started.elapsed(),
         repository,
         observation,
+    )
+}
+
+async fn run_remote_token_count(
+    binding: &ProtocolBinding,
+    cell: &MatrixCell,
+    credential: &str,
+    limits: LiveLimits,
+) -> Result<PassMetrics, ProviderError> {
+    if !matches!(
+        binding.protocol.as_str(),
+        "anthropic_messages" | "anthropic_compatible"
+    ) {
+        return Err(ProviderError::new(
+            ProviderErrorKind::Unsupported,
+            ProviderErrorPhase::Open,
+            "selected protocol has no remote token-count operation",
+        ));
+    }
+    let client = AnthropicClient::builder()
+        .api_key(credential)
+        .base_url(&binding.base_url)
+        .timeout(limits.request_timeout)
+        .build()
+        .map_err(|_| {
+            ProviderError::new(
+                ProviderErrorKind::InvalidRequest,
+                ProviderErrorPhase::Open,
+                "invalid Anthropic bench configuration",
+            )
+        })?;
+    let request = CreateMessageRequest::builder()
+        .model(&cell.coordinate.model_id)
+        .max_tokens(limits.max_output_tokens)
+        .messages(vec![MessageParam::user(
+            "Count this request without generating",
+        )])
+        .build()
+        .map_err(|_| {
+            ProviderError::new(
+                ProviderErrorKind::InvalidRequest,
+                ProviderErrorPhase::Open,
+                "invalid token-count bench request",
+            )
+        })?;
+    let count = client
+        .messages()
+        .count_tokens(&request)
+        .await
+        .map_err(normalize_anthropic_error)?;
+    if count.input_tokens == 0 {
+        return Err(protocol_error("remote token count was zero"));
+    }
+    Ok(PassMetrics {
+        attempts: 1,
+        counted_input_tokens: Some(u64::from(count.input_tokens)),
+        ..PassMetrics::default()
+    })
+}
+
+fn normalize_anthropic_error(error: AnthropicError) -> ProviderError {
+    let kind = match error {
+        AnthropicError::Http(ref source) if source.is_timeout() => ProviderErrorKind::Timeout,
+        AnthropicError::Http(_) => ProviderErrorKind::Transport,
+        AnthropicError::Api { status: 401, .. } => ProviderErrorKind::Authentication,
+        AnthropicError::Api { status: 403, .. } => ProviderErrorKind::PermissionDenied,
+        AnthropicError::Api { status: 404, .. } => ProviderErrorKind::ModelNotFound,
+        AnthropicError::Api { status: 429, .. } => ProviderErrorKind::RateLimited,
+        AnthropicError::Api { status, .. } if status >= 500 => ProviderErrorKind::Unavailable,
+        AnthropicError::Api { .. } | AnthropicError::Validation(_) => {
+            ProviderErrorKind::InvalidRequest
+        }
+        AnthropicError::Json(_)
+        | AnthropicError::SseParse { .. }
+        | AnthropicError::UnknownBlockType(_)
+        | AnthropicError::UnknownStreamEventType(_) => ProviderErrorKind::Protocol,
+    };
+    ProviderError::new(
+        kind,
+        ProviderErrorPhase::Open,
+        "Anthropic token-count operation failed",
     )
 }
 
