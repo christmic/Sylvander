@@ -20,6 +20,7 @@ pub enum CognitiveRole {
     Critic,
     Vision,
     Audio,
+    Document,
 }
 
 /// Exact model bound to one internal cognitive role.
@@ -74,7 +75,7 @@ impl CognitionConfig {
         Ok(())
     }
 
-    fn binding(&self, role: CognitiveRole) -> Option<&CognitiveRoleBinding> {
+    pub(crate) fn binding(&self, role: CognitiveRole) -> Option<&CognitiveRoleBinding> {
         self.roles.iter().find(|binding| binding.role == role)
     }
 

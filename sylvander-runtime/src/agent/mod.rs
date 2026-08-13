@@ -5,6 +5,7 @@ pub(crate) mod approval;
 pub mod cognition;
 pub mod definition;
 pub mod instance;
+pub mod perception;
 pub mod prompt;
 pub mod run;
 pub mod supervisor;
