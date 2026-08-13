@@ -98,6 +98,12 @@ Runtime and the public protocol own all durable or authoritative state. The
 desktop client must not open Runtime databases, execute tools, read arbitrary
 workspace paths, discover credentials, or infer success from a closed stream.
 
+Long-lived protocol objects are projected by their Runtime identity. For
+example, task rows are keyed by `task_id` and started/progress/terminal events
+update that row idempotently, so reconnect replay cannot duplicate work. The
+projection may retain display text and status while the process is alive, but
+it is not a second task store and never synthesizes a terminal state.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem

@@ -116,7 +116,44 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "task_started":
         if (message.session_id === selectedRef.current) {
-          setState((current) => ({ ...current, tasks: [...current.tasks, { owner: message.owner, purpose: message.purpose, state: "running" }] }));
+          setState((current) => ({ ...current, tasks: upsertTask(current.tasks, {
+            id: message.task_id,
+            owner: message.owner,
+            purpose: message.purpose,
+            state: "running",
+          }) }));
+        }
+        break;
+      case "task_progress":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({ ...current, tasks: updateTask(current.tasks, message.task_id, {
+            detail: message.message,
+            state: "running",
+          }) }));
+        }
+        break;
+      case "task_completed":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({ ...current, tasks: updateTask(current.tasks, message.task_id, {
+            detail: message.summary,
+            state: "complete",
+          }) }));
+        }
+        break;
+      case "task_failed":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({ ...current, tasks: updateTask(current.tasks, message.task_id, {
+            detail: message.error,
+            state: "failed",
+          }) }));
+        }
+        break;
+      case "task_cancelled":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({ ...current, tasks: updateTask(current.tasks, message.task_id, {
+            detail: message.reason,
+            state: "cancelled",
+          }) }));
         }
         break;
       case "done":
@@ -171,6 +208,27 @@ function appendDelta(entries: TranscriptEntry[], delta: string): TranscriptEntry
     return [...entries.slice(0, -1), { ...last, body: last.body + delta }];
   }
   return [...entries, { id: "streaming-assistant", kind: "assistant", body: delta }];
+}
+
+/**
+ * Project one Runtime task identity into presentation state.
+ *
+ * Reattach replay may repeat a start event, so task identity—not arrival
+ * count—defines the row. Runtime remains authoritative; this helper never
+ * creates a durable task or invents a terminal transition.
+ */
+function upsertTask(tasks: TaskSummary[], task: TaskSummary): TaskSummary[] {
+  const index = tasks.findIndex((candidate) => candidate.id === task.id);
+  if (index < 0) return [...tasks, task];
+  return tasks.map((candidate, candidateIndex) => candidateIndex === index ? task : candidate);
+}
+
+function updateTask(
+  tasks: TaskSummary[],
+  taskId: string,
+  update: Pick<TaskSummary, "detail" | "state">,
+): TaskSummary[] {
+  return tasks.map((task) => task.id === taskId ? { ...task, ...update } : task);
 }
 
 function formatRecency(seconds: number): string {

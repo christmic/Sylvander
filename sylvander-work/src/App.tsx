@@ -166,7 +166,7 @@ export default function App({ gateway }: AppProps) {
         {(["plan", "tasks", "changes"] as const).map((tab) => <button key={tab} role="tab" aria-selected={inspector === tab} className={inspector === tab ? "active" : ""} onClick={() => setInspector(tab)}>{tab}</button>)}
       </div>
       {inspector === "plan" && <ol className="plan-list">{state.plan.map((step, index) => <li key={`${index}-${step.label}`} data-state={step.state}><span>{step.state === "complete" ? "✓" : index + 1}</span><p>{step.label}</p></li>)}</ol>}
-      {inspector === "tasks" && <div className="task-list">{state.tasks.map((task, index) => <article key={`${index}-${task.purpose}`}><span className={`presence ${task.state}`} /><div><strong>{task.purpose}</strong><p>{task.owner} · {task.state}</p></div></article>)}</div>}
+      {inspector === "tasks" && <div className="task-list">{state.tasks.map((task) => <article key={task.id}><span className={`presence ${task.state}`} /><div><strong>{task.purpose}</strong><p>{task.owner} · {task.state}{task.detail ? ` · ${task.detail}` : ""}</p></div></article>)}</div>}
       {inspector === "changes" && <div className="empty-inspector"><span>±</span><h3>No reviewable diff</h3><p>Runtime-owned changes will appear here.</p></div>}
       <footer className="inspector-summary"><span>Protocol</span><strong>v5</strong><div><span style={{ width: state.connection === "live" ? "100%" : "0%" }} /></div></footer>
     </aside>}

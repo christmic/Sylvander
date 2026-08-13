@@ -38,6 +38,7 @@ export type RuntimeMessage =
   | { type: "task_progress"; session_id: string; task_id: string; message: string }
   | { type: "task_completed"; session_id: string; task_id: string; summary: string }
   | { type: "task_failed"; session_id: string; task_id: string; error: string }
+  | { type: "task_cancelled"; session_id: string; task_id: string; reason: string }
   | { type: "done"; session_id: string; text: string }
   | { type: "error"; session_id: string; message: string }
   | { type: "turn_interrupted"; session_id: string; reason: string }

@@ -26,7 +26,9 @@ export interface PlanStep {
 }
 
 export interface TaskSummary {
+  id: string;
   owner: string;
   purpose: string;
-  state: "running" | "complete" | "pending";
+  detail?: string;
+  state: "running" | "complete" | "failed" | "cancelled";
 }
