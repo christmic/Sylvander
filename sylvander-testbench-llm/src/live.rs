@@ -19,7 +19,7 @@ use sylvander_llm_anthropic::api::types::MessageParam;
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ModelCapabilities, ModelInfo, ModelProvider, ModelRef, ModelRequest,
     ModelResponse, ModelStreamEvent, ProviderError, ProviderErrorKind, ProviderErrorPhase,
-    SystemInstruction, TokenUsage,
+    StopReason, SystemInstruction, TokenUsage,
 };
 use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
 use sylvander_llm_openai::{
@@ -394,6 +394,11 @@ async fn run_single(
         request(cell, "Reply with just: pong", None, max_output_tokens),
     )
     .await?;
+    if response.stop_reason == StopReason::MaxOutputTokens {
+        return Err(protocol_error(
+            "completion exhausted the output-token limit",
+        ));
+    }
     if response.text().is_empty() {
         return Err(protocol_error("completion contained no user-visible text"));
     }

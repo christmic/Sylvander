@@ -100,8 +100,8 @@ impl BenchMatrix {
         if !(1..=120_000).contains(&self.request_timeout_ms) {
             return Err("matrix request timeout must be between 1 and 120000 milliseconds");
         }
-        if !(1..=128).contains(&self.max_output_tokens) {
-            return Err("matrix maximum output tokens must be between 1 and 128");
+        if !(1..=512).contains(&self.max_output_tokens) {
+            return Err("matrix maximum output tokens must be between 1 and 512");
         }
         if self.max_retries > 5 {
             return Err("matrix maximum retries must not exceed 5");

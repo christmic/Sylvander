@@ -75,6 +75,56 @@ async fn run_executes_a_matrix_cell_through_the_production_adapter() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connectivity_rejects_a_completion_truncated_at_the_output_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            concat!(
+                "data: {\"id\":\"chat_limit\",\"model\":\"model-limit\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}],\"usage\":null}\n\n",
+                "data: {\"id\":\"chat_limit\",\"model\":\"model-limit\",\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":8,\"total_tokens\":12}}\n\n"
+            ),
+            "text/event-stream",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let matrix_path = std::env::temp_dir().join(format!(
+        "sylvander-llm-output-limit-matrix-{}.json",
+        std::process::id()
+    ));
+    let matrix = json!({
+        "schema_version": 1,
+        "repetitions": 1,
+        "scenarios": ["connectivity"],
+        "bindings": [{
+            "provider_id": "provider-limit",
+            "protocol": "openai_chat_completions",
+            "base_url": server.uri(),
+            "credential_env": "SYLVANDER_TESTBENCH_LIMIT_CHILD_KEY",
+            "supported_scenarios": ["connectivity"],
+            "models": [{
+                "model_id": "model-limit",
+                "advertised_scenarios": ["connectivity"]
+            }]
+        }]
+    });
+    fs::write(&matrix_path, serde_json::to_vec(&matrix).unwrap()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sylvander-llm-bench"))
+        .args(["run", matrix_path.to_str().unwrap()])
+        .env("SYLVANDER_TESTBENCH_LIMIT_CHILD_KEY", "limit-key")
+        .output()
+        .unwrap();
+    fs::remove_file(matrix_path).unwrap();
+
+    assert!(!output.status.success());
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["failure_kind"], "protocol");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_uses_the_protocol_specific_remote_token_count_operation() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
