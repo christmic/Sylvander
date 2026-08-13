@@ -225,9 +225,12 @@ histograms, and unmatched-terminal diagnostics; all are exposed through the
 operational snapshot. Existing durable evidence remains a separate path;
 it is an asynchronous governance projection rather than Session commit
 authority. The durable Session terminal commits before the matching built-in
-terminal fact and public event. Cross-restart metric aggregation,
-sink-failure health, and CPU/memory/network resource histograms remain
-incomplete.
+terminal fact and public event. The optional bounded debug projection reports
+any post-start write failure as a sticky `ObservabilitySink` health
+issue and makes Runtime unready; later activity cannot reconstruct a missing
+fact. Reaching the configured file limit is a normal bounded terminal, not a
+sink failure. Cross-restart metric aggregation and CPU/memory/network resource
+histograms remain incomplete.
 
 ### Design evidence
 

@@ -181,6 +181,23 @@ async fn debug_projection_writes_bounded_typed_jsonl_without_agent_content() {
 }
 
 #[tokio::test]
+async fn debug_projection_write_failure_is_sticky_and_content_free() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let (writer, reader) = tokio::io::duplex(1);
+    drop(reader);
+    let debug_log =
+        RuntimeObservationDebugLog::start_with_test_writer(writer, recorder.subscribe());
+    recorder.record(RuntimeEvent::TurnCompleted {
+        turn_id: "turn-1".into(),
+        session_id: SessionId::new("session-1"),
+    });
+
+    debug_log.shutdown().await;
+
+    assert!(debug_log.failed());
+}
+
+#[tokio::test]
 async fn debug_projection_prunes_only_its_oldest_managed_files_across_restarts() {
     let directory = tempfile::TempDir::new().unwrap();
     let debug_directory = directory.path().join("debug");

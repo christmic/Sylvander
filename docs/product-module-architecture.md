@@ -273,8 +273,10 @@ diagnostics, and the operational snapshot. The Session turn record is the author
 durable terminal; Runtime records the matching in-process terminal and only
 then publishes the public terminal. Evidence recording remains a separate,
 asynchronous governance projection of bus traffic and is never used to decide
-whether a turn committed. Cross-restart metric aggregation, CPU/memory/network
-resource histograms, and sink-failure health remain incomplete.
+whether a turn committed. The optional bounded debug projection makes a
+post-start write failure a sticky `ObservabilitySink` health issue;
+normal size-limit truncation is not a failure. Cross-restart metric aggregation
+and CPU/memory/network resource histograms remain incomplete.
 
 ## Service and presentation layers
 

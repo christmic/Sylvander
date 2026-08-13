@@ -497,6 +497,30 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
 }
 
 #[tokio::test]
+async fn operational_readiness_tracks_sticky_observation_sink_failure() {
+    let directory = tempfile::tempdir().expect("temporary runtime directory");
+    let mut config = configured_memory_test_config(&directory, &[]);
+    config.server.observability.debug_log = true;
+    let runtime = Runtime::boot_config(config)
+        .await
+        .expect("configured runtime");
+    let debug_log = runtime
+        .observation_debug_log
+        .as_ref()
+        .expect("configured observation sink");
+    debug_log.fail_for_test();
+
+    let snapshot = runtime.operational_snapshot().await.unwrap();
+
+    assert!(!snapshot.ready);
+    assert_eq!(
+        snapshot.health_issues,
+        [RuntimeHealthIssue::ObservabilitySink]
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn operational_readiness_separates_guardian_storage_from_supervisor_health() {
     let directory = tempfile::tempdir().expect("temporary runtime directory");
     let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &[]))

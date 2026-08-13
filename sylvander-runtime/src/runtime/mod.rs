@@ -429,10 +429,11 @@ pub struct RuntimeOperationalSnapshot {
     pub health_issues: Vec<RuntimeHealthIssue>,
 }
 
-/// Content-safe durable subsystem failures that make Runtime unready.
+/// Content-safe subsystem failures that make Runtime unready.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeHealthIssue {
     EvidenceRecorder,
+    ObservabilitySink,
     GuardianSupervisor,
     ExecutionTarget,
     Storage,
@@ -6030,6 +6031,13 @@ impl Runtime {
             && recorder.last_error().await.is_some()
         {
             health_issues.push(RuntimeHealthIssue::EvidenceRecorder);
+        }
+        if self
+            .observation_debug_log
+            .as_ref()
+            .is_some_and(RuntimeObservationDebugLog::failed)
+        {
+            health_issues.push(RuntimeHealthIssue::ObservabilitySink);
         }
         if let Some(guardian) = &self.guardian
             && guardian.last_error().await.is_some()

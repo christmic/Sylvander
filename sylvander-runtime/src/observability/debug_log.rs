@@ -5,6 +5,8 @@
 //! directory without bound. Unrecognized files are never touched.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -26,6 +28,7 @@ const EVENT_OBSERVATION_LOG_TRUNCATED: &str = "observation_log_truncated";
 
 pub(crate) struct RuntimeObservationDebugLog {
     path: PathBuf,
+    failed: Arc<AtomicBool>,
     shutdown: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -44,30 +47,63 @@ impl RuntimeObservationDebugLog {
             .write(true)
             .open(&path)
             .await?;
+        Ok(Self::spawn(path, BufWriter::new(file), receiver))
+    }
+
+    fn spawn<W>(path: PathBuf, writer: W, receiver: broadcast::Receiver<RuntimeEvent>) -> Self
+    where
+        W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task_path = path.clone();
+        let failed = Arc::new(AtomicBool::new(false));
+        let task_failed = failed.clone();
         let task = tokio::spawn(async move {
-            if let Err(error) = run(BufWriter::new(file), receiver, shutdown_rx).await {
+            if let Err(error) = run(writer, receiver, shutdown_rx).await {
+                task_failed.store(true, Ordering::Release);
                 tracing::warn!(path = %task_path.display(), %error, "debug observation log stopped");
             }
         });
-        Ok(Self {
+        Self {
             path,
+            failed,
             shutdown: Mutex::new(Some(shutdown_tx)),
             task: Mutex::new(Some(task)),
-        })
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_with_test_writer<W>(
+        writer: W,
+        receiver: broadcast::Receiver<RuntimeEvent>,
+    ) -> Self
+    where
+        W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        Self::spawn(PathBuf::from("test-observation-sink"), writer, receiver)
     }
 
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
+    pub(crate) fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_for_test(&self) {
+        self.failed.store(true, Ordering::Release);
+    }
+
     pub(crate) async fn shutdown(&self) {
         if let Some(sender) = self.shutdown.lock().await.take() {
             let _ = sender.send(());
         }
-        if let Some(task) = self.task.lock().await.take() {
-            let _ = task.await;
+        if let Some(task) = self.task.lock().await.take()
+            && task.await.is_err()
+        {
+            self.failed.store(true, Ordering::Release);
         }
     }
 }
@@ -119,11 +155,14 @@ fn managed_log_name(name: &str) -> bool {
         .is_some_and(|id| Uuid::parse_str(id).is_ok())
 }
 
-async fn run(
-    mut writer: BufWriter<tokio::fs::File>,
+async fn run<W>(
+    mut writer: W,
     mut receiver: broadcast::Receiver<RuntimeEvent>,
     mut shutdown: oneshot::Receiver<()>,
-) -> std::io::Result<()> {
+) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
     let mut written = 0_u64;
     loop {
         let record = tokio::select! {
@@ -150,11 +189,10 @@ async fn run(
     writer.flush().await
 }
 
-async fn write_record(
-    writer: &mut BufWriter<tokio::fs::File>,
-    written: &mut u64,
-    record: Value,
-) -> std::io::Result<bool> {
+async fn write_record<W>(writer: &mut W, written: &mut u64, record: Value) -> std::io::Result<bool>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
     let mut line = serde_json::to_vec(&timestamped(record))?;
     line.push(b'\n');
     if written.saturating_add(line.len() as u64) > DEBUG_OBSERVATION_LOG_MAX_BYTES {
