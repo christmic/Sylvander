@@ -24,7 +24,8 @@ use tokio::sync::broadcast;
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::storage::session::{
-    ModelExecutionPosition, ModelRecoveryDecision, ToolExecutionPosition, ToolRecoveryDecision,
+    ModelExecutionPosition, ModelRecoveryDecision, PerceptionExecutionPosition,
+    PerceptionRecoveryDecision, ToolExecutionPosition, ToolRecoveryDecision,
 };
 
 /// Inclusive upper bounds for the first seven duration buckets. The eighth
@@ -331,6 +332,15 @@ pub(crate) enum RuntimeEvent {
         decision: ModelRecoveryDecision,
         operator_action_required: bool,
     },
+    /// Boot recovery durably classified one interrupted perception invocation.
+    PerceptionRecoveryClassified {
+        turn_id: String,
+        session_id: SessionId,
+        invocation_id: String,
+        position: PerceptionExecutionPosition,
+        decision: PerceptionRecoveryDecision,
+        operator_action_required: bool,
+    },
     PersistenceFinished {
         turn_id: String,
         session_id: SessionId,
@@ -363,6 +373,7 @@ impl RuntimeEvent {
     const TOOL_FINISHED: &'static str = "tool_finished";
     const TOOL_RECOVERY_CLASSIFIED: &'static str = "tool_recovery_classified";
     const MODEL_RECOVERY_CLASSIFIED: &'static str = "model_recovery_classified";
+    const PERCEPTION_RECOVERY_CLASSIFIED: &'static str = "perception_recovery_classified";
     const PERSISTENCE_FINISHED: &'static str = "persistence_finished";
     const TURN_COMPLETED: &'static str = "turn_completed";
     const TURN_INTERRUPTED: &'static str = "turn_interrupted";
@@ -380,6 +391,7 @@ impl RuntimeEvent {
             Self::ToolFinished { .. } => Self::TOOL_FINISHED,
             Self::ToolRecoveryClassified { .. } => Self::TOOL_RECOVERY_CLASSIFIED,
             Self::ModelRecoveryClassified { .. } => Self::MODEL_RECOVERY_CLASSIFIED,
+            Self::PerceptionRecoveryClassified { .. } => Self::PERCEPTION_RECOVERY_CLASSIFIED,
             Self::PersistenceFinished { .. } => Self::PERSISTENCE_FINISHED,
             Self::TurnCompleted { .. } => Self::TURN_COMPLETED,
             Self::TurnInterrupted { .. } => Self::TURN_INTERRUPTED,
@@ -449,6 +461,10 @@ pub struct RuntimeObservabilitySnapshot {
     pub model_recoveries_classified: u64,
     /// Model iterations that require an explicit operator decision.
     pub model_recoveries_manual: u64,
+    /// Interrupted perception invocations durably classified during boot recovery.
+    pub perception_recoveries_classified: u64,
+    /// Perception invocations that require an explicit operator decision.
+    pub perception_recoveries_manual: u64,
     /// Explicit filesystem-boundary policy denials reported by an adapter.
     pub filesystem_policy_violations: u64,
     /// Required Session persistence operations that committed.
@@ -524,6 +540,8 @@ struct RuntimeObservabilityInner {
     tool_recoveries_manual: AtomicU64,
     model_recoveries_classified: AtomicU64,
     model_recoveries_manual: AtomicU64,
+    perception_recoveries_classified: AtomicU64,
+    perception_recoveries_manual: AtomicU64,
     filesystem_policy_violations: AtomicU64,
     persistence_succeeded: AtomicU64,
     persistence_failed: AtomicU64,
@@ -584,6 +602,8 @@ impl RuntimeObservability {
                 tool_recoveries_manual: AtomicU64::new(0),
                 model_recoveries_classified: AtomicU64::new(0),
                 model_recoveries_manual: AtomicU64::new(0),
+                perception_recoveries_classified: AtomicU64::new(0),
+                perception_recoveries_manual: AtomicU64::new(0),
                 filesystem_policy_violations: AtomicU64::new(0),
                 persistence_succeeded: AtomicU64::new(0),
                 persistence_failed: AtomicU64::new(0),
@@ -885,6 +905,33 @@ impl RuntimeObservability {
                     "runtime lifecycle fact"
                 );
             }
+            RuntimeEvent::PerceptionRecoveryClassified {
+                turn_id,
+                session_id,
+                invocation_id,
+                position,
+                decision,
+                operator_action_required,
+            } => {
+                self.inner
+                    .perception_recoveries_classified
+                    .fetch_add(1, Ordering::Relaxed);
+                if operator_action_required {
+                    self.inner
+                        .perception_recoveries_manual
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                tracing::info!(
+                    event = event_name,
+                    %turn_id,
+                    %session_id,
+                    %invocation_id,
+                    ?position,
+                    ?decision,
+                    operator_action_required,
+                    "runtime lifecycle fact"
+                );
+            }
             RuntimeEvent::PersistenceFinished {
                 turn_id,
                 session_id,
@@ -1045,7 +1092,8 @@ impl RuntimeObservability {
             | RuntimeEvent::ModelRetried { .. }
             | RuntimeEvent::PersistenceFinished { .. }
             | RuntimeEvent::ToolRecoveryClassified { .. }
-            | RuntimeEvent::ModelRecoveryClassified { .. } => {}
+            | RuntimeEvent::ModelRecoveryClassified { .. }
+            | RuntimeEvent::PerceptionRecoveryClassified { .. } => {}
         }
     }
 
@@ -1091,6 +1139,14 @@ impl RuntimeObservability {
                 .model_recoveries_classified
                 .load(Ordering::Relaxed),
             model_recoveries_manual: self.inner.model_recoveries_manual.load(Ordering::Relaxed),
+            perception_recoveries_classified: self
+                .inner
+                .perception_recoveries_classified
+                .load(Ordering::Relaxed),
+            perception_recoveries_manual: self
+                .inner
+                .perception_recoveries_manual
+                .load(Ordering::Relaxed),
             filesystem_policy_violations: self
                 .inner
                 .filesystem_policy_violations

@@ -10,7 +10,6 @@ use crate::session::membership::{SessionGovernance, SessionMembership};
 use crate::storage::agent_instance::{AgentInstanceConfig, AgentInstanceStore};
 use crate::storage::session::{
     ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryReason,
-    PerceptionRecoveryClassification,
 };
 use crate::storage::workspace_journal::WorkspaceJournal;
 
@@ -1394,28 +1393,23 @@ async fn perception_positions_recover_from_receipt_and_survive_restart() {
     );
     let interrupted = store.interrupted_perception_invocations().await.unwrap();
     assert_eq!(interrupted.len(), 1);
-    let classification = PerceptionRecoveryClassification::for_interrupted(
-        interrupted[0].position,
-        interrupted[0].recovery_policy,
-    );
+    let observability = crate::observability::RuntimeObservability::new();
+    let summary = crate::agent::run::recovery::classify_interrupted_tool_calls(
+        std::sync::Arc::new(store.clone()),
+        &observability,
+        None,
+        1_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.perception_discovered, 1);
+    assert_eq!(summary.perception_classified, 1);
+    let classified = store.interrupted_perception_invocations().await.unwrap();
     assert_eq!(
-        classification.decision,
-        PerceptionRecoveryDecision::RecoverReceipt
+        classified[0].recovery_decision,
+        Some(PerceptionRecoveryDecision::RecoverReceipt)
     );
-    assert_eq!(
-        store
-            .classify_perception_recovery(PerceptionRecoveryWrite {
-                invocation_id: invocation_id.clone(),
-                expected_revision: 2,
-                recovery_owner: "boot-perception".into(),
-                observed_at: 1_000,
-                lease_expires_at: 1_030,
-                classification,
-            })
-            .await
-            .unwrap(),
-        3
-    );
+    assert_eq!(observability.snapshot().perception_recoveries_classified, 1);
     let receipt_locator = format!("artifact:{}", uuid::Uuid::new_v4());
     store
         .persist_perception_receipt(PerceptionReceiptPersistence {

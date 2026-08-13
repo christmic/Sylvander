@@ -282,6 +282,18 @@ fn event_json(event: &RuntimeEvent) -> Value {
             "position": position, "decision": decision,
             "operator_action_required": operator_action_required,
         }),
+        RuntimeEvent::PerceptionRecoveryClassified {
+            turn_id,
+            session_id,
+            invocation_id,
+            position,
+            decision,
+            operator_action_required,
+        } => json!({
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
+            "invocation_id": invocation_id, "position": position, "decision": decision,
+            "operator_action_required": operator_action_required,
+        }),
         RuntimeEvent::PersistenceFinished {
             turn_id,
             session_id,

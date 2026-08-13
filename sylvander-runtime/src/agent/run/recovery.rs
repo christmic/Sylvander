@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::observability::{RuntimeEvent, RuntimeObservability};
 use crate::storage::session::{
     ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryWrite,
+    PerceptionRecoveryClassification, PerceptionRecoveryWrite,
     PersistedTurnCompletion, RecoveryClassification, SessionStore, SessionStoreError,
     ToolCallAdvance, ToolExecutionPosition, ToolRecoveryDecision, ToolRecoveryReason,
     ToolRecoveryWrite,
@@ -27,6 +28,8 @@ pub(crate) struct BootRecoverySummary {
     pub manual_reconciliation: u64,
     pub model_discovered: u64,
     pub model_classified: u64,
+    pub perception_discovered: u64,
+    pub perception_classified: u64,
     pub turns_completed: u64,
     pub recovery_owner: Option<String>,
 }
@@ -54,6 +57,15 @@ pub(crate) async fn classify_interrupted_tool_calls(
     )
     .await?;
     summary.recovery_owner = Some(owner.clone());
+    recover_interrupted_perceptions(
+        store.clone(),
+        observability,
+        &owner,
+        observed_at,
+        lease_expires_at,
+        &mut summary,
+    )
+    .await?;
     let calls = store.interrupted_tool_calls().await?;
     summary.discovered = calls.len() as u64;
     if calls.is_empty() {
@@ -165,6 +177,66 @@ pub(crate) async fn classify_interrupted_tool_calls(
         });
     }
     Ok(summary)
+}
+
+async fn recover_interrupted_perceptions(
+    store: Arc<dyn SessionStore>,
+    observability: &RuntimeObservability,
+    owner: &str,
+    observed_at: i64,
+    lease_expires_at: i64,
+    summary: &mut BootRecoverySummary,
+) -> Result<(), SessionStoreError> {
+    let invocations = store.interrupted_perception_invocations().await?;
+    summary.perception_discovered = invocations.len() as u64;
+    for invocation in invocations {
+        if let Some(decision) = active_lease_decision(
+            invocation.recovery_decision,
+            invocation.recovery_lease_expires_at,
+            observed_at,
+        ) {
+            summary.lease_deferred = summary.lease_deferred.saturating_add(1);
+            if invocation.operator_action_required {
+                summary.manual_reconciliation = summary.manual_reconciliation.saturating_add(1);
+            }
+            observability.record(RuntimeEvent::PerceptionRecoveryClassified {
+                turn_id: invocation.turn_id,
+                session_id: invocation.session_id,
+                invocation_id: invocation.invocation_id.as_str().to_owned(),
+                position: invocation.position,
+                decision,
+                operator_action_required: invocation.operator_action_required,
+            });
+            continue;
+        }
+        let classification = PerceptionRecoveryClassification::for_interrupted(
+            invocation.position,
+            invocation.recovery_policy,
+        );
+        store
+            .classify_perception_recovery(PerceptionRecoveryWrite {
+                invocation_id: invocation.invocation_id.clone(),
+                expected_revision: invocation.ledger_revision,
+                recovery_owner: owner.to_owned(),
+                observed_at,
+                lease_expires_at,
+                classification,
+            })
+            .await?;
+        summary.perception_classified = summary.perception_classified.saturating_add(1);
+        if classification.operator_action_required {
+            summary.manual_reconciliation = summary.manual_reconciliation.saturating_add(1);
+        }
+        observability.record(RuntimeEvent::PerceptionRecoveryClassified {
+            turn_id: invocation.turn_id,
+            session_id: invocation.session_id,
+            invocation_id: invocation.invocation_id.as_str().to_owned(),
+            position: invocation.position,
+            decision: classification.decision,
+            operator_action_required: classification.operator_action_required,
+        });
+    }
+    Ok(())
 }
 
 async fn recover_interrupted_model_iterations(
