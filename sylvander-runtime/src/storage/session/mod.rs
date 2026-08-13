@@ -36,6 +36,8 @@ pub use sqlite::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 use std::collections::HashMap;
 use std::ops::Range;
 
+use crate::agent::cognition::CognitiveRole;
+use crate::agent::perception::PerceptionModality;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -466,6 +468,92 @@ pub struct ToolRecoveryWrite {
     pub classification: RecoveryClassification,
 }
 
+/// Immutable identity and route persisted before media processing begins.
+#[derive(Debug, Clone)]
+pub struct PerceptionInvocationStart {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub agent_instance_id: AgentInstanceId,
+    pub invocation_id: PerceptionInvocationId,
+    pub modality: PerceptionModality,
+    pub role: CognitiveRole,
+    pub provider_id: String,
+    pub model_id: String,
+    pub recovery_policy: PerceptionRecoveryPolicy,
+    pub capability_revision: String,
+    pub input_digest: String,
+    pub input_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PerceptionAdvance {
+    pub invocation_id: PerceptionInvocationId,
+    pub expected_revision: u64,
+    pub expected_position: PerceptionExecutionPosition,
+    pub next_position: PerceptionExecutionPosition,
+}
+
+#[derive(Debug, Clone)]
+pub struct PerceptionMediaPersistence {
+    pub invocation_id: PerceptionInvocationId,
+    pub expected_revision: u64,
+    pub artifact_locator: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PerceptionReceiptPersistence {
+    pub invocation_id: PerceptionInvocationId,
+    pub expected_revision: u64,
+    pub receipt_locator: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PerceptionArtifactPersistence {
+    pub invocation_id: PerceptionInvocationId,
+    pub expected_revision: u64,
+    pub artifact_locator: String,
+    pub output_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerceptionInvocationSnapshot {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub agent_instance_id: AgentInstanceId,
+    pub invocation_id: PerceptionInvocationId,
+    pub modality: PerceptionModality,
+    pub role: CognitiveRole,
+    pub provider_id: String,
+    pub model_id: String,
+    pub recovery_policy: PerceptionRecoveryPolicy,
+    pub capability_revision: String,
+    pub input_digest: String,
+    pub input_bytes: u64,
+    pub position: PerceptionExecutionPosition,
+    pub ledger_revision: u64,
+    pub media_artifact_locator: Option<String>,
+    pub receipt_locator: Option<String>,
+    pub output_artifact_locator: Option<String>,
+    pub output_digest: Option<String>,
+    pub recovery_decision: Option<PerceptionRecoveryDecision>,
+    pub recovery_reason: Option<PerceptionRecoveryReason>,
+    pub operator_action_required: bool,
+    pub recovery_owner: Option<String>,
+    pub recovery_lease_expires_at: Option<i64>,
+    pub started_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PerceptionRecoveryWrite {
+    pub invocation_id: PerceptionInvocationId,
+    pub expected_revision: u64,
+    pub recovery_owner: String,
+    pub observed_at: i64,
+    pub lease_expires_at: i64,
+    pub classification: PerceptionRecoveryClassification,
+}
+
 /// Exact model-visible observation, ledger boundary, and terminal state
 /// committed in one transaction.
 #[derive(Debug, Clone)]
@@ -616,6 +704,95 @@ pub trait SessionStore: AgentInstanceStore + Send + Sync {
         &self,
         write: ModelRecoveryWrite,
     ) -> Result<u64, SessionStoreError>;
+
+    /// Persist the exact perception route before retaining media or invoking
+    /// a specialist model.
+    async fn begin_perception(
+        &self,
+        _start: PerceptionInvocationStart,
+    ) -> Result<(), SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    /// Atomically retain the governed source media reference.
+    async fn persist_perception_media(
+        &self,
+        _write: PerceptionMediaPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    /// Advance one adjacent perception effect boundary with revision CAS.
+    async fn advance_perception(
+        &self,
+        _advance: PerceptionAdvance,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    /// Commit an opaque provider receipt after inference acceptance.
+    async fn persist_perception_receipt(
+        &self,
+        _write: PerceptionReceiptPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    /// Commit the normalized perception artifact and its content digest.
+    async fn persist_perception_artifact(
+        &self,
+        _write: PerceptionArtifactPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    /// Mark the normalized result visible to the primary Agent.
+    async fn complete_perception(
+        &self,
+        _invocation_id: &PerceptionInvocationId,
+        _expected_revision: u64,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    async fn perception_invocations(
+        &self,
+        _session_id: &SessionId,
+        _turn_id: &str,
+    ) -> Result<Vec<PerceptionInvocationSnapshot>, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    async fn interrupted_perception_invocations(
+        &self,
+    ) -> Result<Vec<PerceptionInvocationSnapshot>, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    async fn classify_perception_recovery(
+        &self,
+        _write: PerceptionRecoveryWrite,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
 
     /// Atomically record and apply an exact moderator recovery decision.
     async fn resolve_execution_recovery(
