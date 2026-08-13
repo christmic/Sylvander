@@ -27,6 +27,20 @@ transition facts remain available to observability for post-mortem analysis.
 Agent state completion and Runtime product completion remain separate: only
 Runtime may declare success after durable Session commit and publication.
 
+Runtime observability is a governance mechanism rather than part of Agent
+execution. The mandatory recorder publishes each typed, content-free lifecycle
+fact to a bounded broadcast bus after updating built-in tracing, counters, and
+timing. Consumers cannot apply backpressure to the execution path; a slow
+consumer observes an explicit lag count instead.
+
+When `server.observability.debug_log` is enabled, a governance task subscribes
+to that bus and writes one JSON object per line to a unique file under
+`<data_dir>/debug`. The file is capped at 16 MiB, contains no prompts, tool
+arguments, tool output, credentials, or user content, and is flushed when
+Runtime shuts down. `debug_observation_log_path` returns the exact file for the
+current process. This diagnostic projection is not authoritative storage and
+does not participate in Agent success or failure.
+
 The public event protocol deliberately exposes the coarser product lifecycle,
 not every Agent-machine phase. Runtime emits `TurnStarted` only after required
 turn admission persistence and executable composition have succeeded. Existing
