@@ -7,9 +7,15 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+mod corpus;
 mod evaluation;
 mod fault;
 mod ledger;
+
+pub use corpus::{
+    CORPUS_MANIFEST_SCHEMA_VERSION, CorpusArtifact, CorpusManifest, CorpusManifestError,
+    CorpusModality, CorpusProvenance, CorpusRisk, CorpusScenario, CorpusVerifier,
+};
 
 pub use evaluation::{
     ActivationDecision, ActivationGateError, ActivationGatePolicy, ActivationGateReport,
@@ -89,6 +95,7 @@ pub enum BenchmarkModelRole {
     Critic,
     Vision,
     Audio,
+    Document,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -187,6 +194,7 @@ fn profile_accepts_roles(profile: CognitionProfile, roles: &HashSet<BenchmarkMod
                     BenchmarkModelRole::Primary,
                     BenchmarkModelRole::Vision,
                     BenchmarkModelRole::Audio,
+                    BenchmarkModelRole::Document,
                 ])
                 && roles.iter().any(|role| {
                     matches!(role, BenchmarkModelRole::Vision | BenchmarkModelRole::Audio)
