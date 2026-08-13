@@ -22,6 +22,32 @@ fn transcript_window_is_bounded_by_entries_and_bytes() {
 }
 
 #[test]
+fn runtime_turn_start_promotes_pending_admission_to_active_identity() {
+    let mut state = AppState::new();
+    state.session_id = Some("session-1".into());
+    let action = state
+        .submit_prompt("run".into(), Vec::new())
+        .expect("submit chat");
+    assert!(matches!(action, Action::SendChat { .. }));
+    assert!(state.turn_pending);
+    assert!(!state.turn_active);
+
+    state.apply(DomainEvent::TextChunk {
+        delta: "early".into(),
+    });
+    assert!(
+        !state.turn_active,
+        "stream content is not an admission fact"
+    );
+    state.apply(DomainEvent::TurnStarted {
+        turn_id: "turn-1".into(),
+    });
+    assert!(!state.turn_pending);
+    assert!(state.turn_active);
+    assert_eq!(state.active_turn_id.as_deref(), Some("turn-1"));
+}
+
+#[test]
 fn streaming_and_tool_payloads_are_utf8_safe_and_bounded() {
     let mut state = AppState::new();
     state.apply(DomainEvent::TextChunk {
@@ -433,7 +459,8 @@ fn workspace_review_sends_one_typed_diff_attachment() {
             ..
         }] if text.contains("+fixed")
     ));
-    assert!(state.turn_active);
+    assert!(state.turn_pending);
+    assert!(!state.turn_active);
     assert!(matches!(state.messages.last(), Some(ChatMessage::User(_))));
 }
 

@@ -78,8 +78,12 @@ pub struct AppState {
     pub cost_nano_usd: Option<u64>,
     /// Source session for one safe conversation-only branch undo.
     pub last_branch_source_session_id: Option<String>,
-    /// True from local submit until a terminal Done/Error/Interrupted event.
+    /// Local admission guard before Runtime publishes the durable turn fact.
+    pub turn_pending: bool,
+    /// True only after Runtime publishes `TurnStarted`.
     pub turn_active: bool,
+    /// Runtime-owned identity of the active turn.
+    pub active_turn_id: Option<String>,
     /// Handles the small window before a new session receives its server id.
     pub interrupt_requested: bool,
     /// Prompts accepted while a turn is active. They are sent one at a time
@@ -197,7 +201,9 @@ impl AppState {
             output_tokens: 0,
             cost_nano_usd: None,
             last_branch_source_session_id: None,
+            turn_pending: false,
             turn_active: false,
+            active_turn_id: None,
             interrupt_requested: false,
             queued_prompts: VecDeque::new(),
             queued_prompt_attachments: VecDeque::new(),
@@ -364,7 +370,8 @@ impl AppState {
     }
 
     fn has_live_activity(&self) -> bool {
-        self.turn_active
+        self.turn_pending
+            || self.turn_active
             || !self.streaming.is_empty()
             || !self.streaming_thinking.is_empty()
             || self.messages.iter().any(|message| match message {
@@ -388,7 +395,7 @@ impl AppState {
         {
             *message = ChatMessage::User(text.clone());
         }
-        self.turn_active = true;
+        self.turn_pending = true;
         self.interrupt_requested = false;
         self.feedback_target = None;
         self.status = if self.queued_prompts.is_empty() {
@@ -413,7 +420,7 @@ impl AppState {
         attachments: Vec<sylvander_api::MessageAttachment>,
     ) -> Option<Action> {
         self.welcomed = true;
-        if self.turn_active {
+        if self.turn_pending || self.turn_active {
             if self.queued_prompts.len() >= MAX_QUEUED_PROMPTS {
                 self.status =
                     "Prompt queue full · remove an item with /queue remove before adding more"
@@ -432,7 +439,7 @@ impl AppState {
             return None;
         }
         self.messages.push(ChatMessage::User(text.clone()));
-        self.turn_active = true;
+        self.turn_pending = true;
         self.interrupt_requested = false;
         self.feedback_target = None;
         self.chat_scroll = 0;
@@ -629,7 +636,9 @@ impl AppState {
                 self.protocol_capabilities.clear();
                 self.user_profile = None;
                 self.pending_profile_intent = None;
+                self.turn_pending = false;
                 self.turn_active = false;
+                self.active_turn_id = None;
                 self.interrupt_requested = false;
                 while self.modals.top().is_some_and(|modal| {
                     matches!(
@@ -779,7 +788,9 @@ impl AppState {
                     .collect();
                 self.streaming.clear();
                 self.streaming_thinking.clear();
+                self.turn_pending = false;
                 self.turn_active = false;
+                self.active_turn_id = None;
                 self.interrupt_requested = false;
                 if recovery {
                     self.messages.extend(
@@ -873,10 +884,12 @@ impl AppState {
                 self.status = "Session permanently deleted".into();
             }
             DomainEvent::OperationFailed { operation, message } => {
-                if operation == "create_session" {
+                if matches!(operation.as_str(), "chat" | "create_session") {
                     self.session_creation_pending = false;
                     self.pending_session_prompt = None;
+                    self.turn_pending = false;
                     self.turn_active = false;
+                    self.active_turn_id = None;
                 }
                 self.status = format!("{operation} failed: {message}");
                 self.messages.push(ChatMessage::Info(self.status.clone()));
@@ -940,12 +953,15 @@ impl AppState {
                 self.messages
                     .push(ChatMessage::Info(format!("memory decision · {message}")));
             }
-            DomainEvent::TextChunk { delta } => {
+            DomainEvent::TurnStarted { turn_id } => {
+                self.turn_pending = false;
                 self.turn_active = true;
+                self.active_turn_id = Some(turn_id);
+            }
+            DomainEvent::TextChunk { delta } => {
                 self.streaming.push_str(&delta);
             }
             DomainEvent::ThinkingChunk { delta } => {
-                self.turn_active = true;
                 self.streaming_thinking.push_str(&delta);
             }
             DomainEvent::ModelRetry {
@@ -955,7 +971,6 @@ impl AppState {
                 reason,
                 cause,
             } => {
-                self.turn_active = true;
                 self.status = format!(
                     "{} · retry {attempt}/{max_attempts}",
                     retry_cause_label(cause)
@@ -1099,7 +1114,7 @@ impl AppState {
                         content: sylvander_api::AttachmentContent::Text { text: diff },
                     };
                     self.messages.push(ChatMessage::User(prompt.clone()));
-                    self.turn_active = true;
+                    self.turn_pending = true;
                     self.status = "Reviewing workspace changes".into();
                     return Some(Action::SendChat {
                         text: prompt,
@@ -1143,7 +1158,6 @@ impl AppState {
                 tool_name,
                 input,
             } => {
-                self.turn_active = true;
                 // Group consecutive tool events into a single ToolStep
                 // block per UX §6. A new step starts when the last
                 // trailing message is not a ToolStep, or when a previous
@@ -1177,7 +1191,6 @@ impl AppState {
                 tool_name,
                 delta,
             } => {
-                self.turn_active = true;
                 let mut found = false;
                 for message in self.messages.iter_mut().rev() {
                     let ChatMessage::ToolStep { children, .. } = message else {
@@ -1271,7 +1284,9 @@ impl AppState {
                 final_text,
                 feedback_target,
             } => {
+                self.turn_pending = false;
                 self.turn_active = false;
+                self.active_turn_id = None;
                 self.interrupt_requested = false;
                 self.feedback_target = feedback_target;
                 if !self.streaming.is_empty() {
@@ -1299,7 +1314,9 @@ impl AppState {
                 message,
                 feedback_target,
             } => {
+                self.turn_pending = false;
                 self.turn_active = false;
+                self.active_turn_id = None;
                 self.interrupt_requested = false;
                 self.feedback_target = feedback_target;
                 self.messages
@@ -1323,7 +1340,9 @@ impl AppState {
                 reason,
                 feedback_target,
             } => {
+                self.turn_pending = false;
                 self.turn_active = false;
+                self.active_turn_id = None;
                 self.interrupt_requested = false;
                 self.feedback_target = feedback_target;
                 if !self.streaming.is_empty() {

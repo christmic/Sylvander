@@ -202,6 +202,17 @@ fn legacy_usage_event_defaults_to_unknown_cost() {
 }
 
 #[test]
+fn turn_started_maps_the_runtime_identity_into_the_domain() {
+    assert!(matches!(
+        parse_server_msg(ServerMsg::TurnStarted {
+            session_id: "session-1".into(),
+            turn_id: "turn-1".into(),
+        }),
+        Some(DomainEvent::TurnStarted { turn_id }) if turn_id == "turn-1"
+    ));
+}
+
+#[test]
 fn model_selection_uses_typed_reasoning_effort_on_wire() {
     let value = serde_json::to_value(ClientMsg::SelectModel {
         session_id: Some("session-1".into()),

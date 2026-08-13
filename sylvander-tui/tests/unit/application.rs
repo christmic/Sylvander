@@ -104,7 +104,8 @@ fn terminal_event_starts_exactly_one_locally_queued_prompt() {
         feedback_target: None,
     });
 
-    assert!(app.state.turn_active);
+    assert!(app.state.turn_pending);
+    assert!(!app.state.turn_active);
     assert!(app.state.queued_prompts.is_empty());
     assert!(matches!(
         app.take_effects().as_slice(),

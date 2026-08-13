@@ -9,11 +9,8 @@
 //!
 //! **Status contract** (M-T15.C):
 //! - `Disconnected`         — Unix socket is closed (`!` glyph + amber).
-//! - `Working`              — agent is iterating (`◐` glyph + blue).
-//!   Detected observationally: streaming buffer is non-empty, or a
-//!   `ToolStep` has any Pending child. (When the server starts emitting
-//!   `WorkingStarted`/`WorkingEnded` events, `AppState.working_active`
-//!   will override this.)
+//! - `Working`              — admission is pending or Runtime owns an active
+//!   turn (`◐` glyph + blue).
 //! - `WaitingApproval`     — Approval modal is open (`●` glyph + amber).
 //! - `Asking`               — `AskUser` modal is open (`●` glyph + dim).
 //! - `Idle`                 — everything else (`·` glyph + dim).
@@ -67,17 +64,7 @@ pub fn status_mode_for(state: &AppState) -> StatusMode {
         }
     }
 
-    // Local submission marks the turn active immediately; streamed content
-    // then keeps the same state until Done/Error/Interrupted settles it.
-    let working = state.turn_active
-        || !state.streaming.is_empty()
-        || !state.streaming_thinking.is_empty()
-        || state.messages.iter().any(|m| match m {
-            crate::app::ChatMessage::ToolStep { children, .. } => children
-                .iter()
-                .any(|c| c.status == crate::app::ToolStatus::Pending),
-            _ => false,
-        });
+    let working = state.turn_pending || state.turn_active;
     if working {
         return StatusMode::Working;
     }

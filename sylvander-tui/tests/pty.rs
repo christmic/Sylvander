@@ -78,6 +78,7 @@ fn spawn_server(
                         &[r#"{"type":"session_created","session_id":"pty-session"}"#]
                     }
                     Some("chat") if message["text"] == "hello from PTY" => &[
+                        r#"{"type":"turn_started","session_id":"pty-session","turn_id":"pty-turn-1"}"#,
                         r#"{"type":"text_delta","session_id":"pty-session","delta":"PTY response rendered"}"#,
                         r#"{"type":"done","session_id":"pty-session","text":"PTY response rendered"}"#,
                         r#"{"type":"approval_request","session_id":"pty-session","batch_id":"pty-approval","tools":[{"call_id":"pty-tool","tool_name":"bash","input":{"command":"rm -rf build"}}],"allowed_scopes":["once"]}"#,
@@ -89,6 +90,7 @@ fn spawn_server(
                         r#"{"type":"session_history","session":{"id":"pty-session","label":"PTY recovered","workspace":"/workspace/pty","last_seen_secs":0,"archived":false},"messages":[{"role":"user","text":"hello from PTY"},{"role":"assistant","text":"PTY response rendered"}],"iterations":1,"input_tokens":3,"output_tokens":3,"recovery":true,"replay_truncated":false,"notice":"PTY session recovered"}"#,
                     ],
                     Some("chat") if message["text"] == "interrupt me" => &[
+                        r#"{"type":"turn_started","session_id":"pty-session","turn_id":"pty-turn-2"}"#,
                         r#"{"type":"text_delta","session_id":"pty-session","delta":"still working"}"#,
                     ],
                     Some("interrupt") => &[
