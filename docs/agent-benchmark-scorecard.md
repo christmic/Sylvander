@@ -97,6 +97,28 @@ They become required only after matching production capabilities exist. See
 the [OSWorld 2.0 release contract](https://github.com/xlang-ai/OSWorld-V2) and
 [AgentBench FC environments](https://github.com/THUDM/AgentBench).
 
+## Sylvander capability levels
+
+The final report assigns the highest level whose required evidence is complete.
+This is a release gate, not a weighted leaderboard score: a missing required
+suite or excessive execution-error rate caps the level even if another suite
+is strong.
+
+| Level | Interpretation | Required evidence |
+| --- | --- | --- |
+| L0 | conversational only | no independently verified tool baseline |
+| L1 | basic tool Agent | at least 80% required-cell execution coverage, under 20% Agent errors, and at least one passing Terminal-Bench regression task |
+| L2 | qualified terminal/coding Agent | at least 95% coverage, under 10% Agent errors, Terminal-Bench regression pass rate at least 30%, and SWE-bench regression pass rate at least 15% |
+| L3 | reliable long-horizon engineering Agent | full Terminal-Bench and SWE-bench release suites, under 5% Agent errors, Terminal-Bench pass rate at least 50%, SWE-bench Verified resolved rate at least 30%, and no material repeated-run regression |
+| L4 | general tool-interaction Agent | L3 plus τ³ text and AgentBench FC, at least 50% τ³ domain reward, at least 40% AgentBench FC macro success, and no required domain below 25% |
+| L5 | release-grade general Agent | L4 plus at least 70% Terminal-Bench, 50% SWE-bench Verified, 70% τ³, 60% AgentBench FC, under 2% Agent errors, and stable three-run confidence bounds |
+
+The thresholds are Sylvander engineering gates, not claims that the upstream
+projects define these levels. The report includes each raw upstream metric,
+coverage, error taxonomy, efficiency, repetition variance, and the limiting
+criterion. A level based only on a regression subset is marked `provisional`;
+only full pinned suites can produce a `release` level.
+
 ## Execution profiles
 
 The same tasks must not be used for every development decision:

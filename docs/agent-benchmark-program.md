@@ -73,6 +73,13 @@ retry, tool, usage/cache, and terminal lifecycle evidence without raw
 credentials. Verifier reward remains Harbor-owned and is never inferred from
 these operational events.
 
+The required portfolio is Terminal-Bench, SWE-bench Verified, τ³-bench text,
+and AgentBench FC. OSWorld and WebArena remain tracked but are outside the
+current implementation scope. The final acceptance artifact applies the
+capability levels defined in `docs/agent-benchmark-scorecard.md` and reports
+both a provisional subset level and, once every full suite is complete, a
+release level.
+
 ## Known capability gap
 
 τ³ half-duplex execution requires `generate_next_message` to return either user
