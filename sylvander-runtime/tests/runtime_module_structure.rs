@@ -85,6 +85,7 @@ fn agent_run_keeps_construction_and_turn_orchestration_out_of_shared_state() {
         "error.rs",
         "interaction.rs",
         "orchestration.rs",
+        "perception.rs",
         "projection.rs",
         "recovery.rs",
     ] {
