@@ -1411,6 +1411,7 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
         .model_name("test-model")
         .mcp_server(crate::agent_definition::McpServerConfig {
             name: "search".into(),
+            execution_environment: "sandbox".into(),
             command: "/opt/bin/search-mcp".into(),
             args: vec!["--token".into(), "also-secret".into()],
             envs: std::collections::HashMap::from([("SEARCH_TOKEN".into(), "super-secret".into())]),

@@ -177,6 +177,7 @@ name = "write"
 [[tools]]
 type = "mcp_server"
 name = "code-analyzer"
+execution_environment = "sandbox"
 command = "code-analyzer-mcp"
 args = ["--verbose"]
 

@@ -139,6 +139,7 @@ fn mcp_to_draft(server: &McpServerConfig) -> Result<AgentToolDraft, AgentAdminEr
         .collect::<Result<_, AgentAdminError>>()?;
     Ok(AgentToolDraft::McpServer {
         name: server.name.clone(),
+        execution_environment: server.execution_environment.clone(),
         command: server.command.clone(),
         args: server.args.clone(),
         environment,
@@ -211,6 +212,7 @@ fn draft() -> AgentDefinitionDraft {
         system_prompt: "never reveal me".into(),
         tools: vec![AgentToolDraft::McpServer {
             name: "search".into(),
+            execution_environment: "sandbox".into(),
             command: "mcp-search".into(),
             args: vec!["serve".into()],
             environment: [(
@@ -262,13 +264,30 @@ fn system_and_admin_role_are_privileged() {
 #[test]
 fn definition_conversion_preserves_only_secret_references() {
     let config = definition_from_draft(draft()).unwrap();
-    let encoded = match &config.spec.tools[0] {
-        ToolRef::McpServer(server) => &server.envs["TOKEN"],
+    let (execution_environment, encoded) = match &config.spec.tools[0] {
+        ToolRef::McpServer(server) => (&server.execution_environment, &server.envs["TOKEN"]),
         ToolRef::Builtin { .. } => panic!("expected MCP server"),
     };
+    assert_eq!(execution_environment, "sandbox");
     assert!(encoded.starts_with(SECRET_REF_PREFIX));
     assert!(!encoded.contains("secret-value"));
     assert_eq!(draft_from_definition(&config).unwrap(), draft());
+}
+
+#[test]
+fn mcp_execution_environment_is_required() {
+    let mut value = draft();
+    let AgentToolDraft::McpServer {
+        execution_environment,
+        ..
+    } = &mut value.tools[0]
+    else {
+        panic!("expected MCP server");
+    };
+    execution_environment.clear();
+
+    let error = definition_from_draft(value).expect_err("missing environment must fail");
+    assert_eq!(error.code, AgentAdminErrorCode::InvalidDefinition);
 }
 
 #[test]

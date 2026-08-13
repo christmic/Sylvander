@@ -125,6 +125,7 @@ fn fake_config(temp: &TempDir) -> McpServerConfig {
     let log = temp.path().join("requests.log");
     McpServerConfig {
         name: "fake".into(),
+        execution_environment: "test-host".into(),
         command: "python3".into(),
         args: vec![script.display().to_string()],
         envs: HashMap::from([

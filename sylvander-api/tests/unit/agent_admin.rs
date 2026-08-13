@@ -50,6 +50,7 @@ fn update_round_trip_carries_concurrency_and_secret_references_only() {
             system_prompt: "private prompt".into(),
             tools: vec![AgentToolDraft::McpServer {
                 name: "search".into(),
+                execution_environment: "sandbox".into(),
                 command: "mcp-search".into(),
                 args: vec!["serve".into()],
                 environment,

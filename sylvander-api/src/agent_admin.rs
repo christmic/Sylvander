@@ -129,6 +129,9 @@ pub enum AgentToolDraft {
     },
     McpServer {
         name: String,
+        /// Runtime execution-environment identifier. Host execution is never
+        /// inferred when this target is unavailable.
+        execution_environment: String,
         command: String,
         #[serde(default)]
         args: Vec<String>,

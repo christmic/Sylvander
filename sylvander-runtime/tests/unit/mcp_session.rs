@@ -14,6 +14,7 @@ fn binding(user: &str, session: &str) -> SessionMcpBinding {
 fn server(name: &str) -> McpServerConfig {
     McpServerConfig {
         name: name.into(),
+        execution_environment: "sandbox".into(),
         command: "server".into(),
         args: Vec::new(),
         envs: HashMap::new(),

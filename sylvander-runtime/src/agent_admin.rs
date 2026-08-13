@@ -202,11 +202,13 @@ pub(crate) fn definition_from_draft(
             AgentToolDraft::Builtin { name } => ToolRef::Builtin { name },
             AgentToolDraft::McpServer {
                 name,
+                execution_environment,
                 command,
                 args,
                 environment,
             } => ToolRef::McpServer(McpServerConfig {
                 name,
+                execution_environment,
                 command,
                 args,
                 envs: environment
@@ -637,12 +639,18 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
             }
             AgentToolDraft::McpServer {
                 name,
+                execution_environment,
                 command,
                 environment,
                 ..
             } => {
-                if name.trim().is_empty() || command.trim().is_empty() {
-                    return Err(invalid_definition("MCP name and command must not be empty"));
+                if name.trim().is_empty()
+                    || execution_environment.trim().is_empty()
+                    || command.trim().is_empty()
+                {
+                    return Err(invalid_definition(
+                        "MCP name, execution environment, and command must not be empty",
+                    ));
                 }
                 for (name, reference) in environment {
                     if name.trim().is_empty() || !valid_secret_reference(reference) {

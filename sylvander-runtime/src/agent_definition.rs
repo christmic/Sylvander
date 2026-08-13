@@ -94,6 +94,8 @@ pub enum ToolRef {
 pub struct McpServerConfig {
     /// Human-readable name for this server.
     pub name: String,
+    /// Exact Runtime execution-environment identifier.
+    pub execution_environment: String,
     /// Shell command to start the server.
     pub command: String,
     /// CLI arguments.

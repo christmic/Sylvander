@@ -1319,6 +1319,24 @@ fn validate_agent_shape_and_environment(
             errors,
         );
     }
+    for tool in &agent.spec.tools {
+        let crate::agent_definition::ToolRef::McpServer(server) = tool else {
+            continue;
+        };
+        require_text("MCP server name", &server.name, errors);
+        require_text(
+            "MCP execution environment",
+            &server.execution_environment,
+            errors,
+        );
+        require_text("MCP server command", &server.command, errors);
+        if !targets.contains(server.execution_environment.trim()) {
+            errors.push(format!(
+                "MCP server {} references unknown execution environment {}",
+                server.name, server.execution_environment
+            ));
+        }
+    }
     let profiles = unique_ids(
         &format!("prompt profile for Agent {}", agent.spec.id),
         agent.prompt_profiles.iter().map(|item| item.id.as_str()),
