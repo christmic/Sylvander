@@ -261,7 +261,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 15;
+const SESSION_SCHEMA_VERSION: i64 = 16;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -277,6 +277,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_topology",
     "agent_relations",
     "coordination_tasks",
+    "coordination_task_leases",
     "task_dependencies",
     "task_handoffs",
     "coordination_messages",
@@ -301,6 +302,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_sessions_user",
     "idx_sessions_updated",
     "idx_tasks_assignee_state",
+    "idx_task_leases_expiry",
     "idx_handoffs_arbitrator_state",
     "idx_messages_recipient_state",
     "idx_coordination_waits_current",
@@ -445,6 +447,21 @@ CREATE TABLE coordination_tasks (
     updated_at          INTEGER NOT NULL
 );
 
+-- One renewable execution claim per running task. `lease_epoch` is monotonic
+-- and `fencing_token` changes on every expired-lease recovery.
+CREATE TABLE coordination_task_leases (
+    task_id             TEXT PRIMARY KEY REFERENCES coordination_tasks(task_id) ON DELETE CASCADE,
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    assignee_instance_id TEXT NOT NULL,
+    task_revision       INTEGER NOT NULL CHECK(task_revision >= 0),
+    lease_epoch         INTEGER NOT NULL CHECK(lease_epoch > 0),
+    fencing_token       TEXT NOT NULL CHECK(length(trim(fencing_token)) > 0),
+    lease_expires_at    INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    FOREIGN KEY(session_id, assignee_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE
+);
+
 CREATE TABLE task_dependencies (
     session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     prerequisite_task_id TEXT NOT NULL REFERENCES coordination_tasks(task_id) ON DELETE CASCADE,
@@ -499,6 +516,8 @@ CREATE TABLE coordination_messages (
 
 CREATE INDEX idx_tasks_assignee_state
     ON coordination_tasks(session_id, assigned_to_instance_id, state);
+CREATE INDEX idx_task_leases_expiry
+    ON coordination_task_leases(session_id, lease_expires_at);
 CREATE INDEX idx_handoffs_arbitrator_state
     ON task_handoffs(session_id, arbitrator_instance_id, state);
 CREATE INDEX idx_messages_recipient_state
@@ -803,7 +822,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=15;
+PRAGMA user_version=16;
 COMMIT;
 ";
 

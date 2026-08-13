@@ -16,7 +16,8 @@ use crate::coordination::mailbox::{
     MessageClaim, MessageDeliveryState,
 };
 use crate::coordination::task::{
-    CoordinationTask, CoordinationTaskState, SessionTaskGraph, TaskDependency,
+    CoordinationTask, CoordinationTaskState, MAX_TASK_LEASE_SECONDS, SessionTaskGraph,
+    TaskDependency, TaskExecutionLease,
 };
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::membership::SessionMembership;
@@ -52,6 +53,29 @@ pub trait CoordinationStore: Send + Sync {
     ) -> Result<(), SessionStoreError>;
 
     async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError>;
+
+    async fn claim_task(
+        &self,
+        task_id: &TaskId,
+        assignee: &AgentInstanceId,
+        now: i64,
+        lease_seconds: u64,
+    ) -> Result<TaskExecutionLease, SessionStoreError>;
+
+    async fn renew_task_lease(
+        &self,
+        lease: &TaskExecutionLease,
+        now: i64,
+        lease_seconds: u64,
+    ) -> Result<TaskExecutionLease, SessionStoreError>;
+
+    async fn finish_task_lease(
+        &self,
+        lease: &TaskExecutionLease,
+        next_state: CoordinationTaskState,
+        consumed_tokens: u64,
+        now: i64,
+    ) -> Result<CoordinationTask, SessionStoreError>;
 
     async fn add_task_dependency(
         &self,
@@ -541,6 +565,204 @@ impl CoordinationStore for SqliteSessionStore {
         let task_id = task_id.clone();
         self.run(move |connection| load_task(connection, &task_id))
             .await
+    }
+
+    async fn claim_task(
+        &self,
+        task_id: &TaskId,
+        assignee: &AgentInstanceId,
+        now: i64,
+        lease_seconds: u64,
+    ) -> Result<TaskExecutionLease, SessionStoreError> {
+        validate_task_lease_seconds(lease_seconds)?;
+        let task_id = task_id.clone();
+        let assignee = assignee.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let mut task = load_task(&transaction, &task_id)?
+                .ok_or_else(|| SessionStoreError::Invalid("cannot claim an unknown task".into()))?;
+            if task.assigned_to.as_ref() != Some(&assignee)
+                || !matches!(
+                    task.state,
+                    CoordinationTaskState::Ready | CoordinationTaskState::Running
+                )
+            {
+                return Err(SessionStoreError::Invalid(
+                    "task is not claimable by this Agent".into(),
+                ));
+            }
+            let current = load_task_lease(&transaction, &task_id)?;
+            if let Some(lease) = &current
+                && lease.expires_at > now
+            {
+                if lease.assignee == assignee && lease.task_revision == task.revision {
+                    transaction.commit()?;
+                    return Ok(lease.clone());
+                }
+                return Err(SessionStoreError::Invalid(
+                    "task execution lease is already active".into(),
+                ));
+            }
+            if task.state == CoordinationTaskState::Ready {
+                let next_revision = task
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| SessionStoreError::Invalid("task revision overflow".into()))?;
+                transaction.execute(
+                    "UPDATE coordination_tasks SET state='running',revision=?2,updated_at=?3 \
+                     WHERE task_id=?1 AND revision=?4 AND state='ready'",
+                    params![
+                        task.task_id.0,
+                        checked_i64(next_revision, "task revision")?,
+                        now,
+                        checked_i64(task.revision, "task revision")?,
+                    ],
+                )?;
+                task.state = CoordinationTaskState::Running;
+                task.revision = next_revision;
+                task.updated_at = now;
+            }
+            let lease_epoch = current.as_ref().map_or(Ok(1), |lease| {
+                lease
+                    .lease_epoch
+                    .checked_add(1)
+                    .ok_or_else(|| SessionStoreError::Invalid("task lease epoch overflow".into()))
+            })?;
+            let lease_delta = i64::try_from(lease_seconds)
+                .map_err(|_| SessionStoreError::Invalid("task lease duration is invalid".into()))?;
+            let expires_at = now
+                .checked_add(lease_delta)
+                .ok_or_else(|| SessionStoreError::Invalid("task lease expiry overflow".into()))?;
+            let lease = TaskExecutionLease {
+                task_id: task.task_id.clone(),
+                session_id: task.session_id.clone(),
+                assignee,
+                task_revision: task.revision,
+                lease_epoch,
+                fencing_token: uuid::Uuid::new_v4().to_string(),
+                expires_at,
+            };
+            transaction.execute(
+                "INSERT INTO coordination_task_leases \
+                 (task_id,session_id,assignee_instance_id,task_revision,lease_epoch,
+                  fencing_token,lease_expires_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
+                 ON CONFLICT(task_id) DO UPDATE SET
+                  session_id=excluded.session_id,
+                  assignee_instance_id=excluded.assignee_instance_id,
+                  task_revision=excluded.task_revision,
+                  lease_epoch=excluded.lease_epoch,
+                  fencing_token=excluded.fencing_token,
+                  lease_expires_at=excluded.lease_expires_at,
+                  updated_at=excluded.updated_at",
+                params![
+                    lease.task_id.0,
+                    lease.session_id.0,
+                    lease.assignee.0,
+                    checked_i64(lease.task_revision, "task revision")?,
+                    checked_i64(lease.lease_epoch, "task lease epoch")?,
+                    lease.fencing_token,
+                    lease.expires_at,
+                    now,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(lease)
+        })
+        .await
+    }
+
+    async fn renew_task_lease(
+        &self,
+        lease: &TaskExecutionLease,
+        now: i64,
+        lease_seconds: u64,
+    ) -> Result<TaskExecutionLease, SessionStoreError> {
+        validate_task_lease_seconds(lease_seconds)?;
+        let lease = lease.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            ensure_task_lease(&transaction, &lease, now)?;
+            let lease_delta = i64::try_from(lease_seconds)
+                .map_err(|_| SessionStoreError::Invalid("task lease duration is invalid".into()))?;
+            let expires_at = now
+                .checked_add(lease_delta)
+                .ok_or_else(|| SessionStoreError::Invalid("task lease expiry overflow".into()))?;
+            transaction.execute(
+                "UPDATE coordination_task_leases SET lease_expires_at=?4,updated_at=?5 \
+                 WHERE task_id=?1 AND lease_epoch=?2 AND fencing_token=?3",
+                params![
+                    lease.task_id.0,
+                    checked_i64(lease.lease_epoch, "task lease epoch")?,
+                    lease.fencing_token,
+                    expires_at,
+                    now,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(TaskExecutionLease {
+                expires_at,
+                ..lease
+            })
+        })
+        .await
+    }
+
+    async fn finish_task_lease(
+        &self,
+        lease: &TaskExecutionLease,
+        next_state: CoordinationTaskState,
+        consumed_tokens: u64,
+        now: i64,
+    ) -> Result<CoordinationTask, SessionStoreError> {
+        let lease = lease.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            ensure_task_lease(&transaction, &lease, now)?;
+            let mut task = load_task(&transaction, &lease.task_id)?.ok_or_else(|| {
+                SessionStoreError::Invalid("leased task disappeared".into())
+            })?;
+            if task.state != CoordinationTaskState::Running
+                || !task.state.can_transition_to(next_state)
+                || consumed_tokens < task.consumed_tokens
+                || consumed_tokens > task.token_budget
+            {
+                return Err(SessionStoreError::Invalid(
+                    "leased task completion is invalid".into(),
+                ));
+            }
+            let next_revision = task.revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("task revision overflow".into())
+            })?;
+            transaction.execute(
+                "UPDATE coordination_tasks SET state=?2,consumed_tokens=?3,revision=?4,updated_at=?5 \
+                 WHERE task_id=?1 AND revision=?6 AND state='running'",
+                params![
+                    task.task_id.0,
+                    encode_task_state(next_state),
+                    checked_i64(consumed_tokens, "task consumed tokens")?,
+                    checked_i64(next_revision, "task revision")?,
+                    now,
+                    checked_i64(task.revision, "task revision")?,
+                ],
+            )?;
+            transaction.execute(
+                "DELETE FROM coordination_task_leases \
+                 WHERE task_id=?1 AND lease_epoch=?2 AND fencing_token=?3",
+                params![
+                    lease.task_id.0,
+                    checked_i64(lease.lease_epoch, "task lease epoch")?,
+                    lease.fencing_token,
+                ],
+            )?;
+            task.state = next_state;
+            task.consumed_tokens = consumed_tokens;
+            task.revision = next_revision;
+            task.updated_at = now;
+            transaction.commit()?;
+            Ok(task)
+        })
+        .await
     }
 
     async fn add_task_dependency(
@@ -2358,6 +2580,85 @@ fn load_task(
         .optional()?
         .map(|row| decode_task(task_id.clone(), row))
         .transpose()
+}
+
+fn load_task_lease(
+    connection: &rusqlite::Connection,
+    task_id: &TaskId,
+) -> Result<Option<TaskExecutionLease>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT session_id,assignee_instance_id,task_revision,lease_epoch,
+                    fencing_token,lease_expires_at
+             FROM coordination_task_leases WHERE task_id=?1",
+            [&task_id.0],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            Ok(TaskExecutionLease {
+                task_id: task_id.clone(),
+                session_id: SessionId::new(row.0),
+                assignee: AgentInstanceId::new(row.1),
+                task_revision: checked_u64(row.2, "task revision")?,
+                lease_epoch: checked_u64(row.3, "task lease epoch")?,
+                fencing_token: row.4,
+                expires_at: row.5,
+            })
+        })
+        .transpose()
+}
+
+fn ensure_task_lease(
+    transaction: &Transaction<'_>,
+    lease: &TaskExecutionLease,
+    now: i64,
+) -> Result<(), SessionStoreError> {
+    let matches = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM coordination_task_leases claim
+            JOIN coordination_tasks task ON task.task_id=claim.task_id
+            WHERE claim.task_id=?1 AND claim.session_id=?2
+              AND claim.assignee_instance_id=?3 AND claim.task_revision=?4
+              AND claim.lease_epoch=?5 AND claim.fencing_token=?6
+              AND claim.lease_expires_at>?7 AND task.state='running'
+              AND task.revision=claim.task_revision
+        )",
+        params![
+            lease.task_id.0,
+            lease.session_id.0,
+            lease.assignee.0,
+            checked_i64(lease.task_revision, "task revision")?,
+            checked_i64(lease.lease_epoch, "task lease epoch")?,
+            lease.fencing_token,
+            now,
+        ],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !matches {
+        return Err(SessionStoreError::Invalid(
+            "task execution lease was lost or fenced".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_task_lease_seconds(lease_seconds: u64) -> Result<(), SessionStoreError> {
+    if !(1..=MAX_TASK_LEASE_SECONDS).contains(&lease_seconds) {
+        return Err(SessionStoreError::Invalid(
+            "task lease duration is outside the supported range".into(),
+        ));
+    }
+    Ok(())
 }
 
 type EncodedTask = (

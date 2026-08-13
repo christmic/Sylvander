@@ -72,6 +72,21 @@ pub struct CoordinationTask {
     pub updated_at: i64,
 }
 
+/// Runtime-issued ownership of one running task. The opaque token and
+/// monotonic epoch fence late commits from an executor replaced after crash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskExecutionLease {
+    pub task_id: TaskId,
+    pub session_id: SessionId,
+    pub assignee: AgentInstanceId,
+    pub task_revision: u64,
+    pub lease_epoch: u64,
+    pub fencing_token: String,
+    pub expires_at: i64,
+}
+
+pub const MAX_TASK_LEASE_SECONDS: u64 = 300;
+
 /// `prerequisite` must become terminal-success before `dependent` may run.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TaskDependency {
