@@ -114,6 +114,7 @@ def main() -> int:
         "/private/tmp/sylvander-harbor-jobs"
     ))
     parser.add_argument("--job-name")
+    parser.add_argument("--model", default="MiniMax-M2.7")
     parser.add_argument("--harbor", type=Path, default=Path(
         "/private/tmp/sylvander-harbor-minimal/bin/harbor"
     ))
@@ -124,11 +125,14 @@ def main() -> int:
     runner_sha = require_native_arm64(runner)
     revision = runner_revision(runner, runner_sha)
     image = require_native_task(task)
+    if "/" in args.model or not args.model.strip():
+        raise RuntimeError("--model must be a non-empty provider-local model ID")
     key = os.environ.get("SYLVANDER_BENCH_API_KEY", "")
     if args.level != "smoke" and not key:
         raise RuntimeError("set SYLVANDER_BENCH_API_KEY; it will not be placed in argv")
 
-    job_name = args.job_name or f"sylvander-{args.level}-{revision[:9]}"
+    model_slug = "".join(character.lower() if character.isalnum() else "-" for character in args.model)
+    job_name = args.job_name or f"sylvander-{args.level}-{model_slug}-{revision[:9]}"
     job_dir = args.jobs_dir / job_name
     if job_dir.exists():
         raise RuntimeError(f"refusing to reuse job directory: {job_dir}")
@@ -147,7 +151,7 @@ def main() -> int:
         "environment": {"type": "docker", "delete": False},
         "agents": [{
             "name": "sylvander_agent:SylvanderAgent",
-            "model_name": "minimax-cn/MiniMax-M2.7",
+            "model_name": f"minimax-cn/{args.model}",
             "env": agent_env,
         }],
         "tasks": [{"path": str(task)}],
@@ -157,7 +161,7 @@ def main() -> int:
     if args.level == "smoke":
         command.append("--install-only")
 
-    print(f"level={args.level} commit={revision} runner_sha256={runner_sha}")
+    print(f"level={args.level} model={args.model} commit={revision} runner_sha256={runner_sha}")
     print(f"task={task} image={image} job={job_dir}")
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=True) as config_file:
         os.chmod(config_file.name, 0o600)

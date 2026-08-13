@@ -99,10 +99,15 @@ environment and the value is passed through a mode-0600 temporary config:
 python3 sylvander-benchmark-agent/harbor/run_native_benchmark.py smoke
 SYLVANDER_BENCH_API_KEY='...' \
   python3 sylvander-benchmark-agent/harbor/run_native_benchmark.py small
+SYLVANDER_BENCH_API_KEY='...' \
+  python3 sylvander-benchmark-agent/harbor/run_native_benchmark.py small \
+  --model MiniMax-M3
 ```
 
 Advance one level only after the preceding level finishes cleanly. `large`
 contains the million-row stress case and is intentionally last.
+Every model ID creates a separate benchmark coordinate and job name; results
+from different models must not be combined into one Agent-revision baseline.
 
 Build and attest a replacement runner with `build_native_runner.py`. The build
 refuses a dirty worktree and non-native Podman machine, performs an arm64 static
