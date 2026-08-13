@@ -274,6 +274,10 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_governance",
     "session_topology",
     "agent_relations",
+    "coordination_tasks",
+    "task_dependencies",
+    "task_handoffs",
+    "coordination_messages",
     "session_messages",
     "session_usage",
     "session_turns",
@@ -285,6 +289,9 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_sessions_lifetime",
     "idx_sessions_user",
     "idx_sessions_updated",
+    "idx_tasks_assignee_state",
+    "idx_handoffs_arbitrator_state",
+    "idx_messages_recipient_state",
     "idx_session_agents_agent",
     "idx_agent_instances_definition",
     "idx_agent_instances_state",
@@ -388,6 +395,78 @@ CREATE TABLE agent_relations (
     FOREIGN KEY(session_id, target_instance_id)
         REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE
 );
+
+CREATE TABLE coordination_tasks (
+    task_id             TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    membership_revision INTEGER NOT NULL CHECK(membership_revision >= 0),
+    parent_task_id      TEXT REFERENCES coordination_tasks(task_id),
+    created_by_instance_id TEXT NOT NULL,
+    assigned_to_instance_id TEXT,
+    objective           TEXT NOT NULL CHECK(length(trim(objective)) > 0),
+    state               TEXT NOT NULL CHECK(state IN ('proposed','ready','running','blocked','awaiting_review','completed','failed','cancelled')),
+    token_budget        INTEGER NOT NULL CHECK(token_budget > 0),
+    consumed_tokens     INTEGER NOT NULL CHECK(consumed_tokens >= 0 AND consumed_tokens <= token_budget),
+    max_handoffs        INTEGER NOT NULL CHECK(max_handoffs >= 0),
+    handoff_count       INTEGER NOT NULL CHECK(handoff_count >= 0 AND handoff_count <= max_handoffs),
+    revision            INTEGER NOT NULL CHECK(revision >= 0),
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+);
+
+CREATE TABLE task_dependencies (
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    prerequisite_task_id TEXT NOT NULL REFERENCES coordination_tasks(task_id) ON DELETE CASCADE,
+    dependent_task_id   TEXT NOT NULL REFERENCES coordination_tasks(task_id) ON DELETE CASCADE,
+    created_at          INTEGER NOT NULL,
+    PRIMARY KEY(session_id, prerequisite_task_id, dependent_task_id),
+    CHECK(prerequisite_task_id != dependent_task_id)
+);
+
+CREATE TABLE task_handoffs (
+    handoff_id          TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    task_id             TEXT NOT NULL REFERENCES coordination_tasks(task_id),
+    from_instance_id    TEXT NOT NULL,
+    to_instance_id      TEXT NOT NULL,
+    requested_by_instance_id TEXT NOT NULL,
+    arbitrator_instance_id TEXT NOT NULL,
+    task_revision       INTEGER NOT NULL CHECK(task_revision >= 0),
+    topology_revision   INTEGER NOT NULL CHECK(topology_revision >= 0),
+    reason              TEXT NOT NULL CHECK(length(trim(reason)) > 0),
+    state               TEXT NOT NULL CHECK(state IN ('proposed','awaiting_arbitration','accepted','rejected','expired','cancelled')),
+    revision            INTEGER NOT NULL CHECK(revision >= 0),
+    expires_at          INTEGER NOT NULL,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    CHECK(from_instance_id != to_instance_id)
+);
+
+CREATE TABLE coordination_messages (
+    message_id          TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    sender_instance_id  TEXT NOT NULL,
+    recipient_instance_id TEXT NOT NULL,
+    task_id             TEXT REFERENCES coordination_tasks(task_id),
+    message_kind        TEXT NOT NULL CHECK(message_kind IN ('task','progress','evidence','question','decision','control')),
+    payload             TEXT NOT NULL CHECK(length(trim(payload)) > 0),
+    topology_revision   INTEGER NOT NULL CHECK(topology_revision >= 0),
+    route_json          TEXT NOT NULL,
+    max_hops            INTEGER NOT NULL CHECK(max_hops > 0),
+    state               TEXT NOT NULL CHECK(state IN ('pending','delivered','acknowledged','expired','dead_letter')),
+    delivery_attempts   INTEGER NOT NULL CHECK(delivery_attempts >= 0),
+    revision            INTEGER NOT NULL CHECK(revision >= 0),
+    expires_at          INTEGER NOT NULL,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+);
+
+CREATE INDEX idx_tasks_assignee_state
+    ON coordination_tasks(session_id, assigned_to_instance_id, state);
+CREATE INDEX idx_handoffs_arbitrator_state
+    ON task_handoffs(session_id, arbitrator_instance_id, state);
+CREATE INDEX idx_messages_recipient_state
+    ON coordination_messages(session_id, recipient_instance_id, state, created_at);
 
 -- Messages (one row per user/assistant/tool message)
 --
