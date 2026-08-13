@@ -82,7 +82,7 @@ impl WorkflowGate for RuntimeWorkflowGate {
                         | CoordinationTaskState::Failed
                 );
                 let task = if next_state == CoordinationTaskState::Running {
-                    service
+                    let lease = service
                         .claim_task(
                             ClaimTaskRequest {
                                 task_id: task_id.clone(),
@@ -95,6 +95,15 @@ impl WorkflowGate for RuntimeWorkflowGate {
                         )
                         .await
                         .map_err(|error| error.to_string())?;
+                    self.observability
+                        .record(RuntimeEvent::CoordinationTransition {
+                            session_id: self.session_id.clone(),
+                            outcome: if lease.lease_epoch > 1 {
+                                RuntimeCoordinationOutcome::TaskLeaseRecovered
+                            } else {
+                                RuntimeCoordinationOutcome::TaskClaimed
+                            },
+                        });
                     self.store
                         .task(&task_id)
                         .await
@@ -116,6 +125,15 @@ impl WorkflowGate for RuntimeWorkflowGate {
                         )
                         .await
                         .map_err(|error| error.to_string())?;
+                    self.observability
+                        .record(RuntimeEvent::CoordinationTransition {
+                            session_id: self.session_id.clone(),
+                            outcome: if lease.lease_epoch > 1 {
+                                RuntimeCoordinationOutcome::TaskLeaseRecovered
+                            } else {
+                                RuntimeCoordinationOutcome::TaskClaimed
+                            },
+                        });
                     service
                         .finish_claimed_task(
                             FinishClaimedTaskRequest {

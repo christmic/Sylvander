@@ -133,6 +133,10 @@ pub(crate) enum RuntimeCoordinationOutcome {
     Enqueued,
     TaskCreated,
     TaskTransitioned,
+    TaskClaimed,
+    TaskLeaseRecovered,
+    TaskCancelled,
+    BackgroundDispatchRecovered,
     ParticipantActivated,
     TopologyUpdated,
     ArbitrationRequired,
@@ -148,6 +152,10 @@ impl RuntimeCoordinationOutcome {
             Self::Enqueued => "enqueued",
             Self::TaskCreated => "task_created",
             Self::TaskTransitioned => "task_transitioned",
+            Self::TaskClaimed => "task_claimed",
+            Self::TaskLeaseRecovered => "task_lease_recovered",
+            Self::TaskCancelled => "task_cancelled",
+            Self::BackgroundDispatchRecovered => "background_dispatch_recovered",
             Self::ParticipantActivated => "participant_activated",
             Self::TopologyUpdated => "topology_updated",
             Self::ArbitrationRequired => "arbitration_required",
@@ -436,6 +444,10 @@ pub struct RuntimeObservabilitySnapshot {
     pub coordination_enqueued: u64,
     pub coordination_tasks_created: u64,
     pub coordination_tasks_transitioned: u64,
+    pub coordination_tasks_claimed: u64,
+    pub coordination_task_leases_recovered: u64,
+    pub coordination_tasks_cancelled: u64,
+    pub coordination_background_dispatches_recovered: u64,
     pub coordination_participant_activated: u64,
     pub coordination_topology_updated: u64,
     pub coordination_arbitration_required: u64,
@@ -497,6 +509,10 @@ struct RuntimeObservabilityInner {
     coordination_enqueued: AtomicU64,
     coordination_tasks_created: AtomicU64,
     coordination_tasks_transitioned: AtomicU64,
+    coordination_tasks_claimed: AtomicU64,
+    coordination_task_leases_recovered: AtomicU64,
+    coordination_tasks_cancelled: AtomicU64,
+    coordination_background_dispatches_recovered: AtomicU64,
     coordination_participant_activated: AtomicU64,
     coordination_topology_updated: AtomicU64,
     coordination_arbitration_required: AtomicU64,
@@ -546,6 +562,10 @@ impl RuntimeObservability {
                 coordination_enqueued: AtomicU64::new(0),
                 coordination_tasks_created: AtomicU64::new(0),
                 coordination_tasks_transitioned: AtomicU64::new(0),
+                coordination_tasks_claimed: AtomicU64::new(0),
+                coordination_task_leases_recovered: AtomicU64::new(0),
+                coordination_tasks_cancelled: AtomicU64::new(0),
+                coordination_background_dispatches_recovered: AtomicU64::new(0),
                 coordination_participant_activated: AtomicU64::new(0),
                 coordination_topology_updated: AtomicU64::new(0),
                 coordination_arbitration_required: AtomicU64::new(0),
@@ -617,6 +637,18 @@ impl RuntimeObservability {
                     }
                     RuntimeCoordinationOutcome::TaskTransitioned => {
                         &self.inner.coordination_tasks_transitioned
+                    }
+                    RuntimeCoordinationOutcome::TaskClaimed => {
+                        &self.inner.coordination_tasks_claimed
+                    }
+                    RuntimeCoordinationOutcome::TaskLeaseRecovered => {
+                        &self.inner.coordination_task_leases_recovered
+                    }
+                    RuntimeCoordinationOutcome::TaskCancelled => {
+                        &self.inner.coordination_tasks_cancelled
+                    }
+                    RuntimeCoordinationOutcome::BackgroundDispatchRecovered => {
+                        &self.inner.coordination_background_dispatches_recovered
                     }
                     RuntimeCoordinationOutcome::ParticipantActivated => {
                         &self.inner.coordination_participant_activated
@@ -1017,6 +1049,22 @@ impl RuntimeObservability {
             coordination_tasks_transitioned: self
                 .inner
                 .coordination_tasks_transitioned
+                .load(Ordering::Relaxed),
+            coordination_tasks_claimed: self
+                .inner
+                .coordination_tasks_claimed
+                .load(Ordering::Relaxed),
+            coordination_task_leases_recovered: self
+                .inner
+                .coordination_task_leases_recovered
+                .load(Ordering::Relaxed),
+            coordination_tasks_cancelled: self
+                .inner
+                .coordination_tasks_cancelled
+                .load(Ordering::Relaxed),
+            coordination_background_dispatches_recovered: self
+                .inner
+                .coordination_background_dispatches_recovered
                 .load(Ordering::Relaxed),
             coordination_participant_activated: self
                 .inner

@@ -204,7 +204,9 @@ async fn recover_background_dispatches(
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
         let outcome = match outcome {
-            DispatchMessageOutcome::Enqueued(_) => RuntimeCoordinationOutcome::Enqueued,
+            DispatchMessageOutcome::Enqueued(_) => {
+                RuntimeCoordinationOutcome::BackgroundDispatchRecovered
+            }
             DispatchMessageOutcome::EnqueuedByModerator { .. } => {
                 RuntimeCoordinationOutcome::ModeratorAuthorized
             }

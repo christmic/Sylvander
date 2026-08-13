@@ -50,7 +50,7 @@ use crate::agent::approval::ApprovalGrantContext;
 use crate::agent::approval::ApprovalMemory;
 use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::execution::RuntimeExecutionService;
-use crate::observability::RuntimeObservability;
+use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability};
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{AgentSessionKey, SessionContext, SessionMetadata, now_secs};
 use crate::storage::artifact::RuntimeArtifactService;
@@ -1422,6 +1422,12 @@ impl AgentRun {
                                 .await
                             {
                                 Ok(_) => {
+                                    self.inner.observability.record(
+                                        RuntimeEvent::CoordinationTransition {
+                                            session_id: session_id.clone(),
+                                            outcome: RuntimeCoordinationOutcome::TaskCancelled,
+                                        },
+                                    );
                                     let _ = self
                                         .inner
                                         .bus
