@@ -5,10 +5,12 @@
 //! specialist candidate. Skills consume governed perception artifacts later;
 //! they do not become the transport or capability boundary.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sylvander_llm_core::ModelCapabilities;
 
 use super::cognition::{CognitionConfig, CognitiveRole, CognitiveRoleBinding};
+use crate::storage::session::PerceptionInvocationId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +36,61 @@ pub struct PerceptionSignals {
 pub enum PerceptionUnavailableReason {
     TransportUnsupported,
     NoCapableRoute,
+}
+
+/// One deterministic encrypted record owned by a perception invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerceptionArtifactKind {
+    SourceMedia,
+    ProviderReceipt,
+    NormalizedOutput,
+}
+
+impl PerceptionArtifactKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceMedia => "source_media",
+            Self::ProviderReceipt => "provider_receipt",
+            Self::NormalizedOutput => "normalized_output",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerceptionArtifactRecord {
+    pub locator: String,
+    pub media_type: String,
+    pub payload: Vec<u8>,
+    pub digest: String,
+}
+
+/// Turn-bound encrypted artifact authority used by specialist execution.
+/// Implementations must make an exact `(invocation, kind)` write idempotent
+/// and reject any attempt to reuse that identity with different content.
+#[async_trait]
+pub trait PerceptionArtifactStore: Send + Sync {
+    async fn persist_exact(
+        &self,
+        invocation_id: &PerceptionInvocationId,
+        kind: PerceptionArtifactKind,
+        media_type: &str,
+        payload: Vec<u8>,
+    ) -> Result<PerceptionArtifactRecord, PerceptionArtifactError>;
+
+    async fn load_exact(
+        &self,
+        invocation_id: &PerceptionInvocationId,
+        kind: PerceptionArtifactKind,
+    ) -> Result<Option<PerceptionArtifactRecord>, PerceptionArtifactError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PerceptionArtifactError {
+    #[error("perception artifact content conflicts with its durable identity")]
+    Conflict,
+    #[error("perception artifact storage is unavailable")]
+    Unavailable,
 }
 
 /// Deterministic route proposal. A specialist remains the same Agent's

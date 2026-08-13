@@ -12,9 +12,14 @@ use sylvander_agent::artifact::{
     ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore,
 };
 
+use crate::agent::perception::{
+    PerceptionArtifactError, PerceptionArtifactKind, PerceptionArtifactRecord,
+    PerceptionArtifactStore,
+};
 use crate::evidence::{
     EvidenceClassification, EvidenceError, EvidenceStore, GovernedRecordInput, GovernedRecordKind,
 };
+use crate::storage::session::PerceptionInvocationId;
 
 /// Identity and time fixed by Runtime for one admitted Agent turn.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,6 +103,129 @@ impl TurnArtifactStore for BoundArtifactStore {
             original_bytes,
         })
     }
+}
+
+#[async_trait]
+impl PerceptionArtifactStore for BoundArtifactStore {
+    async fn persist_exact(
+        &self,
+        invocation_id: &PerceptionInvocationId,
+        kind: PerceptionArtifactKind,
+        media_type: &str,
+        payload: Vec<u8>,
+    ) -> Result<PerceptionArtifactRecord, PerceptionArtifactError> {
+        let id = perception_record_id(invocation_id, kind);
+        if let Some(existing) = self.load_perception_record(invocation_id, kind).await? {
+            return matching_artifact(existing, media_type, &payload);
+        }
+        let source_ref = perception_source(&self.source_seed, invocation_id, kind);
+        let write = self
+            .store
+            .put_governed_record(GovernedRecordInput {
+                id: id.clone(),
+                scope: self.scope.clone(),
+                kind: GovernedRecordKind::Artifact,
+                classification: EvidenceClassification::Restricted,
+                source_ref,
+                media_type: media_type.to_owned(),
+                payload: payload.clone(),
+                created_at: self.created_at,
+            })
+            .await;
+        if write.is_err() {
+            if let Some(existing) = self.load_perception_record(invocation_id, kind).await? {
+                return matching_artifact(existing, media_type, &payload);
+            }
+            return Err(PerceptionArtifactError::Unavailable);
+        }
+        self.load_perception_record(invocation_id, kind)
+            .await?
+            .ok_or(PerceptionArtifactError::Unavailable)
+    }
+
+    async fn load_exact(
+        &self,
+        invocation_id: &PerceptionInvocationId,
+        kind: PerceptionArtifactKind,
+    ) -> Result<Option<PerceptionArtifactRecord>, PerceptionArtifactError> {
+        self.load_perception_record(invocation_id, kind).await
+    }
+}
+
+impl BoundArtifactStore {
+    async fn load_perception_record(
+        &self,
+        invocation_id: &PerceptionInvocationId,
+        kind: PerceptionArtifactKind,
+    ) -> Result<Option<PerceptionArtifactRecord>, PerceptionArtifactError> {
+        let id = perception_record_id(invocation_id, kind);
+        let export = self
+            .store
+            .export_governed_records(self.scope.clone(), vec![id.clone()], self.created_at)
+            .await;
+        let export = match export {
+            Ok(export) => export,
+            Err(EvidenceError::GovernedRecordNotFound) => return Ok(None),
+            Err(_) => return Err(PerceptionArtifactError::Unavailable),
+        };
+        let record = export
+            .records
+            .into_iter()
+            .next()
+            .ok_or(PerceptionArtifactError::Unavailable)?;
+        if record.id != id
+            || record.kind != GovernedRecordKind::Artifact
+            || record.source_ref != perception_source(&self.source_seed, invocation_id, kind)
+        {
+            return Err(PerceptionArtifactError::Conflict);
+        }
+        Ok(Some(PerceptionArtifactRecord {
+            locator: format!("artifact:{}", record.id),
+            media_type: record.media_type,
+            payload: record.payload,
+            digest: format!("sha256:{}", record.payload_digest_sha256),
+        }))
+    }
+}
+
+fn matching_artifact(
+    existing: PerceptionArtifactRecord,
+    media_type: &str,
+    payload: &[u8],
+) -> Result<PerceptionArtifactRecord, PerceptionArtifactError> {
+    if existing.media_type == media_type && existing.payload == payload {
+        Ok(existing)
+    } else {
+        Err(PerceptionArtifactError::Conflict)
+    }
+}
+
+fn perception_record_id(
+    invocation_id: &PerceptionInvocationId,
+    kind: PerceptionArtifactKind,
+) -> String {
+    uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_OID,
+        format!(
+            "sylvander-perception-artifact-v1:{}:{}",
+            invocation_id.as_str(),
+            kind.as_str()
+        )
+        .as_bytes(),
+    )
+    .to_string()
+}
+
+fn perception_source(
+    source_seed: &str,
+    invocation_id: &PerceptionInvocationId,
+    kind: PerceptionArtifactKind,
+) -> String {
+    format!(
+        "{source_seed}:perception:{}:{}",
+        invocation_id.as_str(),
+        kind.as_str()
+    )
 }
 
 fn source_seed(binding: &ArtifactTurnBinding) -> String {
