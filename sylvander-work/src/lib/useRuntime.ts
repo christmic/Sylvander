@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeIdentityBindingAction, type RuntimeIdentityBindingView, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimePendingMemoryConfirmation, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeAgentAdminRequest, type RuntimeAgentRevisionView, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeIdentityBindingAction, type RuntimeIdentityBindingView, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimePendingMemoryConfirmation, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -87,6 +87,15 @@ export interface RuntimeViewState {
     pendingOperation?: RuntimeIdentityBindingAction["operation"];
     notice?: string;
   };
+  agentAdministration: {
+    status: "idle" | "loading" | "ready" | "submitting" | "error";
+    agentId?: string;
+    activeRevision?: number;
+    revisions: RuntimeAgentRevisionView[];
+    nextBeforeRevision?: number;
+    pendingOperation?: RuntimeAgentAdminRequest["operation"];
+    notice?: string;
+  };
   liveness: "idle" | "checking" | "healthy";
   diagnostic?: string;
 }
@@ -104,6 +113,7 @@ const initialState: RuntimeViewState = {
   memoryConfirmations: [],
   userProfile: { status: "idle" },
   identityBinding: { status: "idle" },
+  agentAdministration: { status: "idle", revisions: [] },
   liveness: "idle",
 };
 
@@ -132,6 +142,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const memoryRequestSessionRef = useRef<string | undefined>(undefined);
   const userProfileRequestRef = useRef<RuntimeUserProfileOperation | undefined>(undefined);
   const identityBindingRequestRef = useRef<RuntimeIdentityBindingAction["operation"] | undefined>(undefined);
+  const agentAdminRequestRef = useRef<RuntimeAgentAdminRequest["operation"] | undefined>(undefined);
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
 
@@ -216,6 +227,38 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           challenge: undefined,
           pendingOperation: undefined,
           notice: "Runtime identity command queue is unavailable",
+        },
+      }));
+      return false;
+    }
+  }, [submit]);
+
+  const requestAgentAdministration = useCallback(async (request: RuntimeAgentAdminRequest) => {
+    if (!protocolCapabilitiesRef.current.has("agent_administration")) return false;
+    agentAdminRequestRef.current = request.operation;
+    setState((current) => ({
+      ...current,
+      agentAdministration: {
+        ...current.agentAdministration,
+        status: request.operation === "list_revisions" || request.operation === "inspect_revision"
+          ? "loading"
+          : "submitting",
+        pendingOperation: request.operation,
+        notice: undefined,
+      },
+    }));
+    try {
+      await submit({ type: "agent_admin", request });
+      return true;
+    } catch {
+      if (agentAdminRequestRef.current === request.operation) agentAdminRequestRef.current = undefined;
+      setState((current) => ({
+        ...current,
+        agentAdministration: {
+          ...current.agentAdministration,
+          status: "error",
+          pendingOperation: undefined,
+          notice: "Runtime administration command queue is unavailable",
         },
       }));
       return false;
@@ -635,6 +678,74 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             challenge: undefined,
             pendingOperation: undefined,
             notice: identityErrorNotice(response.error.message, response.error.retry_after_ms),
+          },
+        }));
+        break;
+      }
+      case "agent_admin": {
+        const pendingOperation = agentAdminRequestRef.current;
+        if (!pendingOperation) break;
+        const response = message.response;
+        if (response.status === "error") {
+          agentAdminRequestRef.current = undefined;
+          setState((current) => ({
+            ...current,
+            agentAdministration: {
+              ...current.agentAdministration,
+              status: "error",
+              pendingOperation: undefined,
+              notice: response.error.message,
+            },
+          }));
+          break;
+        }
+        if (!agentAdminResponseMatches(pendingOperation, response.result.operation)) break;
+        agentAdminRequestRef.current = undefined;
+        if (response.result.operation === "revisions_listed") {
+          const result = response.result;
+          setState((current) => ({
+            ...current,
+            agentAdministration: {
+              status: "ready",
+              agentId: result.agent_id,
+              activeRevision: result.active_revision,
+              revisions: result.revisions,
+              nextBeforeRevision: result.next_before_revision,
+            },
+          }));
+          break;
+        }
+        if (response.result.operation === "revision_inspected") {
+          const result = response.result;
+          setState((current) => ({
+            ...current,
+            agentAdministration: {
+              ...current.agentAdministration,
+              status: "ready",
+              pendingOperation: undefined,
+              revisions: replaceAgentRevision(
+                current.agentAdministration.revisions,
+                result.revision,
+              ),
+            },
+          }));
+          break;
+        }
+        const result = response.result;
+        setState((current) => ({
+          ...current,
+          agentAdministration: {
+            ...current.agentAdministration,
+            status: "ready",
+            activeRevision: result.active_revision,
+            pendingOperation: undefined,
+            notice: result.operation === "revision_activated"
+              ? "Agent revision activated"
+              : "Agent revision rolled back",
+            revisions: current.agentAdministration.revisions.map((revision) => ({
+              ...revision,
+              active: revision.definition.revision === result.active_revision,
+            })),
           },
         }));
         break;
@@ -1061,7 +1172,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       default:
         break;
     }
-  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestIdentityBinding, requestMemoryConfirmations, requestUserProfile, submit]);
+  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestAgentAdministration, requestIdentityBinding, requestMemoryConfirmations, requestUserProfile, submit]);
 
   useEffect(() => {
     let stopped = false;
@@ -1118,10 +1229,12 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         memoryRequestSessionRef.current = undefined;
         userProfileRequestRef.current = undefined;
         identityBindingRequestRef.current = undefined;
+        agentAdminRequestRef.current = undefined;
         setState((current) => ({
           ...current,
           userProfile: { status: "idle" },
           identityBinding: { status: "idle" },
+          agentAdministration: { status: "idle", revisions: [] },
         }));
         scheduleReconnect(event.reason);
       }
@@ -1193,6 +1306,14 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     setState((current) => ({
       ...current,
       identityBinding: { ...current.identityBinding, challenge: undefined },
+    }));
+  }, []);
+
+  const clearAgentAdministration = useCallback(() => {
+    agentAdminRequestRef.current = undefined;
+    setState((current) => ({
+      ...current,
+      agentAdministration: { status: "idle", revisions: [] },
     }));
   }, []);
 
@@ -1411,6 +1532,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     requestIdentityBinding,
     clearIdentityBinding,
     clearIdentityChallenge,
+    requestAgentAdministration,
+    clearAgentAdministration,
     sendChat,
     interruptTurn,
     requestContext,
@@ -1462,6 +1585,29 @@ function identityResponseMatches(
 function identityErrorNotice(message: string, retryAfterMs?: number) {
   const retry = retryAfterMs === undefined ? "" : `; retry in ${retryAfterMs} ms`;
   return `${message}${retry}`;
+}
+
+function agentAdminResponseMatches(
+  request: RuntimeAgentAdminRequest["operation"],
+  response: "revision_inspected" | "revisions_listed" | "revision_activated" | "revision_rolled_back",
+) {
+  return (request === "inspect_revision" && response === "revision_inspected")
+    || (request === "list_revisions" && response === "revisions_listed")
+    || (request === "activate_revision" && response === "revision_activated")
+    || (request === "rollback_revision" && response === "revision_rolled_back");
+}
+
+function replaceAgentRevision(
+  revisions: RuntimeAgentRevisionView[],
+  replacement: RuntimeAgentRevisionView,
+) {
+  const exists = revisions.some((revision) =>
+    revision.definition.revision === replacement.definition.revision);
+  return exists
+    ? revisions.map((revision) => revision.definition.revision === replacement.definition.revision
+      ? replacement
+      : revision)
+    : [...revisions, replacement];
 }
 
 function sameDeltaTarget(left: PendingDelta, right: PendingDelta): boolean {

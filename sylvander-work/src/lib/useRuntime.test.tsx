@@ -224,4 +224,91 @@ describe("useRuntime user profile", () => {
     expect(view.result.current.state.identityBinding).toEqual({ status: "idle" });
     view.unmount();
   });
+
+  it("projects only redacted Agent revisions and waits for activation facts", async () => {
+    const gateway = new ProfileGateway();
+    const view = renderHook(() => useRuntime(gateway));
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "runtime", version: 6, capabilities: ["agent_administration"] },
+    }));
+    await act(async () => {
+      expect(await view.result.current.requestAgentAdministration({
+        operation: "list_revisions",
+        agent_id: "agent-1",
+        limit: 50,
+      })).toBe(true);
+    });
+    expect(gateway.commands.at(-1)).toEqual({
+      type: "agent_admin",
+      request: { operation: "list_revisions", agent_id: "agent-1", limit: 50 },
+    });
+    const revision = {
+      definition: {
+        agent_id: "agent-1",
+        revision: 4,
+        name: "Coding Agent",
+        description: "Works on code",
+        provider_id: "openai",
+        default_model_id: "gpt-test",
+        allowed_models: [{ provider_id: "openai", model_id: "gpt-test" }],
+        system_prompt_sha256: "sha256:prompt",
+        tools: [{ type: "builtin" as const, name: "Read" }],
+        memory_store_types: ["sqlite"],
+        ui_commands: [],
+        hooks: [],
+        tool_presentations: [],
+        behavior: { max_iterations: 50, max_retries: 3 },
+        agent_workspace_configured: true,
+        workspace_mount_count: 1,
+        prompt_profiles: [],
+        allow_session_prompt: false,
+        access: { allow_authenticated: true, allowed_principal_count: 0, allowed_roles: [] },
+      },
+      digest_sha256: "sha256:definition",
+      created_at_unix_secs: 100,
+      active: true,
+    };
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agent_admin",
+      response: {
+        status: "success",
+        result: {
+          operation: "revisions_listed",
+          agent_id: "agent-1",
+          active_revision: 4,
+          revisions: [revision, {
+            ...revision,
+            definition: { ...revision.definition, revision: 3 },
+            digest_sha256: "sha256:older",
+            active: false,
+          }],
+        },
+      },
+    } }));
+    expect(view.result.current.state.agentAdministration.activeRevision).toBe(4);
+
+    await act(async () => {
+      expect(await view.result.current.requestAgentAdministration({
+        operation: "rollback_revision",
+        agent_id: "agent-1",
+        target_revision: 3,
+        expected_active_revision: 4,
+      })).toBe(true);
+    });
+    expect(view.result.current.state.agentAdministration.activeRevision).toBe(4);
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agent_admin",
+      response: {
+        status: "success",
+        result: { operation: "revision_rolled_back", agent_id: "agent-1", active_revision: 3 },
+      },
+    } }));
+    expect(view.result.current.state.agentAdministration.activeRevision).toBe(3);
+    expect(view.result.current.state.agentAdministration.revisions.find(
+      (candidate) => candidate.definition.revision === 3,
+    )?.active).toBe(true);
+    view.unmount();
+  });
 });

@@ -38,6 +38,7 @@ export type RuntimeCommand =
   | { type: "memory_confirmation"; request: RuntimeMemoryConfirmationRequest }
   | { type: "user_profile"; request: RuntimeUserProfileRequest }
   | { type: "identity_binding"; request: RuntimeIdentityBindingRequest }
+  | { type: "agent_admin"; request: RuntimeAgentAdminRequest }
   | { type: "ping" };
 
 export type PlanDecision =
@@ -203,6 +204,46 @@ export type RuntimeIdentityBindingResponse =
         retry_after_ms?: number;
       };
     };
+
+export type RuntimeAgentAdminRequest =
+  | { operation: "inspect_revision"; agent_id: string; revision: number }
+  | { operation: "list_revisions"; agent_id: string; before_revision?: number; limit: number }
+  | { operation: "activate_revision"; agent_id: string; revision: number; expected_active_revision: number }
+  | { operation: "rollback_revision"; agent_id: string; target_revision: number; expected_active_revision: number };
+
+export interface RuntimeAgentRevisionView {
+  definition: {
+    agent_id: string;
+    revision: number;
+    name: string;
+    description: string;
+    provider_id: string;
+    default_model_id: string;
+    allowed_models: Array<{ provider_id: string; model_id: string }>;
+    system_prompt_sha256: string;
+    tools: Array<{ type: "builtin"; name: string } | { type: "mcp_server"; name: string }>;
+    memory_store_types: string[];
+    ui_commands: Array<{ id: string; name: string; usage: string; description: string; hint: string }>;
+    hooks: Array<{ name: string; phase: "before_tool" | "after_tool" | "before_turn" | "after_turn"; timeout_secs: number; blocking: boolean }>;
+    tool_presentations: Array<{ tool_name: string; label: string; kind: string; target_field?: string }>;
+    behavior: { max_iterations: number; max_retries: number };
+    agent_workspace_configured: boolean;
+    workspace_mount_count: number;
+    prompt_profiles: Array<{ id: string; qualified_models: Array<{ provider_id: string; model_id: string }>; system_prompt_sha256: string }>;
+    default_prompt_profile?: string;
+    allow_session_prompt: boolean;
+    access: { allow_authenticated: boolean; allowed_principal_count: number; allowed_roles: string[] };
+  };
+  digest_sha256: string;
+  created_at_unix_secs: number;
+  active: boolean;
+}
+
+export type RuntimeAgentAdminResponse =
+  | { status: "success"; result: { operation: "revision_inspected"; revision: RuntimeAgentRevisionView } }
+  | { status: "success"; result: { operation: "revisions_listed"; agent_id: string; active_revision: number; revisions: RuntimeAgentRevisionView[]; next_before_revision?: number } }
+  | { status: "success"; result: { operation: "revision_activated" | "revision_rolled_back"; agent_id: string; active_revision: number } }
+  | { status: "error"; error: { code: string; message: string; agent_id?: string; revision?: number; expected_active_revision?: number; actual_active_revision?: number } };
 
 export interface RuntimePermissionProfile {
   file_access: "none" | "read_only" | "workspace_write";
@@ -394,6 +435,7 @@ export type RuntimeMessage =
   | { type: "memory_confirmation"; response: RuntimeMemoryConfirmationResponse }
   | { type: "user_profile"; response: RuntimeUserProfileResponse }
   | { type: "identity_binding"; response: RuntimeIdentityBindingResponse }
+  | { type: "agent_admin"; response: RuntimeAgentAdminResponse }
   | { type: "session_created"; session_id: string; config?: RuntimeSessionConfigState }
   | { type: "session_updated"; session_id: string; label?: string; archived: boolean }
   | { type: "session_deleted"; session_id: string }
