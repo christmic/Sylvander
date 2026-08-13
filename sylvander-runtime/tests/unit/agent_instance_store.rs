@@ -219,6 +219,13 @@ async fn automatic_delivery_persists_one_turn_before_execution() {
         Some(receipt.clone())
     );
     assert_eq!(
+        store
+            .recoverable_message_turns(&AgentInstanceId::new("coordinator-1"))
+            .await
+            .unwrap(),
+        vec![(delivered.clone(), receipt.clone())]
+    );
+    assert_eq!(
         service
             .prepare_message_turn(&claim, &receipt.turn_id, 23)
             .await

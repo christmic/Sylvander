@@ -1,4 +1,6 @@
 //! Runtime lifecycle orchestration and protocol-channel hosting.
+mod mailbox_scheduler;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
@@ -274,6 +276,7 @@ pub struct Runtime {
     execution_service: RuntimeExecutionService,
     /// Agent-instance workspace isolation and recovery.
     agent_workspaces: Option<Arc<AgentWorkspaceCoordinator>>,
+    mailbox_scheduler: Option<mailbox_scheduler::AgentMailboxScheduler>,
     /// Owned background probes for configured SSH and OCI targets.
     execution_health: Option<ExecutionHealthTask>,
     /// Shared message bus.
@@ -472,7 +475,7 @@ impl RuntimeRevisionProvider {
         .map_err(|error| RuntimeError::Composition(error.to_string()))
     }
 
-    async fn configured_revision(
+    pub(crate) async fn configured_revision(
         &self,
         agent_id: &AgentId,
         revision: u64,
@@ -4123,6 +4126,7 @@ impl Runtime {
             observation_debug_log: None,
             execution_service,
             agent_workspaces: None,
+            mailbox_scheduler: None,
             execution_health: None,
             bus,
             configured_agents,
@@ -4644,6 +4648,7 @@ impl Runtime {
             "reconciled coding session worktrees"
         );
 
+        let mut mailbox_recipients = Vec::new();
         for mut session in persistent_sessions {
             let effective_agent_id = session
                 .effective_config
@@ -4715,6 +4720,7 @@ impl Runtime {
                     .iter()
                     .filter(|participant| !participant.state.is_terminal())
                 {
+                    mailbox_recipients.push(participant.instance_id.clone());
                     materialize_participant_history(
                         &session_store,
                         participant,
@@ -4876,6 +4882,13 @@ impl Runtime {
                 .clone()
                 .expect("resolved runtime data directory"),
         ));
+        let mailbox_scheduler = mailbox_scheduler::AgentMailboxScheduler::start(
+            sqlite_session_store.clone(),
+            revision_provider.clone(),
+        );
+        for recipient in mailbox_recipients {
+            mailbox_scheduler.wake(recipient);
+        }
         let execution_health = Some(ExecutionHealthTask::start(execution_service.clone()));
         Ok(Self {
             engine,
@@ -4884,6 +4897,7 @@ impl Runtime {
             observation_debug_log,
             execution_service,
             agent_workspaces: Some(agent_workspaces),
+            mailbox_scheduler: Some(mailbox_scheduler),
             execution_health,
             bus,
             configured_agents,
@@ -4922,14 +4936,26 @@ impl Runtime {
         request: DispatchMessageRequest,
     ) -> Result<DispatchMessageOutcome, RuntimeError> {
         validate_coordination_actor(actor, &request.session_id, &request.sender_instance_id)?;
-        self.storage
+        let outcome = self
+            .storage
             .coordination()
             .ok_or_else(|| {
                 RuntimeError::Coordination("durable coordination is unavailable".into())
             })?
             .dispatch_message(request, crate::session::now_secs())
             .await
-            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        if let Some(scheduler) = &self.mailbox_scheduler {
+            match &outcome {
+                DispatchMessageOutcome::Enqueued(message) => {
+                    scheduler.wake(message.recipient_instance_id.clone());
+                }
+                DispatchMessageOutcome::RequiresArbitration { case, .. } => {
+                    scheduler.wake(case.moderator_instance_id.clone());
+                }
+            }
+        }
+        Ok(outcome)
     }
 
     /// Fork, attach, and activate one child Agent through durable spawn boundaries.
@@ -4949,6 +4975,11 @@ impl Runtime {
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
         let ForkAgentOutcome::Created(participant) = outcome else {
+            if let ForkAgentOutcome::RequiresArbitration { case, .. } = &outcome
+                && let Some(scheduler) = &self.mailbox_scheduler
+            {
+                scheduler.wake(case.moderator_instance_id.clone());
+            }
             return Ok(outcome);
         };
         let mut session = self

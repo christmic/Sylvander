@@ -183,6 +183,12 @@ pub trait CoordinationStore: Send + Sync {
         message_id: &CoordinationMessageId,
     ) -> Result<Option<AgentMessageTurn>, SessionStoreError>;
 
+    /// List delivered receipts that still require turn recovery or acknowledgement.
+    async fn recoverable_message_turns(
+        &self,
+        recipient: &AgentInstanceId,
+    ) -> Result<Vec<(CoordinationMessage, AgentMessageTurn)>, SessionStoreError>;
+
     async fn acknowledge_message(
         &self,
         message_id: &CoordinationMessageId,
@@ -1595,6 +1601,39 @@ impl CoordinationStore for SqliteSessionStore {
         let message_id = message_id.clone();
         self.run(move |connection| load_message_turn(connection, &message_id))
             .await
+    }
+
+    async fn recoverable_message_turns(
+        &self,
+        recipient: &AgentInstanceId,
+    ) -> Result<Vec<(CoordinationMessage, AgentMessageTurn)>, SessionStoreError> {
+        let recipient = recipient.clone();
+        self.run(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT message_id FROM coordination_messages
+                 WHERE recipient_instance_id=?1 AND state='delivered'
+                 ORDER BY created_at,message_id",
+            )?;
+            let ids = statement
+                .query_map([&recipient.0], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            ids.into_iter()
+                .map(|id| {
+                    let message_id = CoordinationMessageId::new(id);
+                    let message = load_message(connection, &message_id)?.ok_or_else(|| {
+                        SessionStoreError::Store("recoverable message disappeared".into())
+                    })?;
+                    let receipt = load_message_turn(connection, &message_id)?.ok_or_else(|| {
+                        SessionStoreError::Store(
+                            "delivered message has no durable turn receipt".into(),
+                        )
+                    })?;
+                    Ok((message, receipt))
+                })
+                .collect()
+        })
+        .await
     }
 
     async fn acknowledge_message(
