@@ -67,30 +67,30 @@ use sylvander_agent::approval::{
 use sylvander_agent::ask_user_gate::AskUserGate;
 use sylvander_agent::compress::error::{CompactionError, CompactionFailureCode};
 use sylvander_agent::compress::layer::CompressionLayer;
-use sylvander_agent::conversation::ConversationSnapshot;
-use sylvander_agent::curated_memory::{
+use sylvander_agent::execution_ports::AgentExecutionPorts;
+use sylvander_agent::kernel::agent_loop::{self, AgentLoop};
+use sylvander_agent::memory::curated::{
     CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope,
 };
-use sylvander_agent::error::AgentLoopError;
-use sylvander_agent::event::ModelRetryCause;
-use sylvander_agent::execution_context::{AgentExecutionContext, ExecutionWorkspace};
-use sylvander_agent::execution_ports::AgentExecutionPorts;
-use sylvander_agent::identity::{
-    AgentId as KernelAgentId, SessionId as KernelSessionId, UserId as KernelUserId,
+use sylvander_agent::memory::store::{
+    MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
 };
-use sylvander_agent::loop_::{self, AgentLoop};
 use sylvander_agent::plan_gate::{PlanDecision, PlanGate};
 use sylvander_agent::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
-use sylvander_agent::request::AgentTurnRequest;
 use sylvander_agent::task_gate::TaskGate;
 use sylvander_agent::tool::{
     RegisteredTool, ToolRegistry, ToolSourceFeature, ToolSourceKind, ToolSourceStatus,
 };
 use sylvander_agent::tool_context::{Cap, NetworkPolicy, ToolContext};
 use sylvander_agent::tools::MemoryReadTool;
-use sylvander_agent::tools::memory::{
-    MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
+use sylvander_agent::turn::conversation::ConversationSnapshot;
+use sylvander_agent::turn::error::AgentLoopError;
+use sylvander_agent::turn::event::ModelRetryCause;
+use sylvander_agent::turn::execution_context::{AgentExecutionContext, ExecutionWorkspace};
+use sylvander_agent::turn::identity::{
+    AgentId as KernelAgentId, SessionId as KernelSessionId, UserId as KernelUserId,
 };
+use sylvander_agent::turn::request::AgentTurnRequest;
 use sylvander_agent::turn_context::{
     TurnContextBudgets, TurnContextCandidate, TurnContextInputs, TurnContextLayerKind,
     TurnContextManifest, TurnContextProvenance, TurnContextSource, compose_turn_context,
@@ -190,7 +190,11 @@ pub(crate) struct AgentRunInner {
     /// Stable tool catalog frozen separately for every execution.
     tools: ToolRegistry,
     /// Runtime-owned tool authorization and audit boundary.
-    invocation_gateway: Arc<dyn sylvander_agent::tool_invocation::ToolInvocationGateway>,
+    invocation_gateway: Arc<dyn sylvander_agent::tool::invocation::ToolInvocationGateway>,
+    /// Runtime-installed, provider-neutral Session extensions. Each entry
+    /// binds one immutable registry to the exact authorization gateway built
+    /// from the same executable surface.
+    session_tool_surfaces: RwLock<HashMap<SessionId, SessionToolSurface>>,
     /// Mutable selection read once at the start of every turn. Active turns
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
@@ -252,6 +256,12 @@ pub(crate) struct AgentRunInner {
     /// One cancellation sender per session that currently owns its execution
     /// lock. Queued turns do not replace the active sender.
     active_turns: Mutex<HashMap<SessionId, ActiveTurn>>,
+}
+
+#[derive(Clone)]
+struct SessionToolSurface {
+    tools: ToolRegistry,
+    invocation_gateway: Arc<dyn sylvander_agent::tool::invocation::ToolInvocationGateway>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -948,6 +958,11 @@ impl AgentRun {
 
     /// Leave a session.
     pub async fn leave_session(&self, session_id: &SessionId) {
+        self.inner
+            .session_tool_surfaces
+            .write()
+            .await
+            .remove(session_id);
         self.inner.sessions.write().await.remove(session_id);
         self.inner
             .authenticated_sessions
@@ -965,6 +980,58 @@ impl AgentRun {
             .lock()
             .await
             .remove_session(session_id);
+    }
+
+    /// Compose a neutral Session extension with the Agent revision's base
+    /// tools. Runtime calls this before it builds the matching authorization
+    /// gateway; protocol-specific types never cross this boundary.
+    pub(crate) fn compose_session_tools(
+        &self,
+        extensions: &ToolRegistry,
+    ) -> Result<ToolRegistry, AgentRunError> {
+        self.inner
+            .tools
+            .compose_session_extensions(extensions)
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))
+    }
+
+    /// Atomically publish one Session tool registry and its exact gateway.
+    pub(crate) async fn install_session_tool_surface(
+        &self,
+        session_id: SessionId,
+        tools: ToolRegistry,
+        invocation_gateway: Arc<dyn sylvander_agent::tool::invocation::ToolInvocationGateway>,
+    ) -> Result<(), AgentRunError> {
+        let tool_snapshot = tools.freeze_for_turn().0;
+        let expected = tool_snapshot.invocation_descriptors();
+        let actual = invocation_gateway.snapshot();
+        if expected
+            .iter()
+            .any(|descriptor| !actual.authorizes(&descriptor.name, descriptor.class))
+            || actual
+                .features()
+                .iter()
+                .filter(|feature| {
+                    matches!(
+                        feature.kind,
+                        sylvander_agent::tool::invocation::CapabilityFeatureKind::Executable(_)
+                    )
+                })
+                .count()
+                != expected.len()
+        {
+            return Err(AgentRunError::Configuration(
+                "Session tool registry and authorization gateway differ".into(),
+            ));
+        }
+        self.inner.session_tool_surfaces.write().await.insert(
+            session_id,
+            SessionToolSurface {
+                tools: tool_snapshot,
+                invocation_gateway,
+            },
+        );
+        Ok(())
     }
 
     /// List all sessions.
@@ -1796,7 +1863,7 @@ impl TaskGate for BusTaskGate {
         let running_id = task_id.clone();
         tokio::spawn(async move {
             request.conversation = ConversationSnapshot::new(vec![ChatMessage::user(prompt)]);
-            let mut stream = Box::pin(loop_::run_stream(&kernel, request, ports));
+            let mut stream = Box::pin(agent_loop::run_stream(&kernel, request, ports));
             let deadline = tokio::time::sleep(std::time::Duration::from_mins(10));
             tokio::pin!(deadline);
             loop {
@@ -1837,25 +1904,25 @@ impl TaskGate for BusTaskGate {
                 };
                 let Some(event) = event else { break };
                 let public = match event {
-                    sylvander_agent::event::AgentEvent::IterationStart { iteration } => {
+                    sylvander_agent::turn::event::AgentEvent::IterationStart { iteration } => {
                         Some(StreamEvent::TaskProgress {
                             task_id: running_id.clone(),
                             message: format!("iteration {iteration}"),
                         })
                     }
-                    sylvander_agent::event::AgentEvent::ToolCallStart { name, .. } => {
+                    sylvander_agent::turn::event::AgentEvent::ToolCallStart { name, .. } => {
                         Some(StreamEvent::TaskProgress {
                             task_id: running_id.clone(),
                             message: format!("running {name}"),
                         })
                     }
-                    sylvander_agent::event::AgentEvent::Done(outcome) => {
+                    sylvander_agent::turn::event::AgentEvent::Done(outcome) => {
                         Some(StreamEvent::TaskCompleted {
                             task_id: running_id.clone(),
                             summary: outcome.final_response.text(),
                         })
                     }
-                    sylvander_agent::event::AgentEvent::Error(error) => {
+                    sylvander_agent::turn::event::AgentEvent::Error(error) => {
                         Some(StreamEvent::TaskFailed {
                             task_id: running_id.clone(),
                             error: error.to_string(),
@@ -2673,7 +2740,17 @@ impl AgentRunInner {
         // 2. Build per-session approval gate and tool surface from one
         // immutable permission/capability snapshot. Changes made mid-turn
         // apply to the next turn and invalidate persistent grants there.
-        let (turn_tools, tool_surface_revision) = self.tools.freeze_for_turn();
+        let session_tool_surface = self
+            .session_tool_surfaces
+            .read()
+            .await
+            .get(&session_id)
+            .cloned();
+        let (turn_tools, invocation_gateway) = session_tool_surface.map_or_else(
+            || (self.tools.clone(), self.invocation_gateway.clone()),
+            |surface| (surface.tools, surface.invocation_gateway),
+        );
+        let (turn_tools, tool_surface_revision) = turn_tools.freeze_for_turn();
         let prompt_context_features = self
             .skill_features
             .read()
@@ -2681,8 +2758,7 @@ impl AgentRunInner {
             .iter()
             .map(|feature| feature.name.clone())
             .collect::<Vec<_>>();
-        let invocation_snapshot = self
-            .invocation_gateway
+        let invocation_snapshot = invocation_gateway
             .snapshot()
             .for_turn(&tool_surface_revision, prompt_context_features);
         let capability_revision = invocation_snapshot.revision().to_owned();
@@ -2796,7 +2872,7 @@ impl AgentRunInner {
         let mut background_ports = AgentExecutionPorts::new(
             self.model_provider.clone(),
             tool_context.clone(),
-            self.invocation_gateway.clone(),
+            invocation_gateway.clone(),
             invocation_snapshot.clone(),
         );
         if let Some(store) = &artifact_store {
@@ -2814,7 +2890,7 @@ impl AgentRunInner {
         let mut ports = AgentExecutionPorts::new(
             self.model_provider.clone(),
             tool_context,
-            self.invocation_gateway.clone(),
+            invocation_gateway,
             invocation_snapshot,
         )
         .with_ask_user_gate(ask_user_gate)
@@ -2828,7 +2904,7 @@ impl AgentRunInner {
         }
 
         // 3. Run loop with streaming
-        let mut stream = Box::pin(loop_::run_stream(&loop_config, request, ports));
+        let mut stream = Box::pin(agent_loop::run_stream(&loop_config, request, ports));
         tokio::pin!(interrupted);
         let mut final_message: Option<ModelResponse> = None;
 
@@ -2878,21 +2954,21 @@ impl AgentRunInner {
                 break;
             };
             match event {
-                sylvander_agent::event::AgentEvent::TextChunk(text) => {
+                sylvander_agent::turn::event::AgentEvent::TextChunk(text) => {
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::TextDelta { delta: text },
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::ThinkingChunk(text) => {
+                sylvander_agent::turn::event::AgentEvent::ThinkingChunk(text) => {
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::ThinkingDelta { delta: text },
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::ModelRetry {
+                sylvander_agent::turn::event::AgentEvent::ModelRetry {
                     attempt,
                     max_attempts,
                     delay_ms,
@@ -2916,7 +2992,7 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::ToolCallStart { id, name, input } => {
+                sylvander_agent::turn::event::AgentEvent::ToolCallStart { id, name, input } => {
                     self.observability.record(RuntimeEvent::ToolStarted {
                         turn_id: turn_id.to_owned(),
                         session_id: session_id.clone(),
@@ -2939,7 +3015,11 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::ToolCallOutputDelta { id, name, delta } => {
+                sylvander_agent::turn::event::AgentEvent::ToolCallOutputDelta {
+                    id,
+                    name,
+                    delta,
+                } => {
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::ToolOutputDelta {
@@ -2950,7 +3030,7 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::ToolTimedOut {
+                sylvander_agent::turn::event::AgentEvent::ToolTimedOut {
                     id,
                     name,
                     timeout_secs,
@@ -2973,7 +3053,7 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::ToolCallEnd {
+                sylvander_agent::turn::event::AgentEvent::ToolCallEnd {
                     id,
                     name,
                     output,
@@ -3003,7 +3083,7 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::ToolRejected { id, name, reason } => {
+                sylvander_agent::turn::event::AgentEvent::ToolRejected { id, name, reason } => {
                     self.observability.record(RuntimeEvent::ToolFinished {
                         turn_id: turn_id.to_owned(),
                         session_id: session_id.clone(),
@@ -3022,14 +3102,14 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::IterationStart { iteration } => {
+                sylvander_agent::turn::event::AgentEvent::IterationStart { iteration } => {
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::IterationStart { iteration },
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::IterationEnd {
+                sylvander_agent::turn::event::AgentEvent::IterationEnd {
                     iteration,
                     usage,
                     provider_usage,
@@ -3091,7 +3171,7 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::CompressionStarted => {
+                sylvander_agent::turn::event::AgentEvent::CompressionStarted => {
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::CompactionStarted { automatic: true },
@@ -3101,11 +3181,11 @@ impl AgentRunInner {
                 // `BusAskUserGate` publishes the request when it installs the
                 // pending answer. Forwarding the loop event too would stack
                 // two identical TUI modals for one question.
-                sylvander_agent::event::AgentEvent::Compressed { .. }
-                | sylvander_agent::event::AgentEvent::AskUser { .. }
-                | sylvander_agent::event::AgentEvent::PlanProposed { .. }
-                | sylvander_agent::event::AgentEvent::PlanResolved { .. } => {}
-                sylvander_agent::event::AgentEvent::HistoryCompacted { layers, history } => {
+                sylvander_agent::turn::event::AgentEvent::Compressed { .. }
+                | sylvander_agent::turn::event::AgentEvent::AskUser { .. }
+                | sylvander_agent::turn::event::AgentEvent::PlanProposed { .. }
+                | sylvander_agent::turn::event::AgentEvent::PlanResolved { .. } => {}
+                sylvander_agent::turn::event::AgentEvent::HistoryCompacted { layers, history } => {
                     if let Some(error) =
                         sylvander_agent::compress::layer::first_failure_error(&layers)
                     {
@@ -3149,17 +3229,17 @@ impl AgentRunInner {
                         }
                     }
                 }
-                sylvander_agent::event::AgentEvent::UserAnswer { call_id, answer } => {
+                sylvander_agent::turn::event::AgentEvent::UserAnswer { call_id, answer } => {
                     self.publish_stream(
                         &session_id,
                         sylvander_api::StreamEvent::UserAnswer { call_id, answer },
                     )
                     .await;
                 }
-                sylvander_agent::event::AgentEvent::Done(outcome) => {
+                sylvander_agent::turn::event::AgentEvent::Done(outcome) => {
                     final_message = Some(outcome.final_response);
                 }
-                sylvander_agent::event::AgentEvent::Error(e) => {
+                sylvander_agent::turn::event::AgentEvent::Error(e) => {
                     return Err(AgentRunError::Loop(e));
                 }
             }
@@ -3696,7 +3776,7 @@ pub struct AgentRunBuilder {
     workspace_journal_path: Option<PathBuf>,
     execution_service: Option<RuntimeExecutionService>,
     artifact_service: Option<RuntimeArtifactService>,
-    invocation_gateway: Option<Arc<dyn sylvander_agent::tool_invocation::ToolInvocationGateway>>,
+    invocation_gateway: Option<Arc<dyn sylvander_agent::tool::invocation::ToolInvocationGateway>>,
 }
 
 impl AgentRunBuilder {
@@ -3775,7 +3855,7 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn invocation_gateway(
         mut self,
-        gateway: Arc<dyn sylvander_agent::tool_invocation::ToolInvocationGateway>,
+        gateway: Arc<dyn sylvander_agent::tool::invocation::ToolInvocationGateway>,
     ) -> Self {
         self.invocation_gateway = Some(gateway);
         self
@@ -3982,7 +4062,7 @@ impl AgentRunBuilder {
             .then(|| self.spec.persona.system_prompt.clone());
         let tools = self.tool_overrides.unwrap_or_default();
         let invocation_gateway = self.invocation_gateway.unwrap_or_else(|| {
-            sylvander_agent::tool_invocation::RegistryBoundToolGateway::new(
+            sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(
                 tools.invocation_descriptors(),
             )
         });
@@ -4003,6 +4083,7 @@ impl AgentRunBuilder {
                 system_prompt,
                 tools,
                 invocation_gateway,
+                session_tool_surfaces: RwLock::new(HashMap::new()),
                 runtime_models: RwLock::new(runtime_models),
                 runtime_permissions: RwLock::new(runtime_permissions),
                 prompt_resolver: self.prompt_resolver,

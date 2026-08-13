@@ -3,12 +3,37 @@ use crate::execution::LocalExecutor;
 use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
 use sylvander_agent::compress::error::CompactionFailureCode;
+use sylvander_agent::memory::store::InMemoryMemoryStore;
 use sylvander_agent::tool::ToolExecutor as _;
-use sylvander_agent::tools::memory::InMemoryMemoryStore;
 use sylvander_api::Recipient;
 use sylvander_channel::{BusDiagnostics, BusError, InProcessMessageBus, MessageBus};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_core::ModelInfo as ProviderModelInfo;
+
+#[derive(Clone)]
+struct SessionTestTool(&'static str);
+
+impl sylvander_agent::tool::ToolDefinition for SessionTestTool {
+    fn spec(&self) -> sylvander_agent::tool::ToolSpec {
+        sylvander_agent::tool::ToolSpec::immediate(
+            self.0,
+            "Session test tool",
+            serde_json::json!({"type": "object", "properties": {}}),
+            sylvander_agent::tool::invocation::ToolInvocationClass::Extension,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl sylvander_agent::tool::ToolExecutor for SessionTestTool {
+    async fn handle(
+        &self,
+        _context: &ToolContext,
+        _call: &sylvander_agent::tool::PreparedToolCall,
+    ) -> Result<sylvander_agent::tool::ToolOutput, sylvander_agent::tool::ToolError> {
+        Ok(sylvander_agent::tool::ToolOutput::ok("ok"))
+    }
+}
 
 struct TerminalOrderBus {
     inner: InProcessMessageBus,
@@ -95,7 +120,7 @@ fn direct_turn(
     model: ProviderModelInfo,
     messages: Vec<ChatMessage>,
 ) -> (
-    sylvander_agent::request::AgentTurnRequest,
+    sylvander_agent::turn::request::AgentTurnRequest,
     sylvander_agent::execution_ports::AgentExecutionPorts,
 ) {
     let execution = AgentExecutionContext::restricted_for(
@@ -103,8 +128,8 @@ fn direct_turn(
         "router-agent",
         "direct-model-selection-test",
     );
-    let request = sylvander_agent::request::AgentTurnRequest {
-        conversation: sylvander_agent::conversation::ConversationSnapshot::new(messages),
+    let request = sylvander_agent::turn::request::AgentTurnRequest {
+        conversation: sylvander_agent::turn::conversation::ConversationSnapshot::new(messages),
         model,
         system_instructions: Vec::new(),
         reasoning: None,
@@ -113,7 +138,7 @@ fn direct_turn(
     };
     let gateway = run.inner.invocation_gateway.clone();
     let snapshot =
-        sylvander_agent::tool_invocation::ToolInvocationGateway::snapshot(gateway.as_ref());
+        sylvander_agent::tool::invocation::ToolInvocationGateway::snapshot(gateway.as_ref());
     let ports = sylvander_agent::execution_ports::AgentExecutionPorts::new(
         run.inner.model_provider.clone(),
         ToolContext::new(execution),
@@ -121,6 +146,117 @@ fn direct_turn(
         snapshot,
     );
     (request, ports)
+}
+
+#[tokio::test]
+async fn session_tool_surface_is_exact_and_removed_on_leave() {
+    let (spec, client) = test_spec_and_client();
+    let run = qualified_anthropic_run_builder(spec, client)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .override_tools(ToolRegistry::new().register(SessionTestTool("read")))
+        .build()
+        .expect("build run");
+    let extensions = ToolRegistry::new().register(SessionTestTool("mcp__search__query"));
+    let tools = run
+        .compose_session_tools(&extensions)
+        .expect("compose Session tools");
+    let gateway = sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(
+        tools.invocation_descriptors(),
+    );
+    let session_id = SessionId::new("session-tools");
+
+    run.install_session_tool_surface(session_id.clone(), tools, gateway)
+        .await
+        .expect("install exact surface");
+    let installed = run
+        .inner
+        .session_tool_surfaces
+        .read()
+        .await
+        .get(&session_id)
+        .cloned()
+        .expect("installed surface");
+    assert!(installed.tools.get("read").is_some());
+    assert!(installed.tools.get("mcp__search__query").is_some());
+
+    run.leave_session(&session_id).await;
+    assert!(
+        !run.inner
+            .session_tool_surfaces
+            .read()
+            .await
+            .contains_key(&session_id)
+    );
+}
+
+#[tokio::test]
+async fn session_tool_surface_rejects_gateway_drift() {
+    let (spec, client) = test_spec_and_client();
+    let run = qualified_anthropic_run_builder(spec, client)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .build()
+        .expect("build run");
+    let tools = ToolRegistry::new().register(SessionTestTool("mcp__search__query"));
+    let empty_gateway =
+        sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(Vec::new());
+
+    let error = run
+        .install_session_tool_surface(SessionId::new("drift"), tools, empty_gateway)
+        .await
+        .expect_err("mismatched gateway must fail");
+    assert!(error.to_string().contains("authorization gateway differ"));
+}
+
+#[tokio::test]
+async fn admitted_turn_uses_only_its_session_tool_snapshot() {
+    let (spec, _) = test_spec_and_client();
+    let provider = Arc::new(RecordingProvider::default());
+    let model = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new(
+            spec.model.provider.clone(),
+            spec.model.model_name.clone(),
+        ),
+        context_window: 100_000,
+        max_output_tokens: 4_096,
+        capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE,
+    };
+    let run = AgentRun::qualified_router_builder(spec, provider.clone(), model)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .override_tools(ToolRegistry::new().register(SessionTestTool("read")))
+        .build()
+        .expect("build run");
+    let first = run.join_session(test_metadata()).await;
+    let second = run.join_session(test_metadata()).await;
+    let tools = run
+        .compose_session_tools(&ToolRegistry::new().register(SessionTestTool("mcp__search__query")))
+        .expect("compose first Session tools");
+    let gateway = sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(
+        tools.invocation_descriptors(),
+    );
+    run.install_session_tool_surface(first.clone(), tools, gateway)
+        .await
+        .expect("install first Session tools");
+
+    run.handle_message(BusMessage::user_chat(first, "user-1", "first Session"))
+        .await
+        .expect("first turn");
+    run.handle_message(BusMessage::user_chat(second, "user-1", "second Session"))
+        .await
+        .expect("second turn");
+
+    let requests = provider.requests.lock().expect("request lock");
+    let first_names = requests[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    let second_names = requests[1]
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(first_names.contains(&"mcp__search__query"));
+    assert!(!second_names.contains(&"mcp__search__query"));
 }
 
 #[test]
@@ -1208,7 +1344,7 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
     let selected =
         AgentRunInner::validate_turn_model(&selected, sylvander_api::ReasoningEffort::Off).unwrap();
     let (request, ports) = direct_turn(&run, selected, vec![ChatMessage::user("hello")]);
-    sylvander_agent::loop_::run(&run.inner.loop_config, request, ports)
+    sylvander_agent::kernel::agent_loop::run(&run.inner.loop_config, request, ports)
         .await
         .unwrap();
     let requests = provider.requests.lock().unwrap();
@@ -1306,7 +1442,7 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
     let selected =
         AgentRunInner::validate_turn_model(&selected, sylvander_api::ReasoningEffort::Off).unwrap();
     let (request, ports) = direct_turn(&run, selected, vec![ChatMessage::user("hello")]);
-    sylvander_agent::loop_::run(&run.inner.loop_config, request, ports)
+    sylvander_agent::kernel::agent_loop::run(&run.inner.loop_config, request, ports)
         .await
         .unwrap();
     assert_eq!(
@@ -2890,7 +3026,7 @@ async fn remember_is_system_driven() {
         .recall(
             &session,
             "dark mode",
-            sylvander_agent::tools::memory::MemoryFilter::default(),
+            sylvander_agent::memory::store::MemoryFilter::default(),
         )
         .await
         .expect("search");
@@ -2919,7 +3055,7 @@ async fn remember_derives_identity_from_attached_session() {
 
     assert_eq!(
         entry.owner,
-        sylvander_agent::tools::memory::MemoryOwner::Relationship {
+        sylvander_agent::memory::store::MemoryOwner::Relationship {
             user_id: KernelUserId::new("actual-user"),
             agent_id: KernelAgentId::new(run.id().0.clone()),
         }
@@ -2928,7 +3064,7 @@ async fn remember_derives_identity_from_attached_session() {
         run.recall(
             &session,
             "caller-owned",
-            sylvander_agent::tools::memory::MemoryFilter::default(),
+            sylvander_agent::memory::store::MemoryFilter::default(),
         )
         .await
         .unwrap()
@@ -2970,7 +3106,7 @@ async fn remember_denies_opt_out_missing_and_unavailable_profile_authority() {
             run.recall(
                 &session,
                 "must not persist",
-                sylvander_agent::tools::memory::MemoryFilter::default(),
+                sylvander_agent::memory::store::MemoryFilter::default(),
             )
             .await
             .unwrap()

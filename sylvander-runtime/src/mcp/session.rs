@@ -21,6 +21,7 @@ use crate::execution::{
 };
 use crate::mcp::SECRET_REFERENCE_PREFIX;
 use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
+use sylvander_agent::tool::ToolRegistry;
 use sylvander_api::{AgentId, AgentSecretReference};
 
 const STATE_CONFIGURED: u8 = 1;
@@ -51,6 +52,7 @@ struct SessionMcpRuntime {
     binding: SessionMcpBinding,
     servers: Arc<[McpServerConfig]>,
     clients: Arc<[McpStdioClient]>,
+    tools: ToolRegistry,
     state: AtomicU8,
 }
 
@@ -97,6 +99,7 @@ impl SessionMcpRuntimeService {
         validate_binding(&binding)?;
         validate_servers(&servers)?;
         let mut clients = Vec::with_capacity(servers.len());
+        let mut tools = ToolRegistry::new();
         for declaration in &servers {
             let environment = self
                 .execution
@@ -157,6 +160,14 @@ impl SessionMcpRuntimeService {
                 server: declaration.name.clone(),
                 message: error.to_string(),
             })?;
+            client
+                .list_tools()
+                .await
+                .map_err(|error| SessionMcpError::Connection {
+                    server: declaration.name.clone(),
+                    message: error.to_string(),
+                })?;
+            tools = tools.register_dynamic_source(client.clone());
             clients.push(client);
         }
         let session_id = binding.session_id.clone();
@@ -164,6 +175,7 @@ impl SessionMcpRuntimeService {
             binding,
             servers: servers.into(),
             clients: clients.into(),
+            tools,
             state: AtomicU8::new(STATE_CONFIGURED),
         });
         let mut sessions = self
@@ -188,6 +200,17 @@ impl SessionMcpRuntimeService {
         if let Some(runtime) = runtime {
             runtime.drain().await;
         }
+    }
+
+    /// Return the neutral catalog for one ready Session. The caller freezes
+    /// it together with the Agent revision before publishing the turn.
+    pub(crate) fn tool_registry(&self, session_id: &SessionId) -> Option<ToolRegistry> {
+        self.sessions
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .filter(|runtime| runtime.state.load(Ordering::Acquire) == STATE_CONFIGURED)
+            .map(|runtime| runtime.tools.clone())
     }
 
     fn resolve_server_environment(

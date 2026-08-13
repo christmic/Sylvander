@@ -69,6 +69,7 @@ pub struct ConfiguredAgent {
     pub(crate) run: AgentRun,
     session_issuer: AgentSessionIssuer,
     mcp_sessions: SessionMcpRuntimeService,
+    tool_gateway_factory: Option<WorkerToolGatewayFactory>,
     pub models: BTreeMap<ModelSelection, ModelInfo>,
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
@@ -238,6 +239,7 @@ pub(crate) fn build_agent(
         run,
         session_issuer,
         mcp_sessions: SessionMcpRuntimeService::new(execution_service, None, None),
+        tool_gateway_factory: None,
         models,
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
@@ -332,7 +334,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         .as_ref()
         .map(WorkerToolGatewayFactory::curated_context_provider);
     let tools = configured_tools(&spec, memory.clone(), candidate_sink);
-    let invocation_gateway = match tool_gateway_factory {
+    let invocation_gateway = match &tool_gateway_factory {
         Some(factory) => Some(
             factory
                 .build(spec.id.clone(), tools.invocation_descriptors())
@@ -402,6 +404,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
             Some(resolver),
             result_artifacts,
         ),
+        tool_gateway_factory,
         models,
         approval_enabled: config.server.approval.enabled,
         definition,
@@ -445,6 +448,42 @@ impl ConfiguredAgent {
         {
             self.run.leave_session(&session_id).await;
             return Err(AgentRunError::Configuration(error.to_string()));
+        }
+        let surface = self
+            .mcp_sessions
+            .tool_registry(&session_id)
+            .ok_or_else(|| {
+                AgentRunError::Configuration("MCP Session catalog is unavailable".into())
+            })
+            .and_then(|extensions| self.run.compose_session_tools(&extensions))
+            .and_then(|tools| {
+                let descriptors = tools.invocation_descriptors();
+                let gateway = match &self.tool_gateway_factory {
+                    Some(factory) => factory
+                        .build(self.spec.id.clone(), descriptors)
+                        .map_err(|error| AgentRunError::Configuration(error.to_string()))?,
+                    None => sylvander_agent::tool::invocation::RegistryBoundToolGateway::new(
+                        descriptors,
+                    ),
+                };
+                Ok((tools, gateway))
+            });
+        let (tools, invocation_gateway) = match surface {
+            Ok(surface) => surface,
+            Err(error) => {
+                self.mcp_sessions.detach(&session_id).await;
+                self.run.leave_session(&session_id).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .run
+            .install_session_tool_surface(session_id.clone(), tools, invocation_gateway)
+            .await
+        {
+            self.mcp_sessions.detach(&session_id).await;
+            self.run.leave_session(&session_id).await;
+            return Err(error);
         }
         Ok(session)
     }
