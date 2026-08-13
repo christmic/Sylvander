@@ -681,6 +681,99 @@ describe("Sylvander Work", () => {
     }));
   });
 
+  it("carries one-time identity proofs only through the dedicated account surface", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: {
+        server_name: "test-runtime",
+        version: 6,
+        capabilities: ["user_profile_v1", "identity_binding_v1"],
+      },
+    }));
+    act(() => screen.getByRole("button", { name: "Account settings" }).click());
+    act(() => screen.getByRole("tab", { name: "identity" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "identity_binding",
+      request: { version: 1, action: { operation: "resolve" } },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: { result: "not_linked", version: 1 },
+    } }));
+
+    act(() => screen.getByRole("button", { name: "Link an external Channel" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "identity_binding",
+      request: { version: 1, action: { operation: "begin" } },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: {
+        result: "challenge_issued",
+        version: 1,
+        challenge_id: "challenge-1",
+        secret: "one-time-secret-123",
+        expires_at_unix_secs: Math.floor(Date.now() / 1_000) + 300,
+      },
+    } }));
+    expect(await screen.findByDisplayValue("challenge-1")).toBeTruthy();
+    expect(screen.getByDisplayValue("one-time-secret-123")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy one-time proof" })).toBeTruthy();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Challenge to confirm" }), {
+      target: { value: "external-challenge" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "One-time proof to confirm" }), {
+      target: { value: "external-proof-1234" },
+    });
+    act(() => screen.getByRole("button", { name: "Confirm identity link" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "identity_binding",
+      request: {
+        version: 1,
+        action: {
+          operation: "confirm",
+          challenge_id: "external-challenge",
+          proof: "external-proof-1234",
+        },
+      },
+    }));
+    expect(screen.queryByDisplayValue("one-time-secret-123")).toBeNull();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: {
+        result: "resolved",
+        version: 1,
+        binding: { user_id: "alice", revision: 7, linked_at_unix_secs: 100 },
+      },
+    } }));
+    expect(await screen.findByRole("heading", { name: "Linked as alice" })).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Unlink this ingress…" }).click());
+    act(() => screen.getByRole("button", { name: "Confirm unlink revision 7" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "identity_binding",
+      request: { version: 1, action: { operation: "unlink", expected_revision: 7 } },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "identity_binding",
+      response: {
+        result: "error",
+        version: 1,
+        error: {
+          code: "conflict",
+          operation: "unlink",
+          message: "identity binding revision changed",
+        },
+      },
+    } }));
+    expect(await screen.findByRole("heading", { name: "Linked as alice" })).toBeTruthy();
+    expect(screen.getByText("identity binding revision changed")).toBeTruthy();
+  });
+
   it("requests interruption once and waits for the Runtime terminal", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);

@@ -1189,6 +1189,13 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     setState((current) => ({ ...current, identityBinding: { status: "idle" } }));
   }, []);
 
+  const clearIdentityChallenge = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      identityBinding: { ...current.identityBinding, challenge: undefined },
+    }));
+  }, []);
+
   const answerQuestion = useCallback(async (callId: string, answer: string) => {
     const question = state.question;
     if (!question || question.callId !== callId) return;
@@ -1403,6 +1410,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     clearUserProfile,
     requestIdentityBinding,
     clearIdentityBinding,
+    clearIdentityChallenge,
     sendChat,
     interruptTurn,
     requestContext,

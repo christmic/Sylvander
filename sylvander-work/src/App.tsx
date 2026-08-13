@@ -1,6 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
 
 import crabMark from "../../docs/design/final-brand/sylvander-seed-crab-character-square.png";
+import { IdentitySettings } from "./IdentitySettings";
 import { ProfileSettings } from "./ProfileSettings";
 import type { ApprovalScope, ReasoningEffort, RuntimeGatewayPort, RuntimePermissionProfile, RuntimeSessionConfigPatch } from "./lib/gateway";
 import { useRuntime, type RuntimeViewState } from "./lib/useRuntime";
@@ -10,7 +11,7 @@ export interface AppProps {
 }
 
 export default function App({ gateway }: AppProps) {
-  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, resolveMemoryConfirmation, requestUserProfile, clearUserProfile, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
+  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, resolveMemoryConfirmation, requestUserProfile, clearUserProfile, requestIdentityBinding, clearIdentityBinding, clearIdentityChallenge, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [inspector, setInspector] = useState<"plan" | "tasks" | "changes" | "context">("plan");
@@ -27,7 +28,7 @@ export default function App({ gateway }: AppProps) {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [sessionLabel, setSessionLabel] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [accountView, setAccountView] = useState<"profile" | "identity" | undefined>();
   const [modelIndex, setModelIndex] = useState("0");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("off");
   const [permissionProfile, setPermissionProfile] = useState<RuntimePermissionProfile>({
@@ -226,14 +227,25 @@ export default function App({ gateway }: AppProps) {
   }
 
   function openUserProfile() {
-    setProfileOpen(true);
+    if (!state.protocol?.capabilities.includes("user_profile_v1")) return;
+    setAccountView("profile");
     setInspectorOpen(false);
+    clearIdentityBinding();
     void requestUserProfile({ operation: "read" });
   }
 
-  function closeUserProfile() {
-    setProfileOpen(false);
+  function openIdentityBinding() {
+    if (!state.protocol?.capabilities.includes("identity_binding_v1")) return;
+    setAccountView("identity");
+    setInspectorOpen(false);
     clearUserProfile();
+    void requestIdentityBinding({ operation: "resolve" });
+  }
+
+  function closeAccount() {
+    setAccountView(undefined);
+    clearUserProfile();
+    clearIdentityBinding();
   }
 
   async function patchSessionConfiguration(operation: "set" | "inherit") {
@@ -274,7 +286,7 @@ export default function App({ gateway }: AppProps) {
         <button className="rail-button" aria-label="Agents"><span>◎</span></button>
         <button className="rail-button" aria-label="Automations"><span>⌁</span></button>
       </div>
-      <button className="rail-button settings" aria-label="Account settings" disabled={!state.protocol?.capabilities.includes("user_profile_v1")} onClick={openUserProfile}><span>⚙</span></button>
+      <button className="rail-button settings" aria-label="Account settings" disabled={!state.protocol?.capabilities.some((capability) => capability === "user_profile_v1" || capability === "identity_binding_v1")} onClick={() => state.protocol?.capabilities.includes("user_profile_v1") ? openUserProfile() : openIdentityBinding()}><span>⚙</span></button>
     </nav>
 
     <aside
@@ -321,7 +333,7 @@ export default function App({ gateway }: AppProps) {
           <div><h2>{selected?.label ?? "No Session selected"}</h2><p>{selected?.workspace ?? "Connect Runtime to continue"}</p></div>
         </div>
         <div className="header-actions">
-          <button className="quiet-button" onClick={() => { setInspectorOpen(!inspectorOpen); if (!inspectorOpen) closeUserProfile(); }} aria-pressed={inspectorOpen}>Plan <span>{state.plan.filter((step) => step.state === "complete").length}/{state.plan.length}</span></button>
+          <button className="quiet-button" onClick={() => { setInspectorOpen(!inspectorOpen); if (!inspectorOpen) closeAccount(); }} aria-pressed={inspectorOpen}>Plan <span>{state.plan.filter((step) => step.state === "complete").length}/{state.plan.length}</span></button>
           <button className="icon-button" aria-label="Session actions" disabled={!selected} onClick={() => setSessionActionsOpen(!sessionActionsOpen)}>···</button>
         </div>
       </header>
@@ -390,7 +402,8 @@ export default function App({ gateway }: AppProps) {
       </div>
     </main>
 
-    {profileOpen && <ProfileSettings state={state.userProfile} onClose={closeUserProfile} onRequest={requestUserProfile} />}
+    {accountView === "profile" && <ProfileSettings state={state.userProfile} onClose={closeAccount} onOpenIdentity={state.protocol?.capabilities.includes("identity_binding_v1") ? openIdentityBinding : undefined} onRequest={requestUserProfile} />}
+    {accountView === "identity" && <IdentitySettings state={state.identityBinding} onClose={closeAccount} onOpenProfile={state.protocol?.capabilities.includes("user_profile_v1") ? openUserProfile : undefined} onClearChallenge={clearIdentityChallenge} onRequest={requestIdentityBinding} />}
 
     {inspectorOpen && <aside className="inspector" aria-label="Session inspector">
       <header><div><span className="eyebrow">Live work</span><h2>Execution</h2></div><button className="icon-button" onClick={() => setInspectorOpen(false)} aria-label="Close inspector">×</button></header>

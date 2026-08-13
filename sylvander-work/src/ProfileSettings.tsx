@@ -6,12 +6,13 @@ import type { RuntimeViewState } from "./lib/useRuntime";
 interface ProfileSettingsProps {
   state: RuntimeViewState["userProfile"];
   onClose(): void;
+  onOpenIdentity?: () => void;
   onRequest(action: RuntimeUserProfileAction): Promise<boolean>;
 }
 
 type OptionalEnum<T extends string> = "" | T;
 
-export function ProfileSettings({ state, onClose, onRequest }: ProfileSettingsProps) {
+export function ProfileSettings({ state, onClose, onOpenIdentity, onRequest }: ProfileSettingsProps) {
   const [language, setLanguage] = useState("");
   const [languagePrivacy, setLanguagePrivacy] = useState<RuntimePrivacyClass>("personal");
   const [locale, setLocale] = useState("");
@@ -110,6 +111,7 @@ export function ProfileSettings({ state, onClose, onRequest }: ProfileSettingsPr
 
   return <aside className="inspector account-panel" aria-label="Account settings">
     <header><div><span className="eyebrow">Owner settings</span><h2>User Profile</h2></div><button className="icon-button" type="button" aria-label="Close account settings" onClick={onClose}>×</button></header>
+    {onOpenIdentity && <div className="inspector-tabs" role="tablist" aria-label="Account settings sections"><button role="tab" className="active" aria-selected="true">profile</button><button role="tab" aria-selected="false" onClick={onOpenIdentity}>identity</button></div>}
     <section className="context-panel">
       <p>Runtime derives the profile owner from this authenticated connection. Values stay out of Session history and local storage.</p>
       {state.notice && <p role={state.status === "error" ? "alert" : "status"}>{state.notice}</p>}
