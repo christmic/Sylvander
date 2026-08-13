@@ -28,7 +28,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `ListSessions`, `LoadSession` | complete | recovery metadata listed below |
 | `RenameSession`, `ArchiveSession`, `DeleteSession` | complete | restore archived Session |
 | `GetRuntimeInfo` | complete | model/permission selection commands |
-| `GetSessionConfig`, `UpdateSessionConfig` | missing | replace semantics cannot preserve redacted write-only prompt; requires field patch contract |
+| `GetSessionConfig`, `UpdateSessionConfig` | complete | revision-bound field patch preserves omitted write-only state |
 | `SubmitFeedback` | missing | terminal feedback surface |
 | `MemoryConfirmation` | missing | governed memory decision surface |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
@@ -58,7 +58,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `RuntimeInfo` | partial | catalog/platform details and selectors |
 | `ModelRetry`, `InteractionTimeout` | complete | typed cause/kind/recovery projection and matching decision dismissal |
 | `IterationStart`, `IterationEnd` | complete | active state and cumulative usage/cost projection |
-| `SessionConfig` | missing | settings revision/provenance |
+| `SessionConfig` | complete | sparse overrides, effective values, revision, and provenance |
 | feedback, memory, admin, profile, identity responses | missing | matching command surfaces |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
 | workspace rollback lifecycle | complete | preview, restored files, and failure |

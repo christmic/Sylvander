@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage, type RuntimeModelDescriptor } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimeSessionConfigState } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -64,6 +64,7 @@ export interface RuntimeViewState {
     status: "preview" | "completed" | "failed";
     detail?: string;
   };
+  sessionConfig?: RuntimeSessionConfigState;
   diagnostic?: string;
 }
 
@@ -263,6 +264,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           activePlan: current.selectedId === message.session_id ? undefined : current.activePlan,
           tasks: current.selectedId === message.session_id ? [] : current.tasks,
           sessionStats: current.selectedId === message.session_id ? undefined : current.sessionStats,
+          sessionConfig: current.selectedId === message.session_id ? undefined : current.sessionConfig,
           contextReport: current.selectedId === message.session_id ? undefined : current.contextReport,
           contextRequestPending: current.selectedId === message.session_id
             ? false
@@ -324,6 +326,11 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           }));
         }
         break;
+      case "session_config":
+        if (message.state.session_id === selectedRef.current) {
+          setState((current) => ({ ...current, sessionConfig: message.state }));
+        }
+        break;
       case "sessions_list": {
         const sessions = message.sessions.map((session) => ({
           id: session.id,
@@ -377,6 +384,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           plan: [],
           tasks: [],
           sessionStats: undefined,
+          sessionConfig: message.config,
           contextReport: undefined,
           contextRequestPending: false,
           compaction: undefined,
@@ -400,6 +408,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             plan: current.selectedId === message.session_id ? [] : current.plan,
             tasks: current.selectedId === message.session_id ? [] : current.tasks,
             sessionStats: current.selectedId === message.session_id ? undefined : current.sessionStats,
+            sessionConfig: current.selectedId === message.session_id ? undefined : current.sessionConfig,
             contextReport: current.selectedId === message.session_id ? undefined : current.contextReport,
             contextRequestPending: current.selectedId === message.session_id
               ? false
@@ -430,6 +439,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           plan: current.selectedId === message.session_id ? [] : current.plan,
           tasks: current.selectedId === message.session_id ? [] : current.tasks,
           sessionStats: current.selectedId === message.session_id ? undefined : current.sessionStats,
+          sessionConfig: current.selectedId === message.session_id ? undefined : current.sessionConfig,
           contextReport: current.selectedId === message.session_id ? undefined : current.contextReport,
           contextRequestPending: current.selectedId === message.session_id
             ? false
@@ -778,6 +788,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       selectedId: sessionId,
       transcript: [],
       sessionStats: undefined,
+      sessionConfig: undefined,
       plan: [],
       activePlan: undefined,
       tasks: [],

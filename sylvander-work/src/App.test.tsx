@@ -440,6 +440,80 @@ describe("Sylvander Work", () => {
       session_id: "session-1",
       profile: { file_access: "read_only", network_access: "allowed", approval_policy: "deny" },
     }));
+
+    act(() => screen.getByRole("button", { name: "Runtime details" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "get_session_config", session_id: "session-1",
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_config",
+      state: {
+        session_id: "session-1",
+        revision: 7,
+        overrides: {},
+        effective: {
+          provider_id: "alpha",
+          model_id: "shared",
+          reasoning_effort: "off",
+          permissions: { file_access: "workspace_write", network_access: "denied", approval_policy: "allow" },
+          provenance: {
+            model: { kind: "agent_default" },
+            reasoning_effort: { kind: "agent_default" },
+            permissions: { kind: "channel_default" },
+          },
+        },
+      },
+    } }));
+    expect(await screen.findByText("Session revision 7 · model agent_default · permissions channel_default")).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Pin effective to Session" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "update_session_config",
+      request: {
+        session_id: "session-1",
+        expected_revision: 7,
+        patch: {
+          model: { operation: "set", value: { provider_id: "alpha", model_id: "shared" } },
+          reasoning_effort: { operation: "set", value: "off" },
+          permissions: { operation: "set", value: { file_access: "workspace_write", network_access: "denied", approval_policy: "allow" } },
+        },
+      },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_config",
+      state: {
+        session_id: "session-1",
+        revision: 8,
+        overrides: {
+          model: { provider_id: "alpha", model_id: "shared" },
+          reasoning_effort: "off",
+          permissions: { file_access: "workspace_write", network_access: "denied", approval_policy: "allow" },
+        },
+        effective: {
+          provider_id: "alpha",
+          model_id: "shared",
+          reasoning_effort: "off",
+          permissions: { file_access: "workspace_write", network_access: "denied", approval_policy: "allow" },
+          provenance: {
+            model: { kind: "session_override" },
+            reasoning_effort: { kind: "session_override" },
+            permissions: { kind: "session_override" },
+          },
+        },
+      },
+    } }));
+    act(() => screen.getByRole("button", { name: "Restore inheritance" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "update_session_config",
+      request: {
+        session_id: "session-1",
+        expected_revision: 8,
+        patch: {
+          model: { operation: "inherit" },
+          reasoning_effort: { operation: "inherit" },
+          permissions: { operation: "inherit" },
+        },
+      },
+    }));
   });
 
   it("reviews, accepts, and discards Runtime coding Sessions", async () => {

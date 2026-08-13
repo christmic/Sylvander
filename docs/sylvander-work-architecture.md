@@ -244,6 +244,11 @@ Model and permission selection is catalog-driven. Desktop keeps provider and
 model identifiers paired, offers only each descriptor's advertised reasoning
 efforts, and omits `ask` when Runtime disables approvals. Submissions are typed
 requests; displayed settings change only after a later `RuntimeInfo` fact.
+Session-specific settings additionally load the Runtime revision and per-field
+provenance. Pinning or restoring inheritance uses explicit `set`/`inherit`
+patches against that revision, so omitted fields—including the redacted,
+write-only system prompt—remain untouched. A later `SessionConfig` is the only
+source of the next revision and displayed provenance.
 
 The Changes inspector never reads Git directly. It requests Runtime's coding
 Session diff, keeps failure alongside the still-reviewable patch, and waits for

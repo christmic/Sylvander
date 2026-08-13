@@ -29,7 +29,9 @@ export type RuntimeCommand =
   | { type: "accept_coding_session"; session_id: string }
   | { type: "discard_coding_session"; session_id: string }
   | { type: "preview_workspace_rollback"; session_id: string }
-  | { type: "rollback_workspace"; session_id: string; expected_turn_id: string };
+  | { type: "rollback_workspace"; session_id: string; expected_turn_id: string }
+  | { type: "get_session_config"; session_id: string }
+  | { type: "update_session_config"; request: RuntimeSessionConfigUpdateRequest };
 
 export type PlanDecision =
   | { decision: "approved" }
@@ -52,6 +54,48 @@ export interface RuntimeModelDescriptor {
   capability_names: string[];
   reasoning_efforts: ReasoningEffort[];
   lifecycle: { status: "active" } | { status: "deprecated"; replacement?: string };
+}
+
+export type RuntimeConfigFieldPatch<T> =
+  | { operation: "inherit" }
+  | { operation: "set"; value: T };
+
+export interface RuntimeSessionConfigPatch {
+  model?: RuntimeConfigFieldPatch<{ provider_id: string; model_id: string }>;
+  reasoning_effort?: RuntimeConfigFieldPatch<ReasoningEffort>;
+  permissions?: RuntimeConfigFieldPatch<RuntimePermissionProfile>;
+}
+
+export interface RuntimeSessionConfigUpdateRequest {
+  session_id: string;
+  expected_revision: number;
+  patch: RuntimeSessionConfigPatch;
+}
+
+interface RuntimeConfigSource {
+  kind: "agent_default" | "channel_default" | "session_override" | "request_override";
+  reference?: string;
+}
+
+export interface RuntimeSessionConfigState {
+  session_id: string;
+  revision: number;
+  overrides: {
+    model?: { provider_id: string; model_id: string };
+    reasoning_effort?: ReasoningEffort;
+    permissions?: RuntimePermissionProfile;
+  };
+  effective: {
+    provider_id: string;
+    model_id: string;
+    reasoning_effort: ReasoningEffort;
+    permissions: RuntimePermissionProfile;
+    provenance: {
+      model: RuntimeConfigSource;
+      reasoning_effort: RuntimeConfigSource;
+      permissions: RuntimeConfigSource;
+    };
+  };
 }
 
 export interface RuntimeSession {
@@ -166,6 +210,7 @@ export type RuntimeMessage =
   | { type: "workspace_rollback_preview"; session_id: string; preview: { turn_id: string; files: string[] } }
   | { type: "workspace_rollback_completed"; session_id: string; report: { turn_id: string; restored: string[] } }
   | { type: "workspace_rollback_failed"; session_id: string; reason: string }
+  | { type: "session_config"; state: RuntimeSessionConfigState }
   | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: ApprovalScope[] }
   | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }
   | { type: "ask_user"; session_id: string; call_id: string; question: string; options: string[]; multi_select: boolean }
@@ -178,7 +223,7 @@ export type RuntimeMessage =
   | { type: "done"; session_id: string; text: string }
   | { type: "error"; session_id: string; message: string }
   | { type: "turn_interrupted"; session_id: string; reason: string }
-  | { type: "session_created"; session_id: string }
+  | { type: "session_created"; session_id: string; config?: RuntimeSessionConfigState }
   | { type: "session_updated"; session_id: string; label?: string; archived: boolean }
   | { type: "session_deleted"; session_id: string }
   | { type: "operation_error"; operation: string; message: string }
