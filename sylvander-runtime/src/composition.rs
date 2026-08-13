@@ -2,10 +2,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::agent_definition::{AgentSpec, ToolRef};
-use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
+use crate::mcp::{SessionMcpBinding, SessionMcpRuntimeService};
+use crate::mcp_stdio::McpResultArtifactSink;
 use crate::observability::RuntimeObservability;
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use sylvander_agent::curated_memory::MemoryCandidateSink;
@@ -18,11 +18,10 @@ use sylvander_agent::tools::{
 };
 use sylvander_agent::user_profile_provider::UserProfileProvider;
 use sylvander_api::{
-    AgentSecretReference, ApprovalPolicy, FileAccess, ModelSelection,
-    ModelSelectionResolutionError, NetworkAccess, PermissionProfile, ReasoningEffort,
-    SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
-    SessionEffectiveConfig, SessionWorkspaceBinding, SessionWorkspaceMount,
-    WorkspaceCapabilityPolicy, WorkspaceMountRole,
+    ApprovalPolicy, FileAccess, ModelSelection, ModelSelectionResolutionError, NetworkAccess,
+    PermissionProfile, ReasoningEffort, SessionConfigOverrides, SessionConfigProvenance,
+    SessionConfigSource, SessionConfigSourceKind, SessionEffectiveConfig, SessionWorkspaceBinding,
+    SessionWorkspaceMount, WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };
 use sylvander_channel::MessageBus;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -69,6 +68,7 @@ pub struct ConfiguredAgent {
     pub spec: AgentSpec,
     pub(crate) run: AgentRun,
     session_issuer: AgentSessionIssuer,
+    mcp_sessions: SessionMcpRuntimeService,
     pub models: BTreeMap<ModelSelection, ModelInfo>,
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
@@ -236,6 +236,7 @@ pub(crate) fn build_agent(
         spec,
         run,
         session_issuer,
+        mcp_sessions: SessionMcpRuntimeService::new(),
         models,
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
@@ -263,7 +264,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     resolver: Arc<dyn CredentialSecretResolver>,
     external_secret_provider: Option<Arc<dyn RenewableExternalSecretProvider>>,
     credential_audit: Arc<CredentialOperationAuditLedger>,
-    result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
+    _result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
     artifact_service: Option<RuntimeArtifactService>,
     tool_gateway_factory: Option<WorkerToolGatewayFactory>,
 ) -> Result<ConfiguredAgent, CompositionError> {
@@ -329,7 +330,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     let curated_context = tool_gateway_factory
         .as_ref()
         .map(WorkerToolGatewayFactory::curated_context_provider);
-    let tools = configured_tools(&spec, memory.clone(), result_artifacts, candidate_sink).await?;
+    let tools = configured_tools(&spec, memory.clone(), candidate_sink);
     let invocation_gateway = match tool_gateway_factory {
         Some(factory) => Some(
             factory
@@ -395,6 +396,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         spec,
         run,
         session_issuer,
+        mcp_sessions: SessionMcpRuntimeService::new(),
         models,
         approval_enabled: config.server.approval.enabled,
         definition,
@@ -412,11 +414,33 @@ impl ConfiguredAgent {
         session_id: sylvander_api::SessionId,
         metadata: crate::session::SessionMetadata,
     ) -> Result<AuthenticatedSession, AgentRunError> {
-        let lease = self.session_issuer.issue(session_id, metadata)?;
-        self.run.attach_authenticated_session(lease).await
+        let binding = SessionMcpBinding {
+            user_id: metadata.user_id.clone(),
+            agent_id: self.spec.id.clone(),
+            session_id: session_id.clone(),
+            policy_revision: self.definition.revision,
+        };
+        let servers = self
+            .definition
+            .spec
+            .tools
+            .iter()
+            .filter_map(|reference| match reference {
+                ToolRef::McpServer(server) => Some(server.clone()),
+                ToolRef::Builtin { .. } => None,
+            })
+            .collect();
+        let lease = self.session_issuer.issue(session_id.clone(), metadata)?;
+        let session = self.run.attach_authenticated_session(lease).await?;
+        if let Err(error) = self.mcp_sessions.attach(binding, servers) {
+            self.run.leave_session(&session_id).await;
+            return Err(AgentRunError::Configuration(error.to_string()));
+        }
+        Ok(session)
     }
 
     pub(crate) async fn detach_authenticated_session(&self, session_id: &sylvander_api::SessionId) {
+        self.mcp_sessions.detach(session_id);
         self.run.leave_session(session_id).await;
     }
 
@@ -756,59 +780,15 @@ fn default_tools_with_candidate(
     }
 }
 
-async fn configured_tools(
+fn configured_tools(
     spec: &AgentSpec,
     memory: Arc<dyn MemoryStore>,
-    result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
     candidate_sink: Option<Arc<dyn MemoryCandidateSink>>,
-) -> Result<ToolRegistry, CompositionError> {
-    let mut registry = default_tools_with_candidate(memory, candidate_sink);
-    for reference in &spec.tools {
-        let ToolRef::McpServer(config) = reference else {
-            continue;
-        };
-        let resolved = resolve_mcp_config(config)?;
-        let client = match &result_artifacts {
-            Some(sink) => {
-                McpStdioClient::connect_with_result_artifact_sink(
-                    &resolved,
-                    Duration::from_secs(30),
-                    sink.clone(),
-                )
-                .await
-            }
-            None => McpStdioClient::connect(&resolved, Duration::from_secs(30)).await,
-        }
-        .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?;
-        client
-            .list_tools()
-            .await
-            .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?;
-        registry = registry.register_dynamic_source(client);
-    }
-    Ok(registry.with_hooks(spec.hooks.clone()))
-}
-
-fn resolve_mcp_config(
-    config: &crate::agent_definition::McpServerConfig,
-) -> Result<crate::agent_definition::McpServerConfig, CompositionError> {
-    const PREFIX: &str = "sylvander-secret-ref:v1:";
-    let mut resolved = config.clone();
-    for (name, value) in &mut resolved.envs {
-        let Some(encoded) = value.strip_prefix(PREFIX) else {
-            continue;
-        };
-        let reference: AgentSecretReference = serde_json::from_str(encoded)
-            .map_err(|_| CompositionError::McpSecret(config.name.clone(), name.clone()))?;
-        *value = match reference {
-            AgentSecretReference::Environment { name: source } => std::env::var(source)
-                .map_err(|_| CompositionError::McpSecret(config.name.clone(), name.clone()))?,
-            AgentSecretReference::File { path } => std::fs::read_to_string(path)
-                .map(|secret| secret.trim_end_matches(['\r', '\n']).to_string())
-                .map_err(|_| CompositionError::McpSecret(config.name.clone(), name.clone()))?,
-        };
-    }
-    Ok(resolved)
+) -> ToolRegistry {
+    // MCP declarations attach to authenticated Sessions. Starting them here
+    // would recreate the revision-wide process sharing this architecture is
+    // explicitly removing.
+    default_tools_with_candidate(memory, candidate_sink).with_hooks(spec.hooks.clone())
 }
 
 fn configured_prompt_resolver(

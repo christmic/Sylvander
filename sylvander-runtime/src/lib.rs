@@ -68,7 +68,11 @@ mod identity_binding_service;
 #[cfg(test)]
 #[path = "../tests/unit/identity_binding_service.rs"]
 mod identity_binding_service_tests;
-/// Managed MCP stdio process, JSON-RPC transport, and Agent-tool adapter.
+/// Session-owned MCP lifecycle and process-environment boundary.
+pub(crate) mod mcp;
+/// Legacy stdio connection mechanics retained only while they are moved under
+/// the Session-owned MCP runtime.
+#[allow(dead_code)]
 pub(crate) mod mcp_stdio;
 mod memory_maintenance;
 #[allow(dead_code)] // internal API consumed by model routing/admin batches
