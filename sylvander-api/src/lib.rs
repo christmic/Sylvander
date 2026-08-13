@@ -20,6 +20,8 @@
 
 /// Versioned administrative messages for Agent definition revisions.
 pub mod agent_admin;
+/// Versioned, bounded retrieval DTOs for Runtime-owned artifacts.
+pub mod artifact;
 /// Authenticated ingress context and content-safe boundary failures.
 pub mod boundary;
 /// Content-free auxiliary cognition governance evidence.
@@ -57,6 +59,7 @@ pub mod user_profile;
 pub mod workspace_worker;
 
 pub use agent_admin::*;
+pub use artifact::*;
 pub use boundary::*;
 pub use cognition::*;
 pub use execution::*;

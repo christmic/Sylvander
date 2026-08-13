@@ -322,6 +322,7 @@ impl Channel for UnixChannel {
 fn ui_protocol_capabilities() -> Vec<String> {
     [
         "agent_administration",
+        "artifact_range_read",
         "attachments",
         "approval_scopes",
         "compaction",
@@ -913,6 +914,18 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
             } else {
                 operation_error(tx, "get_session_config", "UI service is unavailable");
+            }
+        }
+        ClientMsg::ReadArtifact { request } => {
+            if let Some(host) = &ctx.host {
+                match host.read_artifact(boundary, request).await {
+                    Ok(chunk) => {
+                        let _ = tx.send(ServerMsg::ArtifactChunk { chunk });
+                    }
+                    Err(error) => boundary_denied(tx, error),
+                }
+            } else {
+                operation_error(tx, "read_artifact", "UI service is unavailable");
             }
         }
         ClientMsg::UpdateSessionConfig { request } => {

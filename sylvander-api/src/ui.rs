@@ -62,6 +62,9 @@ pub enum UiClientMessage {
     GetSessionConfig {
         session_id: String,
     },
+    ReadArtifact {
+        request: crate::ArtifactReadRequest,
+    },
     UpdateSessionConfig {
         request: crate::SessionConfigUpdateRequest,
     },
@@ -166,6 +169,9 @@ pub enum UiServerMessage {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<crate::SessionConfigState>,
+    },
+    ArtifactChunk {
+        chunk: crate::ArtifactChunk,
     },
     TurnStarted {
         session_id: String,

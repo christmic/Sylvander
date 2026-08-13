@@ -43,15 +43,16 @@ use async_trait::async_trait;
 use sylvander_api::BusMessage;
 use sylvander_api::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
-    AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
-    IDENTITY_BINDING_PROTOCOL_VERSION, IdentityBindingCapabilities, IdentityBindingError,
-    IdentityBindingErrorCode, IdentityBindingOperation, IdentityBindingRequest,
-    IdentityBindingResponse, IdentityBindingValidationError, MemoryConfirmationRequest,
-    MemoryConfirmationResponse, PrincipalKind, RegistryAdminError, RegistryAdminErrorCode,
-    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, RuntimeUiSnapshot,
-    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionId, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo,
-    UserProfileCapabilities, UserProfileError, UserProfileRequest, UserProfileResponse,
+    AgentId, ArtifactChunk, ArtifactReadRequest, AuthenticationFailure, BoundaryContext,
+    BoundaryError, BoundaryErrorCode, IDENTITY_BINDING_PROTOCOL_VERSION,
+    IdentityBindingCapabilities, IdentityBindingError, IdentityBindingErrorCode,
+    IdentityBindingOperation, IdentityBindingRequest, IdentityBindingResponse,
+    IdentityBindingValidationError, MemoryConfirmationRequest, MemoryConfirmationResponse,
+    PrincipalKind, RegistryAdminError, RegistryAdminErrorCode, RegistryAdminRequest,
+    RegistryAdminResponse, RunFeedback, RuntimeUiSnapshot, SessionConfigOverrides,
+    SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest, SessionId,
+    USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo, UserProfileCapabilities,
+    UserProfileError, UserProfileRequest, UserProfileResponse,
 };
 
 /// Complete normalized input for one authenticated external chat turn.
@@ -329,6 +330,17 @@ pub trait ChannelHost: Send + Sync {
         boundary: &BoundaryContext,
         session_id: &SessionId,
     ) -> Result<SessionConfigState, BoundaryError>;
+    /// Return one audited, bounded range from an owned Session artifact.
+    ///
+    /// Runtime derives user authority from `boundary`; Channel must not
+    /// resolve locators or obtain a storage handle.
+    async fn read_artifact(
+        &self,
+        boundary: &BoundaryContext,
+        _request: ArtifactReadRequest,
+    ) -> Result<ArtifactChunk, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "read_artifact"))
+    }
     /// Validate and apply a typed configuration update.
     async fn update_session_config(
         &self,

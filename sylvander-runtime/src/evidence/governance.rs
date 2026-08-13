@@ -264,6 +264,17 @@ pub struct GovernedRecord {
     pub expires_at: i64,
 }
 
+/// Decrypted, bounded artifact range returned after exact-scope and Session
+/// provenance checks. The complete payload never crosses this boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GovernedArtifactRange {
+    pub(crate) media_type: String,
+    pub(crate) offset: usize,
+    pub(crate) total_bytes: usize,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) payload_digest_sha256: String,
+}
+
 /// Deterministic export plus the durable audit entry that authorized it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceExport {
@@ -312,7 +323,8 @@ impl McpResultArtifactSink for EvidenceArtifactSink {
     async fn persist(&self, artifact: McpResultArtifact) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
         let source =
-            bounded_artifact_source(&artifact.server, &artifact.operation, &artifact.session_id);
+            bounded_artifact_source(&artifact.server, &artifact.operation, &artifact.session_id)
+                .map_err(|error| error.to_string())?;
         self.store
             .put_governed_record(GovernedRecordInput {
                 id: id.clone(),
@@ -488,6 +500,68 @@ impl EvidenceStore {
             digest_sha256,
             exported_at,
         })
+    }
+
+    /// Read one bounded artifact range and persist a content-free audit in the
+    /// same transaction. Scope and Session provenance must both match.
+    pub(crate) async fn read_governed_artifact_range(
+        &self,
+        scope: EvidenceScope,
+        record_id: String,
+        session_id: String,
+        offset: usize,
+        max_bytes: usize,
+        read_at: i64,
+    ) -> Result<GovernedArtifactRange, EvidenceError> {
+        let state = self.governance()?.clone();
+        validate_scope(&scope, &state)?;
+        validate_text(&record_id, MAX_IDENTIFIER_BYTES)?;
+        if max_bytes == 0 || max_bytes > sylvander_api::MAX_ARTIFACT_READ_BYTES || read_at < 0 {
+            return Err(EvidenceError::InvalidGovernedRecord);
+        }
+        let source_prefix = artifact_session_source_prefix(&session_id)?;
+        let selector_digest = selector_digest(std::slice::from_ref(&record_id));
+        self.run(move |connection| {
+            let transaction = connection
+                .unchecked_transaction()
+                .map_err(EvidenceError::sqlite)?;
+            let stored = load_stored(&transaction, &scope, &record_id)?
+                .ok_or(EvidenceError::GovernedRecordNotFound)?;
+            if stored.expires_at <= read_at {
+                return Err(EvidenceError::GovernedRecordNotFound);
+            }
+            let record = decrypt_record(&state, scope.clone(), stored)?;
+            if record.kind != GovernedRecordKind::Artifact
+                || !record.source_ref.starts_with(&source_prefix)
+                || offset > record.payload.len()
+            {
+                return Err(EvidenceError::GovernedRecordNotFound);
+            }
+            let end = offset.saturating_add(max_bytes).min(record.payload.len());
+            let bytes = record.payload[offset..end].to_vec();
+            let result_digest = range_digest(&record, offset, &bytes);
+            insert_audit(
+                &transaction,
+                &GovernanceAudit {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    scope,
+                    action: "read".into(),
+                    selector_digest_sha256: selector_digest,
+                    result_digest_sha256: result_digest,
+                    record_count: 1,
+                    occurred_at: read_at,
+                },
+            )?;
+            transaction.commit().map_err(EvidenceError::sqlite)?;
+            Ok(GovernedArtifactRange {
+                media_type: record.media_type,
+                offset,
+                total_bytes: record.payload.len(),
+                bytes,
+                payload_digest_sha256: record.payload_digest_sha256,
+            })
+        })
+        .await
     }
 
     /// Delete an exact record set inside one tenant/user scope. Ciphertext is
@@ -1104,16 +1178,36 @@ fn selector_digest(record_ids: &[String]) -> String {
     encode_digest(hasher.finalize())
 }
 
-fn bounded_artifact_source(server: &str, operation: &str, session_id: &str) -> String {
-    let source = format!(
-        "mcp:{server}:{operation}:session-sha256:{}",
+pub(crate) fn artifact_session_source_prefix(session_id: &str) -> Result<String, EvidenceError> {
+    validate_text(session_id, MAX_IDENTIFIER_BYTES)?;
+    Ok(format!(
+        "artifact-session-sha256:{}:",
         sha256(session_id.as_bytes())
-    );
-    if source.len() <= MAX_SOURCE_BYTES && !source.chars().any(char::is_control) {
-        source
-    } else {
-        format!("mcp:sha256:{}", sha256(source.as_bytes()))
-    }
+    ))
+}
+
+fn bounded_artifact_source(
+    server: &str,
+    operation: &str,
+    session_id: &str,
+) -> Result<String, EvidenceError> {
+    let prefix = artifact_session_source_prefix(session_id)?;
+    let provider_source = format!("{server}\0{operation}");
+    Ok(format!(
+        "{prefix}mcp-source-sha256:{}",
+        sha256(provider_source.as_bytes())
+    ))
+}
+
+fn range_digest(record: &GovernedRecord, offset: usize, bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"sylvander:evidence:artifact-range:v1\0");
+    hasher.update(record.id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(offset.to_string().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(bytes);
+    encode_digest(hasher.finalize())
 }
 
 fn export_digest(scope: &EvidenceScope, records: &[GovernedRecord]) -> String {

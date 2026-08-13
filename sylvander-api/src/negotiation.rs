@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Sylvander intentionally ships one latest schema before its first stable
 /// release. Older or newer revisions fail negotiation instead of entering a
 /// compatibility path.
-pub const UI_PROTOCOL_VERSION: u16 = 6;
+pub const UI_PROTOCOL_VERSION: u16 = 7;
 pub const UI_PROTOCOL_MIN_VERSION: u16 = UI_PROTOCOL_VERSION;
 pub const UI_PROTOCOL_MAX_VERSION: u16 = UI_PROTOCOL_VERSION;
 /// Negotiated UI capability for opaque, evidence-backed turn feedback.

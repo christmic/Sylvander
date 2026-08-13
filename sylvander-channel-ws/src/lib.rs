@@ -558,6 +558,7 @@ fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
         "sessions".into(),
         sylvander_api::FEEDBACK_CAPABILITY.into(),
         sylvander_api::USER_PROFILE_CAPABILITY.into(),
+        "artifact_range_read".into(),
     ];
     if version >= 2 {
         capabilities.extend([
@@ -946,6 +947,18 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
             } else {
                 operation_error(tx, "get_session_config", "UI service is unavailable");
+            }
+        }
+        ClientMsg::ReadArtifact { request } => {
+            if let Some(host) = &ctx.host {
+                match host.read_artifact(&boundary, request).await {
+                    Ok(chunk) => {
+                        let _ = tx.send(ServerMsg::ArtifactChunk { chunk });
+                    }
+                    Err(error) => boundary_denied(tx, error),
+                }
+            } else {
+                operation_error(tx, "read_artifact", "UI service is unavailable");
             }
         }
         ClientMsg::UpdateSessionConfig { request } => {

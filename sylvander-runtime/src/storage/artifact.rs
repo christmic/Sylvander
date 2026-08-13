@@ -16,7 +16,8 @@ use crate::agent::cognition_artifact::{
     CognitionArtifactError, CognitionArtifactKind, CognitionArtifactRecord, CognitionArtifactStore,
 };
 use crate::evidence::{
-    EvidenceClassification, EvidenceError, EvidenceStore, GovernedRecordInput, GovernedRecordKind,
+    EvidenceClassification, EvidenceError, EvidenceStore, GovernedArtifactRange,
+    GovernedRecordInput, GovernedRecordKind, artifact_session_source_prefix,
 };
 
 /// Identity and time fixed by Runtime for one admitted Agent turn.
@@ -56,7 +57,7 @@ impl RuntimeArtifactService {
         {
             return Err(EvidenceError::InvalidGovernedRecord);
         }
-        let source_seed = source_seed(&binding);
+        let source_seed = source_seed(&binding)?;
         let scope = self.store.governed_scope(binding.user_id)?;
         Ok(Arc::new(BoundArtifactStore {
             store: self.store.clone(),
@@ -85,6 +86,29 @@ impl RuntimeArtifactService {
             store: self.store.clone(),
             created_at: binding.created_at,
         }))
+    }
+
+    /// Resolve one opaque locator inside the authenticated user and Session.
+    pub(crate) async fn read_range(
+        &self,
+        user_id: String,
+        session_id: String,
+        locator: &str,
+        offset: usize,
+        max_bytes: usize,
+        read_at: i64,
+    ) -> Result<GovernedArtifactRange, EvidenceError> {
+        let record_id = parse_locator(locator)?;
+        self.store
+            .read_governed_artifact_range(
+                self.store.governed_scope(user_id)?,
+                record_id.to_string(),
+                session_id,
+                offset,
+                max_bytes,
+                read_at,
+            )
+            .await
     }
 }
 
@@ -244,13 +268,17 @@ fn perception_source(
     )
 }
 
-fn source_seed(binding: &ArtifactTurnBinding) -> String {
+fn source_seed(binding: &ArtifactTurnBinding) -> Result<String, EvidenceError> {
     let mut digest = Sha256::new();
     digest.update(b"sylvander-agent-artifact-turn-v1\0");
     for value in [&binding.agent_id, &binding.session_id, &binding.turn_id] {
         update_length_prefixed(&mut digest, value);
     }
-    format!("agent-turn:sha256:{:x}", digest.finalize())
+    let session_prefix = artifact_session_source_prefix(&binding.session_id)?;
+    Ok(format!(
+        "{session_prefix}agent-turn-sha256:{:x}",
+        digest.finalize()
+    ))
 }
 
 fn artifact_source(source_seed: &str, call_id: &str) -> String {
@@ -264,6 +292,17 @@ fn update_length_prefixed(digest: &mut Sha256, value: &str) {
     digest.update(value.len().to_string().as_bytes());
     digest.update(b":");
     digest.update(value.as_bytes());
+}
+
+fn parse_locator(locator: &str) -> Result<&str, EvidenceError> {
+    let id = locator
+        .strip_prefix("artifact:")
+        .or_else(|| locator.strip_prefix("evidence-artifact:"))
+        .ok_or(EvidenceError::GovernedRecordNotFound)?;
+    if id.is_empty() || id.contains(':') {
+        return Err(EvidenceError::GovernedRecordNotFound);
+    }
+    Ok(id)
 }
 
 fn map_store_error(error: EvidenceError) -> ArtifactStoreError {

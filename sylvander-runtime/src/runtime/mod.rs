@@ -22,6 +22,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -99,7 +100,7 @@ use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::credential::registry::CredentialSecretResolver;
 use crate::evidence::{
     AdministrationAudit, AuthorizationDenial, EvidenceArtifactSink, EvidenceEncryption,
-    EvidenceGovernance, EvidenceRecorder, EvidenceStore,
+    EvidenceError, EvidenceGovernance, EvidenceRecorder, EvidenceStore,
 };
 use crate::execution::{ExecutionHealthTask, ExecutionTargetHealth, RuntimeExecutionService};
 use crate::guardian::curation as guardian_curation;
@@ -451,6 +452,7 @@ pub(crate) struct RuntimeChannelHost {
     credential_resolver: Option<Arc<dyn CredentialSecretResolver>>,
     credential_audit: Option<Arc<CredentialOperationAuditLedger>>,
     evidence: Option<EvidenceStore>,
+    artifact_service: Option<RuntimeArtifactService>,
     evidence_run_id: Option<String>,
     guardian: Option<Arc<GuardianRuntime>>,
     identity_bindings: Option<Arc<IdentityBindingService>>,
@@ -946,6 +948,64 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             warn!(%audit_error, request_id = %boundary.request_id, "failed to persist authorization denial");
         }
         result
+    }
+
+    async fn read_artifact(
+        &self,
+        boundary: &sylvander_api::BoundaryContext,
+        request: sylvander_api::ArtifactReadRequest,
+    ) -> Result<sylvander_api::ArtifactChunk, sylvander_api::BoundaryError> {
+        const OPERATION: &str = "read_artifact";
+
+        if request.version != sylvander_api::ARTIFACT_READ_PROTOCOL_VERSION {
+            return Err(boundary_failure(
+                boundary,
+                OPERATION,
+                "unsupported artifact read protocol version",
+            ));
+        }
+        let offset = usize::try_from(request.offset).map_err(|_| {
+            boundary_failure(boundary, OPERATION, "artifact offset is out of range")
+        })?;
+        let session_id = SessionId::new(request.session_id.clone());
+        let session = self.owned_session(boundary, &session_id, OPERATION).await?;
+        let service = self.artifact_service.as_ref().ok_or_else(|| {
+            boundary_failure(boundary, OPERATION, "artifact service is unavailable")
+        })?;
+        let range = service
+            .read_range(
+                session.metadata.user_id,
+                request.session_id.clone(),
+                &request.locator,
+                offset,
+                sylvander_api::MAX_ARTIFACT_READ_BYTES,
+                crate::session::now_secs(),
+            )
+            .await
+            .map_err(|error| match error {
+                EvidenceError::GovernedRecordNotFound
+                | EvidenceError::GovernedRecordDeleted
+                | EvidenceError::InvalidGovernedRecord => {
+                    sylvander_api::BoundaryError::forbidden(boundary, OPERATION)
+                }
+                _ => boundary_failure(boundary, OPERATION, "artifact service is unavailable"),
+            })?;
+        let total_bytes = u64::try_from(range.total_bytes)
+            .map_err(|_| boundary_failure(boundary, OPERATION, "artifact metadata is invalid"))?;
+        let next_offset = u64::try_from(range.offset.saturating_add(range.bytes.len()))
+            .map_err(|_| boundary_failure(boundary, OPERATION, "artifact metadata is invalid"))?;
+        Ok(sylvander_api::ArtifactChunk {
+            version: sylvander_api::ARTIFACT_READ_PROTOCOL_VERSION,
+            session_id: request.session_id,
+            locator: request.locator,
+            media_type: range.media_type,
+            offset: request.offset,
+            total_bytes,
+            next_offset,
+            eof: next_offset == total_bytes,
+            content_base64: base64::engine::general_purpose::STANDARD.encode(range.bytes),
+            payload_digest_sha256: range.payload_digest_sha256,
+        })
     }
 
     async fn discover_agents(
@@ -3911,6 +3971,7 @@ fn ui_operation(message: &sylvander_api::UiClientMessage) -> &'static str {
         ClientMessage::DiscoverAgents => "discover_agents",
         ClientMessage::CreateSession { .. } => "create_session",
         ClientMessage::GetSessionConfig { .. } => "get_session_config",
+        ClientMessage::ReadArtifact { .. } => "read_artifact",
         ClientMessage::UpdateSessionConfig { .. } => "update_session_config",
         ClientMessage::SubmitFeedback { .. } => "submit_feedback",
         ClientMessage::MemoryConfirmation { request } => request.operation(),
@@ -4024,6 +4085,7 @@ fn ui_session_id(message: &sylvander_api::UiClientMessage) -> Option<&str> {
         | ClientMessage::InspectCodingSession { session_id }
         | ClientMessage::AcceptCodingSession { session_id }
         | ClientMessage::DiscardCodingSession { session_id } => Some(session_id),
+        ClientMessage::ReadArtifact { request } => Some(&request.session_id),
         ClientMessage::UpdateSessionConfig { request } => Some(&request.session_id.0),
         ClientMessage::MemoryConfirmation { request } => Some(request.session_id()),
         _ => None,
@@ -4155,6 +4217,7 @@ impl Runtime {
             credential_resolver: None,
             credential_audit: None,
             evidence: None,
+            artifact_service: None,
             evidence_run_id: None,
             guardian: None,
             identity_bindings: None,
@@ -4603,7 +4666,7 @@ impl Runtime {
             external_secret_provider,
             credential_audit: credential_audit.clone(),
             result_artifacts,
-            artifact_service,
+            artifact_service: artifact_service.clone(),
             tool_gateway_factory,
             configured: RwLock::new(
                 configured_agents
@@ -4946,6 +5009,7 @@ impl Runtime {
             credential_resolver: Some(credential_resolver),
             credential_audit: Some(credential_audit.clone()),
             evidence: Some(security_audit),
+            artifact_service,
             evidence_run_id: evidence
                 .as_ref()
                 .map(|recorder| recorder.run_id().to_string()),

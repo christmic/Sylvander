@@ -54,6 +54,7 @@ pub use governance::{
     EvidenceGovernance, EvidenceScope, GovernanceAudit, GovernedRecord, GovernedRecordInput,
     GovernedRecordKind, RetentionSweep, structured_redact,
 };
+pub(crate) use governance::{GovernedArtifactRange, artifact_session_source_prefix};
 pub use proposal_types::{
     ImprovementProposal, ImprovementProposalStatus, ImprovementRisk, ProposalTransition,
     RequiredEvaluation, StoredImprovementProposal,
@@ -61,7 +62,7 @@ pub use proposal_types::{
 pub use recorder::{EvidenceRecorder, EvidenceRecorderFailure};
 
 const EVIDENCE_APPLICATION_ID: i64 = 0x5359_4556;
-const EVIDENCE_SCHEMA_VERSION: i64 = 1;
+const EVIDENCE_SCHEMA_VERSION: i64 = 2;
 
 /// Derive the opaque wire handle persisted beside one exact evidence turn.
 ///
@@ -1532,7 +1533,7 @@ CREATE TABLE IF NOT EXISTS evidence_governance_audit (
   tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, action TEXT NOT NULL,
   selector_digest_sha256 TEXT NOT NULL, result_digest_sha256 TEXT NOT NULL,
   record_count INTEGER NOT NULL, occurred_at INTEGER NOT NULL,
-  CHECK(action IN ('export','delete','retention')),
+  CHECK(action IN ('read','export','delete','retention')),
   CHECK(record_count > 0)
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_id, sequence);

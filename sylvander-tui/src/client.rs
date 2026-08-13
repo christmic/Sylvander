@@ -632,6 +632,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. }
+        | ServerMsg::ArtifactChunk { .. }
         | ServerMsg::AgentAdmin { .. }
         | ServerMsg::RegistryAdmin { .. }
         | ServerMsg::IdentityBinding { .. }
