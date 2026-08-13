@@ -19,7 +19,7 @@ pub use corpus::{
 
 pub use evaluation::{
     ActivationDecision, ActivationGateError, ActivationGatePolicy, ActivationGateReport,
-    evaluate_cognition_activation,
+    CognitionActivationBundle, evaluate_cognition_activation, evaluate_corpus_activation,
 };
 pub use fault::{
     FaultController, FaultDecision, FaultInjectionError, FaultInjectionSpec, FaultReceipt,

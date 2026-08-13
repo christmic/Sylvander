@@ -1,10 +1,12 @@
 //! Deterministic paired evidence gate for auxiliary cognition activation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sylvander_api::CognitionActivationEvidence;
 
+use crate::CorpusManifest;
 use crate::{
     BenchmarkModelRole, CognitionProfile, FailurePoint, RuntimeBenchError, RuntimeBenchResult,
     ScenarioFamily, TopologyProfile, WorkspaceProfile,
@@ -56,6 +58,14 @@ pub struct ActivationGateReport {
     pub p95_latency_increase_basis_points: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CognitionActivationBundle {
+    pub corpus_manifest_sha256: String,
+    pub report: ActivationGateReport,
+    pub evidence: CognitionActivationEvidence,
+}
+
 impl ActivationGateReport {
     pub fn activation_evidence(
         &self,
@@ -82,6 +92,69 @@ impl ActivationGateReport {
                 .maximum_p95_latency_increase_basis_points,
         })
     }
+}
+
+/// Validate exact manifest coverage, evaluate the paired gate, and bind the
+/// report to the canonical manifest, policy, and every normalized result.
+pub fn evaluate_corpus_activation(
+    manifest: &CorpusManifest,
+    baseline: &[RuntimeBenchResult],
+    candidate: &[RuntimeBenchResult],
+    policy: ActivationGatePolicy,
+) -> Result<CognitionActivationBundle, ActivationGateError> {
+    manifest
+        .validate_pair_coverage(baseline, candidate)
+        .map_err(|_| ActivationGateError::Corpus)?;
+    let (manifest_json, corpus_manifest_sha256) = manifest
+        .canonical_json_and_sha256()
+        .map_err(|_| ActivationGateError::Corpus)?;
+    let report = evaluate_cognition_activation(baseline, candidate, manifest.candidate, policy)?;
+    let (baseline_plan, candidate_plan) = manifest
+        .paired_plans()
+        .map_err(|_| ActivationGateError::Corpus)?;
+    let baseline = ordered_results(baseline, &baseline_plan.coordinates)?;
+    let candidate = ordered_results(candidate, &candidate_plan.coordinates)?;
+    let evidence_json = serde_json::to_vec(&CanonicalEvidenceSet {
+        manifest_json: &manifest_json,
+        policy,
+        baseline,
+        candidate,
+    })
+    .map_err(|_| ActivationGateError::EvidenceEncoding)?;
+    let evidence_set_sha256 = format!("{:x}", Sha256::digest(&evidence_json));
+    let evidence = report.activation_evidence(evidence_set_sha256, policy)?;
+    Ok(CognitionActivationBundle {
+        corpus_manifest_sha256,
+        report,
+        evidence,
+    })
+}
+
+#[derive(Serialize)]
+struct CanonicalEvidenceSet<'a> {
+    manifest_json: &'a str,
+    policy: ActivationGatePolicy,
+    baseline: Vec<&'a RuntimeBenchResult>,
+    candidate: Vec<&'a RuntimeBenchResult>,
+}
+
+fn ordered_results<'a>(
+    results: &'a [RuntimeBenchResult],
+    order: &[crate::RuntimeBenchCoordinate],
+) -> Result<Vec<&'a RuntimeBenchResult>, ActivationGateError> {
+    let indexed = results
+        .iter()
+        .map(|result| (result.coordinate.clone(), result))
+        .collect::<HashMap<_, _>>();
+    order
+        .iter()
+        .map(|coordinate| {
+            indexed
+                .get(coordinate)
+                .copied()
+                .ok_or(ActivationGateError::UnpairedEvidence)
+        })
+        .collect()
 }
 
 /// Compare exact scenario/run pairs. Unpaired samples and mismatched primary
@@ -295,6 +368,10 @@ pub enum ActivationGateError {
     TooManyPairs,
     #[error("only an eligible activation report can become Registry evidence")]
     IneligibleReport,
+    #[error("corpus evidence is invalid")]
+    Corpus,
+    #[error("canonical activation evidence could not be encoded")]
+    EvidenceEncoding,
 }
 
 #[cfg(test)]
