@@ -17,13 +17,13 @@ use tokio::sync::Mutex;
 use super::{
     ActiveCredentialLease, ActiveCredentialSource, CredentialAccessError, CredentialLeaseFuture,
 };
-use crate::agent_registry::AgentRegistry;
 use crate::config::SecretRef;
 use crate::credential_audit::{
     CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
     CredentialOperationAuditLedger,
 };
 use crate::credential_registry::CredentialSecretResolver;
+use crate::registry::agent::AgentRegistry;
 
 /// Maximum lease lifetime accepted from an external provider.
 pub const MAX_EXTERNAL_SECRET_LEASE_SECONDS: i64 = 300;

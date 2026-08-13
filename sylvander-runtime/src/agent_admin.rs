@@ -22,13 +22,13 @@ use sylvander_api::{
     RedactedAgentTool, RedactedAgentUiCommand,
 };
 
-use crate::agent_registry::{AgentRegistry, AgentRegistryError, AgentRevision};
 use crate::config::{
     AgentAccessConfig, AgentDefinitionConfig, PromptProfileConfig, ServerConfig,
     WorkspaceBindingConfig,
 };
 use crate::mcp::SECRET_REFERENCE_PREFIX;
 use crate::prompt_contract::validate_public_prompt_selectors;
+use crate::registry::agent::{AgentRegistry, AgentRegistryError, AgentRevision};
 use sylvander_agent::prompt::{
     MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_prompt,
     validate_unique_identities,

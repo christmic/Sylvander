@@ -51,10 +51,10 @@ use crate::provider::request_scoped::{
     AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
     RegistryCredentialSource, RenewableExternalSecretProvider,
 };
-use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
+use crate::registry::composition::VersionedRegistryCompositionSnapshot;
 #[doc(hidden)]
-pub use crate::registry_domain::ModelCapabilityIssue;
-use crate::registry_domain::{
+pub use crate::registry::domain::ModelCapabilityIssue;
+use crate::registry::domain::{
     CanonicalModelCapability, ModelDefinition, ProviderDefinition, parse_model_capabilities,
 };
 use crate::storage::artifact::RuntimeArtifactService;
@@ -261,7 +261,7 @@ pub(crate) fn build_agent(
 pub(crate) async fn build_registry_agent_versioned_with_resolver(
     config: &ServerConfig,
     snapshot: VersionedRegistryCompositionSnapshot,
-    registry: crate::agent_registry::AgentRegistry,
+    registry: crate::registry::agent::AgentRegistry,
     bus: Arc<dyn MessageBus>,
     observability: RuntimeObservability,
     execution_service: RuntimeExecutionService,

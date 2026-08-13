@@ -1,10 +1,10 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::provider::request_scoped::{
     AnthropicProviderFactory, ProviderAdapterFactory, ProviderFactoryError,
 };
-use crate::registry_domain::{
+use crate::registry::agent::{AgentRegistry, AgentRegistryError};
+use crate::registry::domain::{
     ModelDefinition, ProviderDefinition, StoredRevision, canonical_definition,
 };
 

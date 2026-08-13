@@ -2,9 +2,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::config::{SecretRef, SecretResolver, SecretValue};
-use crate::registry_domain::{
+use crate::registry::agent::{AgentRegistry, AgentRegistryError};
+use crate::registry::domain::{
     CredentialBindingRevision, CredentialBindingView, SecretReferenceKind, StoredRevision,
     canonical_secret_reference,
 };

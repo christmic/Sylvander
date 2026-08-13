@@ -20,7 +20,7 @@ use sylvander_llm_openai::{
 };
 
 use crate::credential_registry::{CredentialRegistryError, ResolvedCredential};
-use crate::registry_domain::{
+use crate::registry::domain::{
     CanonicalModelCapability, ModelCapabilityError, ModelDefinition, ProviderDefinition,
     parse_model_capabilities,
 };
@@ -92,12 +92,12 @@ impl CredentialAccessError {
     fn from_registry(error: CredentialRegistryError) -> Self {
         match error {
             CredentialRegistryError::Registry(
-                crate::agent_registry::AgentRegistryError::Storage(_)
-                | crate::agent_registry::AgentRegistryError::Task(_),
+                crate::registry::agent::AgentRegistryError::Storage(_)
+                | crate::registry::agent::AgentRegistryError::Task(_),
             ) => Self::RegistryUnavailable,
             CredentialRegistryError::Registry(
-                crate::agent_registry::AgentRegistryError::Integrity(_)
-                | crate::agent_registry::AgentRegistryError::Serialization(_),
+                crate::registry::agent::AgentRegistryError::Integrity(_)
+                | crate::registry::agent::AgentRegistryError::Serialization(_),
             ) => Self::Integrity,
             _ => Self::Unavailable,
         }

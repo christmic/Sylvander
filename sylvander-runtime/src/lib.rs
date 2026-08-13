@@ -30,13 +30,17 @@ mod agent_admin_runtime_v3_tests;
 pub mod agent_definition;
 /// Runtime-owned Agent, provider, model, and credential revision governance.
 pub mod registry;
+#[cfg(test)]
 use registry::administration as registry_admin;
 /// Versioned Agent definitions and active-revision lookup.
 pub use registry::agent as agent_registry;
 #[cfg(test)]
 use registry::bootstrap as registry_bootstrap;
+#[cfg(test)]
 use registry::composition as registry_composition_v3;
+#[cfg(test)]
 use registry::domain as registry_domain;
+#[cfg(test)]
 use registry::snapshot as agent_registry_snapshot_v3;
 #[cfg(test)]
 #[path = "../tests/unit/agent_registry_snapshot_v3_contract.rs"]
@@ -187,7 +191,6 @@ use crate::agent_admin::{
     AgentAdminDispatch, AgentAdminService, is_agent_administrator, map_registry_error,
     redact_revision,
 };
-use crate::agent_registry_snapshot_v3::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
 #[cfg(test)]
 use crate::agent_run::AgentRun;
 use crate::agent_supervisor::{AgentRunEngine, RevisionedAgentRunProvider};
@@ -217,7 +220,8 @@ use crate::memory_maintenance::{
     MemoryMaintenanceTask, RuntimeMemoryMaintenancePolicy, catch_up as memory_maintenance_catch_up,
 };
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
-use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
+use crate::registry::administration::{CredentialRegistryMutationService, RegistryAdminService};
+use crate::registry::snapshot::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
 use crate::session::SessionMetadata;
 use crate::storage::artifact::RuntimeArtifactService;
 use crate::storage::memory::{
