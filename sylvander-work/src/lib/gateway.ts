@@ -195,6 +195,7 @@ export type RuntimeMessage =
   | { type: "agents_discovered"; agents: RuntimeAgent[] }
   | { type: "runtime_info"; snapshot: RuntimeInfo }
   | ({ type: "session_history" } & RuntimeSessionHistory)
+  | { type: "turn_started"; session_id: string; turn_id: string }
   | { type: "text_delta"; session_id: string; delta: string }
   | { type: "thinking_delta"; session_id: string; delta: string }
   | ({ type: "model_retry" } & RuntimeModelRetry)

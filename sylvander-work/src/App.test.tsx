@@ -330,7 +330,7 @@ describe("Sylvander Work", () => {
     expect(gateway.commands.at(-1)).toEqual({ type: "list_sessions", include_archived: false });
   });
 
-  it("locks duplicate chat submission until a Runtime terminal arrives", async () => {
+  it("locks duplicate chat submission until Runtime settles admission", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);
     await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
@@ -354,6 +354,14 @@ describe("Sylvander Work", () => {
       { type: "chat", text: "Run once", attachments: [], session_id: "session-1" },
     ]));
     expect(composer.hasAttribute("disabled")).toBe(true);
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "operation_error", operation: "chat", message: "admission rejected",
+    } }));
+    await waitFor(() => expect(composer.hasAttribute("disabled")).toBe(false));
+    fireEvent.change(composer, { target: { value: "Retry once" } });
+    act(() => screen.getByRole("button", { name: "Send" }).click());
+    await waitFor(() => expect(gateway.commands.filter((command) => command.type === "chat")).toHaveLength(2));
 
     act(() => gateway.emit({ type: "message", message: {
       type: "done", session_id: "session-1", text: "Complete",
@@ -394,7 +402,7 @@ describe("Sylvander Work", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
   });
 
-  it("projects Runtime iteration lifecycle and cumulative usage", async () => {
+  it("uses Runtime turn identity as the sole start fact and projects usage", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);
     await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
@@ -418,6 +426,10 @@ describe("Sylvander Work", () => {
     } }));
     act(() => gateway.emit({ type: "message", message: {
       type: "iteration_start", session_id: "session-1", iteration: 1,
+    } }));
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "turn_started", session_id: "session-1", turn_id: "turn-1",
     } }));
     expect(await screen.findByRole("button", { name: "Stop" })).toBeTruthy();
     act(() => gateway.emit({ type: "message", message: {

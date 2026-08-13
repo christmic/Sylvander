@@ -339,7 +339,7 @@ mod tests {
             code: "incompatible_protocol".into(),
             message: "client and server ranges do not overlap".into(),
             server_min_version: 4,
-            server_max_version: 5,
+            server_max_version: sylvander_api::UI_PROTOCOL_VERSION,
         });
 
         assert_eq!(

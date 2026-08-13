@@ -118,7 +118,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     }));
   }, []);
 
-  const markSessionActive = useCallback((sessionId: string) => {
+  const applyTurnStarted = useCallback((sessionId: string) => {
     if (localTurnStateRef.current.get(sessionId) === "active") return;
     localTurnStateRef.current.set(sessionId, "active");
     setState((current) => ({
@@ -182,8 +182,10 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }));
         break;
       }
+      case "turn_started":
+        applyTurnStarted(message.session_id);
+        break;
       case "iteration_start":
-        markSessionActive(message.session_id);
         break;
       case "iteration_end":
         if (message.session_id === selectedRef.current) {
@@ -502,9 +504,17 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         if (message.operation === "get_context") {
           contextRequestSessionRef.current = undefined;
         }
+        if (message.operation === "chat" && selectedRef.current) {
+          localTurnStateRef.current.delete(selectedRef.current);
+        }
         terminalSequenceRef.current += 1;
         setState((current) => ({
           ...current,
+          sessions: message.operation === "chat"
+            ? current.sessions.map((session) => session.id === current.selectedId
+              ? { ...session, state: "idle" }
+              : session)
+            : current.sessions,
           contextRequestPending: message.operation === "get_context"
             ? false
             : current.contextRequestPending,
@@ -518,12 +528,20 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }));
         break;
       case "boundary_denied": {
+        if (message.error.operation === "chat" && selectedRef.current) {
+          localTurnStateRef.current.delete(selectedRef.current);
+        }
         terminalSequenceRef.current += 1;
         const retry = message.error.retry_after_ms === undefined
           ? ""
           : ` · retry after ${message.error.retry_after_ms}ms`;
         setState((current) => ({
           ...current,
+          sessions: message.error.operation === "chat"
+            ? current.sessions.map((session) => session.id === current.selectedId
+              ? { ...session, state: "idle" }
+              : session)
+            : current.sessions,
           diagnostic: `${message.error.operation}: ${message.error.message}`,
           transcript: [...current.transcript, {
             id: `notice-boundary-${terminalSequenceRef.current}`,
@@ -535,16 +553,13 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       }
       case "text_delta":
-        markSessionActive(message.session_id);
         enqueueDelta(message.session_id, { kind: "assistant", delta: message.delta });
         break;
       case "thinking_delta":
-        markSessionActive(message.session_id);
         enqueueDelta(message.session_id, { kind: "thinking", delta: message.delta });
         break;
       case "model_retry":
         if (message.session_id === selectedRef.current) {
-          markSessionActive(message.session_id);
           terminalSequenceRef.current += 1;
           const sequence = terminalSequenceRef.current;
           setState((current) => ({
@@ -577,7 +592,6 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }
         break;
       case "tool_output_delta":
-        markSessionActive(message.session_id);
         enqueueDelta(message.session_id, {
           kind: "tool",
           callId: message.call_id,
@@ -586,7 +600,6 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "tool_call":
         if (message.session_id === selectedRef.current) {
-          markSessionActive(message.session_id);
           flushPendingDeltas(message.session_id);
           setState((current) => ({
             ...current,
@@ -615,7 +628,6 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "approval_request":
         if (message.session_id === selectedRef.current && message.tools.length > 0) {
-          markSessionActive(message.session_id);
           setState((current) => ({ ...current, approval: {
             sessionId: message.session_id,
             batchId: message.batch_id,
@@ -634,7 +646,6 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "ask_user":
         if (message.session_id === selectedRef.current) {
-          markSessionActive(message.session_id);
           setState((current) => ({ ...current, question: {
             sessionId: message.session_id,
             callId: message.call_id,
@@ -647,7 +658,6 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "plan_proposed":
       case "plan_updated":
         if (message.session_id === selectedRef.current) {
-          markSessionActive(message.session_id);
           setState((current) => ({
             ...current,
             activePlan: { sessionId: message.session_id, planId: message.plan_id },
@@ -660,7 +670,6 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       case "task_started":
         if (message.session_id === selectedRef.current) {
-          markSessionActive(message.session_id);
           setState((current) => ({ ...current, tasks: upsertTask(current.tasks, {
             id: message.task_id,
             owner: message.owner,
@@ -747,7 +756,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       default:
         break;
     }
-  }, [enqueueDelta, flushPendingDeltas, markSessionActive, submit]);
+  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, submit]);
 
   useEffect(() => {
     let stopped = false;
