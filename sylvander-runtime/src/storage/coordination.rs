@@ -12,8 +12,8 @@ use crate::coordination::arbitration::{
 use crate::coordination::governance::{HandoffObservation, ProgressObservation, WaitDependency};
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
-    CoordinationMessage, CoordinationMessageKind, MAX_MESSAGE_LEASE_SECONDS, MessageClaim,
-    MessageDeliveryState,
+    AgentMessageTurn, CoordinationMessage, CoordinationMessageKind, MAX_MESSAGE_LEASE_SECONDS,
+    MessageClaim, MessageDeliveryState,
 };
 use crate::coordination::task::{
     CoordinationTask, CoordinationTaskState, SessionTaskGraph, TaskDependency,
@@ -169,6 +169,19 @@ pub trait CoordinationStore: Send + Sync {
         next_state: MessageDeliveryState,
         now: i64,
     ) -> Result<CoordinationMessage, SessionStoreError>;
+
+    /// Atomically fence one claimed envelope to one future Agent turn.
+    async fn prepare_message_turn(
+        &self,
+        claim: &MessageClaim,
+        turn_id: &str,
+        now: i64,
+    ) -> Result<(CoordinationMessage, AgentMessageTurn), SessionStoreError>;
+
+    async fn message_turn(
+        &self,
+        message_id: &CoordinationMessageId,
+    ) -> Result<Option<AgentMessageTurn>, SessionStoreError>;
 
     async fn acknowledge_message(
         &self,
@@ -1492,6 +1505,98 @@ impl CoordinationStore for SqliteSessionStore {
         .await
     }
 
+    async fn prepare_message_turn(
+        &self,
+        claim: &MessageClaim,
+        turn_id: &str,
+        now: i64,
+    ) -> Result<(CoordinationMessage, AgentMessageTurn), SessionStoreError> {
+        if turn_id.trim().is_empty() || turn_id.len() > 256 {
+            return Err(SessionStoreError::Invalid(
+                "Agent message turn id is invalid".into(),
+            ));
+        }
+        let claim = claim.clone();
+        let turn_id = turn_id.to_owned();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            if let Some(existing) = load_message_turn(&transaction, &claim.message.message_id)? {
+                let message =
+                    load_message(&transaction, &claim.message.message_id)?.ok_or_else(|| {
+                        SessionStoreError::Store("prepared message disappeared".into())
+                    })?;
+                if existing.session_id == claim.message.session_id
+                    && existing.recipient_instance_id == claim.message.recipient_instance_id
+                    && existing.turn_id == turn_id
+                    && matches!(
+                        message.state,
+                        MessageDeliveryState::Delivered | MessageDeliveryState::Acknowledged
+                    )
+                {
+                    return Ok((message, existing));
+                }
+                return Err(SessionStoreError::Invalid(
+                    "Agent message turn receipt conflicts with requested intent".into(),
+                ));
+            }
+            let next_revision =
+                claim.message.revision.checked_add(1).ok_or_else(|| {
+                    SessionStoreError::Invalid("message revision overflow".into())
+                })?;
+            let changed = transaction.execute(
+                "UPDATE coordination_messages SET state='delivered',
+                 lease_owner_instance_id=NULL,lease_expires_at=NULL,revision=?1,updated_at=?2
+                 WHERE message_id=?3 AND state='claimed' AND recipient_instance_id=?4
+                   AND lease_epoch=?5 AND revision=?6 AND lease_expires_at>?2",
+                params![
+                    checked_i64(next_revision, "message revision")?,
+                    now,
+                    claim.message.message_id.0,
+                    claim.message.recipient_instance_id.0,
+                    checked_i64(claim.lease_epoch, "message lease epoch")?,
+                    checked_i64(claim.message.revision, "message revision")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::MessageConflict {
+                    message_id: claim.message.message_id,
+                    expected: Some(claim.message.revision),
+                    actual: None,
+                });
+            }
+            transaction.execute(
+                "INSERT INTO agent_message_turns
+                 (message_id,session_id,recipient_instance_id,turn_id,created_at)
+                 VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    claim.message.message_id.0,
+                    claim.message.session_id.0,
+                    claim.message.recipient_instance_id.0,
+                    turn_id,
+                    now,
+                ],
+            )?;
+            let message = load_message(&transaction, &claim.message.message_id)?
+                .ok_or_else(|| SessionStoreError::Store("prepared message disappeared".into()))?;
+            let receipt =
+                load_message_turn(&transaction, &claim.message.message_id)?.ok_or_else(|| {
+                    SessionStoreError::Store("message turn receipt disappeared".into())
+                })?;
+            transaction.commit()?;
+            Ok((message, receipt))
+        })
+        .await
+    }
+
+    async fn message_turn(
+        &self,
+        message_id: &CoordinationMessageId,
+    ) -> Result<Option<AgentMessageTurn>, SessionStoreError> {
+        let message_id = message_id.clone();
+        self.run(move |connection| load_message_turn(connection, &message_id))
+            .await
+    }
+
     async fn acknowledge_message(
         &self,
         message_id: &CoordinationMessageId,
@@ -1613,6 +1718,29 @@ fn load_message(
             })
         })
         .transpose()
+}
+
+fn load_message_turn(
+    connection: &rusqlite::Connection,
+    message_id: &CoordinationMessageId,
+) -> Result<Option<AgentMessageTurn>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT session_id,recipient_instance_id,turn_id,created_at
+             FROM agent_message_turns WHERE message_id=?1",
+            [&message_id.0],
+            |row| {
+                Ok(AgentMessageTurn {
+                    message_id: message_id.clone(),
+                    session_id: SessionId::new(row.get::<_, String>(0)?),
+                    recipient_instance_id: AgentInstanceId::new(row.get::<_, String>(1)?),
+                    turn_id: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
 }
 
 fn load_progress(

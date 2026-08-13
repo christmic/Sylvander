@@ -184,6 +184,50 @@ async fn coordination_service_derives_route_from_durable_topology() {
 }
 
 #[tokio::test]
+async fn automatic_delivery_persists_one_turn_before_execution() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    service
+        .dispatch_message(dispatch_request("auto-message"), 20)
+        .await
+        .unwrap();
+    let claim = service
+        .claim_next_message(&AgentInstanceId::new("coordinator-1"), 21, 10)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let (delivered, receipt) = service
+        .prepare_message_turn(&claim, "coordination:auto-message", 22)
+        .await
+        .unwrap();
+
+    assert_eq!(delivered.state, MessageDeliveryState::Delivered);
+    assert_eq!(receipt.turn_id, "coordination:auto-message");
+    assert_eq!(
+        store.message_turn(&delivered.message_id).await.unwrap(),
+        Some(receipt.clone())
+    );
+    assert_eq!(
+        service
+            .prepare_message_turn(&claim, &receipt.turn_id, 23)
+            .await
+            .unwrap(),
+        (delivered, receipt)
+    );
+}
+
+#[tokio::test]
 async fn coordination_service_persists_moderator_case_before_blocking_dispatch() {
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     store.save(&stored_session()).await.unwrap();

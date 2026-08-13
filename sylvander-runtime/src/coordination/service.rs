@@ -18,7 +18,8 @@ use crate::coordination::governance::{
 };
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
-    CoordinationMessage, CoordinationMessageKind, MessageClaim, MessageDeliveryState,
+    AgentMessageTurn, CoordinationMessage, CoordinationMessageKind, MessageClaim,
+    MessageDeliveryState,
 };
 use crate::coordination::task::SessionTaskGraph;
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -684,6 +685,19 @@ where
                 MessageDeliveryState::Delivered,
                 now,
             )
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Persist the exact future turn before an automatic delivery is exposed.
+    pub async fn prepare_message_turn(
+        &self,
+        claim: &MessageClaim,
+        turn_id: &str,
+        now: i64,
+    ) -> Result<(CoordinationMessage, AgentMessageTurn), CoordinationServiceError> {
+        self.store
+            .prepare_message_turn(claim, turn_id, now)
             .await
             .map_err(Into::into)
     }

@@ -82,6 +82,16 @@ pub struct MessageClaim {
     pub lease_expires_at: i64,
 }
 
+/// Durable bridge from one delivered envelope to exactly one Agent turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMessageTurn {
+    pub message_id: CoordinationMessageId,
+    pub session_id: SessionId,
+    pub recipient_instance_id: AgentInstanceId,
+    pub turn_id: String,
+    pub created_at: i64,
+}
+
 pub const MAX_MESSAGE_LEASE_SECONDS: u64 = 60;
 
 impl CoordinationMessage {

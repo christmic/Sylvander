@@ -261,7 +261,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 13;
+const SESSION_SCHEMA_VERSION: i64 = 14;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -279,6 +279,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "task_dependencies",
     "task_handoffs",
     "coordination_messages",
+    "agent_message_turns",
     "coordination_waits",
     "coordination_progress",
     "governance_cases",
@@ -486,6 +487,18 @@ CREATE INDEX idx_handoffs_arbitrator_state
     ON task_handoffs(session_id, arbitrator_instance_id, state);
 CREATE INDEX idx_messages_recipient_state
     ON coordination_messages(session_id, recipient_instance_id, state, created_at);
+
+-- Persistent program counter binding an envelope to its one model turn.
+CREATE TABLE agent_message_turns (
+    message_id            TEXT PRIMARY KEY REFERENCES coordination_messages(message_id) ON DELETE CASCADE,
+    session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    recipient_instance_id TEXT NOT NULL,
+    turn_id               TEXT NOT NULL CHECK(length(trim(turn_id)) > 0),
+    created_at            INTEGER NOT NULL,
+    UNIQUE(session_id, turn_id),
+    FOREIGN KEY(session_id, recipient_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE
+);
 
 -- Current wait-for graph. Revision fences prevent stale edges from surviving
 -- task progress or topology replacement after a crash.
@@ -774,7 +787,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=13;
+PRAGMA user_version=14;
 COMMIT;
 ";
 
