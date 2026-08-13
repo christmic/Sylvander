@@ -188,6 +188,7 @@ fn versioned_snapshot(config: &ServerConfig) -> VersionedRegistryCompositionSnap
             ),
         ]),
         default_model: selection("alpha"),
+        cognition_activations: Vec::new(),
     }
 }
 

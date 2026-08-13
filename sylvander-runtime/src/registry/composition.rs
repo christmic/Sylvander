@@ -11,6 +11,7 @@ use sylvander_api::{AgentId, ModelSelection};
 use crate::config::AgentDefinitionConfig;
 use crate::credential::registry::CredentialRegistryError;
 use crate::registry::agent::{AgentRegistry, AgentRegistryError};
+use crate::registry::cognition_activation::{CognitionActivationError, CognitionActivationRecord};
 use crate::registry::domain::{ModelDefinition, ProviderDefinition};
 use crate::registry::snapshot::AgentSnapshotV3Error;
 
@@ -21,6 +22,8 @@ pub(crate) struct VersionedRegistryCompositionSnapshot {
     pub providers: BTreeMap<String, ProviderDefinition>,
     pub models: BTreeMap<ModelSelection, ModelDefinition>,
     pub default_model: ModelSelection,
+    /// Owner-approved auxiliary routes for this exact Agent revision only.
+    pub cognition_activations: Vec<CognitionActivationRecord>,
 }
 
 impl AgentRegistry {
@@ -153,11 +156,32 @@ impl AgentRegistry {
             ));
         }
 
+        let mut cognition_activations = Vec::new();
+        for binding in &agent.spec.cognition.roles {
+            let Some(activation) = self
+                .active_cognition_activation(agent_id, revision, binding.role)
+                .await?
+            else {
+                continue;
+            };
+            if activation.draft.model != binding.model
+                || !models.contains_key(&activation.draft.model)
+            {
+                return Err(
+                    VersionedRegistryCompositionError::CognitionActivationMismatch {
+                        role: format!("{:?}", binding.role),
+                    },
+                );
+            }
+            cognition_activations.push(activation);
+        }
+
         Ok(VersionedRegistryCompositionSnapshot {
             agent,
             providers,
             models,
             default_model: configured_default,
+            cognition_activations,
         })
     }
 }
@@ -205,10 +229,14 @@ pub(crate) enum VersionedRegistryCompositionError {
     },
     #[error("registry composition does not contain default Model `{0:?}`")]
     MissingDefaultModel(ModelSelection),
+    #[error("approved cognition activation for role `{role}` does not match the registry closure")]
+    CognitionActivationMismatch { role: String },
     #[error(transparent)]
     Snapshot(#[from] AgentSnapshotV3Error),
     #[error(transparent)]
     Credential(#[from] CredentialRegistryError),
+    #[error(transparent)]
+    CognitionActivation(#[from] CognitionActivationError),
     #[error(transparent)]
     Registry(#[from] AgentRegistryError),
 }

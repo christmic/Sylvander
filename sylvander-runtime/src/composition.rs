@@ -1,6 +1,6 @@
 //! Production composition of configured Agent runs.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::agent_definition::{AgentSpec, McpServerConfig, McpStreamableHttpConfig, ToolRef};
@@ -281,6 +281,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         providers,
         models: model_definitions,
         default_model,
+        cognition_activations,
     } = snapshot;
     let revision_bindings = versioned_registry_revision_bindings(&providers, &model_definitions)?;
     for (selection, model) in &model_definitions {
@@ -331,6 +332,13 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
 
     let prompt_resolver = configured_prompt_resolver(&definition)?;
     let mut spec = definition.spec.clone();
+    let approved_roles = cognition_activations
+        .iter()
+        .map(|activation| activation.draft.role)
+        .collect::<HashSet<_>>();
+    spec.cognition
+        .roles
+        .retain(|binding| approved_roles.contains(&binding.role));
     apply_default_prompt(&prompt_resolver, &definition, &default_model, &mut spec)?;
     let candidate_sink = tool_gateway_factory
         .as_ref()
