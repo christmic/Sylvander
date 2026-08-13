@@ -635,6 +635,8 @@ async fn tool_result_and_result_position_commit_atomically() {
                     expected_position: ToolExecutionPosition::EffectCommitted,
                     content: content.clone(),
                     tool_name: "Read".into(),
+                    terminal_state: ToolCallState::Succeeded,
+                    failure_kind: None,
                 },
             )
             .await
@@ -643,6 +645,8 @@ async fn tool_result_and_result_position_commit_atomically() {
     );
     let calls = store.tool_calls(&session.id, "turn-result").await.unwrap();
     assert_eq!(calls[0].position, ToolExecutionPosition::ResultPersisted);
+    assert_eq!(calls[0].state, ToolCallState::Succeeded);
+    assert!(calls[0].ended_at.is_some());
     let history = store
         .read_history(&ctx(), &session.id, false, None)
         .await
@@ -662,6 +666,8 @@ async fn tool_result_and_result_position_commit_atomically() {
                     expected_position: ToolExecutionPosition::EffectCommitted,
                     content: serde_json::json!({}),
                     tool_name: "Read".into(),
+                    terminal_state: ToolCallState::Succeeded,
+                    failure_kind: None,
                 },
             )
             .await

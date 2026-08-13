@@ -355,7 +355,8 @@ pub struct ToolRecoveryWrite {
     pub classification: RecoveryClassification,
 }
 
-/// Exact model-visible tool observation committed with its ledger boundary.
+/// Exact model-visible observation, ledger boundary, and terminal state
+/// committed in one transaction.
 #[derive(Debug, Clone)]
 pub struct ToolResultPersistence {
     pub session_id: SessionId,
@@ -365,6 +366,8 @@ pub struct ToolResultPersistence {
     pub expected_position: ToolExecutionPosition,
     pub content: JsonValue,
     pub tool_name: String,
+    pub terminal_state: ToolCallState,
+    pub failure_kind: Option<ToolCallFailureKind>,
 }
 
 // ---------------------------------------------------------------------------

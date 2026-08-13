@@ -1226,6 +1226,15 @@ impl SessionStore for SqliteSessionStore {
         ctx: &sylvander_api::SessionContext,
         result: ToolResultPersistence,
     ) -> Result<u64, SessionStoreError> {
+        let (terminal_state, failure_kind) = match (result.terminal_state, result.failure_kind) {
+            (ToolCallState::Succeeded, None) => ("succeeded", None),
+            (ToolCallState::Failed, kind) => ("failed", kind.map(tool_call_failure_kind_str)),
+            _ => {
+                return Err(SessionStoreError::Invalid(
+                    "tool result terminal state and failure kind are inconsistent".into(),
+                ));
+            }
+        };
         if result.tool_name.trim().is_empty()
             || !matches!(
                 result.expected_position,
@@ -1254,7 +1263,8 @@ impl SessionStore for SqliteSessionStore {
             let advanced = transaction
                 .execute(
                     "UPDATE session_tool_calls \
-                     SET position='result_persisted', ledger_revision=?5, updated_at=?6 \
+                     SET position='result_persisted', ledger_revision=?5, updated_at=?6, \
+                         state=?8, ended_at=?6, failure_kind=?9 \
                      WHERE session_id=?1 AND turn_id=?2 AND call_id=?3 \
                        AND ledger_revision=?4 AND position=?7 AND state='running'",
                     params![
@@ -1265,6 +1275,8 @@ impl SessionStore for SqliteSessionStore {
                         next_revision,
                         now,
                         tool_execution_position_str(result.expected_position),
+                        terminal_state,
+                        failure_kind,
                     ],
                 )
                 .map_err(sqlite_err)?;

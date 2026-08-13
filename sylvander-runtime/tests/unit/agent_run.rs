@@ -1253,7 +1253,7 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
         assert_eq!(snapshot.tools_started, 1);
         assert_eq!(snapshot.tools_succeeded, succeeded);
         assert_eq!(snapshot.tools_failed, failed);
-        assert_eq!(snapshot.persistence_succeeded, 7 + (2 * succeeded));
+        assert_eq!(snapshot.persistence_succeeded, 7 + succeeded);
         assert_eq!(snapshot.persistence_failed, 0);
         assert_eq!(snapshot.active_tools, 0);
     }
@@ -1261,38 +1261,40 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
 
 #[tokio::test]
 async fn durable_tool_persistence_failures_fail_the_turn_and_clear_active_work() {
-    for (fail, operation, started) in [
+    for (fail, operation, started, policy) in [
         (
             SessionStoreFailPoint::AppendMessage,
             SessionPersistenceOperation::PersistModelToolResponse,
             0,
+            sylvander_api::ApprovalPolicy::Allow,
         ),
         (
             SessionStoreFailPoint::BeginToolCall,
             SessionPersistenceOperation::BeginToolCall,
             0,
+            sylvander_api::ApprovalPolicy::Allow,
         ),
         (
             SessionStoreFailPoint::AdvanceToolCall,
             SessionPersistenceOperation::AdvanceToolCall,
             1,
+            sylvander_api::ApprovalPolicy::Allow,
         ),
         (
             SessionStoreFailPoint::PersistToolResult,
             SessionPersistenceOperation::PersistToolResult,
             1,
+            sylvander_api::ApprovalPolicy::Allow,
         ),
         (
             SessionStoreFailPoint::FinishToolCall,
             SessionPersistenceOperation::FinishToolCall,
             1,
+            sylvander_api::ApprovalPolicy::Deny,
         ),
     ] {
-        let (result, snapshot, events) = persistent_tool_lifecycle_with_failure(
-            sylvander_api::ApprovalPolicy::Allow,
-            Some(fail),
-        )
-        .await;
+        let (result, snapshot, events) =
+            persistent_tool_lifecycle_with_failure(policy, Some(fail)).await;
         assert_persistence_failure(result.unwrap_err(), operation);
         assert!(matches!(
             events.first(),

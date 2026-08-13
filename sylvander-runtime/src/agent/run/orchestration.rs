@@ -1163,6 +1163,12 @@ impl AgentRunInner {
                                     expected_position: result_position,
                                     content: result_content,
                                     tool_name: name.clone(),
+                                    terminal_state: if is_error {
+                                        ToolCallState::Failed
+                                    } else {
+                                        ToolCallState::Succeeded
+                                    },
+                                    failure_kind: stored_failure_kind,
                                 },
                             )
                             .await
@@ -1177,32 +1183,6 @@ impl AgentRunInner {
                                 turn_id: turn_id.to_owned(),
                                 session_id: session_id.clone(),
                                 operation: RuntimePersistenceOperation::PersistToolResult,
-                                succeeded: true,
-                            });
-                        store
-                            .finish_tool_call(ToolCallCompletion {
-                                session_id: session_id.clone(),
-                                turn_id: turn_id.to_owned(),
-                                call_id: id.clone(),
-                                state: if is_error {
-                                    ToolCallState::Failed
-                                } else {
-                                    ToolCallState::Succeeded
-                                },
-                                failure_kind: stored_failure_kind,
-                            })
-                            .await
-                            .map_err(|source| {
-                                AgentRunError::session_persistence(
-                                    SessionPersistenceOperation::FinishToolCall,
-                                    source,
-                                )
-                            })?;
-                        self.observability
-                            .record(RuntimeEvent::PersistenceFinished {
-                                turn_id: turn_id.to_owned(),
-                                session_id: session_id.clone(),
-                                operation: RuntimePersistenceOperation::FinishToolCall,
                                 succeeded: true,
                             });
                     }
