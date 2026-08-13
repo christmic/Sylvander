@@ -1,13 +1,29 @@
 use super::*;
+use base64::Engine as _;
 use std::path::PathBuf;
+use std::sync::Arc;
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
+use sylvander_llm_core::{
+    AudioContent, AudioFormat, ContentBlock, ModelCapabilities, ModelEventStream, ModelInfo,
+    ModelProvider, ModelRef, ModelRequest, ModelResponse, ModelStreamEvent, ProviderFuture,
+    StopReason, TokenUsage,
+};
 
+use crate::agent::cognition::CognitiveRole;
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute,
     HistoryView, SessionAgentRole,
 };
+use crate::agent::perception::{
+    PerceptionArtifactKind, PerceptionArtifactStore, PerceptionModality,
+};
+use crate::agent::perception_execution::{
+    PerceptionExecutionRequest, execute_perception, recover_perception_receipt,
+};
+use crate::evidence::{EvidenceEncryption, EvidenceGovernance, EvidenceStore};
 use crate::session::membership::{SessionGovernance, SessionMembership};
 use crate::storage::agent_instance::{AgentInstanceConfig, AgentInstanceStore};
+use crate::storage::artifact::{ArtifactTurnBinding, RuntimeArtifactService};
 use crate::storage::session::{
     ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryReason,
 };
@@ -86,6 +102,88 @@ fn make_session(id: &str, lifetime: SessionLifetime) -> StoredSession {
         test_meta(),
         vec![AgentId::new("agent-1")],
     )
+}
+
+struct SuccessfulPerceptionProvider;
+
+impl ModelProvider for SuccessfulPerceptionProvider {
+    fn complete_stream(&self, request: ModelRequest) -> ProviderFuture<'_> {
+        let response = ModelResponse {
+            id: "provider-receipt-1".into(),
+            model: request.model,
+            content: vec![ContentBlock::Text {
+                text: "spoken words".into(),
+            }],
+            stop_reason: StopReason::EndTurn,
+            usage: TokenUsage {
+                input_tokens: 4,
+                output_tokens: 2,
+                ..TokenUsage::default()
+            },
+        };
+        Box::pin(async move {
+            let stream: ModelEventStream = Box::pin(futures_util::stream::iter([Ok(
+                ModelStreamEvent::Completed(Box::new(response)),
+            )]));
+            Ok(stream)
+        })
+    }
+}
+
+fn perception_governance() -> EvidenceGovernance {
+    let encryption = EvidenceEncryption::from_secret("perception-test", &[9; 32]).unwrap();
+    EvidenceGovernance::new("tenant-a", 30, encryption).unwrap()
+}
+
+fn audio_model() -> ModelInfo {
+    ModelInfo {
+        reference: ModelRef::new("test-provider", "audio-specialist"),
+        context_window: 8_192,
+        max_output_tokens: 512,
+        capabilities: ModelCapabilities::AUDIO_INPUT,
+    }
+}
+
+async fn running_perception_turn(store: &SqliteSessionStore, turn_id: &str) -> StoredSession {
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    persist_turn_member(store, &session, &effective_config()).await;
+    store
+        .begin_turn(
+            &turn_ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: turn_id.into(),
+                agent_instance_id: turn_instance(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role":"user","content":"audio"}),
+                model_id: "primary".into(),
+            },
+        )
+        .await
+        .unwrap();
+    session
+}
+
+async fn perception_artifacts(
+    evidence_path: &std::path::Path,
+    turn_id: &str,
+) -> Arc<dyn PerceptionArtifactStore> {
+    let evidence = EvidenceStore::open_governed(evidence_path, perception_governance())
+        .await
+        .unwrap();
+    RuntimeArtifactService::new(evidence)
+        .unwrap()
+        .bind_perception(ArtifactTurnBinding {
+            user_id: "user-1".into(),
+            agent_id: "agent-1".into(),
+            session_id: "sess-1".into(),
+            turn_id: turn_id.into(),
+            created_at: crate::session::now_secs(),
+        })
+        .unwrap()
 }
 
 #[tokio::test]
@@ -1465,6 +1563,173 @@ async fn perception_positions_recover_from_receipt_and_survive_restart() {
     assert_eq!(
         snapshot.output_artifact_locator.as_deref(),
         Some(output_locator.as_str())
+    );
+}
+
+#[tokio::test]
+async fn specialist_execution_commits_receipt_artifact_and_model_visible_result() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteSessionStore::open(directory.path().join("sessions.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let session = running_perception_turn(&store, "turn-specialist").await;
+    let artifacts =
+        perception_artifacts(&directory.path().join("evidence.sqlite"), "turn-specialist").await;
+    let invocation_id = PerceptionInvocationId::new();
+    let bytes = b"RIFF-audio".to_vec();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+    let result = execute_perception(
+        store.clone(),
+        artifacts.clone(),
+        Arc::new(SuccessfulPerceptionProvider),
+        PerceptionExecutionRequest {
+            session_id: session.id.clone(),
+            turn_id: "turn-specialist".into(),
+            agent_instance_id: turn_instance(),
+            invocation_id: invocation_id.clone(),
+            modality: PerceptionModality::Audio,
+            role: CognitiveRole::Audio,
+            model: audio_model(),
+            recovery_policy: PerceptionRecoveryPolicy::RecoverFromReceipt,
+            media_type: "audio/wav".into(),
+            media_bytes: bytes,
+            media_block: ContentBlock::Audio {
+                audio: AudioContent {
+                    data: encoded,
+                    format: AudioFormat::Wav,
+                    transcript: None,
+                },
+            },
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.text, "spoken words");
+    assert_eq!(result.provider_response_id, "provider-receipt-1");
+    assert_eq!(result.usage.input_tokens, 4);
+    let invocations = store
+        .perception_invocations(&session.id, "turn-specialist")
+        .await
+        .unwrap();
+    assert_eq!(
+        invocations[0].position,
+        PerceptionExecutionPosition::ResultPersisted
+    );
+    assert_eq!(
+        invocations[0].receipt_locator.as_deref(),
+        Some(
+            artifacts
+                .load_exact(&invocation_id, PerceptionArtifactKind::ProviderReceipt)
+                .await
+                .unwrap()
+                .unwrap()
+                .locator
+                .as_str()
+        )
+    );
+    assert_eq!(
+        invocations[0].output_digest.as_deref(),
+        Some(result.output_digest.as_str())
+    );
+}
+
+#[tokio::test]
+async fn receipt_written_before_ledger_advance_recovers_without_provider_replay() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteSessionStore::open(directory.path().join("sessions.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let session = running_perception_turn(&store, "turn-receipt-recovery").await;
+    let artifacts = perception_artifacts(
+        &directory.path().join("evidence.sqlite"),
+        "turn-receipt-recovery",
+    )
+    .await;
+    let invocation_id = PerceptionInvocationId::new();
+    store
+        .begin_perception(PerceptionInvocationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-receipt-recovery".into(),
+            agent_instance_id: turn_instance(),
+            invocation_id: invocation_id.clone(),
+            modality: PerceptionModality::Audio,
+            role: CognitiveRole::Audio,
+            provider_id: "test-provider".into(),
+            model_id: "audio-specialist".into(),
+            recovery_policy: PerceptionRecoveryPolicy::RecoverFromReceipt,
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            input_digest: format!("sha256:{}", "b".repeat(64)),
+            input_bytes: 10,
+        })
+        .await
+        .unwrap();
+    let media = artifacts
+        .persist_exact(
+            &invocation_id,
+            PerceptionArtifactKind::SourceMedia,
+            "audio/wav",
+            b"RIFF-audio".to_vec(),
+        )
+        .await
+        .unwrap();
+    let revision = store
+        .persist_perception_media(PerceptionMediaPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 0,
+            artifact_locator: media.locator,
+        })
+        .await
+        .unwrap();
+    store
+        .advance_perception(PerceptionAdvance {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            expected_position: PerceptionExecutionPosition::MediaPersisted,
+            next_position: PerceptionExecutionPosition::InferenceStarted,
+        })
+        .await
+        .unwrap();
+    let response = ModelResponse {
+        id: "durable-receipt".into(),
+        model: audio_model().reference,
+        content: vec![ContentBlock::Text {
+            text: "recovered words".into(),
+        }],
+        stop_reason: StopReason::EndTurn,
+        usage: TokenUsage::default(),
+    };
+    artifacts
+        .persist_exact(
+            &invocation_id,
+            PerceptionArtifactKind::ProviderReceipt,
+            "application/json",
+            serde_json::to_vec(&response).unwrap(),
+        )
+        .await
+        .unwrap();
+    let snapshot = store
+        .perception_invocations(&session.id, "turn-receipt-recovery")
+        .await
+        .unwrap()
+        .remove(0);
+
+    let recovered = recover_perception_receipt(store.clone(), artifacts, snapshot)
+        .await
+        .unwrap();
+    assert_eq!(recovered.text, "recovered words");
+    assert_eq!(
+        store
+            .perception_invocations(&session.id, "turn-receipt-recovery")
+            .await
+            .unwrap()[0]
+            .position,
+        PerceptionExecutionPosition::ResultPersisted
     );
 }
 
