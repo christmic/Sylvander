@@ -938,7 +938,7 @@ impl AgentRun {
             .insert(lease.session_id.clone());
         let ctx = match self
             .inner
-            .restore_session_context(&lease.session_id, &lease.metadata)
+            .restore_session_context(&lease.session_id, None, &lease.metadata)
             .await
         {
             Ok(context) => context,
@@ -1037,6 +1037,57 @@ impl AgentRun {
     /// Get a session context.
     pub async fn get_session(&self, session_id: &SessionId) -> Option<SessionContext> {
         sole_session_context(&*self.inner.sessions.read().await, session_id).cloned()
+    }
+
+    /// Attach one exact durable Agent participant to this running definition.
+    pub async fn attach_agent_instance(
+        &self,
+        session: &AuthenticatedSession,
+        agent_instance_id: &AgentInstanceId,
+    ) -> Result<SessionContext, AgentRunError> {
+        if !Arc::ptr_eq(&self.inner.session_authority, &session.authority) {
+            return Err(AgentRunError::Authentication(
+                "session capability belongs to another agent run".into(),
+            ));
+        }
+        let metadata = self
+            .inner
+            .sessions
+            .read()
+            .await
+            .get(&AgentSessionKey::new(
+                session.session_id.clone(),
+                session.agent_instance_id.clone(),
+            ))
+            .map(|context| context.metadata.clone())
+            .ok_or_else(|| AgentRunError::UnknownSession(session.session_id.clone()))?;
+        let context = self
+            .inner
+            .restore_session_context(&session.session_id, Some(agent_instance_id), &metadata)
+            .await?;
+        self.inner
+            .sessions
+            .write()
+            .await
+            .insert(context.key(), context.clone());
+        Ok(context)
+    }
+
+    /// Read one exact Agent participant context without implicit selection.
+    pub async fn get_agent_session(
+        &self,
+        session_id: &SessionId,
+        agent_instance_id: &AgentInstanceId,
+    ) -> Option<SessionContext> {
+        self.inner
+            .sessions
+            .read()
+            .await
+            .get(&AgentSessionKey::new(
+                session_id.clone(),
+                agent_instance_id.clone(),
+            ))
+            .cloned()
     }
 
     /// Return the latest Agent-machine state while this Session owns a turn.
@@ -1142,7 +1193,7 @@ impl AgentRun {
                             }
                             let context = self
                                 .inner
-                                .restore_session_context(session_id, metadata)
+                                .restore_session_context(session_id, None, metadata)
                                 .await;
                             match context {
                                 Ok(context) => {
@@ -1654,12 +1705,15 @@ impl AgentRunInner {
     async fn restore_session_context(
         &self,
         session_id: &SessionId,
+        requested_instance_id: Option<&AgentInstanceId>,
         metadata: &SessionMetadata,
     ) -> Result<SessionContext, AgentRunError> {
         let Some(store) = &self.session_store else {
             return Ok(SessionContext::new(
                 session_id.clone(),
-                AgentInstanceId::new(format!("moderator:{}", session_id.0)),
+                requested_instance_id
+                    .cloned()
+                    .unwrap_or_else(|| AgentInstanceId::new(format!("moderator:{}", session_id.0))),
                 metadata.clone(),
             ));
         };
@@ -1730,10 +1784,26 @@ impl AgentRunInner {
                 })?;
             membership
         };
-        let moderator_instance_id = membership.governance.moderator_instance_id;
+        let agent_instance_id = requested_instance_id
+            .cloned()
+            .unwrap_or_else(|| membership.governance.moderator_instance_id.clone());
+        let participant = membership
+            .participants
+            .iter()
+            .find(|participant| participant.instance_id == agent_instance_id)
+            .ok_or_else(|| {
+                AgentRunError::Configuration(
+                    "requested Agent instance is not a durable Session member".into(),
+                )
+            })?;
+        if participant.definition.agent_id != self.id || participant.state.is_terminal() {
+            return Err(AgentRunError::Configuration(
+                "requested Agent instance is unavailable for this running definition".into(),
+            ));
+        }
         let mut context = SessionContext::new(
             session_id.clone(),
-            moderator_instance_id.clone(),
+            agent_instance_id.clone(),
             stored.metadata.clone(),
         );
 
@@ -1742,7 +1812,7 @@ impl AgentRunInner {
             self.id.clone(),
             session_id.clone(),
         )
-        .with_agent_instance(moderator_instance_id);
+        .with_agent_instance(agent_instance_id);
         let mut messages = store
             .read_history(&caller, session_id, false, None)
             .await

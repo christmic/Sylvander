@@ -3614,7 +3614,7 @@ async fn durable_session_history_restores_into_agent_context() {
         .expect("build");
     let restored = run
         .inner
-        .restore_session_context(&session_id, &metadata)
+        .restore_session_context(&session_id, None, &metadata)
         .await
         .expect("restore durable history");
 
@@ -3650,7 +3650,7 @@ async fn direct_join_persists_an_auditable_effective_configuration() {
         .expect("build");
 
     run.inner
-        .restore_session_context(&session_id, &metadata)
+        .restore_session_context(&session_id, None, &metadata)
         .await
         .expect("persist direct session");
 
@@ -4068,6 +4068,91 @@ async fn one_session_can_hold_multiple_agent_contexts_without_implicit_selection
         );
     }
     assert!(run.active_turn_snapshot(&session_id).await.is_none());
+}
+
+#[tokio::test]
+async fn durable_worker_attach_restores_only_its_instance_history() {
+    let store = Arc::new(
+        crate::storage::session::SqliteSessionStore::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let (spec, client) = test_spec_and_client();
+    let (run, issuer) = qualified_anthropic_run_builder(spec, client)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .session_store(store.clone())
+        .build_with_session_issuer()
+        .unwrap();
+    let session_id = SessionId::new("durable-worker-attach");
+    let metadata = test_metadata();
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![run.id().clone()],
+    );
+    stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+    store.save(&stored).await.unwrap();
+    let initial = crate::runtime::initial_session_membership(
+        &stored,
+        stored.effective_config.as_ref().unwrap(),
+    )
+    .unwrap();
+    let mut worker = initial.participants[0].clone();
+    worker.instance_id = AgentInstanceId::new("worker-instance");
+    worker.role = crate::agent::instance::SessionAgentRole::Worker;
+    worker.origin = crate::agent::instance::AgentInstanceOrigin::Forked {
+        parent_instance_id: initial.governance.moderator_instance_id.clone(),
+        fork_sequence: 0,
+    };
+    let membership = crate::session::membership::SessionMembership::new(
+        session_id.clone(),
+        vec![initial.participants[0].clone(), worker.clone()],
+        initial.governance,
+    )
+    .unwrap();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    let worker_caller = sylvander_api::SessionContext::new(
+        metadata.user_id.clone(),
+        run.id().clone(),
+        session_id.clone(),
+    )
+    .with_agent_instance(worker.instance_id.clone());
+    store
+        .append_message(
+            &worker_caller,
+            &session_id,
+            StoredMessageRole::User,
+            serde_json::to_value(ChatMessage::user("worker-only")).unwrap(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let moderator = run
+        .attach_authenticated_session(issuer.issue(session_id.clone(), metadata).unwrap())
+        .await
+        .unwrap();
+    let restored = run
+        .attach_agent_instance(&moderator, &worker.instance_id)
+        .await
+        .unwrap();
+    assert_eq!(restored.agent_instance_id, worker.instance_id);
+    assert_eq!(restored.len(), 1);
+    assert_eq!(
+        run.get_agent_session(&session_id, &restored.agent_instance_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(run.get_session(&session_id).await.is_none());
 }
 
 #[tokio::test]
