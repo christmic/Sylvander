@@ -1379,9 +1379,11 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     ));
     let observations = runtime.operational_snapshot().await.unwrap().observability;
-    assert_eq!(observations.event_count, 6);
+    assert_eq!(observations.event_count, 8);
     assert_eq!(observations.chat_admitted, 4);
     assert_eq!(observations.chat_dispatched, 2);
+    assert_eq!(observations.chat_dispatch_failed, 2);
+    assert_eq!(observations.active_dispatches, 0);
     runtime.shutdown().await.unwrap();
 }
 
