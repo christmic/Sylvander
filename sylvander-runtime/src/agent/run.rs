@@ -50,7 +50,7 @@ use crate::agent::approval::ApprovalGrantContext;
 use crate::agent::approval::ApprovalMemory;
 use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::execution::RuntimeExecutionService;
-use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability};
+use crate::observability::RuntimeObservability;
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{AgentSessionKey, SessionContext, SessionMetadata, now_secs};
 use crate::storage::artifact::RuntimeArtifactService;
@@ -1396,54 +1396,23 @@ impl AgentRun {
                             session_id,
                             task_id,
                         } => {
-                            let Some(store) = &self.inner.workflow_store else {
-                                warn!(%session_id, %task_id, "durable task cancellation unavailable");
-                                continue;
-                            };
                             let Recipient::AgentInstance { instance_id, .. } = &msg.recipient
                             else {
                                 warn!(%session_id, %task_id, "task cancellation has no Agent actor");
                                 continue;
                             };
-                            let service = crate::coordination::service::CoordinationService::new(
-                                store.clone(),
-                                crate::coordination::governance::GovernancePolicy::default(),
-                                crate::coordination::service::DEFAULT_ARBITRATION_TTL_SECONDS,
-                            );
-                            match service
-                                .cancel_task(
-                                    crate::coordination::service::CancelTaskRequest {
-                                        task_id: sylvander_api::TaskId::new(task_id),
-                                        session_id: session_id.clone(),
-                                        actor: instance_id.clone(),
-                                    },
-                                    now_secs(),
-                                )
-                                .await
+                            if let Err(error) = background::cancel_durable_task(
+                                self.inner.workflow_store.as_ref(),
+                                &self.inner.bus,
+                                &self.inner.observability,
+                                &self.inner.id,
+                                instance_id,
+                                session_id,
+                                task_id,
+                            )
+                            .await
                             {
-                                Ok(_) => {
-                                    self.inner.observability.record(
-                                        RuntimeEvent::CoordinationTransition {
-                                            session_id: session_id.clone(),
-                                            outcome: RuntimeCoordinationOutcome::TaskCancelled,
-                                        },
-                                    );
-                                    let _ = self
-                                        .inner
-                                        .bus
-                                        .publish(BusMessage::stream_event(
-                                            session_id.clone(),
-                                            self.inner.id.clone(),
-                                            sylvander_api::StreamEvent::TaskCancelled {
-                                                task_id: task_id.clone(),
-                                                reason: "cancelled by user".into(),
-                                            },
-                                        ))
-                                        .await;
-                                }
-                                Err(error) => {
-                                    warn!(%session_id, %task_id, %error, "durable task cancellation rejected");
-                                }
+                                warn!(%session_id, %task_id, %error, "durable task cancellation rejected");
                             }
                         }
                     }

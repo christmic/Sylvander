@@ -12,7 +12,7 @@ use sylvander_channel::MessageBus;
 use crate::coordination::governance::GovernancePolicy;
 use crate::coordination::mailbox::{BACKGROUND_TASK_TTL_SECONDS, CoordinationMessageKind};
 use crate::coordination::service::{
-    CoordinationService, CreateTaskRequest, DEFAULT_ARBITRATION_TTL_SECONDS,
+    CancelTaskRequest, CoordinationService, CreateTaskRequest, DEFAULT_ARBITRATION_TTL_SECONDS,
     DispatchMessageOutcome, DispatchMessageRequest,
 };
 use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability};
@@ -20,6 +20,48 @@ use crate::session::now_secs;
 use crate::storage::session::SqliteSessionStore;
 
 const BACKGROUND_TASK_TOKEN_BUDGET: u64 = 20_000;
+
+pub(super) async fn cancel_durable_task(
+    store: Option<&Arc<SqliteSessionStore>>,
+    bus: &Arc<dyn MessageBus>,
+    observability: &RuntimeObservability,
+    agent_id: &AgentId,
+    actor: &AgentInstanceId,
+    session_id: &SessionId,
+    task_id: &str,
+) -> Result<(), String> {
+    let store = store.ok_or_else(|| "durable task cancellation unavailable".to_owned())?;
+    CoordinationService::new(
+        store.clone(),
+        GovernancePolicy::default(),
+        DEFAULT_ARBITRATION_TTL_SECONDS,
+    )
+    .cancel_task(
+        CancelTaskRequest {
+            task_id: TaskId::new(task_id),
+            session_id: session_id.clone(),
+            actor: actor.clone(),
+        },
+        now_secs(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    observability.record(RuntimeEvent::CoordinationTransition {
+        session_id: session_id.clone(),
+        outcome: RuntimeCoordinationOutcome::TaskCancelled,
+    });
+    let _ = bus
+        .publish(BusMessage::stream_event(
+            session_id.clone(),
+            agent_id.clone(),
+            StreamEvent::TaskCancelled {
+                task_id: task_id.to_owned(),
+                reason: "cancelled by user".into(),
+            },
+        ))
+        .await;
+    Ok(())
+}
 
 pub(super) struct BusTaskGate {
     pub(super) bus: Arc<dyn MessageBus>,
