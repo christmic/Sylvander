@@ -31,6 +31,13 @@ violations, and cleanup. OCI is the current enforcing adapter. Local and SSH
 remain non-sandboxed adapters and cannot execute a tool whose prepared policy
 requires a sandbox.
 
+Full-sandbox health is the conjunction of filesystem isolation, denied
+network, resource ceilings, and process-tree ownership. Runtime publishes each
+truth separately and derives `sandbox_enforced`; it never upgrades a partially
+isolated adapter. OCI owns the named container tree and force-removes it when a
+timeout, cancellation, transport loss, or dropped future prevents ordinary
+completion.
+
 Current implementation status: Runtime boot constructs one crate-private,
 immutable `RuntimeExecutionService` from the built-in exact `local` target and
 configured SSH/OCI targets. It resolves adapter credentials at composition,

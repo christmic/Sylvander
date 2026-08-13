@@ -238,6 +238,7 @@ fn container_reports_the_isolation_it_actually_enforces() {
     assert!(isolation.filesystem);
     assert!(isolation.network_denied);
     assert!(isolation.resource_limits);
+    assert!(isolation.process_tree);
     assert!(isolation.enforces_sandbox());
 }
 

@@ -248,6 +248,7 @@ pub struct ProcessIsolation {
     pub filesystem: bool,
     pub network_denied: bool,
     pub resource_limits: bool,
+    pub process_tree: bool,
 }
 
 impl ProcessIsolation {
@@ -257,6 +258,7 @@ impl ProcessIsolation {
             filesystem: false,
             network_denied: false,
             resource_limits: false,
+            process_tree: false,
         }
     }
 
@@ -266,12 +268,13 @@ impl ProcessIsolation {
             filesystem: true,
             network_denied: true,
             resource_limits: true,
+            process_tree: true,
         }
     }
 
     #[must_use]
     pub const fn enforces_sandbox(self) -> bool {
-        self.filesystem && self.network_denied && self.resource_limits
+        self.filesystem && self.network_denied && self.resource_limits && self.process_tree
     }
 }
 

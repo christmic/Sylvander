@@ -63,6 +63,13 @@ progress. Each command runs in its own process group. Timeout or future
 cancellation terminates the whole group so descendants cannot outlive the
 Agent turn.
 
+`ProcessIsolation::enforces_sandbox()` requires four independent truths:
+filesystem isolation, denied network, resource ceilings, and owned process-tree
+cleanup. Missing any one dimension fails closed for a prepared call whose
+sandbox is required. This matches the persistent-process environment contract;
+a backend cannot claim a complete sandbox merely because its filesystem mount
+is restricted.
+
 Agent tests cover executor injection, logical mount routing, prepared-policy
 bounds, capability denial, conditional Edit behavior, and unavailable-target
 behavior through test doubles. Runtime tests prove that concurrent stale
