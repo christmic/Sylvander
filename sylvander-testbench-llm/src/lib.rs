@@ -4,6 +4,11 @@
 //! journeys. Provider crates retain their deterministic protocol tests and do
 //! not depend on this crate.
 
+mod matrix;
 mod result;
 
+pub use matrix::{
+    Applicability, BenchMatrix, BenchScenario, MatrixCell, MatrixCoordinate, ModelBinding,
+    ProtocolBinding,
+};
 pub use result::{BenchResult, BenchStatus, PassMetrics, RepositoryState, endpoint_origin};

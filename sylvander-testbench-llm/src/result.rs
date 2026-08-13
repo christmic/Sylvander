@@ -5,6 +5,8 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::BenchScenario;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BenchStatus {
@@ -48,6 +50,8 @@ pub struct BenchResult {
     pub run_id: String,
     pub case_id: String,
     pub case_revision: u32,
+    pub scenario: BenchScenario,
+    pub run_ordinal: u32,
     pub status: BenchStatus,
     pub sylvander_commit: String,
     pub worktree_dirty: bool,
@@ -74,6 +78,8 @@ impl BenchResult {
     pub fn passed(
         case_id: impl Into<String>,
         case_revision: u32,
+        scenario: BenchScenario,
+        run_ordinal: u32,
         provider_id: impl Into<String>,
         protocol: impl Into<String>,
         model_id: impl Into<String>,
@@ -90,6 +96,8 @@ impl BenchResult {
             run_id: format!("{provider_id}-{case_id}-{started_at_unix_ms}"),
             case_id,
             case_revision,
+            scenario,
+            run_ordinal,
             status: BenchStatus::Passed,
             sylvander_commit: repository.sylvander_commit,
             worktree_dirty: repository.worktree_dirty,

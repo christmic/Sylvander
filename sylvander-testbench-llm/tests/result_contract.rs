@@ -1,5 +1,5 @@
 use sylvander_testbench_llm::{
-    BenchResult, BenchStatus, PassMetrics, RepositoryState, endpoint_origin,
+    BenchResult, BenchScenario, BenchStatus, PassMetrics, RepositoryState, endpoint_origin,
 };
 use url::Url;
 
@@ -8,6 +8,8 @@ fn passed_result_is_versioned_complete_and_content_safe() {
     let result = BenchResult::passed(
         "connectivity_usage",
         1,
+        BenchScenario::Connectivity,
+        2,
         "provider-a",
         "openai_responses",
         "model-a",
@@ -28,6 +30,8 @@ fn passed_result_is_versioned_complete_and_content_safe() {
     );
     assert_eq!(result.schema_version, 1);
     assert_eq!(result.status, BenchStatus::Passed);
+    assert_eq!(result.scenario, BenchScenario::Connectivity);
+    assert_eq!(result.run_ordinal, 2);
     let json = serde_json::to_string(&result).unwrap();
     assert!(!json.contains("credential"));
     assert!(!json.contains("authorization"));

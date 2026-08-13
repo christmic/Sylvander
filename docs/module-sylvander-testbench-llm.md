@@ -2,21 +2,67 @@
 
 ## Ownership
 
-`sylvander-testbench-llm` is the non-production acceptance module for every
-Sylvander LLM adapter. It owns credential-gated live journeys, deterministic
-fault injection, and the content-safe machine-readable result contract.
+`sylvander-testbench-llm` is a non-production, high-dimensional acceptance and
+comparison module. Its atomic coordinate is:
 
-Provider crates continue to own official-derived wire fixtures and local
-conversion tests. They never depend on the testbench. Agent owns retry policy,
-while Runtime owns durable process recovery; the testbench may compose those
-public boundaries without moving either responsibility into a provider.
+```text
+protocol × provider × model × scenario × run
+```
+
+It owns:
+
+- declarative matrix validation and expansion;
+- explicit capability applicability for every matrix cell;
+- credential-gated live journey orchestration;
+- controlled fault injection through public production boundaries;
+- scoring, cross-coordinate comparison, and content-safe evidence output.
+
+It does **not** own provider request/response types, protocol conversion,
+stream parsing, production retry, credential discovery, or durable recovery.
+It does not replace or relocate tests belonging to a production module.
+
+## Test-layer boundary
+
+Each `sylvander-llm-*` provider crate retains its own:
+
+1. unit tests for request conversion, feature gates, usage normalization, and
+   error classification;
+2. deterministic integration tests using official-shaped HTTP/SSE fixtures;
+3. narrowly scoped, ignored real-API tests proving that the adapter still
+   speaks its declared protocol.
+
+The testbench consumes those already-tested public adapters and answers a
+different question: how a declared set of models and providers behaves across
+the same scenario set. A passing testbench cell cannot compensate for a failed
+provider test, and a passing provider test is not a cross-model benchmark.
+
+Agent owns retry policy, while Runtime owns durable process recovery. The
+testbench may compose those public boundaries to measure retry and recovery,
+but the implementation and focused tests stay in their owning crates.
+
+## Matrix semantics
+
+Protocol and provider identities are independent. Multiple providers may
+implement one protocol, and one provider may expose multiple protocols. Every
+protocol binding enumerates multiple model deployments and declares protocol
+scenario support; every model separately advertises applicable scenarios.
+
+Expansion emits every selected scenario and repetition for every
+`provider/protocol/model` coordinate. Unsupported cells are retained as
+`not_applicable_protocol` or `not_applicable_model`; they are never silently
+filtered or counted as passes. Duplicate provider/protocol/model coordinates
+and empty dimensions are invalid input.
 
 ## Dependency boundary
 
-The crate may depend on `sylvander-llm-core` and all current provider adapters.
-No production crate may depend on `sylvander-testbench-llm`. Secrets enter only
-through explicitly selected ignored live tests and are never represented by the
-result schema.
+The crate may depend on `sylvander-llm-core`, current provider adapters, and the
+public Agent/Runtime boundaries required by a measured scenario. No production
+crate may depend on `sylvander-testbench-llm`; dependency direction is always
+production to testbench consumer, never the reverse.
+
+Secrets enter only through an explicitly named environment-variable binding.
+The matrix stores that variable's name, never its value. Credentials are never
+represented by the result schema.
 
 ## Verification
 

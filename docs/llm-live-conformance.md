@@ -8,12 +8,19 @@ external service.
 
 ## Scope and ownership
 
-The suite verifies the production path from an explicitly configured provider
-adapter through the provider-neutral `ModelProvider` stream contract. Runtime
-owns configuration, credential resolution, deadlines, durable turn state, and
+The suite is a high-dimensional bench whose atomic coordinate is `protocol ×
+provider × model × scenario × run`. It verifies production paths from an
+explicitly configured provider adapter through the provider-neutral
+`ModelProvider` stream contract and compares equivalent scenario results across
+coordinates.
+
+Provider crates retain their unit, fixture integration, and narrow ignored
+real-API tests. The testbench neither moves nor replaces them. Runtime owns
+configuration, credential resolution, deadlines, durable turn state, and
 process recovery. Provider crates own request encoding, HTTP/SSE handling,
 error classification, and exact usage conversion. Agent owns the single retry
-budget for failures that occur before a stream opens.
+budget for failures that occur before a stream opens. The testbench owns only
+matrix orchestration, applicability, scoring, comparison, and evidence.
 
 This ownership creates two different recovery claims:
 
@@ -106,6 +113,7 @@ Every case emits one JSON object with these stable dimensions:
 schema_version
 run_id
 case_id + case_revision
+scenario + run_ordinal
 status = passed | failed | not_run | not_applicable | infrastructure_error
 sylvander_commit + worktree_dirty
 provider_id + protocol + model_id + endpoint_origin
