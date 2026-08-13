@@ -58,7 +58,7 @@ use crate::registry::domain::{
     CanonicalModelCapability, ModelDefinition, ProviderDefinition, parse_model_capabilities,
 };
 use crate::storage::artifact::RuntimeArtifactService;
-use crate::storage::session::SessionStore;
+use crate::storage::session::SqliteSessionStore;
 
 /// A configured run plus the metadata needed by protocol adapters.
 #[derive(Clone)]
@@ -126,7 +126,7 @@ impl ConfiguredAgent {
 pub(crate) fn build_agents(
     config: &ServerConfig,
     bus: Arc<dyn MessageBus>,
-    sessions: Arc<dyn SessionStore>,
+    sessions: Arc<SqliteSessionStore>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Option<Arc<dyn UserProfileProvider>>,
     secrets: &dyn SecretResolver,
@@ -153,7 +153,7 @@ pub(crate) fn build_agent(
     config: &ServerConfig,
     definition: &AgentDefinitionConfig,
     bus: Arc<dyn MessageBus>,
-    sessions: Arc<dyn SessionStore>,
+    sessions: Arc<SqliteSessionStore>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Option<Arc<dyn UserProfileProvider>>,
     secrets: &dyn SecretResolver,
@@ -222,7 +222,8 @@ pub(crate) fn build_agent(
         primary_exact,
     )
     .bus(bus)
-    .session_store(sessions)
+    .session_store(sessions.clone())
+    .workflow_store(sessions)
     .memory(memory.clone())
     .override_tools(tools)
     .available_provider_models(provider_models)
@@ -265,7 +266,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     bus: Arc<dyn MessageBus>,
     observability: RuntimeObservability,
     execution_service: RuntimeExecutionService,
-    sessions: Arc<dyn SessionStore>,
+    sessions: Arc<SqliteSessionStore>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Option<Arc<dyn UserProfileProvider>>,
     resolver: Arc<dyn CredentialSecretResolver>,
@@ -376,7 +377,8 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         .bus(bus)
         .observability(observability)
         .execution_service(execution_service.clone())
-        .session_store(sessions)
+        .session_store(sessions.clone())
+        .workflow_store(sessions)
         .memory(memory.clone())
         .override_tools(tools)
         .available_provider_models(provider_models)

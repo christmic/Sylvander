@@ -42,7 +42,7 @@ impl ToolDefinition for ManageWorkflowTool {
                         "properties": {
                             "action": {"const": "transition"},
                             "task_id": {"type": "string"},
-                            "state": {"type": "string", "enum": ["running", "blocked", "awaiting_review", "completed", "failed", "cancelled"]},
+                            "state": {"type": "string", "enum": ["ready", "running", "blocked", "awaiting_review", "completed", "failed", "cancelled"]},
                             "consumed_tokens": {"type": "integer", "minimum": 0}
                         },
                         "required": ["action", "task_id", "state", "consumed_tokens"],

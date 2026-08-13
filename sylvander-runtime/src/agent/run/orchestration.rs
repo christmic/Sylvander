@@ -32,6 +32,7 @@ use sylvander_agent::turn_context::{
     TurnContextSource, compose_turn_context, retrieve_relationship_context,
     retrieve_workspace_context,
 };
+use sylvander_agent::workflow_gate::WorkflowGate;
 use sylvander_agent::workspace_executor::{
     MountedWorkspace, UnavailableExecutor, WorkspaceCapabilities, WorkspaceExecutor,
     WorkspaceRouter, WorkspaceTarget,
@@ -52,6 +53,7 @@ use super::projection::{
     public_compaction_report, public_retry_cause, runtime_failure_kind,
     runtime_persistence_operation, turn_failure_kind, usage_cost_nano_usd,
 };
+use super::workflow::RuntimeWorkflowGate;
 use super::workspace_context;
 use super::{
     AgentRunError, AgentRunInner, ContextUsage, RuntimeTurnSnapshot, SessionPersistenceOperation,
@@ -1145,6 +1147,14 @@ impl AgentRunInner {
         .with_ask_user_gate(ask_user_gate)
         .with_plan_gate(plan_gate)
         .with_task_gate(task_gate);
+        if let Some(store) = &self.workflow_store {
+            let workflow_gate: Arc<dyn WorkflowGate> = Arc::new(RuntimeWorkflowGate {
+                store: store.clone(),
+                session_id: session_id.clone(),
+                agent_instance_id: agent_instance_id.clone(),
+            });
+            ports = ports.with_workflow_gate(workflow_gate);
+        }
         if let Some(gate) = approval_gate {
             ports = ports.with_approval_gate(gate);
         }

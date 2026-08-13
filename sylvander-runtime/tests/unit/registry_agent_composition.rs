@@ -394,7 +394,7 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
 
     let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
-    let sessions: Arc<dyn SessionStore> = store.clone();
+    let sessions: Arc<SqliteSessionStore> = store.clone();
     let agent = build_registry_agent_versioned_with_resolver(
         &config,
         snapshot.clone(),

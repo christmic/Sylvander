@@ -104,6 +104,7 @@ mod interaction;
 mod orchestration;
 mod projection;
 pub(crate) mod recovery;
+mod workflow;
 #[path = "workspace_context.rs"]
 mod workspace_context;
 
@@ -223,6 +224,8 @@ pub(crate) struct AgentRunInner {
     session_authority: Arc<SessionAuthorityMarker>,
     /// Optional durable source of truth shared with channels/runtime.
     session_store: Option<Arc<dyn SessionStore>>,
+    /// Concrete local coordination backend selected by production Runtime.
+    workflow_store: Option<Arc<crate::storage::session::SqliteSessionStore>>,
     /// Long-term memory store.
     memory: Option<Arc<dyn MemoryStore>>,
     /// Truth about how the active memory backend was selected.

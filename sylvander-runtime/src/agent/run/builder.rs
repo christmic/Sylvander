@@ -28,6 +28,7 @@ use crate::execution::RuntimeExecutionService;
 use crate::observability::RuntimeObservability;
 use crate::storage::artifact::RuntimeArtifactService;
 use crate::storage::session::SessionStore;
+use crate::storage::session::SqliteSessionStore;
 use crate::storage::workspace_journal::WorkspaceJournal;
 
 /// Builder for [`AgentRun`].
@@ -41,6 +42,7 @@ pub struct AgentRunBuilder {
     compression_overrides: Option<CompressionPipeline>,
     memory: Option<Arc<dyn MemoryStore>>,
     session_store: Option<Arc<dyn SessionStore>>,
+    workflow_store: Option<Arc<SqliteSessionStore>>,
     available_provider_models: Vec<ModelInfo>,
     qualified_model_lifecycles:
         HashMap<sylvander_api::ModelSelection, sylvander_api::ModelLifecycle>,
@@ -74,6 +76,7 @@ impl AgentRunBuilder {
             compression_overrides: None,
             memory: None,
             session_store: None,
+            workflow_store: None,
             available_provider_models: Vec::new(),
             qualified_model_lifecycles: HashMap::new(),
             qualified_model_pricing: HashMap::new(),
@@ -113,6 +116,14 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
         self.session_store = Some(store);
+        self
+    }
+
+    /// Attach the authoritative coordination backend used by Agent workflow
+    /// intents. Test-only Session stores may intentionally omit this port.
+    #[must_use]
+    pub(crate) fn workflow_store(mut self, store: Arc<SqliteSessionStore>) -> Self {
+        self.workflow_store = Some(store);
         self
     }
 
@@ -374,6 +385,7 @@ impl AgentRunBuilder {
                 authenticated_session_authority_active: AtomicBool::new(false),
                 session_authority,
                 session_store: self.session_store,
+                workflow_store: self.workflow_store,
                 memory,
                 memory_source,
                 approval_enabled: self.approval_enabled,

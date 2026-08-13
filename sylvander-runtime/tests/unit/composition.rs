@@ -196,7 +196,7 @@ async fn versioned_builder_preserves_the_full_qualified_catalog() {
         .await
         .unwrap();
     let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
-    let sessions: Arc<dyn SessionStore> =
+    let sessions: Arc<SqliteSessionStore> =
         Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
 
     let configured = build_registry_agent_versioned_with_resolver(
@@ -303,7 +303,7 @@ async fn versioned_builder_preflights_every_model_before_router_construction() {
         .await
         .unwrap();
     let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
-    let sessions: Arc<dyn SessionStore> =
+    let sessions: Arc<SqliteSessionStore> =
         Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
 
     let result = build_registry_agent_versioned_with_resolver(
@@ -470,7 +470,7 @@ path = "/tmp/sylvander-test.sock"
         },
     ];
     let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
-    let sessions: Arc<dyn SessionStore> =
+    let sessions: Arc<SqliteSessionStore> =
         Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
 
     let mut agents = build_agents(
