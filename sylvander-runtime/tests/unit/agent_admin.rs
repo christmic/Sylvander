@@ -128,6 +128,11 @@ fn tool_to_draft(tool: &ToolRef) -> Result<AgentToolDraft, AgentAdminError> {
     match tool {
         ToolRef::Builtin { name } => Ok(AgentToolDraft::Builtin { name: name.clone() }),
         ToolRef::McpServer(server) => mcp_to_draft(server),
+        ToolRef::McpStreamableHttp(server) => Ok(AgentToolDraft::McpStreamableHttp {
+            name: server.name.clone(),
+            url: server.url.clone(),
+            bearer_token: None,
+        }),
     }
 }
 
@@ -268,7 +273,7 @@ fn definition_conversion_preserves_only_secret_references() {
     let config = definition_from_draft(draft()).unwrap();
     let (execution_environment, encoded) = match &config.spec.tools[0] {
         ToolRef::McpServer(server) => (&server.execution_environment, &server.envs["TOKEN"]),
-        ToolRef::Builtin { .. } => panic!("expected MCP server"),
+        ToolRef::Builtin { .. } | ToolRef::McpStreamableHttp(_) => panic!("expected MCP server"),
     };
     assert_eq!(execution_environment, "sandbox");
     assert!(encoded.starts_with(crate::mcp::SECRET_REFERENCE_PREFIX));

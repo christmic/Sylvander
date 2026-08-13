@@ -9,8 +9,8 @@ use sylvander_agent::tool::ToolExecutor as _;
 use sylvander_agent::tool_context::defaults::system_tool_context;
 
 use super::{
-    AgentId, McpServerConfig, SessionId, SessionMcpBinding, SessionMcpError,
-    SessionMcpRuntimeService,
+    AgentId, McpServerConfig, McpStreamableHttpConfig, SessionId, SessionMcpBinding,
+    SessionMcpError, SessionMcpRuntimeService,
 };
 use crate::execution::{
     ExecutionTargetRegistration, PersistentProcess, PersistentProcessAuthority,
@@ -144,11 +144,21 @@ fn server(name: &str) -> McpServerConfig {
 async fn sessions_keep_distinct_ownership_before_servers_are_configured() {
     let service = service();
     service
-        .attach(binding("user-a", "session-a"), Vec::new(), "/tmp".into())
+        .attach(
+            binding("user-a", "session-a"),
+            Vec::new(),
+            Vec::new(),
+            "/tmp".into(),
+        )
         .await
         .expect("attach first Session");
     service
-        .attach(binding("user-b", "session-b"), Vec::new(), "/tmp".into())
+        .attach(
+            binding("user-b", "session-b"),
+            Vec::new(),
+            Vec::new(),
+            "/tmp".into(),
+        )
         .await
         .expect("attach second Session");
 
@@ -175,7 +185,12 @@ async fn detach_removes_the_session_before_drain() {
     let service = service();
     let session_id = SessionId::new("session");
     service
-        .attach(binding("user", "session"), Vec::new(), "/tmp".into())
+        .attach(
+            binding("user", "session"),
+            Vec::new(),
+            Vec::new(),
+            "/tmp".into(),
+        )
         .await
         .expect("attach Session");
 
@@ -189,12 +204,22 @@ async fn detach_removes_the_session_before_drain() {
 async fn duplicate_session_or_server_fails_closed() {
     let runtime = service();
     runtime
-        .attach(binding("user", "session"), Vec::new(), "/tmp".into())
+        .attach(
+            binding("user", "session"),
+            Vec::new(),
+            Vec::new(),
+            "/tmp".into(),
+        )
         .await
         .expect("attach Session");
     assert_eq!(
         runtime
-            .attach(binding("user", "session"), Vec::new(), "/tmp".into())
+            .attach(
+                binding("user", "session"),
+                Vec::new(),
+                Vec::new(),
+                "/tmp".into()
+            )
             .await
             .expect_err("duplicate Session"),
         SessionMcpError::DuplicateSession("session".into())
@@ -204,11 +229,30 @@ async fn duplicate_session_or_server_fails_closed() {
         .attach(
             binding("user", "other-session"),
             vec![server("files"), server("files")],
+            Vec::new(),
             "/tmp".into(),
         )
         .await
         .expect_err("duplicate server name");
     assert_eq!(duplicate, SessionMcpError::DuplicateServer("files".into()));
+
+    let cross_transport = service()
+        .attach(
+            binding("user", "cross-transport"),
+            vec![server("files")],
+            vec![McpStreamableHttpConfig {
+                name: "files".into(),
+                url: "https://mcp.example.test/service".into(),
+                bearer_token: None,
+            }],
+            "/tmp".into(),
+        )
+        .await
+        .expect_err("duplicate namespace across transports");
+    assert_eq!(
+        cross_transport,
+        SessionMcpError::DuplicateServer("files".into())
+    );
 }
 
 #[tokio::test]
@@ -217,7 +261,12 @@ async fn unknown_execution_environment_fails_before_process_start() {
     declaration.execution_environment = "missing".into();
 
     let error = service()
-        .attach(binding("user", "session"), vec![declaration], "/tmp".into())
+        .attach(
+            binding("user", "session"),
+            vec![declaration],
+            Vec::new(),
+            "/tmp".into(),
+        )
         .await
         .expect_err("unknown environment");
     assert_eq!(
@@ -242,6 +291,7 @@ async fn same_agent_sessions_keep_process_workspace_and_results_isolated() {
         .attach(
             binding("user-a", "session-a"),
             vec![server("identity")],
+            Vec::new(),
             "/workspace/a".into(),
         )
         .await
@@ -250,6 +300,7 @@ async fn same_agent_sessions_keep_process_workspace_and_results_isolated() {
         .attach(
             binding("user-b", "session-b"),
             vec![server("identity")],
+            Vec::new(),
             "/workspace/b".into(),
         )
         .await

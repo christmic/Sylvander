@@ -1369,6 +1369,22 @@ fn validate_agent_shape_and_environment(
     }
     for tool in &agent.spec.tools {
         let crate::agent_definition::ToolRef::McpServer(server) = tool else {
+            if let crate::agent_definition::ToolRef::McpStreamableHttp(server) = tool {
+                require_text("MCP Streamable HTTP server name", &server.name, errors);
+                require_text("MCP Streamable HTTP server URL", &server.url, errors);
+                if url::Url::parse(&server.url).ok().is_none_or(|url| {
+                    url.scheme() != "https"
+                        || url.host_str().is_none()
+                        || !url.username().is_empty()
+                        || url.password().is_some()
+                        || url.fragment().is_some()
+                }) {
+                    errors.push(format!(
+                        "MCP Streamable HTTP server {} requires a valid HTTPS URL",
+                        server.name
+                    ));
+                }
+            }
             continue;
         };
         require_text("MCP server name", &server.name, errors);
