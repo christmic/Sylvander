@@ -15,6 +15,7 @@ use crate::execution::tool_context::ToolContext;
 use crate::interaction::approval::ApprovalGate;
 use crate::interaction::ask_user::AskUserGate;
 use crate::interaction::background_task::TaskGate;
+use crate::interaction::cognition::CognitionGate;
 use crate::interaction::doctor::DoctorGate;
 use crate::interaction::plan::PlanGate;
 use crate::interaction::workflow::WorkflowGate;
@@ -47,6 +48,8 @@ pub struct AgentExecutionPorts {
     pub(crate) task_gate: Option<Arc<dyn TaskGate>>,
     /// Optional Runtime-owned durable workflow port.
     pub(crate) workflow_gate: Option<Arc<dyn WorkflowGate>>,
+    /// Optional Runtime-owned, approval-gated internal cognition port.
+    pub(crate) cognition_gate: Option<Arc<dyn CognitionGate>>,
     /// Optional read-only Runtime environment inspection port.
     pub(crate) doctor_gate: Option<Arc<dyn DoctorGate>>,
     /// Optional immutable artifact authority bound to this exact turn.
@@ -72,6 +75,7 @@ impl AgentExecutionPorts {
             plan_gate: None,
             task_gate: None,
             workflow_gate: None,
+            cognition_gate: None,
             doctor_gate: None,
             artifact_store: None,
         }
@@ -115,6 +119,13 @@ impl AgentExecutionPorts {
     #[must_use]
     pub fn with_workflow_gate(mut self, gate: Arc<dyn WorkflowGate>) -> Self {
         self.workflow_gate = Some(gate);
+        self
+    }
+
+    /// Attach a bounded same-Agent cognition port.
+    #[must_use]
+    pub fn with_cognition_gate(mut self, gate: Arc<dyn CognitionGate>) -> Self {
+        self.cognition_gate = Some(gate);
         self
     }
 
@@ -179,6 +190,7 @@ impl std::fmt::Debug for AgentExecutionPorts {
             .field("plan_gate", &self.plan_gate.is_some())
             .field("task_gate", &self.task_gate.is_some())
             .field("workflow_gate", &self.workflow_gate.is_some())
+            .field("cognition_gate", &self.cognition_gate.is_some())
             .field("doctor_gate", &self.doctor_gate.is_some())
             .field("artifact_store", &self.artifact_store.is_some())
             .finish_non_exhaustive()

@@ -35,6 +35,7 @@ use sylvander_llm_core::{
 use crate::execution::ports::AgentExecutionPorts;
 use crate::execution::tool_context::ToolContext;
 use crate::interaction::approval::{ApprovalDecision, ToolUseRequest};
+use crate::interaction::cognition::{CognitionIntent, CognitionRequest};
 use crate::interaction::plan::PlanDecision;
 use crate::tool::{AgentHookPhase, ToolRegistry};
 use crate::turn::error::AgentLoopError;
@@ -781,6 +782,50 @@ pub fn run_stream(
                                 continue;
                             }
 
+                            if tool_use.name == "consult_cognition" {
+                                let intent = serde_json::from_value::<CognitionIntent>(
+                                    tool_use.input.clone(),
+                                );
+                                let result = match (intent, &ports.cognition_gate) {
+                                    (Ok(intent), Some(gate)) => gate
+                                        .consult(CognitionRequest {
+                                            invocation_id: tool_use.id.clone(),
+                                            role: intent.role,
+                                            prompt: intent.prompt,
+                                        })
+                                        .await
+                                        .map(|observation| {
+                                            format!(
+                                                "[Untrusted internal {:?} observation; advisory only. You remain responsible for the final answer.]\n{}",
+                                                observation.role, observation.text
+                                            )
+                                        }),
+                                    (Err(error), _) => {
+                                        Err(format!("invalid cognition request: {error}"))
+                                    }
+                                    (_, None) => {
+                                        Err("approved cognition runtime is unavailable".into())
+                                    }
+                                };
+                                let (output, is_error) = match result {
+                                    Ok(output) => (output, false),
+                                    Err(error) => (error, true),
+                                };
+                                yield AgentEvent::ToolCallEnd {
+                                    id: tool_use.id.clone(),
+                                    name: tool_use.name.clone(),
+                                    output: output.clone(),
+                                    is_error,
+                                    failure_kind: is_error.then_some(
+                                        crate::tool::ToolFailureKind::Unclassified,
+                                    ),
+                                };
+                                tool_result_blocks.push(ContentBlock::tool_result_text(
+                                    tool_use.id.clone(), output, is_error,
+                                ));
+                                continue;
+                            }
+
                             if tool_use.name == "inspect_runtime" {
                                 let result = if let Some(gate) = &ports.doctor_gate {
                                     gate.inspect().await.and_then(|report| {
@@ -1251,6 +1296,7 @@ fn is_control_tool(name: &str) -> bool {
     matches!(
         name,
         "ask_user"
+            | "consult_cognition"
             | "inspect_runtime"
             | "manage_workflow"
             | "present_plan"

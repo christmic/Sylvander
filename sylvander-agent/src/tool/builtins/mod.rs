@@ -8,6 +8,7 @@ use crate::tool::{ToolFailureKind, ToolOutput};
 
 pub mod ask_user;
 pub mod background_task;
+pub mod cognition;
 pub mod command;
 pub mod doctor;
 pub mod edit;
@@ -27,6 +28,7 @@ pub use crate::memory::store as memory;
 
 pub use ask_user::AskUserTool;
 pub use background_task::StartBackgroundTaskTool;
+pub use cognition::ConsultCognitionTool;
 pub use command::CommandTool;
 pub use doctor::InspectRuntimeTool;
 pub use edit::EditTool;

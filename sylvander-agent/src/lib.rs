@@ -110,8 +110,8 @@ pub use execution::{
     workspace as workspace_executor,
 };
 pub use interaction::{
-    approval, ask_user as ask_user_gate, background_task as task_gate, doctor as doctor_gate,
-    plan as plan_gate, workflow as workflow_gate,
+    approval, ask_user as ask_user_gate, background_task as task_gate, cognition as cognition_gate,
+    doctor as doctor_gate, plan as plan_gate, workflow as workflow_gate,
 };
 pub use kernel::agent_loop as loop_;
 pub use memory::curated as curated_memory;
@@ -171,8 +171,8 @@ pub mod prelude {
         MemoryScope, MemoryStore, MemoryStoreError, RelationshipMemoryRetentionPolicy,
     };
     pub use crate::tool::builtins::{
-        EditTool, ListTool, MemoryReadTool, MemoryWriteTool, PresentPlanTool, ReadTool, SearchTool,
-        StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
+        ConsultCognitionTool, EditTool, ListTool, MemoryReadTool, MemoryWriteTool, PresentPlanTool,
+        ReadTool, SearchTool, StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
     };
     pub use crate::tool::{
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,

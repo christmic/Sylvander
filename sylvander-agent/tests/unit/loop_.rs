@@ -1,5 +1,6 @@
 use super::*;
 use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
+use crate::cognition_gate::{CognitionGate, CognitionObservation, CognitionRequest, CognitionRole};
 use crate::test_support::MockTool;
 use crate::tool_invocation::ToolInvocationGateway as _;
 use crate::turn::conversation::ConversationSnapshot;
@@ -23,6 +24,22 @@ struct ScriptedProvider {
 #[derive(Default)]
 struct RecordingApprovalGate {
     requests: std::sync::Mutex<Vec<ToolUseRequest>>,
+}
+
+#[derive(Default)]
+struct RecordingCognitionGate {
+    requests: std::sync::Mutex<Vec<CognitionRequest>>,
+}
+
+#[async_trait::async_trait]
+impl CognitionGate for RecordingCognitionGate {
+    async fn consult(&self, request: CognitionRequest) -> Result<CognitionObservation, String> {
+        self.requests.lock().unwrap().push(request.clone());
+        Ok(CognitionObservation {
+            role: request.role,
+            text: "bounded internal draft".into(),
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -172,6 +189,62 @@ async fn timed_out_tool_emits_one_authoritative_terminal() {
 
     assert_eq!(timeout_events, 1);
     assert_eq!(terminal_events, 1);
+}
+
+#[tokio::test]
+async fn primary_model_can_request_bounded_cognition_without_creating_an_agent() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "cognition-call-1".into(),
+                name: "consult_cognition".into(),
+                arguments: json!({
+                    "role": "fast_draft",
+                    "prompt": "Draft a concise answer"
+                }),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "primary final answer".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let tools =
+        crate::tool::ToolRegistry::new().register(crate::tools::ConsultCognitionTool::new());
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let gate = Arc::new(RecordingCognitionGate::default());
+    let ports = turn_ports(provider.clone(), &request).with_cognition_gate(gate.clone());
+
+    let outcome = run(&kernel(), request, ports).await.unwrap();
+
+    assert!(matches!(
+        outcome.final_response.content.as_slice(),
+        [ProviderBlock::Text { text }] if text == "primary final answer"
+    ));
+    let requests = gate.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].invocation_id, "cognition-call-1");
+    assert_eq!(requests[0].role, CognitionRole::FastDraft);
+    assert_eq!(requests[0].prompt, "Draft a concise answer");
+    drop(requests);
+    let provider_requests = provider.requests.lock().unwrap();
+    assert!(provider_requests[1].messages.iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ProviderBlock::ToolResult { content, is_error: false, .. }
+                    if content.iter().any(|part| matches!(
+                        part,
+                        ToolResultContent::Text { text }
+                            if text.contains("bounded internal draft")
+                                && text.contains("advisory only")
+                    ))
+            )
+        })
+    }));
 }
 
 #[tokio::test]
