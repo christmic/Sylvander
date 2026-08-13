@@ -5,6 +5,7 @@ pub(crate) mod administration;
 pub mod agent;
 #[allow(dead_code)] // pure bootstrap plan; executor wiring follows registry snapshots
 pub(crate) mod bootstrap;
+pub mod cognition_activation;
 #[allow(dead_code)] // versioned composition is wired into Agent construction next
 pub(crate) mod composition;
 #[allow(dead_code)] // consumed by the staged registry mutation batches
