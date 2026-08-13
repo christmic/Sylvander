@@ -1,4 +1,4 @@
-# Sylvander desktop interaction specification
+# Sylvander Work interaction specification
 
 > Status: normative foundation specification
 >
@@ -6,7 +6,7 @@
 
 ## Product experience
 
-Sylvander Desktop is the calm control surface for durable Agent work. It makes
+Sylvander Work is the calm desktop control surface for durable Agent work. It makes
 parallel Sessions, live execution, decisions, and verification easy to scan
 without turning the product into an operations dashboard.
 
@@ -142,7 +142,7 @@ The application has five explicit connection states:
 
 | State | Presentation | Allowed action |
 |---|---|---|
-| Starting | Window and fixture-safe skeleton | None |
+| Starting | Native window and connection-safe skeleton | None |
 | Connecting | Small activity label in title region | Cancel or wait |
 | Live | Quiet teal Runtime indicator | Normal work |
 | Reconnecting | Existing state remains readable; sending pauses | Retry now |

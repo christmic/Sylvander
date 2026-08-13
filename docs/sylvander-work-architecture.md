@@ -1,4 +1,4 @@
-# Sylvander desktop architecture
+# Sylvander Work architecture
 
 > Status: accepted foundation decision
 >
@@ -6,19 +6,20 @@
 
 ## Decision
 
-Sylvander Desktop uses a Tauri 2 shell, a Svelte 5 TypeScript presentation
-layer, and the existing authenticated JSON-over-WebSocket UI protocol.
+Sylvander Work uses a Tauri 2 native shell, a React 19 TypeScript presentation
+layer, and a Rust-owned gateway for the existing authenticated
+JSON-over-WebSocket UI protocol.
 
-The desktop application is a presentation client. Runtime remains the sole
+Sylvander Work is a presentation client. Runtime remains the sole
 owner of authenticated Sessions, Agent execution, provider credentials,
 authorization, storage, tools, and observability.
 
 ```text
-Svelte presentation and interaction state
+React presentation and interaction state
                 |
-        bounded desktop gateway
+          typed Tauri Channel
                 |
-      Tauri WebSocket capability
+        bounded Rust gateway
                 |
   sylvander-channel-ws / public UI protocol
                 |
@@ -51,8 +52,11 @@ The following upstream sources were inspected on 2026-08-13:
   <https://v2.tauri.app/security/capabilities/>.
 - Tauri recommends channels for streaming Rust data to a frontend:
   <https://v2.tauri.app/develop/calling-rust/>.
-- Svelte describes its compiler as moving work out of the browser and emitting
-  minimal browser work: <https://svelte.dev/>.
+- React's official release line documents React 19.2 as the current stable
+  feature release: <https://react.dev/blog/2025/10/01/react-19-2>.
+- Vite 8 uses the Rust-based Rolldown bundler and its official release pairs
+  the React integration with `@vitejs/plugin-react` v6:
+  <https://vite.dev/blog/announcing-vite8>.
 - Kun uses one runtime for GUI and TUI and makes plans, approvals, background
   tasks, diffs, and verification visible in one workbench:
   <https://github.com/KunAgent/Kun>.
@@ -70,7 +74,8 @@ not copied, and Kun's non-commercial license is not introduced into Sylvander.
 
 | Candidate | Strength | Decision |
 |---|---|---|
-| Tauri 2 + Svelte 5 | Small system-WebView shell, Rust-native host boundary, mature text/layout/accessibility platform, compiled reactive UI | Selected |
+| Tauri 2 + React 19 | Small system-WebView shell, Rust-native host boundary, durable ecosystem, mature accessibility/testing support, and a stable component model | Selected |
+| Tauri 2 + Svelte 5 | Smaller presentation runtime and concise reactivity | Rejected for this product: React's ecosystem and long-term staffing/maintenance advantages outweigh the modest view-layer cost. |
 | Electron + React | Broad ecosystem and competitor precedent | Rejected for the foundation because bundling Chromium and Node conflicts with the resource-efficiency goal. |
 | Slint | Native compiled Rust UI and lightweight rendering | Deferred: rich Markdown, diff, browser preview, accessibility, and desktop component coverage would add product risk. |
 | GPUI / egui / iced | Direct Rust rendering and strong control | Deferred: the first release values complete desktop interaction and assistive semantics over owning a renderer. |
@@ -81,7 +86,7 @@ motion, and screenshot acceptance tests.
 
 ## Ownership rules
 
-The Svelte layer owns only ephemeral presentation state:
+The React layer owns only ephemeral presentation state:
 
 - selected navigation surface and selected Session;
 - Composer drafts and local focus;
@@ -100,20 +105,30 @@ plugins are not enabled in the foundation.
 
 ## Transport contract
 
-The production client connects to a configured `ws://` or `wss://` endpoint,
+The native Rust gateway connects to a configured `ws://` or `wss://` endpoint,
 sends `UiClientMessage::Hello`, and waits for `UiServerMessage::Welcome` before
 submitting work. The bearer lease is supplied to the native transport and is
-never persisted in browser storage or rendered in diagnostics.
+never passed to JavaScript, persisted in browser storage, or rendered in
+diagnostics. The WebView content security policy does not allow arbitrary
+network connections, so React cannot bypass the native gateway.
 
 Inbound messages are bounded by the server's configured WebSocket limit.
 Streaming deltas are coalesced to at most one presentation update per animation
 frame. Terminal `Done`, `Error`, or `TurnInterrupted` events settle a turn;
 disconnect never implies completion.
 
-The initial shell uses a deterministic fixture gateway so visual, responsive,
-and state tests do not require credentials. Replacing it with the production
-gateway must preserve the same typed store actions and must be accepted against
-the compiled `sylvander-channel-ws` journey.
+Production builds contain no fixture or demo gateway. Unit and component tests
+may inject an in-memory implementation of the gateway interface; it is never
+included in the application bootstrap. The compiled
+`sylvander-channel-ws` journey remains the protocol acceptance boundary.
+
+## Version baseline
+
+The foundation pins exact, verified stable patches so a clean build is
+reproducible: Tauri `2.11.5`, React and React DOM `19.2.8`, Vite `8.2.1`,
+TypeScript `6.0.3`, and Vitest `4.1.10`. Dependency updates are deliberate
+maintenance changes with build, protocol, visual, and accessibility evidence;
+"latest" is not resolved dynamically during release builds.
 
 ## Performance and quality gates
 
@@ -132,8 +147,8 @@ These are acceptance targets, not current claims:
 
 ## Delivery slices
 
-1. Build the responsive fixture-backed shell and domain store.
-2. Add the bounded production WebSocket gateway and protocol conformance tests.
+1. Build the responsive React shell and typed presentation store.
+2. Add the bounded native Rust WebSocket gateway and protocol conformance tests.
 3. Add approval, AskUser, plan, task, diff, artifact, and settings surfaces.
 4. Add native dialogs, notifications, window persistence, signing, and updates.
 5. Establish cross-platform performance and accessibility release evidence.
