@@ -22,7 +22,9 @@ export type RuntimeCommand =
   | { type: "create_session"; request: { agent_id: string; label: string; channel_id?: string; overrides: Record<string, never> } }
   | { type: "get_runtime_info" }
   | { type: "get_context"; session_id?: string }
-  | { type: "compact"; session_id: string };
+  | { type: "compact"; session_id: string }
+  | { type: "select_model"; session_id?: string; model: { provider_id: string; model_id: string }; reasoning_effort: ReasoningEffort }
+  | { type: "select_permissions"; session_id?: string; profile: RuntimePermissionProfile };
 
 export type PlanDecision =
   | { decision: "approved" }
@@ -30,6 +32,22 @@ export type PlanDecision =
   | { decision: "rejected"; reason: string };
 
 export type ApprovalScope = "once" | "session" | "persistent";
+export type ReasoningEffort = "off" | "low" | "medium" | "high";
+
+export interface RuntimePermissionProfile {
+  file_access: "none" | "read_only" | "workspace_write";
+  network_access: "denied" | "allowed";
+  approval_policy: "ask" | "allow" | "deny";
+}
+
+export interface RuntimeModelDescriptor {
+  id: string;
+  provider: string;
+  capabilities: number;
+  capability_names: string[];
+  reasoning_efforts: ReasoningEffort[];
+  lifecycle: { status: "active" } | { status: "deprecated"; replacement?: string };
+}
 
 export interface RuntimeSession {
   id: string;
@@ -66,13 +84,9 @@ export interface RuntimeAgent {
 
 export interface RuntimeInfo {
   model: { provider_id: string; model_id: string };
-  reasoning_effort: "off" | "low" | "medium" | "high";
-  models: unknown[];
-  permissions: {
-    file_access: "none" | "read_only" | "workspace_write";
-    network_access: "denied" | "allowed";
-    approval_policy: "ask" | "allow" | "deny";
-  };
+  reasoning_effort: ReasoningEffort;
+  models: RuntimeModelDescriptor[];
+  permissions: RuntimePermissionProfile;
   capabilities: number;
   approval_enabled: boolean;
   max_attachment_bytes: number;

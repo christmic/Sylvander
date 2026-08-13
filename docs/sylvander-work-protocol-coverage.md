@@ -37,7 +37,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `GetContext`, `Compact` | complete | Runtime-owned report and compaction lifecycle |
 | `PreviewWorkspaceRollback`, `RollbackWorkspace` | missing | reviewed rollback flow |
 | `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | missing | changes/review surface |
-| `SelectModel`, `SelectPermissions` | missing | Runtime-validated selectors |
+| `SelectModel`, `SelectPermissions` | complete | provider-qualified catalog and typed permission profile |
 | `Ping` | missing | explicit liveness journey |
 
 ## Server events

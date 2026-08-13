@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage, type RuntimeModelDescriptor } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -9,10 +9,12 @@ export interface RuntimeViewState {
   runtimeInfo?: {
     providerId: string;
     modelId: string;
-    reasoningEffort: "off" | "low" | "medium" | "high";
+    reasoningEffort: ReasoningEffort;
+    models: RuntimeModelDescriptor[];
     fileAccess: "none" | "read_only" | "workspace_write";
     networkAccess: "denied" | "allowed";
     approvalPolicy: "ask" | "allow" | "deny";
+    approvalEnabled: boolean;
   };
   agents: Array<{ id: string; name: string; providerId: string; modelId: string }>;
   sessions: SessionSummary[];
@@ -150,9 +152,11 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             providerId: message.model.provider_id,
             modelId: message.model.model_id,
             reasoningEffort: message.reasoning_effort,
+            models: message.models,
             fileAccess: message.permissions.file_access,
             networkAccess: message.permissions.network_access,
             approvalPolicy: message.permissions.approval_policy,
+            approvalEnabled: message.approval_enabled,
           },
         }));
         break;

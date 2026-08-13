@@ -391,6 +391,57 @@ describe("Sylvander Work", () => {
     expect(await screen.findByText("Compaction failed · Provider context changed")).toBeTruthy();
   });
 
+  it("submits only Runtime-advertised model and permission selections", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Settings", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "runtime_info",
+      model: { provider_id: "alpha", model_id: "shared" },
+      reasoning_effort: "off",
+      models: [
+        { id: "shared", provider: "alpha", capabilities: 0, capability_names: [], reasoning_efforts: ["off"], lifecycle: { status: "active" } },
+        { id: "shared", provider: "beta", capabilities: 0, capability_names: [], reasoning_efforts: ["low", "high"], lifecycle: { status: "active" } },
+      ],
+      permissions: { file_access: "workspace_write", network_access: "denied", approval_policy: "allow" },
+      capabilities: 0,
+      approval_enabled: false,
+      max_attachment_bytes: 1_024,
+      platform: {},
+    } }));
+    act(() => screen.getByRole("button", { name: /alpha\/shared/ }).click());
+    fireEvent.change(screen.getByRole("combobox", { name: "Runtime model" }), { target: { value: "1" } });
+    expect(within(screen.getByRole("combobox", { name: "Reasoning effort" })).queryByRole("option", { name: "off" })).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "Reasoning effort" }), { target: { value: "high" } });
+    act(() => screen.getByRole("button", { name: "Apply model" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "select_model",
+      session_id: "session-1",
+      model: { provider_id: "beta", model_id: "shared" },
+      reasoning_effort: "high",
+    }));
+
+    act(() => screen.getByRole("button", { name: "Runtime details" }).click());
+    expect(within(screen.getByRole("combobox", { name: "Approval policy" })).queryByRole("option", { name: "ask" })).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "File access" }), { target: { value: "read_only" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Network access" }), { target: { value: "allowed" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Approval policy" }), { target: { value: "deny" } });
+    act(() => screen.getByRole("button", { name: "Apply permissions" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "select_permissions",
+      session_id: "session-1",
+      profile: { file_access: "read_only", network_access: "allowed", approval_policy: "deny" },
+    }));
+  });
+
   it("rolls back the local turn lock when native chat submission fails", async () => {
     const gateway = new TestGateway();
     gateway.rejectChat = true;

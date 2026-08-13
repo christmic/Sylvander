@@ -1,7 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
 
 import crabMark from "../../docs/design/final-brand/sylvander-seed-crab-character-square.png";
-import type { ApprovalScope, RuntimeGatewayPort } from "./lib/gateway";
+import type { ApprovalScope, ReasoningEffort, RuntimeGatewayPort, RuntimePermissionProfile } from "./lib/gateway";
 import { useRuntime, type RuntimeViewState } from "./lib/useRuntime";
 
 export interface AppProps {
@@ -23,6 +23,14 @@ export default function App({ gateway }: AppProps) {
   const [newSessionAgentId, setNewSessionAgentId] = useState("");
   const [sessionActionsOpen, setSessionActionsOpen] = useState(false);
   const [sessionLabel, setSessionLabel] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelIndex, setModelIndex] = useState("0");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("off");
+  const [permissionProfile, setPermissionProfile] = useState<RuntimePermissionProfile>({
+    file_access: "workspace_write",
+    network_access: "denied",
+    approval_policy: "allow",
+  });
   const [compactLayout, setCompactLayout] = useState(() =>
     typeof matchMedia === "function" && matchMedia("(max-width: 860px)").matches);
   const selected = state.sessions.find((session) => session.id === state.selectedId);
@@ -53,6 +61,19 @@ export default function App({ gateway }: AppProps) {
     setSessionLabel(selected?.label ?? "");
     setSessionActionsOpen(false);
   }, [selected?.id, selected?.label]);
+
+  useEffect(() => {
+    if (!state.runtimeInfo) return;
+    const index = state.runtimeInfo.models.findIndex((model) =>
+      model.provider === state.runtimeInfo!.providerId && model.id === state.runtimeInfo!.modelId);
+    setModelIndex(String(Math.max(index, 0)));
+    setReasoningEffort(state.runtimeInfo.reasoningEffort);
+    setPermissionProfile({
+      file_access: state.runtimeInfo.fileAccess,
+      network_access: state.runtimeInfo.networkAccess,
+      approval_policy: state.runtimeInfo.approvalPolicy,
+    });
+  }, [state.runtimeInfo]);
 
   function updateDraft(value: string) {
     if (state.selectedId) setDrafts((current) => ({ ...current, [state.selectedId!]: value }));
@@ -151,6 +172,27 @@ export default function App({ gateway }: AppProps) {
     setSessionActionsOpen(false);
   }
 
+  async function selectRuntimeModel() {
+    const model = state.runtimeInfo?.models[Number(modelIndex)];
+    if (!model || !model.reasoning_efforts.includes(reasoningEffort)) return;
+    await submit({
+      type: "select_model",
+      ...(selected ? { session_id: selected.id } : {}),
+      model: { provider_id: model.provider, model_id: model.id },
+      reasoning_effort: reasoningEffort,
+    });
+    setSettingsOpen(false);
+  }
+
+  async function selectRuntimePermissions() {
+    await submit({
+      type: "select_permissions",
+      ...(selected ? { session_id: selected.id } : {}),
+      profile: permissionProfile,
+    });
+    setSettingsOpen(false);
+  }
+
   return <div className="app-shell">
     <nav className="product-rail" aria-label="Product">
       <div className="brand-mark"><img src={crabMark} alt="Sylvander Seed-Crab" /></div>
@@ -193,7 +235,7 @@ export default function App({ gateway }: AppProps) {
       <footer className="runtime-card">
         <span className={`runtime-dot ${state.connection}`} />
         <div><strong>{state.protocol?.serverName ?? "Local Runtime"}</strong><span>{connectionLabel(state.connection)}{state.runtimeInfo ? ` · ${permissionLabel(state.runtimeInfo)}` : ""}</span></div>
-        <button aria-label="Runtime details">···</button>
+        <button aria-label="Runtime details" onClick={() => setSettingsOpen(true)}>···</button>
       </footer>
     </aside>
 
@@ -235,6 +277,12 @@ export default function App({ gateway }: AppProps) {
       <div className="interaction-zone">
         {sessionActionsOpen && selected && <form className="decision-dock" aria-labelledby="session-actions-title" onSubmit={(event) => void renameSession(event)}><div className="decision-icon" aria-hidden="true">···</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="session-actions-title">Manage {selected.label}</h3><label>Name<input aria-label="Session label" value={sessionLabel} onChange={(event) => setSessionLabel(event.target.value)} /></label><p>Archive hides the Session from active work. Delete permanently removes it through Runtime policy.</p></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void archiveSession()}>Archive</button><button type="button" className="secondary-button" onClick={() => void deleteSession()}>Delete permanently</button><button className="primary-button" disabled={!sessionLabel.trim()}>Rename</button></div></form>}
         {createOpen && <form className="decision-dock" aria-labelledby="create-session-title" onSubmit={(event) => void createSession(event)}><div className="decision-icon" aria-hidden="true">＋</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="create-session-title">Create Session</h3><label>Name<input aria-label="Session name" value={newSessionLabel} onChange={(event) => setNewSessionLabel(event.target.value)} /></label><label>Agent<select aria-label="Session Agent" value={newSessionAgentId} onChange={(event) => setNewSessionAgentId(event.target.value)}>{state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.providerId}/{agent.modelId}</option>)}</select></label></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-button" disabled={!newSessionLabel.trim() || !newSessionAgentId}>Create</button></div></form>}
+        {settingsOpen && state.runtimeInfo && <section className="decision-dock" aria-labelledby="runtime-settings-title"><div className="decision-icon" aria-hidden="true">⚙</div><div className="decision-copy"><span className="eyebrow">Runtime validated</span><h3 id="runtime-settings-title">Model and permissions</h3><label>Model<select aria-label="Runtime model" value={modelIndex} onChange={(event) => {
+          const nextIndex = event.target.value;
+          const efforts = state.runtimeInfo!.models[Number(nextIndex)]?.reasoning_efforts ?? [];
+          setModelIndex(nextIndex);
+          if (!efforts.includes(reasoningEffort)) setReasoningEffort(efforts[0] ?? "off");
+        }}>{state.runtimeInfo.models.map((model, index) => <option key={`${model.provider}/${model.id}`} value={index}>{model.provider}/{model.id}</option>)}</select></label><label>Reasoning<select aria-label="Reasoning effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}>{(state.runtimeInfo.models[Number(modelIndex)]?.reasoning_efforts ?? []).map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select></label><label>Files<select aria-label="File access" value={permissionProfile.file_access} onChange={(event) => setPermissionProfile((current) => ({ ...current, file_access: event.target.value as RuntimePermissionProfile["file_access"] }))}><option value="none">none</option><option value="read_only">read only</option><option value="workspace_write">workspace write</option></select></label><label>Network<select aria-label="Network access" value={permissionProfile.network_access} onChange={(event) => setPermissionProfile((current) => ({ ...current, network_access: event.target.value as RuntimePermissionProfile["network_access"] }))}><option value="denied">denied</option><option value="allowed">allowed</option></select></label><label>Approval<select aria-label="Approval policy" value={permissionProfile.approval_policy} onChange={(event) => setPermissionProfile((current) => ({ ...current, approval_policy: event.target.value as RuntimePermissionProfile["approval_policy"] }))}>{state.runtimeInfo.approvalEnabled && <option value="ask">ask</option>}<option value="allow">allow</option><option value="deny">deny</option></select></label></div><div className="decision-actions"><button className="secondary-button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" disabled={!state.runtimeInfo.models[Number(modelIndex)]} onClick={() => void selectRuntimeModel()}>Apply model</button><button className="primary-button" onClick={() => void selectRuntimePermissions()}>Apply permissions</button></div></section>}
         {state.question && <form className="decision-dock" aria-labelledby="question-title" onSubmit={(event) => void submitQuestion(event)}>
           <div className="decision-icon" aria-hidden="true">?</div>
           <div className="decision-copy"><span className="eyebrow">Agent asks</span><h3 id="question-title">{state.question.prompt}</h3><div className="question-options">{state.question.options.map((option) => <label key={option}><input type={state.question!.multiSelect ? "checkbox" : "radio"} name="agent-question" checked={questionSelections.includes(option)} onChange={() => toggleQuestionOption(option)} /> {option}</label>)}</div><input aria-label="Other answer" value={questionText} onChange={(event) => setQuestionText(event.target.value)} placeholder={state.question.options.length > 0 ? "Other or additional context" : "Your answer"} /></div>
@@ -249,7 +297,7 @@ export default function App({ gateway }: AppProps) {
           <label htmlFor="composer-input" className="sr-only">Message Sylvander</label>
           <textarea id="composer-input" value={draft} onChange={(event) => updateDraft(event.target.value)} rows={2} placeholder="What should we work through?" onKeyDown={handleComposerKey} disabled={!selected || state.connection !== "live" || selected.state === "active" || selected.state === "waiting"} />
           <div className="composer-footer">
-            <div className="composer-tools"><button type="button" aria-label="Attach context">＋</button><button type="button">{reasoningLabel(state.runtimeInfo?.reasoningEffort)} <span>⌄</span></button><button type="button">{state.runtimeInfo ? `${state.runtimeInfo.providerId}/${state.runtimeInfo.modelId}` : "Runtime model"} <span>⌄</span></button></div>
+            <div className="composer-tools"><button type="button" aria-label="Attach context">＋</button><button type="button" onClick={() => setSettingsOpen(true)}>{reasoningLabel(state.runtimeInfo?.reasoningEffort)} <span>⌄</span></button><button type="button" onClick={() => setSettingsOpen(true)}>{state.runtimeInfo ? `${state.runtimeInfo.providerId}/${state.runtimeInfo.modelId}` : "Runtime model"} <span>⌄</span></button></div>
             <div className="send-group"><span><kbd>↵</kbd> send · <kbd>⇧↵</kbd> line</span>{selected && ["active", "waiting"].includes(selected.state)
               ? <button type="button" className="send-button" disabled={state.connection !== "live" || state.interruptingSessionIds.includes(selected.id)} aria-label="Stop" onClick={() => void interruptTurn(selected.id)}>{state.interruptingSessionIds.includes(selected.id) ? "…" : "■"}</button>
               : <button className="send-button" disabled={!draft.trim() || !selected || state.connection !== "live"} aria-label="Send">↑</button>}</div>

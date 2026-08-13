@@ -240,6 +240,11 @@ compaction remains a Runtime operation: Desktop disables duplicate requests
 while `CompactionStarted` is live and reports only the completed or failed
 public result.
 
+Model and permission selection is catalog-driven. Desktop keeps provider and
+model identifiers paired, offers only each descriptor's advertised reasoning
+efforts, and omits `ask` when Runtime disables approvals. Submissions are typed
+requests; displayed settings change only after a later `RuntimeInfo` fact.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled
