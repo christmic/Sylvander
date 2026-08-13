@@ -9,9 +9,10 @@ use uuid::Uuid;
 
 use crate::observability::{RuntimeEvent, RuntimeObservability};
 use crate::storage::session::{
-    RecoveryClassification, SessionStore, SessionStoreError, ToolRecoveryDecision,
-    ToolRecoveryWrite,
+    RecoveryClassification, SessionStore, SessionStoreError, ToolCallAdvance,
+    ToolExecutionPosition, ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
 };
+use crate::storage::workspace_journal::{WorkspaceJournal, WorkspaceMutationRecovery};
 
 const RECOVERY_LEASE_SECS: i64 = 30;
 
@@ -30,6 +31,7 @@ pub(crate) struct BootRecoverySummary {
 pub(crate) async fn classify_interrupted_tool_calls(
     store: Arc<dyn SessionStore>,
     observability: &RuntimeObservability,
+    workspace_journal: Option<&WorkspaceJournal>,
     observed_at: i64,
 ) -> Result<BootRecoverySummary, SessionStoreError> {
     let calls = store.interrupted_tool_calls().await?;
@@ -44,9 +46,55 @@ pub(crate) async fn classify_interrupted_tool_calls(
     let lease_expires_at = observed_at
         .checked_add(RECOVERY_LEASE_SECS)
         .ok_or_else(|| SessionStoreError::Invalid("tool recovery lease time overflow".into()))?;
-    for call in calls {
-        let classification =
+    for mut call in calls {
+        let mut classification =
             RecoveryClassification::for_interrupted(call.position, call.effective_recovery_policy);
+        if classification.decision == ToolRecoveryDecision::Reconcile {
+            let recovery =
+                workspace_journal.map_or(WorkspaceMutationRecovery::Unknown, |journal| {
+                    journal.reconcile_tool_call(&call.session_id.0, &call.turn_id, &call.call_id)
+                });
+            match recovery {
+                WorkspaceMutationRecovery::Committed => {
+                    call.ledger_revision = store
+                        .advance_tool_call(ToolCallAdvance {
+                            session_id: call.session_id.clone(),
+                            turn_id: call.turn_id.clone(),
+                            call_id: call.call_id.clone(),
+                            expected_revision: call.ledger_revision,
+                            expected_position: ToolExecutionPosition::EffectStarted,
+                            next_position: ToolExecutionPosition::EffectCommitted,
+                        })
+                        .await?;
+                    call.position = ToolExecutionPosition::EffectCommitted;
+                    classification = RecoveryClassification::for_interrupted(
+                        call.position,
+                        call.effective_recovery_policy,
+                    );
+                }
+                WorkspaceMutationRecovery::NotCommitted => {
+                    classification = RecoveryClassification::reconciled(
+                        ToolRecoveryDecision::RetrySameInvocation,
+                        ToolRecoveryReason::ReconciliationConfirmedNoEffect,
+                        false,
+                    );
+                }
+                WorkspaceMutationRecovery::RolledBack => {
+                    classification = RecoveryClassification::reconciled(
+                        ToolRecoveryDecision::RetrySameInvocation,
+                        ToolRecoveryReason::ReconciliationConfirmedRollback,
+                        false,
+                    );
+                }
+                WorkspaceMutationRecovery::Unknown => {
+                    classification = RecoveryClassification::reconciled(
+                        ToolRecoveryDecision::ManualReconciliation,
+                        ToolRecoveryReason::ReconciliationUncertain,
+                        true,
+                    );
+                }
+            }
+        }
         store
             .classify_tool_recovery(ToolRecoveryWrite {
                 invocation_id: call.invocation_id,

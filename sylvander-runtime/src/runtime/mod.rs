@@ -4274,9 +4274,15 @@ impl Runtime {
             .list_persistent()
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let recovery_journal = config
+            .server
+            .workspace_journal
+            .as_ref()
+            .map(crate::storage::workspace_journal::WorkspaceJournal::new);
         let recovery = crate::agent::run::recovery::classify_interrupted_tool_calls(
             session_store.clone(),
             &observability,
+            recovery_journal.as_ref(),
             crate::session::now_secs(),
         )
         .await

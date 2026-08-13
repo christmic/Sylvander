@@ -2248,6 +2248,9 @@ const fn tool_recovery_reason_str(reason: ToolRecoveryReason) -> &'static str {
         ToolRecoveryReason::EffectNotStarted => "effect_not_started",
         ToolRecoveryReason::SameIdentityReplayAllowed => "same_identity_replay_allowed",
         ToolRecoveryReason::ReconciliationRequired => "reconciliation_required",
+        ToolRecoveryReason::ReconciliationConfirmedNoEffect => "reconciliation_confirmed_no_effect",
+        ToolRecoveryReason::ReconciliationConfirmedRollback => "reconciliation_confirmed_rollback",
+        ToolRecoveryReason::ReconciliationUncertain => "reconciliation_uncertain",
         ToolRecoveryReason::ReplayForbiddenAfterEffectStart => {
             "replay_forbidden_after_effect_start"
         }
@@ -2261,6 +2264,13 @@ fn decode_tool_recovery_reason(value: &str) -> rusqlite::Result<ToolRecoveryReas
         "effect_not_started" => Ok(ToolRecoveryReason::EffectNotStarted),
         "same_identity_replay_allowed" => Ok(ToolRecoveryReason::SameIdentityReplayAllowed),
         "reconciliation_required" => Ok(ToolRecoveryReason::ReconciliationRequired),
+        "reconciliation_confirmed_no_effect" => {
+            Ok(ToolRecoveryReason::ReconciliationConfirmedNoEffect)
+        }
+        "reconciliation_confirmed_rollback" => {
+            Ok(ToolRecoveryReason::ReconciliationConfirmedRollback)
+        }
+        "reconciliation_uncertain" => Ok(ToolRecoveryReason::ReconciliationUncertain),
         "replay_forbidden_after_effect_start" => {
             Ok(ToolRecoveryReason::ReplayForbiddenAfterEffectStart)
         }

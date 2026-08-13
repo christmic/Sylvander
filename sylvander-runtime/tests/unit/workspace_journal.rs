@@ -68,6 +68,36 @@ fn prepared_crash_record_and_new_file_are_recoverable() {
     assert!(!file.exists());
 }
 
+#[test]
+fn exact_tool_call_reconciliation_never_guesses_from_missing_or_conflicting_state() {
+    let root = tempfile::tempdir().unwrap();
+    let journal_root = tempfile::tempdir().unwrap();
+    let journal = WorkspaceJournal::new(journal_root.path());
+    std::fs::write(root.path().join("src.txt"), "before").unwrap();
+    let prepared = journal
+        .prepare("s", "turn-1", "call-1", root.path(), "src.txt", b"after")
+        .unwrap();
+    assert_eq!(
+        journal.reconcile_tool_call("s", "turn-1", "call-1"),
+        WorkspaceMutationRecovery::NotCommitted,
+    );
+    std::fs::write(root.path().join("src.txt"), "after").unwrap();
+    assert_eq!(
+        journal.reconcile_tool_call("s", "turn-1", "call-1"),
+        WorkspaceMutationRecovery::Committed,
+    );
+    journal.commit(&prepared).unwrap();
+    std::fs::write(root.path().join("src.txt"), "external").unwrap();
+    assert_eq!(
+        journal.reconcile_tool_call("s", "turn-1", "call-1"),
+        WorkspaceMutationRecovery::Unknown,
+    );
+    assert_eq!(
+        journal.reconcile_tool_call("s", "turn-1", "missing"),
+        WorkspaceMutationRecovery::Unknown,
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn resolver_rejects_parent_escape_and_symlink_hops() {

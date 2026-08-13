@@ -90,6 +90,9 @@ pub enum ToolRecoveryReason {
     EffectNotStarted,
     SameIdentityReplayAllowed,
     ReconciliationRequired,
+    ReconciliationConfirmedNoEffect,
+    ReconciliationConfirmedRollback,
+    ReconciliationUncertain,
     ReplayForbiddenAfterEffectStart,
     EffectAlreadyCommitted,
     ResultAlreadyPersisted,
@@ -104,6 +107,20 @@ pub struct RecoveryClassification {
 }
 
 impl RecoveryClassification {
+    /// Build a persisted classification from a trusted concrete adapter.
+    #[must_use]
+    pub const fn reconciled(
+        decision: ToolRecoveryDecision,
+        reason: ToolRecoveryReason,
+        operator_action_required: bool,
+    ) -> Self {
+        Self {
+            decision,
+            reason,
+            operator_action_required,
+        }
+    }
+
     /// Classify one non-terminal invocation from its frozen effective policy.
     #[must_use]
     pub const fn for_interrupted(

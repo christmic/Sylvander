@@ -1,5 +1,8 @@
 use super::*;
 use std::path::PathBuf;
+use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
+
+use crate::storage::workspace_journal::WorkspaceJournal;
 
 /// Default session context used by every test. Identity is the
 /// stable "user-1" from `test_meta` so ownership assertions share one
@@ -618,6 +621,7 @@ async fn boot_recovery_persists_manual_decision_and_observes_it() {
     let summary = crate::agent::run::recovery::classify_interrupted_tool_calls(
         std::sync::Arc::new(store.clone()),
         &observability,
+        None,
         1_000,
     )
     .await
@@ -634,6 +638,104 @@ async fn boot_recovery_persists_manual_decision_and_observes_it() {
     let observed = observability.snapshot();
     assert_eq!(observed.tool_recoveries_classified, 1);
     assert_eq!(observed.tool_recoveries_manual, 1);
+}
+
+#[tokio::test]
+async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-write".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "write"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let invocation_id = ToolInvocationId::new();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-write".into(),
+            call_id: "call-write".into(),
+            invocation_id,
+            tool_name: "Write".into(),
+            invocation_class: Some(ToolInvocationClass::FilesystemMutation),
+            declared_recovery_policy: ToolRecoveryPolicy::ReconcileBeforeRetry,
+            effective_recovery_policy: ToolRecoveryPolicy::ReconcileBeforeRetry,
+            capability_revision: "sha256:write-surface".into(),
+            input_digest: "sha256:write-input".into(),
+        })
+        .await
+        .unwrap();
+    for (revision, current, next) in [
+        (
+            0,
+            ToolExecutionPosition::Prepared,
+            ToolExecutionPosition::Authorized,
+        ),
+        (
+            1,
+            ToolExecutionPosition::Authorized,
+            ToolExecutionPosition::EffectStarted,
+        ),
+    ] {
+        store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session.id.clone(),
+                turn_id: "turn-write".into(),
+                call_id: "call-write".into(),
+                expected_revision: revision,
+                expected_position: current,
+                next_position: next,
+            })
+            .await
+            .unwrap();
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let journal_root = tempfile::tempdir().unwrap();
+    let journal = WorkspaceJournal::new(journal_root.path());
+    let prepared = journal
+        .prepare(
+            "sess-1",
+            "turn-write",
+            "call-write",
+            workspace.path(),
+            "result.txt",
+            b"committed once",
+        )
+        .unwrap();
+    std::fs::write(workspace.path().join("result.txt"), "committed once").unwrap();
+    journal.commit(&prepared).unwrap();
+
+    let observability = crate::observability::RuntimeObservability::new();
+    let summary = crate::agent::run::recovery::classify_interrupted_tool_calls(
+        std::sync::Arc::new(store.clone()),
+        &observability,
+        Some(&journal),
+        1_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.manual_reconciliation, 0);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("result.txt")).unwrap(),
+        "committed once"
+    );
+    let calls = store.tool_calls(&session.id, "turn-write").await.unwrap();
+    assert_eq!(calls[0].position, ToolExecutionPosition::EffectCommitted);
+    assert_eq!(
+        calls[0].recovery_decision,
+        Some(ToolRecoveryDecision::RecoverResult),
+    );
 }
 
 #[tokio::test]

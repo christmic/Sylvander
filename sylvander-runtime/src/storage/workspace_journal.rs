@@ -32,6 +32,15 @@ pub(crate) struct RollbackPreview {
     pub files: Vec<String>,
 }
 
+/// Content-free reconciliation result for one journal-bound invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceMutationRecovery {
+    Committed,
+    NotCommitted,
+    RolledBack,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum MutationState {
@@ -244,6 +253,37 @@ impl WorkspaceJournal {
         Ok(RollbackReport { turn_id, restored })
     }
 
+    /// Reconcile one exact tool call without changing its manifest or file.
+    pub(crate) fn reconcile_tool_call(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        call_id: &str,
+    ) -> WorkspaceMutationRecovery {
+        let Ok(_guard) = self.lock.lock() else {
+            return WorkspaceMutationRecovery::Unknown;
+        };
+        let entries = self.session_dir(session_id).join("entries");
+        let Ok(iter) = fs::read_dir(entries) else {
+            return WorkspaceMutationRecovery::Unknown;
+        };
+        let mut matching = iter
+            .filter_map(Result::ok)
+            .filter_map(|entry| read_manifest(&entry.path()).ok())
+            .filter(|manifest| {
+                manifest.session_id == session_id
+                    && manifest.turn_id == turn_id
+                    && manifest.call_id == call_id
+            });
+        let Some(manifest) = matching.next() else {
+            return WorkspaceMutationRecovery::Unknown;
+        };
+        if matching.next().is_some() {
+            return WorkspaceMutationRecovery::Unknown;
+        }
+        reconcile_manifest(&manifest)
+    }
+
     fn recover_locked(&self, session_id: &str) -> Result<(), String> {
         let marker_path = self.session_dir(session_id).join("rollback.json");
         let Ok(bytes) = fs::read(&marker_path) else {
@@ -296,6 +336,35 @@ impl WorkspaceJournal {
 
     fn session_dir(&self, session_id: &str) -> PathBuf {
         self.base.join(session_id.replace(['/', '\\'], "_"))
+    }
+}
+
+fn reconcile_manifest(manifest: &Manifest) -> WorkspaceMutationRecovery {
+    let Ok(target) = WorkspaceJournal::resolve(&manifest.workspace, &manifest.relative_path) else {
+        return WorkspaceMutationRecovery::Unknown;
+    };
+    let current = fs::read(&target).ok();
+    let Ok(after) = fs::read(&manifest.after_blob) else {
+        return WorkspaceMutationRecovery::Unknown;
+    };
+    let before = match &manifest.before_blob {
+        Some(path) => match fs::read(path) {
+            Ok(bytes) => Some(bytes),
+            Err(_) => return WorkspaceMutationRecovery::Unknown,
+        },
+        None => None,
+    };
+    let matches_after = current.as_deref() == Some(after.as_slice());
+    let matches_before = current == before;
+    match manifest.state {
+        MutationState::Applied | MutationState::Prepared if matches_after => {
+            WorkspaceMutationRecovery::Committed
+        }
+        MutationState::Prepared | MutationState::Abandoned if matches_before => {
+            WorkspaceMutationRecovery::NotCommitted
+        }
+        MutationState::RolledBack if matches_before => WorkspaceMutationRecovery::RolledBack,
+        _ => WorkspaceMutationRecovery::Unknown,
     }
 }
 
