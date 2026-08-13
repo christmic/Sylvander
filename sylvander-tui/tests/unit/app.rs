@@ -57,10 +57,13 @@ fn connection_requests_and_applies_runtime_truth() {
     let mut state = AppState::new();
     assert!(matches!(
         state.apply(DomainEvent::Connected),
-        Some(Action::RequestRuntimeInfo)
+        Some(Action::DiscoverAgents)
     ));
     state.apply(DomainEvent::RuntimeInfo {
-        model: "claude-test".into(),
+        model: sylvander_api::ModelSelection {
+            provider_id: "test".into(),
+            model_id: "claude-test".into(),
+        },
         reasoning_effort: sylvander_api::ReasoningEffort::Low,
         models: vec![sylvander_api::ModelDescriptor {
             id: "claude-test".into(),
@@ -78,10 +81,11 @@ fn connection_requests_and_applies_runtime_truth() {
         },
         capabilities: 0b10001,
         approval_enabled: true,
-        max_attachment_bytes: 4096,
+        max_request_bytes: 4096,
         platform: sylvander_api::PlatformSnapshot::default(),
     });
-    assert_eq!(state.metadata.model, "claude-test");
+    assert_eq!(state.metadata.model.provider_id, "test");
+    assert_eq!(state.metadata.model.model_id, "claude-test");
     assert_eq!(
         state.metadata.reasoning_effort,
         sylvander_api::ReasoningEffort::Low
@@ -93,7 +97,7 @@ fn connection_requests_and_applies_runtime_truth() {
     );
     assert_eq!(state.metadata.capabilities, 0b10001);
     assert!(state.metadata.approval_enabled);
-    assert_eq!(state.metadata.max_attachment_bytes, 4096);
+    assert_eq!(state.metadata.max_request_bytes, 4096);
 }
 
 #[test]
@@ -104,7 +108,7 @@ fn protocol_negotiation_records_server_truth() {
         server_name: "test-server".into(),
         capabilities: vec!["diagnostics".into()],
     });
-    assert!(matches!(action, Some(Action::RequestRuntimeInfo)));
+    assert!(matches!(action, Some(Action::DiscoverAgents)));
     assert!(state.connected);
     assert_eq!(state.protocol_version, Some(1));
     assert_eq!(state.protocol_capabilities, ["diagnostics"]);
@@ -189,7 +193,7 @@ fn reconnect_requests_reconciliation_and_preserves_the_local_queue() {
     ));
     assert!(matches!(
         state.pending_actions.as_slice(),
-        [Action::DiscoverAgents, Action::RequestRuntimeInfo]
+        [Action::DiscoverAgents]
     ));
 
     state.apply(DomainEvent::SessionHistoryLoaded {
@@ -226,7 +230,10 @@ fn reconnect_requests_reconciliation_and_preserves_the_local_queue() {
 fn current_deprecated_model_surfaces_migration_target() {
     let mut state = AppState::new();
     state.apply(DomainEvent::RuntimeInfo {
-        model: "old-model".into(),
+        model: sylvander_api::ModelSelection {
+            provider_id: "test".into(),
+            model_id: "old-model".into(),
+        },
         reasoning_effort: sylvander_api::ReasoningEffort::Off,
         models: vec![sylvander_api::ModelDescriptor {
             id: "old-model".into(),
@@ -242,7 +249,7 @@ fn current_deprecated_model_surfaces_migration_target() {
         permissions: sylvander_api::PermissionProfile::default(),
         capabilities: 0,
         approval_enabled: false,
-        max_attachment_bytes: 4096,
+        max_request_bytes: 4096,
         platform: sylvander_api::PlatformSnapshot::default(),
     });
     assert_eq!(state.status, "Model deprecated · old-model → new-model");
@@ -1152,12 +1159,14 @@ fn first_prompt_creates_configured_session_then_sends_exactly_once() {
     ));
     assert!(state.session_creation_pending);
     let repeated_agents = state.agents.clone();
+    assert!(matches!(
+        state.apply(DomainEvent::AgentsDiscovered {
+            agents: repeated_agents,
+        }),
+        Some(Action::RequestRuntimeInfo { agent_id }) if agent_id == sylvander_api::AgentId::new("coding")
+    ));
     assert!(
-        state
-            .apply(DomainEvent::AgentsDiscovered {
-                agents: repeated_agents,
-            })
-            .is_none(),
+        state.session_creation_pending,
         "a repeated discovery response must not create a second session"
     );
 

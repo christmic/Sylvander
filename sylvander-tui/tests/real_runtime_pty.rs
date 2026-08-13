@@ -15,14 +15,15 @@ use sylvander_agent::tools::{AskUserTool, WriteTool};
 use sylvander_api::{
     AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, BusMessage,
     FileAccess, MessageKind, NetworkAccess, PermissionProfile, ReasoningEffort, RunFeedback,
-    SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind, SessionConfigState,
-    SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig, SessionId,
-    SessionMetadata, StreamEvent, UiClientMessage, UiSessionInfo,
+    RuntimeUiSnapshot, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
+    SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig,
+    SessionId, SessionMetadata, StreamEvent, UiClientMessage, UiHistoryMessage, UiSessionHistory,
+    UiSessionInfo,
 };
 use sylvander_channel::{
     Channel, ChannelContext, ChannelHost, InProcessMessageBus, MessageBus, SubscriptionFilter,
 };
-use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
+use sylvander_channel_unix::UnixChannel;
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
@@ -31,7 +32,8 @@ use sylvander_runtime::agent_definition::AgentSpec;
 use sylvander_runtime::agent_run::{AgentRun, AgentSessionIssuer};
 use sylvander_runtime::agent_supervisor::AgentRunEngine;
 use sylvander_runtime::storage::session::{
-    SessionFilter, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+    MessageRole, SessionFilter, SessionLifetime, SessionStore, SqliteSessionStore, StoredMessage,
+    StoredSession,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -113,7 +115,7 @@ impl Respond for ApprovalScenario {
             0 => ResponseTemplate::new(200).set_body_json(json!({
                 "id": "msg_approval_request", "type": "message", "role": "assistant",
                 "content": [{
-                    "type": "tool_use", "id": "write_real_1", "name": "write",
+                    "type": "tool_use", "id": "write_real_1", "name": "Write",
                     "input": {"file_path": "blocked.txt", "content": "must not exist"}
                 }],
                 "model": "sylvander-test-model", "stop_reason": "tool_use",
@@ -138,7 +140,7 @@ struct RuntimeHarness {
     channel_task: tokio::task::JoinHandle<()>,
 }
 
-/// Test-only implementation of the same fail-closed ChannelHost boundary required by
+/// Test-only implementation of the same fail-closed `ChannelHost` boundary required by
 /// production channels. It authenticates every operation, binds sessions to
 /// the Unix principal and channel instance, and joins the exact durable
 /// session to the real `AgentRun` before chat can be published.
@@ -328,16 +330,21 @@ impl ChannelHost for HarnessChannelHost {
     async fn list_sessions(
         &self,
         boundary: &BoundaryContext,
+        include_archived: bool,
     ) -> Result<Vec<UiSessionInfo>, BoundaryError> {
         let principal = Self::principal(boundary, "list_sessions")?;
-        let sessions = self.sessions.list_persistent().await.map_err(|error| {
-            Self::denial(
-                boundary,
-                BoundaryErrorCode::InvalidScope,
-                "list_sessions",
-                &error.to_string(),
-            )
-        })?;
+        let sessions = self
+            .sessions
+            .list_persistent(include_archived)
+            .await
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    "list_sessions",
+                    &error.to_string(),
+                )
+            })?;
         let now = sylvander_runtime::session::now_secs();
         Ok(sessions
             .into_iter()
@@ -354,8 +361,99 @@ impl ChannelHost for HarnessChannelHost {
                 },
                 workspace: session.metadata.workspace.display().to_string(),
                 last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
+                archived: session.archived,
             })
             .collect())
+    }
+
+    async fn runtime_snapshot(
+        &self,
+        boundary: &BoundaryContext,
+        agent_id: &AgentId,
+        _session_id: Option<&SessionId>,
+    ) -> Result<RuntimeUiSnapshot, BoundaryError> {
+        Self::principal(boundary, "runtime_snapshot")?;
+        if agent_id != &self.agent_id {
+            return Err(BoundaryError::forbidden(boundary, "runtime_snapshot"));
+        }
+        Ok(RuntimeUiSnapshot {
+            agent_id: agent_id.clone(),
+            model: sylvander_api::ModelSelection {
+                provider_id: self.provider_id.clone(),
+                model_id: "sylvander-test-model".into(),
+            },
+            reasoning_effort: ReasoningEffort::Off,
+            models: Vec::new(),
+            permissions: PermissionProfile {
+                file_access: FileAccess::WorkspaceWrite,
+                network_access: NetworkAccess::Denied,
+                approval_policy: if self.approval_enabled {
+                    sylvander_api::ApprovalPolicy::Ask
+                } else {
+                    sylvander_api::ApprovalPolicy::Allow
+                },
+            },
+            capabilities: u8::try_from(ProviderModelCapabilities::TOOL_USE.bits())
+                .expect("test capability mask fits the UI protocol"),
+            approval_enabled: self.approval_enabled,
+            max_request_bytes: 512 * 1024,
+            platform: sylvander_api::PlatformSnapshot::default(),
+        })
+    }
+
+    async fn load_session(
+        &self,
+        boundary: &BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<UiSessionHistory, BoundaryError> {
+        self.require_owner(boundary, &session_id.0, "load_session")
+            .await?;
+        let session = self
+            .sessions
+            .get(session_id)
+            .await
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    "load_session",
+                    &error.to_string(),
+                )
+            })?
+            .ok_or_else(|| BoundaryError::forbidden(boundary, "load_session"))?;
+        let context = sylvander_api::SessionContext::new(
+            session.metadata.user_id.clone(),
+            self.agent_id.clone(),
+            session.id.clone(),
+        );
+        let messages = self
+            .sessions
+            .read_history(&context, &session.id, true, None)
+            .await
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    "load_session",
+                    &error.to_string(),
+                )
+            })?;
+        let usage = self.sessions.usage(&session.id).await.map_err(|error| {
+            Self::denial(
+                boundary,
+                BoundaryErrorCode::InvalidScope,
+                "load_session",
+                &error.to_string(),
+            )
+        })?;
+        Ok(UiSessionHistory {
+            session: ui_session_info(&session),
+            messages: messages.iter().filter_map(ui_history_message).collect(),
+            iterations: usage.iterations,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cost_nano_usd: usage.cost_nano_usd,
+        })
     }
 
     async fn create_session(
@@ -613,6 +711,45 @@ impl ChannelHost for HarnessChannelHost {
     }
 }
 
+fn ui_session_info(session: &StoredSession) -> UiSessionInfo {
+    let now = sylvander_runtime::session::now_secs();
+    UiSessionInfo {
+        id: session.id.0.clone(),
+        label: session.name.clone(),
+        workspace: session.metadata.workspace.display().to_string(),
+        last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
+        archived: session.archived,
+    }
+}
+
+fn ui_history_message(message: &StoredMessage) -> Option<UiHistoryMessage> {
+    let content = message.content.get("content")?;
+    let text = content.as_str().map_or_else(
+        || {
+            content.as_array().map(|blocks| {
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        },
+        |text| Some(text.to_string()),
+    )?;
+    if text.is_empty() {
+        return None;
+    }
+    let role = match message.role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+    };
+    Some(UiHistoryMessage {
+        role: role.into(),
+        text,
+    })
+}
+
 fn ui_message_session_id(message: &UiClientMessage) -> Option<&str> {
     match message {
         UiClientMessage::Chat {
@@ -720,31 +857,7 @@ async fn start_runtime(
         .spawn_run(spec, run)
         .await
         .expect("spawn AgentRun through Engine");
-    let approval_policy = if approval_enabled {
-        sylvander_api::ApprovalPolicy::Ask
-    } else {
-        sylvander_api::ApprovalPolicy::Allow
-    };
-    let channel = Arc::new(
-        UnixChannel::new(socket_path, agent_id.clone()).with_runtime_info(RuntimeInfo {
-            model: sylvander_api::ModelSelection {
-                provider_id: "test".into(),
-                model_id: "sylvander-test-model".into(),
-            },
-            reasoning_effort: sylvander_api::ReasoningEffort::Off,
-            models: Vec::new(),
-            permissions: sylvander_api::PermissionProfile {
-                file_access: sylvander_api::FileAccess::WorkspaceWrite,
-                network_access: sylvander_api::NetworkAccess::Denied,
-                approval_policy,
-            },
-            capabilities: sylvander_llm_anthropic::api::model::ModelCapabilities::TOOL_USE.bits(),
-            approval_enabled,
-            max_attachment_bytes: 512 * 1024,
-            platform: sylvander_api::PlatformSnapshot::default(),
-            platform_provider: None,
-        }),
-    );
+    let channel = Arc::new(UnixChannel::new(socket_path, agent_id.clone()));
     let host: Arc<dyn ChannelHost> = Arc::new(HarnessChannelHost {
         bus: bus.clone(),
         sessions: store.clone(),
@@ -895,6 +1008,14 @@ fn run_tui_with_exit(
         "TUI welcome did not render; child_status={:?}; output={}",
         child.try_wait().expect("poll failed TUI child"),
         String::from_utf8_lossy(&captured.lock().expect("lock failed welcome output"))
+    );
+    assert!(
+        wait_for_output(
+            &captured,
+            "anthropic/sylvander-test-model",
+            Duration::from_secs(4)
+        ),
+        "TUI did not load the Runtime-owned model snapshot"
     );
     interact(&mut writer, &captured);
     if disconnect {
@@ -1108,7 +1229,8 @@ async fn real_agent_approval_rejection_prevents_tool_execution() {
             writer.flush().expect("flush approval turn");
             assert!(
                 wait_for_output(captured, "Permission needed", Duration::from_secs(4)),
-                "real Agent approval Decision Dock was not rendered"
+                "real Agent approval Decision Dock was not rendered; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("inspect approval output"))
             );
             writer.write_all(b"n").expect("reject real Agent tool");
             writer.flush().expect("flush approval rejection");

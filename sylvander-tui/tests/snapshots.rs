@@ -526,7 +526,10 @@ fn palette_with_no_match() {
 fn model_picker_shows_server_truth_and_reasoning_control() {
     let mut state = AppState::new();
     state.connected = true;
-    state.metadata.model = "claude-sonnet".into();
+    state.metadata.model = sylvander_api::ModelSelection {
+        provider_id: "anthropic-compatible".into(),
+        model_id: "claude-sonnet".into(),
+    };
     state.metadata.reasoning_effort = sylvander_api::ReasoningEffort::Low;
     state.metadata.models = vec![
         sylvander_api::ModelDescriptor {
