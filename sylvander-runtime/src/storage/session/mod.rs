@@ -9,6 +9,7 @@
 
 mod execution_ledger;
 mod model_ledger;
+mod perception_ledger;
 mod recovery_action;
 mod sqlite;
 
@@ -21,6 +22,10 @@ pub use execution_ledger::{
 pub use model_ledger::{
     ModelExecutionPosition, ModelInvocationId, ModelRecoveryClassification, ModelRecoveryDecision,
     ModelRecoveryReason,
+};
+pub use perception_ledger::{
+    PerceptionExecutionPosition, PerceptionInvocationId, PerceptionRecoveryClassification,
+    PerceptionRecoveryDecision, PerceptionRecoveryPolicy, PerceptionRecoveryReason,
 };
 pub use recovery_action::{
     ExecutionRecoveryAction, ExecutionRecoveryActionId, ExecutionRecoveryActionReceipt,
