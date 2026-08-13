@@ -38,6 +38,13 @@ isolated adapter. OCI owns the named container tree and force-removes it when a
 timeout, cancellation, transport loss, or dropped future prevents ordinary
 completion.
 
+Tool failure observation is fact-based. Agent emits a separate content-safe
+classification only when a tool preserves an adapter-provided policy denial;
+Runtime records that fact independently from the provider-facing `is_error`
+result. The built-in snapshot currently counts explicit filesystem-boundary
+violations. It does not inspect model-visible error text and is not replaceable
+by extensions.
+
 Current implementation status: Runtime boot constructs one crate-private,
 immutable `RuntimeExecutionService` from the built-in exact `local` target and
 configured SSH/OCI targets. It resolves adapter credentials at composition,

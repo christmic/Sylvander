@@ -1,6 +1,6 @@
 //! Runtime-owned Session orchestration around the Agent execution kernel.
 //!
-//! [`AgentRun`](crate::agent_run::AgentRun) is a running agent instance. It is a cheap `Clone` handle
+//! [`AgentRun`] is a running agent instance. It is a cheap `Clone` handle
 //! to shared state (`AgentRunInner`).
 //!
 //! # Memory: mechanism first, tools second
@@ -8,7 +8,7 @@
 //! Memory is agent infrastructure. The read path is exposed as a tool so the
 //! model can autonomously retrieve context. Model-proposed writes enter the
 //! Runtime-owned Guardian candidate flow.
-//! [`AgentRun::remember`](crate::agent_run::AgentRun::remember) is a separate,
+//! [`AgentRun::remember`] is a separate,
 //! synchronous relationship-only API for trusted application observations.
 //!
 //! # Session: engineering layer, model-invisible
@@ -19,7 +19,7 @@
 //! # Approval (M12)
 //!
 //! Tool approval flows through the bus. When approval is needed, the
-//! loop pauses (via [`ApprovalGate`](sylvander_agent::approval::ApprovalGate)) and the engine processes
+//! loop pauses (via [`ApprovalGate`]) and the engine processes
 //! `ApproveTool` responses concurrently via spawned `handle_message`
 //! tasks. Per-session locks prevent concurrent execution on the same
 //! session.
@@ -52,6 +52,7 @@ use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::execution::RuntimeExecutionService;
 use crate::observability::{
     RuntimeEvent, RuntimeFailureKind, RuntimeObservability, RuntimePersistenceOperation,
+    RuntimeToolFailureKind,
 };
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionContext, SessionMetadata, now_secs};
@@ -3097,6 +3098,23 @@ impl AgentRunInner {
                     )
                     .await;
                 }
+                sylvander_agent::turn::event::AgentEvent::ToolFailureClassified {
+                    id,
+                    name,
+                    kind,
+                } => match kind {
+                    sylvander_agent::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation => {
+                        self.observability
+                            .record(RuntimeEvent::ToolFailureClassified {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                tool_call_id: id,
+                                tool_name: name,
+                                kind: RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation,
+                            });
+                    }
+                    sylvander_agent::tool::ToolFailureKind::Unclassified => {}
+                },
                 sylvander_agent::turn::event::AgentEvent::ToolCallEnd {
                     id,
                     name,

@@ -17,6 +17,7 @@ use sylvander_llm_core::{ChatMessage, TokenUsage};
 
 use crate::context::compression::layer::LayerReport;
 use crate::interaction::plan::PlanDecision;
+use crate::tool::ToolFailureKind;
 use crate::turn::error::AgentLoopError;
 use crate::turn::outcome::AgentOutcome;
 
@@ -87,6 +88,17 @@ pub enum AgentEvent {
         id: String,
         name: String,
         timeout_secs: u64,
+    },
+
+    /// A tool returned a trusted, content-safe failure classification.
+    ///
+    /// This event precedes the corresponding [`Self::ToolCallEnd`]. Generic
+    /// model-visible failures are not emitted because they carry no stronger
+    /// execution fact than `is_error`.
+    ToolFailureClassified {
+        id: String,
+        name: String,
+        kind: ToolFailureKind,
     },
 
     /// Tool execution finished.

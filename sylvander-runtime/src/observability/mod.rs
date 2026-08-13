@@ -85,6 +85,13 @@ pub(crate) enum RuntimeFailureKind {
     Persistence,
 }
 
+/// Content-safe classification for a trusted tool execution failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeToolFailureKind {
+    /// The execution adapter explicitly rejected a filesystem boundary.
+    FilesystemBoundaryPolicyViolation,
+}
+
 /// Durable operation represented by a persistence lifecycle fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimePersistenceOperation {
@@ -148,6 +155,13 @@ pub(crate) enum RuntimeEvent {
         tool_call_id: String,
         tool_name: String,
         succeeded: bool,
+    },
+    ToolFailureClassified {
+        turn_id: String,
+        session_id: SessionId,
+        tool_call_id: String,
+        tool_name: String,
+        kind: RuntimeToolFailureKind,
     },
     PersistenceFinished {
         turn_id: String,
@@ -225,6 +239,8 @@ pub struct RuntimeObservabilitySnapshot {
     pub tools_succeeded: u64,
     /// Rejected, timed-out, fatal, or model-visible failed tool calls.
     pub tools_failed: u64,
+    /// Explicit filesystem-boundary policy denials reported by an adapter.
+    pub filesystem_policy_violations: u64,
     /// Required Session persistence operations that committed.
     pub persistence_succeeded: u64,
     /// Required Session persistence operations that failed.
@@ -272,6 +288,7 @@ struct RuntimeObservabilityInner {
     tools_started: AtomicU64,
     tools_succeeded: AtomicU64,
     tools_failed: AtomicU64,
+    filesystem_policy_violations: AtomicU64,
     persistence_succeeded: AtomicU64,
     persistence_failed: AtomicU64,
 }
@@ -304,6 +321,7 @@ impl RuntimeObservability {
                 tools_started: AtomicU64::new(0),
                 tools_succeeded: AtomicU64::new(0),
                 tools_failed: AtomicU64::new(0),
+                filesystem_policy_violations: AtomicU64::new(0),
                 persistence_succeeded: AtomicU64::new(0),
                 persistence_failed: AtomicU64::new(0),
             }),
@@ -424,6 +442,29 @@ impl RuntimeObservability {
                     %tool_call_id,
                     %tool_name,
                     succeeded,
+                    "runtime lifecycle fact"
+                );
+            }
+            RuntimeEvent::ToolFailureClassified {
+                turn_id,
+                session_id,
+                tool_call_id,
+                tool_name,
+                kind,
+            } => {
+                match kind {
+                    RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation => self
+                        .inner
+                        .filesystem_policy_violations
+                        .fetch_add(1, Ordering::Relaxed),
+                };
+                tracing::info!(
+                    event = "tool_failure_classified",
+                    %turn_id,
+                    %session_id,
+                    %tool_call_id,
+                    %tool_name,
+                    ?kind,
                     "runtime lifecycle fact"
                 );
             }
@@ -570,7 +611,9 @@ impl RuntimeObservability {
                     timing.turn_latency.observe(duration);
                 }
             }
-            RuntimeEvent::ModelRetried { .. } | RuntimeEvent::PersistenceFinished { .. } => {}
+            RuntimeEvent::ModelRetried { .. }
+            | RuntimeEvent::ToolFailureClassified { .. }
+            | RuntimeEvent::PersistenceFinished { .. } => {}
         }
     }
 
@@ -606,6 +649,10 @@ impl RuntimeObservability {
             tools_started: self.inner.tools_started.load(Ordering::Relaxed),
             tools_succeeded: self.inner.tools_succeeded.load(Ordering::Relaxed),
             tools_failed: self.inner.tools_failed.load(Ordering::Relaxed),
+            filesystem_policy_violations: self
+                .inner
+                .filesystem_policy_violations
+                .load(Ordering::Relaxed),
             persistence_succeeded: self.inner.persistence_succeeded.load(Ordering::Relaxed),
             persistence_failed: self.inner.persistence_failed.load(Ordering::Relaxed),
             active_dispatches: timing.dispatch_started.len() as u64,

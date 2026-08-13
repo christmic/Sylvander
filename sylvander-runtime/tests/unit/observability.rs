@@ -5,6 +5,7 @@ use crate::agent_definition::{AgentId, SessionId};
 use crate::observability::{
     RuntimeClock, RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind,
     RuntimeObservability, RuntimeObservabilitySnapshot, RuntimePersistenceOperation,
+    RuntimeToolFailureKind,
 };
 use sylvander_api::MessageId;
 
@@ -101,6 +102,13 @@ fn turn_tool_and_persistence_facts_reduce_to_content_safe_counts() {
             succeeded,
         });
     }
+    recorder.record(RuntimeEvent::ToolFailureClassified {
+        turn_id: turn_id.clone(),
+        session_id: session_id.clone(),
+        tool_call_id: "call-1".into(),
+        tool_name: "read".into(),
+        kind: RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation,
+    });
     for succeeded in [true, false] {
         recorder.record(RuntimeEvent::PersistenceFinished {
             turn_id: turn_id.clone(),
@@ -126,7 +134,7 @@ fn turn_tool_and_persistence_facts_reduce_to_content_safe_counts() {
     assert_eq!(
         recorder.snapshot(),
         RuntimeObservabilitySnapshot {
-            event_count: 10,
+            event_count: 11,
             turns_started: 1,
             turns_completed: 1,
             turns_interrupted: 1,
@@ -135,6 +143,7 @@ fn turn_tool_and_persistence_facts_reduce_to_content_safe_counts() {
             tools_started: 1,
             tools_succeeded: 1,
             tools_failed: 1,
+            filesystem_policy_violations: 1,
             persistence_succeeded: 1,
             persistence_failed: 1,
             unmatched_terminals: 3,

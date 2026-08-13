@@ -1,7 +1,7 @@
 //! Versioned, declarative server configuration.
 //!
 //! Configuration contains references to secrets, never inline credentials.
-//! [`ServerConfig::validate`] resolves all cross-object identities before the
+//! [`crate::config::ServerConfig::validate`] resolves all cross-object identities before the
 //! runtime starts any Agent, executor, or channel.
 
 use std::collections::{HashMap, HashSet};

@@ -442,6 +442,55 @@ async fn provider_backend_runs_tool_then_text_with_qualified_requests() {
 }
 
 #[tokio::test]
+async fn trusted_tool_failure_classification_reaches_the_event_stream() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "call-policy".into(),
+                name: "guarded".into(),
+                arguments: json!({}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let tool = MockTool::new(
+        "guarded",
+        "returns an explicit policy denial",
+        crate::tool::ToolOutput::classified_err(
+            "workspace boundary denied",
+            crate::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation,
+        ),
+    );
+    let tools = crate::tool::ToolRegistry::new().register(tool);
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let ports = turn_ports(provider, &request);
+    let kernel = kernel();
+    let mut events = Box::pin(run_stream(&kernel, request, ports));
+    let mut classified = false;
+
+    while let Some(event) = events.next().await {
+        if matches!(
+            event,
+            AgentEvent::ToolFailureClassified {
+                id,
+                name,
+                kind: crate::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation,
+            } if id == "call-policy" && name == "guarded"
+        ) {
+            classified = true;
+        }
+    }
+
+    assert!(classified);
+}
+
+#[tokio::test]
 async fn approval_receives_facts_from_the_exact_prepared_call() {
     let provider = Arc::new(ScriptedProvider::new([
         Ok(completed_events(

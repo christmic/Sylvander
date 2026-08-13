@@ -683,12 +683,22 @@ pub fn run_stream(
                                 output,
                                 is_error,
                                 timed_out_after,
+                                failure_kind,
                             } = execution;
                             if let Some(timeout) = timed_out_after {
                                 yield AgentEvent::ToolTimedOut {
                                     id: tool_use.id.clone(),
                                     name: name.clone(),
                                     timeout_secs: timeout.as_secs(),
+                                };
+                            }
+                            if let Some(kind) = failure_kind
+                                && kind != crate::tool::ToolFailureKind::Unclassified
+                            {
+                                yield AgentEvent::ToolFailureClassified {
+                                    id: tool_use.id.clone(),
+                                    name: name.clone(),
+                                    kind,
                                 };
                             }
 
@@ -836,12 +846,22 @@ pub fn run_stream(
                                     output,
                                     is_error,
                                     timed_out_after,
+                                    failure_kind,
                                 } = execution;
                                 if let Some(timeout) = timed_out_after {
                                     yield AgentEvent::ToolTimedOut {
                                         id: id.clone(),
                                         name: name.clone(),
                                         timeout_secs: timeout.as_secs(),
+                                    };
+                                }
+                                if let Some(kind) = failure_kind
+                                    && kind != crate::tool::ToolFailureKind::Unclassified
+                                {
+                                    yield AgentEvent::ToolFailureClassified {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        kind,
                                     };
                                 }
                                 yield AgentEvent::ToolCallEnd {
@@ -1017,6 +1037,7 @@ struct ToolExecutionOutcome {
     output: String,
     is_error: bool,
     timed_out_after: Option<std::time::Duration>,
+    failure_kind: Option<crate::tool::ToolFailureKind>,
 }
 
 struct RegisteredToolExecutionRequest {
@@ -1052,6 +1073,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                 output: error.to_string(),
                 is_error: true,
                 timed_out_after: None,
+                failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
             };
         }
     };
@@ -1071,6 +1093,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                 output: format!("tool authorization failed: {error}"),
                 is_error: true,
                 timed_out_after: None,
+                failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
             };
         }
     };
@@ -1080,6 +1103,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
             output: error.to_string(),
             is_error: true,
             timed_out_after: None,
+            failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
         };
         if let Err(audit_error) = grant
             .finish(crate::tool::invocation::ToolInvocationOutcome::Failed)
@@ -1117,11 +1141,13 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                 output: format!("tool `{route}` timed out after {}s", timeout.as_secs()),
                 is_error: true,
                 timed_out_after: Some(timeout),
+                failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
             },
             crate::tool::invocation::ToolInvocationOutcome::TimedOut,
         ),
         (Some(Ok(output)), None) => {
             tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, is_error = output.is_error, "tool execution finished");
+            let failure_kind = output.failure_kind();
             let terminal = if output.is_error {
                 crate::tool::invocation::ToolInvocationOutcome::Failed
             } else {
@@ -1132,6 +1158,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                     output: output.content,
                     is_error: output.is_error,
                     timed_out_after: None,
+                    failure_kind,
                 },
                 terminal,
             )
@@ -1143,6 +1170,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                     output: format!("tool execution failed: {error}"),
                     is_error: true,
                     timed_out_after: None,
+                    failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
                 },
                 crate::tool::invocation::ToolInvocationOutcome::Failed,
             )
@@ -1153,6 +1181,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         warn!(%session_id, %trace_id, %call_id, tool = %route, %error, "tool terminal audit failed");
         outcome.output = error.to_string();
         outcome.is_error = true;
+        outcome.failure_kind = Some(crate::tool::ToolFailureKind::Unclassified);
     }
     outcome
 }
