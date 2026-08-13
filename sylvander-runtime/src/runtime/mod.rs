@@ -432,6 +432,7 @@ pub(crate) struct RuntimeRevisionProvider {
     observability: RuntimeObservability,
     execution_service: RuntimeExecutionService,
     sessions: Arc<dyn SessionStore>,
+    agent_workspace_store: Option<Arc<dyn AgentWorkspaceStore>>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Arc<dyn sylvander_agent::user_profile_provider::UserProfileProvider>,
     credential_resolver: Arc<dyn CredentialSecretResolver>,
@@ -777,13 +778,22 @@ impl RevisionedAgentRunProvider for RuntimeRevisionProvider {
             .configured_revision(agent_id, revision)
             .await
             .map_err(|error| error.to_string())?;
-        let session = self
+        let mut session = self
             .sessions
             .get(session_id)
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("unknown Session {session_id}"))?;
         if let Some(instance_id) = agent_instance_id {
+            if let Some(store) = &self.agent_workspace_store
+                && let Some(view) = store
+                    .workspace_view(&WorkspaceViewId::new(format!("agent:{}", instance_id.0)))
+                    .await
+                    .map_err(|error| error.to_string())?
+                && view.state == crate::coordination::workspace::WorkspaceViewState::Active
+            {
+                session.metadata.workspace = view.effective_workspace;
+            }
             configured
                 .attach_agent_instance(session_id.clone(), instance_id.clone(), session.metadata)
                 .await
@@ -4551,6 +4561,7 @@ impl Runtime {
             observability: observability.clone(),
             execution_service: execution_service.clone(),
             sessions: session_store.clone(),
+            agent_workspace_store: Some(sqlite_session_store.clone()),
             memory: memory_store.clone(),
             user_profiles: Arc::new(user_profiles.clone()),
             credential_resolver: credential_resolver.clone(),

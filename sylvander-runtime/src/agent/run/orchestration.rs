@@ -2000,16 +2000,20 @@ pub(super) async fn workspace_turn_context(
     let task_focus = task_workspace
         .and_then(|binding| binding.instruction_focus.clone())
         .unwrap_or_default();
-    let agent_target = agent_workspace.map(workspace_target);
+    let agent_target = agent_workspace.map(|binding| WorkspaceTarget {
+        id: binding.execution_target.clone(),
+        workspace_path: if task_workspace.is_none() {
+            fallback_task_workspace.to_path_buf()
+        } else {
+            binding.path.clone()
+        },
+        read_only: true,
+    });
     let task_target = Some(task_workspace.map_or_else(
         || WorkspaceTarget::local(fallback_task_workspace, true),
         |binding| WorkspaceTarget {
             id: binding.execution_target.clone(),
-            workspace_path: if binding.execution_target == "local" {
-                fallback_task_workspace.to_path_buf()
-            } else {
-                binding.path.clone()
-            },
+            workspace_path: fallback_task_workspace.to_path_buf(),
             read_only: true,
         },
     ));
@@ -2139,14 +2143,6 @@ pub(super) async fn workspace_turn_context(
     })
 }
 
-fn workspace_target(binding: &sylvander_api::SessionWorkspaceBinding) -> WorkspaceTarget {
-    WorkspaceTarget {
-        id: binding.execution_target.clone(),
-        workspace_path: binding.path.clone(),
-        read_only: true,
-    }
-}
-
 fn workspace_context_executor<'a>(
     execution_service: &'a RuntimeExecutionService,
     target: &WorkspaceTarget,
@@ -2200,9 +2196,7 @@ pub(super) fn tool_context_for_permissions(
         )
     });
     let target_id = binding.map_or("local", |binding| binding.execution_target.as_str());
-    let workspace = binding.map_or(metadata.workspace.as_path(), |binding| {
-        binding.path.as_path()
-    });
+    let workspace = metadata.workspace.as_path();
     let permission_read_only = permissions.file_access != sylvander_api::FileAccess::WorkspaceWrite;
     let read_only = permission_read_only || binding.is_some_and(|binding| binding.read_only);
     let mut agent_execution = AgentExecutionContext::restricted_for(
