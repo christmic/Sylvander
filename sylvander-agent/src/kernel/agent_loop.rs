@@ -405,6 +405,7 @@ pub fn run_stream(
                     return;
                 }
             };
+            let response_id = response.id.clone();
             yield AgentEvent::TurnTransition(required_turn_transition(
                 &mut machine,
                 TurnPhase::FinalizingModelResponse,
@@ -1039,6 +1040,7 @@ pub fn run_stream(
             //    events (chunks + tool calls) have fired.
             yield AgentEvent::IterationEnd {
                 iteration,
+                response_id,
                 usage: machine.cumulative_usage(),
                 provider_usage: machine.last_provider_usage(),
             };

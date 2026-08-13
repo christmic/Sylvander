@@ -182,6 +182,9 @@ pub enum AgentEvent {
     IterationEnd {
         /// Iteration number that just completed.
         iteration: u32,
+        /// Provider response identifier used to correlate external request
+        /// records without retaining credentials or request content.
+        response_id: String,
         /// Cumulative usage so far.
         usage: TokenUsage,
         /// Usage reported by this provider request only. Consumers use this

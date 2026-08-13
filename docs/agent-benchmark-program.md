@@ -49,11 +49,17 @@ aggregate pass rate, mean reward, latency, iterations, tool calls, token usage,
 and failure taxonomy, but it must not replace or reinterpret the benchmark's
 primary metric. Repeated runs are retained individually before aggregation.
 
+The user-facing meaning of every status, score, portfolio member, and execution
+profile is normative in `docs/agent-benchmark-scorecard.md`. In particular, a
+harness exception is not a verifier reward of zero, and a one-task smoke run is
+not an Agent capability baseline.
+
 ## Delivery order
 
 1. ATIF v1.7 value contract and fail-closed event recorder;
 2. Harbor Agent adapter plus a deterministic local task fixture;
-3. versioned Terminal-Bench smoke subset, then representative baseline;
+3. versioned Terminal-Bench adapter smoke, stratified regression subset, then
+   the full release baseline;
 4. SWE-bench prediction export and official-harness smoke task;
 5. τ³-bench half-duplex user/tool adapter;
 6. explicit regression thresholds only after repeat variance is measured.
@@ -61,6 +67,21 @@ primary metric. Repeated runs are retained individually before aggregation.
 Every live gate records exact code, harness, dataset, environment, and model
 coordinates. Missing infrastructure, credentials, verifier output, or terminal
 trajectory evidence is `not_run`/`infrastructure_error`, never a skip-pass.
+An upstream reward is retained verbatim even when post-run diagnostics find
+environment contamination; the scorecard marks that sample non-baseline rather
+than silently rewriting the benchmark's reward.
+The runner also checkpoints the public `AgentEvent` stream throughout the run;
+partial ATIF is retained after timeout or interruption and records request,
+retry, tool, usage/cache, and terminal lifecycle evidence without raw
+credentials. Verifier reward remains Harbor-owned and is never inferred from
+these operational events.
+
+The required portfolio is Terminal-Bench, SWE-bench Verified, τ³-bench text,
+and AgentBench FC. OSWorld and WebArena remain tracked but are outside the
+current implementation scope. The final acceptance artifact applies the
+capability levels defined in `docs/agent-benchmark-scorecard.md` and reports
+both a provisional subset level and, once every full suite is complete, a
+release level.
 
 ## Known capability gap
 

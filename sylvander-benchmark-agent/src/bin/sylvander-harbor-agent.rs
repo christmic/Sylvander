@@ -2,11 +2,16 @@ use std::env;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use sylvander_benchmark_agent::ProviderAudit;
 use sylvander_benchmark_agent::harbor::{HarborRunConfig, run_harbor_task};
 use sylvander_benchmark_agent::provider::{AgentProtocol, AgentProviderBinding, build_provider};
 
 #[tokio::main]
 async fn main() {
+    if env::args().any(|argument| argument == "--self-check") {
+        println!("sylvander-harbor-agent ready");
+        return;
+    }
     if let Err(error) = run().await {
         eprintln!("sylvander Harbor adapter failed: {error}");
         std::process::exit(1);
@@ -32,11 +37,13 @@ async fn run() -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .collect();
+    let provider_audit =
+        ProviderAudit::new(&provider_id, &protocol, &model_id, &base_url, &api_key);
     let provider = build_provider(
         &AgentProviderBinding {
             provider_id: provider_id.clone(),
             protocol: AgentProtocol::parse(&protocol).map_err(|error| error.to_string())?,
-            base_url,
+            base_url: base_url.clone(),
             provider_features,
         },
         api_key,
@@ -65,6 +72,8 @@ async fn run() -> Result<(), String> {
             max_output_tokens: arguments.max_output_tokens,
             timeout: Duration::from_secs(arguments.timeout_secs),
             environment_isolated,
+            trajectory_path: arguments.trajectory_file.clone(),
+            provider_audit,
         },
     )
     .await
@@ -75,11 +84,6 @@ async fn run() -> Result<(), String> {
         .rev()
         .find(|step| step.source == sylvander_benchmark_agent::Source::Agent)
         .map_or("", |step| step.message.as_str());
-    let encoded = serde_json::to_vec_pretty(&trajectory)
-        .map_err(|error| format!("failed to encode trajectory: {error}"))?;
-    tokio::fs::write(arguments.trajectory_file, encoded)
-        .await
-        .map_err(|error| format!("failed to write trajectory: {error}"))?;
     tokio::fs::write(arguments.final_answer_file, final_answer)
         .await
         .map_err(|error| format!("failed to write final answer: {error}"))?;

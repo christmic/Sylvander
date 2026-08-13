@@ -18,4 +18,4 @@ pub use atif::{
     Agent, FinalMetrics, Metrics, Observation, ObservationResult, Source, Step, ToolCall,
     Trajectory,
 };
-pub use recorder::{RecorderError, TrajectoryRecorder};
+pub use recorder::{ProviderAudit, RecorderError, TrajectoryRecorder, persist_trajectory};
