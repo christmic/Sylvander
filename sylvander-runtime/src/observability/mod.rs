@@ -611,11 +611,11 @@ impl RuntimeObservability {
                 session_id,
                 ..
             } => {
-                timing.tool_started.retain(
-                    |(active_session_id, active_turn_id, _), _| {
+                timing
+                    .tool_started
+                    .retain(|(active_session_id, active_turn_id, _), _| {
                         active_session_id != session_id || active_turn_id != turn_id
-                    },
-                );
+                    });
                 let started = timing
                     .turn_started
                     .remove(&(session_id.clone(), turn_id.clone()));
