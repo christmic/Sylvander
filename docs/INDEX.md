@@ -138,6 +138,10 @@ and this index in the same change.
   external Agent evaluation adapters, ATIF trajectories, and scoring ownership.
 - [agent-benchmark-program.md](agent-benchmark-program.md) — versioned Harbor,
   Terminal-Bench, SWE-bench, and τ³-bench evaluation strategy.
+- [agent-benchmark-runbook.md](agent-benchmark-runbook.md) — native arm64 image
+  qualification, live execution, failure triage, and L1 promotion procedure.
+- [agent-benchmark-cases.md](agent-benchmark-cases.md) — selected regression
+  tasks, their capability signals, and pass interpretation.
 - [module-sylvander-server.md](module-sylvander-server.md) —
   process composition root, configuration handoff, and shutdown ownership.
 - [module-sylvander-channel-dingtalk.md](module-sylvander-channel-dingtalk.md) —

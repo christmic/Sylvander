@@ -40,6 +40,15 @@ def _last_json_line(output: str) -> dict[str, object] | None:
     return None
 
 
+def _normalize_machine(machine: str) -> str:
+    aliases = {"arm64": "aarch64", "x86_64": "x86_64", "amd64": "x86_64"}
+    tokens = machine.strip().lower().split()
+    for token in reversed(tokens):
+        if token in aliases or token == "aarch64":
+            return aliases.get(token, token)
+    return tokens[-1] if tokens else ""
+
+
 class SylvanderAgent(BaseAgent):
     """Run Sylvander inside the task environment and emit native ATIF v1.7."""
 
@@ -57,6 +66,17 @@ class SylvanderAgent(BaseAgent):
 
     @override
     async def setup(self, environment: BaseEnvironment) -> None:
+        required_arch = self._get_env("SYLVANDER_HARBOR_REQUIRED_ARCH")
+        if required_arch:
+            detected = await environment.exec("uname -m", timeout_sec=10)
+            actual = _normalize_machine(detected.stdout or "")
+            expected = _normalize_machine(required_arch)
+            if detected.return_code != 0 or actual != expected:
+                raise RuntimeError(
+                    "benchmark image architecture mismatch: "
+                    f"required {expected}, detected {actual or 'unknown'}; "
+                    "emulation fallback is forbidden"
+                )
         host_binary = self._get_env("SYLVANDER_HARBOR_BINARY_HOST_PATH")
         if host_binary:
             prepare = await environment.exec(

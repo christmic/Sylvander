@@ -69,12 +69,12 @@ every command to Podman. Its only translation is Compose's
 `--project-directory`: the wrapper removes that unsupported `podman-compose`
 flag and uses its value as the Compose process working directory.
 
-On Apple Silicon, benchmark containers prefer an equivalent `linux/arm64`
-image. An upstream-pinned task image takes precedence over host architecture:
-when the official task supplies only `linux/amd64`, Harbor keeps that image and
-Podman uses QEMU rather than rebuilding or substituting the verifier. The run
-record must retain both host and image architectures so emulation overhead is
-visible and is never confused with Agent capability reward.
+On Apple Silicon, local benchmark containers must be native `linux/arm64`.
+Set `SYLVANDER_HARBOR_REQUIRED_ARCH=aarch64`; setup checks `uname -m` before
+installing the runner or making a model call and fails closed on amd64. QEMU is
+not an allowed fallback. If upstream has no arm64 image, build one from the
+pinned task sources, record its inputs and digests, and require the reference
+solution to pass before running Sylvander.
 
 The reference environment uses Podman client 6.1.0, Podman server 6.0.2, the
 `quay.io/podman/machine-os:6.0` AppleHV machine image, and podman-compose 1.6.0.

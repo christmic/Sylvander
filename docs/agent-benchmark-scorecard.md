@@ -59,9 +59,10 @@ and repetition count match. Dirty-worktree runs are diagnostic evidence, not
 release baselines.
 
 Environment evidence also records host and image architecture. Apple Silicon
-runs prefer equivalent `linux/arm64` images; an upstream-pinned amd64-only
-verifier remains `linux/amd64` under emulation so its reward stays comparable.
-Emulation time is reported as efficiency evidence and does not alter reward.
+local runs require native `linux/arm64`; emulation is forbidden. When upstream
+has no arm64 image, Sylvander rebuilds from pinned sources and requires a gold
+qualification. Locally rebuilt and upstream-prebuilt image digests form
+separate comparison tracks.
 
 ## Benchmark portfolio
 

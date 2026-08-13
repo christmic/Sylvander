@@ -147,11 +147,13 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-benchmark-agent --no-deps --lo
 External live runs additionally validate exported trajectories with Harbor's
 reference validator and retain the exact harness/dataset revision.
 
-On arm64 hosts, execution selects a semantically equivalent `linux/arm64`
-benchmark image first. A benchmark-pinned image is immutable evidence, however:
-if upstream publishes only `linux/amd64`, the run uses emulation and records the
-host/image architecture pair instead of rebuilding the verifier and losing
-score comparability.
+On arm64 hosts, local scored execution requires native `linux/arm64`. The
+adapter fails before model use when the container reports another architecture.
+If upstream publishes no arm64 image, rebuild from pinned sources and qualify
+the reference solution; never fall back to QEMU. Rebuilt and upstream-prebuilt
+digests are separate comparison tracks. The operational procedure is normative
+in `docs/agent-benchmark-runbook.md`, and selected tasks are explained in
+`docs/agent-benchmark-cases.md`.
 
 The Podman/Harbor installation gate is separate from a scored benchmark. The
 effective pinned Terminal-Bench 2.0 gate uses an architecture-matched static
