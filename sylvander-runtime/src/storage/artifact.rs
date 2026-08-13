@@ -67,6 +67,27 @@ impl RuntimeArtifactService {
             created_at: binding.created_at,
         }))
     }
+
+    /// Bind deterministic encrypted storage for one turn's perception calls.
+    pub(crate) fn bind_perception(
+        &self,
+        binding: ArtifactTurnBinding,
+    ) -> Result<Arc<dyn PerceptionArtifactStore>, EvidenceError> {
+        if binding.created_at < 0
+            || binding.agent_id.is_empty()
+            || binding.session_id.is_empty()
+            || binding.turn_id.is_empty()
+        {
+            return Err(EvidenceError::InvalidGovernedRecord);
+        }
+        let source_seed = source_seed(&binding);
+        Ok(Arc::new(BoundArtifactStore {
+            scope: self.store.governed_scope(binding.user_id)?,
+            source_seed,
+            store: self.store.clone(),
+            created_at: binding.created_at,
+        }))
+    }
 }
 
 struct BoundArtifactStore {

@@ -48,6 +48,10 @@ use sylvander_llm_core::{
 #[cfg(test)]
 use crate::agent::approval::ApprovalGrantContext;
 use crate::agent::approval::ApprovalMemory;
+use crate::agent::perception_execution::{
+    PerceptionEvaluationInput, PerceptionExecutionError, PerceptionExecutionRequest,
+    PerceptionExecutionResult, execute_perception,
+};
 use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::execution::RuntimeExecutionService;
 use crate::observability::RuntimeObservability;
@@ -540,6 +544,81 @@ impl AgentRun {
                 observed_at,
             )
             .await
+    }
+
+    /// Execute one explicitly requested perception specialist for paired
+    /// evaluation. This does not enable automatic auxiliary routing.
+    pub async fn evaluate_perception_specialist(
+        &self,
+        session: &AuthenticatedSession,
+        input: PerceptionEvaluationInput,
+    ) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
+        if !Arc::ptr_eq(&self.inner.session_authority, &session.authority) {
+            return Err(PerceptionExecutionError::Unauthorized);
+        }
+        let binding = self
+            .inner
+            .spec
+            .cognition
+            .binding(input.role)
+            .ok_or(PerceptionExecutionError::SpecialistNotConfigured)?;
+        let model = self
+            .inner
+            .runtime_models
+            .read()
+            .await
+            .available
+            .get(&binding.model)
+            .and_then(|model| model.exact.clone())
+            .ok_or(PerceptionExecutionError::SpecialistNotConfigured)?;
+        let metadata = self
+            .inner
+            .sessions
+            .read()
+            .await
+            .get(&AgentSessionKey::new(
+                session.session_id.clone(),
+                session.agent_instance_id.clone(),
+            ))
+            .map(|context| context.metadata.clone())
+            .ok_or(PerceptionExecutionError::Unauthorized)?;
+        let store = self
+            .inner
+            .session_store
+            .clone()
+            .ok_or(PerceptionExecutionError::Unavailable)?;
+        let artifacts = self
+            .inner
+            .artifact_service
+            .as_ref()
+            .ok_or(PerceptionExecutionError::Unavailable)?
+            .bind_perception(crate::storage::artifact::ArtifactTurnBinding {
+                user_id: metadata.user_id,
+                agent_id: self.inner.id.0.clone(),
+                session_id: session.session_id.0.clone(),
+                turn_id: input.turn_id.clone(),
+                created_at: now_secs(),
+            })
+            .map_err(|_| PerceptionExecutionError::Unavailable)?;
+        execute_perception(
+            store,
+            artifacts,
+            self.inner.model_provider.clone(),
+            PerceptionExecutionRequest {
+                session_id: session.session_id.clone(),
+                turn_id: input.turn_id,
+                agent_instance_id: session.agent_instance_id.clone(),
+                invocation_id: input.invocation_id,
+                modality: input.modality,
+                role: input.role,
+                model,
+                recovery_policy: input.recovery_policy,
+                media_type: input.media_type,
+                media_bytes: input.media_bytes,
+                media_block: input.media_block,
+            },
+        )
+        .await
     }
 
     /// Build a run around an immutable provider-qualified router.

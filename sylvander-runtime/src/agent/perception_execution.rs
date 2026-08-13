@@ -3,13 +3,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
 use futures_util::StreamExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sylvander_api::AgentInstanceId;
 use sylvander_llm_core::{
-    ChatMessage, ContentBlock, ModelInfo, ModelProvider, ModelRef, ModelRequest, ModelResponse,
-    ModelStreamEvent, StopReason, SystemInstruction, TokenUsage,
+    AudioFormat, ChatMessage, ContentBlock, MediaSource, ModelInfo, ModelProvider, ModelRef,
+    ModelRequest, ModelResponse, ModelStreamEvent, StopReason, SystemInstruction, TokenUsage,
     validate_model_request_capabilities,
 };
 
@@ -44,6 +45,21 @@ pub struct PerceptionExecutionRequest {
     pub media_block: ContentBlock,
 }
 
+/// Explicit input for the evidence-gathering path. Runtime does not invoke
+/// this path automatically; benchmark or evaluation code must hold an
+/// authenticated Session capability and choose one configured role.
+#[derive(Clone)]
+pub struct PerceptionEvaluationInput {
+    pub turn_id: String,
+    pub invocation_id: PerceptionInvocationId,
+    pub modality: PerceptionModality,
+    pub role: CognitiveRole,
+    pub recovery_policy: PerceptionRecoveryPolicy,
+    pub media_type: String,
+    pub media_bytes: Vec<u8>,
+    pub media_block: ContentBlock,
+}
+
 /// Bounded model-visible result returned to the primary model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerceptionExecutionResult {
@@ -58,6 +74,12 @@ pub struct PerceptionExecutionResult {
 /// Content-safe specialist failure. Durable position remains authoritative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PerceptionExecutionError {
+    #[error("perception evaluation is not authorized")]
+    Unauthorized,
+    #[error("perception specialist is not configured")]
+    SpecialistNotConfigured,
+    #[error("perception execution infrastructure is unavailable")]
+    Unavailable,
     #[error("perception request is invalid")]
     InvalidRequest,
     #[error("perception model is incompatible")]
@@ -337,7 +359,12 @@ fn validate_request(request: &PerceptionExecutionRequest) -> Result<(), Percepti
         || request.media_type.trim().is_empty()
         || request.media_bytes.is_empty()
         || !role_matches_modality(request.role, request.modality)
-        || !block_matches_modality(&request.media_block, request.modality)
+        || !block_matches_input(
+            &request.media_block,
+            request.modality,
+            &request.media_type,
+            &request.media_bytes,
+        )
     {
         return Err(PerceptionExecutionError::InvalidRequest);
     }
@@ -353,13 +380,42 @@ const fn role_matches_modality(role: CognitiveRole, modality: PerceptionModality
     )
 }
 
-const fn block_matches_modality(block: &ContentBlock, modality: PerceptionModality) -> bool {
-    matches!(
-        (block, modality),
-        (ContentBlock::Image { .. }, PerceptionModality::Image)
-            | (ContentBlock::Audio { .. }, PerceptionModality::Audio)
-            | (ContentBlock::Document { .. }, PerceptionModality::Document)
-    )
+fn block_matches_input(
+    block: &ContentBlock,
+    modality: PerceptionModality,
+    media_type: &str,
+    bytes: &[u8],
+) -> bool {
+    let encoded = match (block, modality) {
+        (ContentBlock::Image { image }, PerceptionModality::Image) => match &image.source {
+            MediaSource::Base64 {
+                media_type: block_type,
+                data,
+            } if block_type == media_type => data,
+            MediaSource::Base64 { .. } | MediaSource::Url { .. } => return false,
+        },
+        (ContentBlock::Document { document }, PerceptionModality::Document) => {
+            match &document.source {
+                MediaSource::Base64 {
+                    media_type: block_type,
+                    data,
+                } if block_type == media_type => data,
+                MediaSource::Base64 { .. } | MediaSource::Url { .. } => return false,
+            }
+        }
+        (ContentBlock::Audio { audio }, PerceptionModality::Audio)
+            if matches!(
+                (audio.format, media_type),
+                (AudioFormat::Wav, "audio/wav" | "audio/x-wav") | (AudioFormat::Mp3, "audio/mpeg")
+            ) =>
+        {
+            &audio.data
+        }
+        _ => return false,
+    };
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .is_ok_and(|decoded| decoded == bytes)
 }
 
 const fn specialist_instruction(modality: PerceptionModality) -> &'static str {
