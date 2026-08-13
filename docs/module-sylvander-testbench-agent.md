@@ -63,7 +63,9 @@ The initial benchmark families are:
    environments;
 2. SWE-bench-compatible patch export and official Docker verification for
    real repository issues;
-3. τ³-bench half-duplex integration for policy-bound tool/user interaction.
+3. τ³-bench half-duplex integration for policy-bound tool/user interaction,
+   after the production Agent supports externally executed tool suspension and
+   resume.
 
 The first executable slice targets Harbor terminal tasks because Sylvander
 already owns coding tools and a Runtime-selected workspace executor. SWE-bench

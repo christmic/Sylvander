@@ -2,8 +2,10 @@
 
 This directory contains the thin Harbor-side adapter. It requires a Linux build
 of `sylvander-harbor-agent` at
-`/opt/sylvander/bin/sylvander-harbor-agent` in the Agent task image. The adapter
-does not install compilers or mutate the benchmark dataset at runtime.
+`/opt/sylvander/bin/sylvander-harbor-agent` in the Agent task image. Alternatively,
+set `SYLVANDER_HARBOR_BINARY_HOST_PATH` to a prebuilt Linux executable; Harbor's
+environment transport uploads it during `setup`. The adapter does not install
+compilers or mutate the benchmark dataset at runtime.
 
 Run it as a custom Harbor Agent using the pinned source contract:
 

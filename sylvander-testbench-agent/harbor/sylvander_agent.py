@@ -32,6 +32,19 @@ class SylvanderAgent(BaseAgent):
 
     @override
     async def setup(self, environment: BaseEnvironment) -> None:
+        host_binary = self._get_env("SYLVANDER_HARBOR_BINARY_HOST_PATH")
+        if host_binary:
+            prepare = await environment.exec(
+                "mkdir -p /opt/sylvander/bin", user="root", timeout_sec=10
+            )
+            if prepare.return_code != 0:
+                raise RuntimeError("failed to prepare Sylvander binary directory")
+            await environment.upload_file(Path(host_binary), self.BINARY)
+            chmod = await environment.exec(
+                f"chmod 755 {shlex.quote(self.BINARY)}", user="root", timeout_sec=10
+            )
+            if chmod.return_code != 0:
+                raise RuntimeError("failed to install Sylvander benchmark binary")
         result = await environment.exec(
             f"test -x {shlex.quote(self.BINARY)}", timeout_sec=10
         )

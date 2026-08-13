@@ -19,9 +19,10 @@ policy-bound API use.
   retain `instance_id`, patch, and Agent/model identity, while normalized
   Sylvander evidence excludes patch contents.
 - [τ³-bench](https://github.com/sierra-research/tau2-bench) is the current
-  successor to the outdated original τ-bench tasks. Its half-duplex Agent
-  contract accepts user/tool messages and returns assistant messages, which
-  maps to a future Runtime interaction adapter rather than the terminal runner.
+  successor to the outdated original τ-bench tasks. Sylvander pins its current
+  adapter evidence to `79975ac5741e23fbb1d2ac44262d62398a6d87bd`, including
+  `src/tau2/agent/base_agent.py`, `base/participant.py`,
+  `data_model/message.py`, and `orchestrator/orchestrator.py`.
 
 AgencyBench and general browser/desktop suites remain tracked candidates, not
 initial gates: their visual, browser, research, or very-long-horizon scenarios
@@ -60,3 +61,19 @@ primary metric. Repeated runs are retained individually before aggregation.
 Every live gate records exact code, harness, dataset, environment, and model
 coordinates. Missing infrastructure, credentials, verifier output, or terminal
 trajectory evidence is `not_run`/`infrastructure_error`, never a skip-pass.
+
+## Known capability gap
+
+τ³ half-duplex execution requires `generate_next_message` to return either user
+text or a structured tool call; its orchestrator executes that domain tool and
+passes a `ToolMessage` into the next call. Sylvander's current `AgentLoop`
+authorizes and executes a registered tool internally before continuing its next
+model iteration. It has no production port for suspending on an externally
+owned tool call and resuming from an external result. Therefore τ³ cells are
+`not_applicable_capability` for the current Agent revision. A direct-model
+adapter would measure the provider rather than Sylvander and is forbidden.
+
+Closing this gap requires an Agent/Runtime feature with focused module tests:
+an externally executed tool boundary that preserves immutable turn authority,
+call correlation, authorization, durable suspension, and restart-safe resume.
+Only then may the testbench add the thin τ³ `HalfDuplexAgent` bridge.
