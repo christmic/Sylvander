@@ -226,6 +226,11 @@ optional nano-USD cost, and source Session identity. These are read-only run
 artifacts: the inspector formats them for display, clears them on selection
 change/removal, and never recomputes provider usage or price locally.
 
+An active or locally admitted turn replaces Send with Stop. Stop emits the
+public `Interrupt` command exactly once and remains pending until Runtime emits
+a terminal event. Desktop never treats command delivery as proof that execution
+has stopped.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled

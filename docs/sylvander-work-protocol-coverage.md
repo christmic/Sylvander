@@ -20,7 +20,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `Chat` | text complete | attachments and authoritative `TurnStarted` integration |
 | `Approve` | complete | renders only Runtime `allowed_scopes`, defaulting to protocol `Once` |
 | `Answer` | complete | none |
-| `Interrupt` | typed only | expose active-turn stop control |
+| `Interrupt` | complete | stop remains pending until a Runtime terminal event |
 | `ResolvePlan` | complete | none |
 | `CancelTask` | complete | none |
 | `DiscoverAgents` | complete | richer Agent selection metadata |

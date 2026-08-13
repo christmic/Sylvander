@@ -41,6 +41,7 @@ export interface RuntimeViewState {
     options: string[];
     multiSelect: boolean;
   };
+  interruptingSessionIds: string[];
   diagnostic?: string;
 }
 
@@ -51,6 +52,7 @@ const initialState: RuntimeViewState = {
   transcript: [],
   plan: [],
   tasks: [],
+  interruptingSessionIds: [],
 };
 
 // Retry scheduling is presentation orchestration only. Each attempt still
@@ -72,6 +74,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const frameRef = useRef<number | undefined>(undefined);
   const terminalSequenceRef = useRef(0);
   const localTurnStateRef = useRef(new Map<string, "waiting" | "active">());
+  const interruptingSessionsRef = useRef(new Set<string>());
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
 
@@ -214,6 +217,9 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         } else {
           setState((current) => ({
             ...current,
+            interruptingSessionIds: current.interruptingSessionIds.filter(
+              (sessionId) => sessionId !== message.session_id,
+            ),
             sessions: current.sessions.map((session) => session.id === message.session_id
               ? { ...session, label: message.label ?? session.label }
               : session),
@@ -433,6 +439,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "error":
       case "turn_interrupted":
         localTurnStateRef.current.delete(message.session_id);
+        interruptingSessionsRef.current.delete(message.session_id);
         if (message.session_id === selectedRef.current) {
           flushPendingDeltas(message.session_id);
           terminalSequenceRef.current += 1;
@@ -443,6 +450,9 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             : message.type === "turn_interrupted" ? message.reason : undefined;
           setState((current) => ({
             ...current,
+            interruptingSessionIds: current.interruptingSessionIds.filter(
+              (sessionId) => sessionId !== message.session_id,
+            ),
             approval: undefined,
             question: undefined,
             activePlan: undefined,
@@ -636,6 +646,29 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     }
   }, [submit]);
 
+  const interruptTurn = useCallback(async (sessionId: string) => {
+    const session = state.sessions.find((candidate) => candidate.id === sessionId);
+    if (!session || !["active", "waiting"].includes(session.state)
+      || interruptingSessionsRef.current.has(sessionId)) return;
+    interruptingSessionsRef.current.add(sessionId);
+    setState((current) => ({
+      ...current,
+      interruptingSessionIds: [...current.interruptingSessionIds, sessionId],
+    }));
+    try {
+      await submit({ type: "interrupt", session_id: sessionId });
+    } catch (error) {
+      interruptingSessionsRef.current.delete(sessionId);
+      setState((current) => ({
+        ...current,
+        interruptingSessionIds: current.interruptingSessionIds.filter(
+          (candidate) => candidate !== sessionId,
+        ),
+        diagnostic: safeDiagnostic(error),
+      }));
+    }
+  }, [state.sessions, submit]);
+
   return {
     state,
     submit,
@@ -644,6 +677,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     resolvePlan,
     cancelTask,
     sendChat,
+    interruptTurn,
   };
 }
 

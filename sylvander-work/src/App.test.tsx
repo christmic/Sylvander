@@ -257,6 +257,38 @@ describe("Sylvander Work", () => {
     await waitFor(() => expect(composer.hasAttribute("disabled")).toBe(false));
   });
 
+  it("requests interruption once and waits for the Runtime terminal", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Interrupt", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    const composer = await screen.findByRole("textbox", { name: "Message Sylvander" });
+    fireEvent.change(composer, { target: { value: "Long task" } });
+    act(() => screen.getByRole("button", { name: "Send" }).click());
+    const stop = await screen.findByRole("button", { name: "Stop" });
+    act(() => {
+      stop.click();
+      stop.click();
+    });
+    await waitFor(() => expect(gateway.commands.filter((command) => command.type === "interrupt")).toEqual([
+      { type: "interrupt", session_id: "session-1" },
+    ]));
+    expect(stop.hasAttribute("disabled")).toBe(true);
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "turn_interrupted", session_id: "session-1", reason: "Stopped by user",
+    } }));
+    expect(await screen.findByText("Stopped by user")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+  });
+
   it("rolls back the local turn lock when native chat submission fails", async () => {
     const gateway = new TestGateway();
     gateway.rejectChat = true;
