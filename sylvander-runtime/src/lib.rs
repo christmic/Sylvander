@@ -85,10 +85,8 @@ use session::identity_binding as identity_binding_service;
 mod identity_binding_service_tests;
 /// Session-owned MCP lifecycle and process-environment boundary.
 pub(crate) mod mcp;
-/// Legacy stdio connection mechanics retained only while they are moved under
-/// the Session-owned MCP runtime.
-#[allow(dead_code)]
-pub(crate) mod mcp_stdio;
+#[cfg(test)]
+use mcp::stdio as mcp_stdio;
 mod memory_maintenance;
 #[cfg(test)]
 #[path = "../tests/unit/model_registry.rs"]
@@ -158,7 +156,7 @@ use tracing::{info, warn};
 #[cfg(test)]
 use crate::agent_definition::AgentSpec;
 use crate::agent_definition::{AgentId, SessionId};
-use crate::mcp_stdio::McpResultArtifactSink;
+use crate::mcp::stdio::McpResultArtifactSink;
 pub use crate::observability::{
     RUNTIME_DURATION_BUCKET_UPPER_BOUNDS_MICROS, RuntimeDurationHistogramSnapshot,
     RuntimeObservabilitySnapshot,

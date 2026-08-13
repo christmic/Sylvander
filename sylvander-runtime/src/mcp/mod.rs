@@ -6,6 +6,7 @@
 //! MCP protocol or process authority.
 
 mod session;
+pub(crate) mod stdio;
 
 pub(crate) use session::{SessionMcpBinding, SessionMcpRuntimeService};
 

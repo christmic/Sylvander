@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::agent_definition::{AgentSpec, ToolRef};
 use crate::mcp::{SessionMcpBinding, SessionMcpRuntimeService};
-use crate::mcp_stdio::McpResultArtifactSink;
+use crate::mcp::stdio::McpResultArtifactSink;
 use crate::observability::RuntimeObservability;
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use sylvander_agent::memory::curated::MemoryCandidateSink;

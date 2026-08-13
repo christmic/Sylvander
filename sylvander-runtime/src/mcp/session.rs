@@ -20,7 +20,7 @@ use crate::execution::{
     PersistentProcessOwner, PersistentResourceLimits, RuntimeExecutionService,
 };
 use crate::mcp::SECRET_REFERENCE_PREFIX;
-use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
+use crate::mcp::stdio::{McpResultArtifactSink, McpStdioClient};
 use sylvander_agent::tool::ToolRegistry;
 use sylvander_api::{AgentId, AgentSecretReference};
 

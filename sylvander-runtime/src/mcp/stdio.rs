@@ -1355,5 +1355,5 @@ fn ceil_char_boundary(value: &str, mut index: usize) -> usize {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/mcp_stdio.rs"]
+#[path = "../../tests/unit/mcp_stdio.rs"]
 mod tests;
