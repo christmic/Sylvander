@@ -34,7 +34,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `UserProfile` | complete | owner-scoped typed CRUD, privacy controls, export, and conflict reload |
 | `IdentityBinding` | complete | one-time challenge handling, confirm/resolve, and revision-bound unlink |
 | `AgentAdmin` | complete | redacted inspect/list plus complete write-only definition staging and explicit activate/rollback |
-| `RegistryAdmin` | designed | redacted inspection plus explicit revisioned mutation surfaces |
+| `RegistryAdmin` | complete | redacted Provider/Model/Credential inspection plus complete typed lifecycle mutations |
 | `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
 | `ForkSession` | complete end-to-end for checkpoints | completed-turn rewind editor |
 | `RestoreSession` | complete end-to-end | UI waits for `SessionUpdated` before refreshing active/archive lists |
@@ -69,7 +69,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | profile responses | complete | owner-visible ephemeral projection; no transcript, diagnostics, or local persistence |
 | identity responses | complete | one-time secret lifecycle and binding revision projection |
 | Agent admin responses | complete | staged revision remains inactive; conflicts refresh; activation/rollback remain authoritative |
-| Registry admin responses | designed | redacted views, typed conflicts, and no optimistic mutation |
+| Registry admin responses | complete | separate revision/generation projections, conflict refresh, and no optimistic mutation |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
 | workspace rollback lifecycle | complete | preview, restored files, and failure |
 | coding Session lifecycle | complete | diff, accepted, discarded, and operation failure |

@@ -1825,7 +1825,8 @@ function applyRegistryMutation(
     || result.operation === "provider_revision_rolled_back") {
     const activated = result.operation === "provider_revision_activated"
       || result.operation === "provider_revision_rolled_back"
-      || result.operation === "provider_created";
+      || result.operation === "provider_created"
+      || result.revision.active;
     const activeRevision = activated ? result.revision.definition.revision : registry.provider?.activeRevision ?? 0;
     return { ...current, registryAdministration: { ...registry, status: "ready", pendingOperation: undefined, notice: registrySuccessNotice(result.operation), provider: {
       id: result.revision.definition.provider_id,
@@ -1840,7 +1841,8 @@ function applyRegistryMutation(
     || result.operation === "model_revision_rolled_back") {
     const activated = result.operation === "model_revision_activated"
       || result.operation === "model_revision_rolled_back"
-      || result.operation === "model_created";
+      || result.operation === "model_created"
+      || result.revision.active;
     const activeRevision = activated ? result.revision.definition.revision : registry.model?.activeRevision ?? 0;
     return { ...current, registryAdministration: { ...registry, status: "ready", pendingOperation: undefined, notice: registrySuccessNotice(result.operation), model: {
       providerId: result.revision.definition.provider_id,
@@ -1854,7 +1856,7 @@ function applyRegistryMutation(
     || result.operation === "credential_generation_staged") {
     const bindingId = registryBindingId(request);
     if (!bindingId) return current;
-    const activated = result.operation === "credential_binding_created";
+    const activated = result.operation === "credential_binding_created" || result.generation.active;
     const activeGeneration = activated ? result.generation.generation : registry.credential?.activeGeneration ?? 0;
     return { ...current, registryAdministration: { ...registry, status: "ready", pendingOperation: undefined, notice: registrySuccessNotice(result.operation), credential: {
       bindingId,

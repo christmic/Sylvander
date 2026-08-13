@@ -202,6 +202,11 @@ kbd, code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .definition-editor label { display: grid; gap: 4px; color: var(--muted); font-size: 10px; }.definition-editor label:has(input[type="checkbox"]) { display: flex; align-items: center; }
 .definition-editor input:not([type="checkbox"]), .definition-editor select, .definition-editor textarea { width: 100%; min-width: 0; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
 .definition-editor textarea { min-height: 88px; resize: vertical; }.definition-row > input, .definition-row > select, .definition-row > label { flex: 1; }
+.registry-section { display: grid; gap: 10px; }.registry-section > h3, .registry-section > p { margin: 0; }
+.registry-section label, .registry-section fieldset { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.registry-section label:has(input[type="checkbox"]) { display: flex; align-items: center; }
+.registry-section input:not([type="checkbox"]), .registry-section select { width: 100%; min-width: 0; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+.admin-revision { display: grid; gap: 6px; padding: 10px; border-bottom: 1px solid var(--line-soft); }.admin-revision h3, .admin-revision p { margin: 0; }
 .changes-panel { display: grid; gap: 12px; min-height: 0; padding: 16px; }
 .changes-panel pre { max-height: 52vh; margin: 0; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #09080a; color: var(--text); white-space: pre-wrap; }
 .changes-panel h3, .changes-panel p { margin: 0; }.changes-panel hr { width: 100%; border: 0; border-top: 1px solid var(--line); }

@@ -4,6 +4,7 @@ import crabMark from "../../docs/design/final-brand/sylvander-seed-crab-characte
 import { AgentAdministration } from "./AgentAdministration";
 import { IdentitySettings } from "./IdentitySettings";
 import { ProfileSettings } from "./ProfileSettings";
+import { RegistryAdministration } from "./RegistryAdministration";
 import type { ApprovalScope, ReasoningEffort, RuntimeGatewayPort, RuntimePermissionProfile, RuntimeSessionConfigPatch } from "./lib/gateway";
 import { useRuntime, type RuntimeViewState } from "./lib/useRuntime";
 
@@ -12,7 +13,7 @@ export interface AppProps {
 }
 
 export default function App({ gateway }: AppProps) {
-  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, resolveMemoryConfirmation, requestUserProfile, clearUserProfile, requestIdentityBinding, clearIdentityBinding, clearIdentityChallenge, requestAgentAdministration, clearAgentAdministration, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
+  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, resolveMemoryConfirmation, requestUserProfile, clearUserProfile, requestIdentityBinding, clearIdentityBinding, clearIdentityChallenge, requestAgentAdministration, clearAgentAdministration, requestRegistryAdministration, clearRegistryAdministration, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [inspector, setInspector] = useState<"plan" | "tasks" | "changes" | "context">("plan");
@@ -31,6 +32,7 @@ export default function App({ gateway }: AppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountView, setAccountView] = useState<"profile" | "identity" | undefined>();
   const [agentAdministrationOpen, setAgentAdministrationOpen] = useState(false);
+  const [registryAdministrationOpen, setRegistryAdministrationOpen] = useState(false);
   const [modelIndex, setModelIndex] = useState("0");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("off");
   const [permissionProfile, setPermissionProfile] = useState<RuntimePermissionProfile>({
@@ -252,6 +254,7 @@ export default function App({ gateway }: AppProps) {
 
   function openAgentAdministration() {
     setAgentAdministrationOpen(true);
+    setRegistryAdministrationOpen(false);
     setInspectorOpen(false);
     closeAccount();
     const agent = state.agents[0];
@@ -265,6 +268,19 @@ export default function App({ gateway }: AppProps) {
   function closeAgentAdministration() {
     setAgentAdministrationOpen(false);
     clearAgentAdministration();
+  }
+
+  function openRegistryAdministration() {
+    setRegistryAdministrationOpen(true);
+    setAgentAdministrationOpen(false);
+    clearAgentAdministration();
+    setInspectorOpen(false);
+    closeAccount();
+  }
+
+  function closeRegistryAdministration() {
+    setRegistryAdministrationOpen(false);
+    clearRegistryAdministration();
   }
 
   async function patchSessionConfiguration(operation: "set" | "inherit") {
@@ -303,6 +319,7 @@ export default function App({ gateway }: AppProps) {
       <div className="rail-actions">
         <button className="rail-button active" aria-label="Work" aria-current="page" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(!sidebarOpen)}><span>◫</span></button>
         <button className="rail-button" aria-label="Agents" disabled={!state.protocol?.capabilities.includes("agent_administration")} onClick={openAgentAdministration}><span>◎</span></button>
+        <button className="rail-button" aria-label="Registry" disabled={!state.protocol?.capabilities.includes("registry_administration")} onClick={openRegistryAdministration}><span>≋</span></button>
         <button className="rail-button" aria-label="Automations"><span>⌁</span></button>
       </div>
       <button className="rail-button settings" aria-label="Account settings" disabled={!state.protocol?.capabilities.some((capability) => capability === "user_profile_v1" || capability === "identity_binding_v1")} onClick={() => state.protocol?.capabilities.includes("user_profile_v1") ? openUserProfile() : openIdentityBinding()}><span>⚙</span></button>
@@ -424,6 +441,7 @@ export default function App({ gateway }: AppProps) {
     {accountView === "profile" && <ProfileSettings state={state.userProfile} onClose={closeAccount} onOpenIdentity={state.protocol?.capabilities.includes("identity_binding_v1") ? openIdentityBinding : undefined} onRequest={requestUserProfile} />}
     {accountView === "identity" && <IdentitySettings state={state.identityBinding} onClose={closeAccount} onOpenProfile={state.protocol?.capabilities.includes("user_profile_v1") ? openUserProfile : undefined} onClearChallenge={clearIdentityChallenge} onRequest={requestIdentityBinding} />}
     {agentAdministrationOpen && <AgentAdministration agents={state.agents} state={state.agentAdministration} onClose={closeAgentAdministration} onRequest={requestAgentAdministration} />}
+    {registryAdministrationOpen && <RegistryAdministration state={state.registryAdministration} onClose={closeRegistryAdministration} onRequest={requestRegistryAdministration} />}
 
     {inspectorOpen && <aside className="inspector" aria-label="Session inspector">
       <header><div><span className="eyebrow">Live work</span><h2>Execution</h2></div><button className="icon-button" onClick={() => setInspectorOpen(false)} aria-label="Close inspector">×</button></header>
