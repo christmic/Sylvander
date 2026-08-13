@@ -32,7 +32,7 @@ use sylvander_agent::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy}
 use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
 use sylvander_api::session::{SessionConfigOverrides, SessionEffectiveConfig};
-use sylvander_api::{CoordinationMessageId, HandoffId, TaskId, UserId};
+use sylvander_api::{AgentInstanceId, CoordinationMessageId, HandoffId, TaskId, UserId};
 
 // ---------------------------------------------------------------------------
 // SessionLifetime
@@ -243,6 +243,7 @@ pub enum TurnFailureKind {
 pub struct TurnSnapshot {
     pub session_id: SessionId,
     pub turn_id: String,
+    pub agent_instance_id: AgentInstanceId,
     pub config_revision: u64,
     pub effective_config: SessionEffectiveConfig,
     pub created_at: i64,
@@ -256,6 +257,7 @@ pub struct TurnSnapshot {
 pub struct TurnStart {
     pub session_id: SessionId,
     pub turn_id: String,
+    pub agent_instance_id: AgentInstanceId,
     pub config_revision: u64,
     pub effective_config: SessionEffectiveConfig,
     pub user_content: JsonValue,

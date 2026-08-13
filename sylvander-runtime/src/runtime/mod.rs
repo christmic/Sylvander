@@ -572,7 +572,7 @@ struct SessionPinClosure {
     changed: bool,
 }
 
-fn initial_session_membership(
+pub(crate) fn initial_session_membership(
     session: &StoredSession,
     effective: &SessionEffectiveConfig,
 ) -> Result<SessionMembership, RuntimeError> {

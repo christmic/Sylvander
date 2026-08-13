@@ -1,5 +1,11 @@
 use super::*;
 use crate::execution::LocalExecutor;
+use crate::storage::agent_instance::AgentInstanceStore;
+use crate::storage::session::{
+    ModelInvocationId, ModelIterationStart, ModelResponsePersistence, RecoveryClassification,
+    ToolCallAdvance, ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId,
+    ToolRecoveryWrite,
+};
 use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
 use sylvander_agent::approval::ToolApprovalFacts;
@@ -8,7 +14,9 @@ use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::memory::store::InMemoryMemoryStore;
 use sylvander_agent::tool::DynamicToolSource;
 use sylvander_agent::tool::ToolExecutor as _;
-use sylvander_agent::tool::invocation::ToolInvocationClass;
+use sylvander_agent::tool::invocation::{
+    ToolInvocationClass, ToolRecoveryPolicy, prepared_input_digest,
+};
 use sylvander_agent::tool::{ToolExecutionMode, ToolExecutionPolicy};
 use sylvander_agent::tools::{ReadTool, WriteTool};
 use sylvander_api::{Recipient, StreamEvent};
@@ -1352,13 +1360,6 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
 
 #[tokio::test]
 async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
-    use crate::storage::session::{
-        ModelInvocationId, ModelIterationStart, ModelResponsePersistence, RecoveryClassification,
-        ToolCallAdvance, ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId,
-        ToolRecoveryWrite,
-    };
-    use sylvander_agent::tool::invocation::{ToolRecoveryPolicy, prepared_input_digest};
-
     let store = Arc::new(
         crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
@@ -1393,6 +1394,15 @@ async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
     );
     session.effective_config = Some(run.inner.direct_session_config(&metadata).await);
     store.save(&session).await.unwrap();
+    let membership = crate::runtime::initial_session_membership(
+        &session,
+        session.effective_config.as_ref().unwrap(),
+    )
+    .unwrap();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
     run.attach_authenticated_session(issuer.issue(session_id.clone(), metadata).unwrap())
         .await
         .unwrap();
@@ -1404,6 +1414,7 @@ async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
             TurnStart {
                 session_id: session_id.clone(),
                 turn_id: "turn-replay".into(),
+                agent_instance_id: membership.governance.moderator_instance_id,
                 config_revision: 0,
                 effective_config: session.effective_config.unwrap(),
                 user_content: serde_json::json!({"role":"user","content":"read"}),

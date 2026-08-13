@@ -2,6 +2,12 @@ use super::*;
 use std::path::PathBuf;
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
 
+use crate::agent::instance::{
+    AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute,
+    HistoryView, SessionAgentRole,
+};
+use crate::session::membership::{SessionGovernance, SessionMembership};
+use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::session::{
     ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryReason,
 };
@@ -12,6 +18,52 @@ use crate::storage::workspace_journal::WorkspaceJournal;
 /// authenticated subject.
 fn ctx() -> sylvander_api::SessionContext {
     sylvander_api::SessionContext::new("user-1", "agent-1", "sess-1")
+}
+
+fn turn_instance() -> AgentInstanceId {
+    AgentInstanceId::new("test-instance")
+}
+
+async fn persist_turn_member(
+    store: &SqliteSessionStore,
+    session: &StoredSession,
+    effective: &sylvander_api::SessionEffectiveConfig,
+) {
+    let instance_id = turn_instance();
+    let membership = SessionMembership::new(
+        session.id.clone(),
+        vec![AgentInstance {
+            instance_id: instance_id.clone(),
+            session_id: session.id.clone(),
+            definition: AgentDefinitionKey {
+                agent_id: effective.agent_id.clone(),
+                revision: effective.agent_revision,
+            },
+            origin: AgentInstanceOrigin::Defined,
+            role: SessionAgentRole::Moderator,
+            history_view: HistoryView::SharedLane { cursor: 0 },
+            approval_route: ApprovalRoute::User,
+            state: AgentInstanceState::Ready,
+            lifecycle_revision: 0,
+            capability_revision: "test-capability".into(),
+            created_at: session.created_at,
+            updated_at: session.updated_at,
+        }],
+        SessionGovernance {
+            session_id: session.id.clone(),
+            moderator_instance_id: instance_id,
+            governance_revision: "test-governance".into(),
+            membership_revision: 0,
+            lease_epoch: 1,
+            fencing_token: 1,
+            updated_at: session.updated_at,
+        },
+    )
+    .unwrap();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
 }
 
 fn test_meta() -> SessionMetadata {
@@ -64,12 +116,14 @@ async fn unknown_model_outcome_survives_restart_and_persists_manual_decision() {
         let mut session = make_session("model-crash", SessionLifetime::Persistent);
         session.effective_config = Some(effective_config());
         store.save(&session).await.unwrap();
+        persist_turn_member(&store, &session, &effective_config()).await;
         store
             .begin_turn(
                 &ctx(),
                 TurnStart {
                     session_id: session.id.clone(),
                     turn_id: "turn-crash".into(),
+                    agent_instance_id: turn_instance(),
                     config_revision: 0,
                     effective_config: effective_config(),
                     user_content: serde_json::json!({"role":"user","content":"crash"}),
@@ -206,6 +260,7 @@ async fn save_and_get() {
     });
     session.effective_config = Some(effective_config());
     store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
 
     let found = store.get(&SessionId::new("s1")).await.unwrap();
     assert!(found.is_some());
@@ -252,6 +307,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     let session = make_session("s1", SessionLifetime::Persistent);
     store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
     let effective = effective_config();
     let overrides = sylvander_api::SessionConfigOverrides {
         model: Some(sylvander_api::ModelSelection {
@@ -281,6 +337,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     let start = TurnStart {
         session_id: session.id.clone(),
         turn_id: "turn-1".into(),
+        agent_instance_id: turn_instance(),
         config_revision: 1,
         effective_config: effective.clone(),
         user_content: serde_json::json!({"role": "user", "content": "hello"}),
@@ -289,10 +346,22 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     let message = store.begin_turn(&ctx(), start.clone()).await.unwrap();
     assert_eq!(message.seq, 0);
     let snapshot = store.turn(&session.id, "turn-1").await.unwrap().unwrap();
+    assert_eq!(snapshot.agent_instance_id, turn_instance());
     assert_eq!(snapshot.config_revision, 1);
     assert_eq!(snapshot.effective_config, effective);
     assert_eq!(snapshot.state, TurnState::Running);
     assert_eq!(snapshot.ended_at, None);
+
+    let mut unknown_instance = start.clone();
+    unknown_instance.turn_id = "turn-unknown-instance".into();
+    unknown_instance.agent_instance_id = AgentInstanceId::new("unknown");
+    assert!(matches!(
+        store
+            .begin_turn(&ctx(), unknown_instance)
+            .await
+            .unwrap_err(),
+        SessionStoreError::Invalid(_)
+    ));
 
     let assistant = store
         .complete_turn(
@@ -348,6 +417,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     let stale = TurnStart {
         session_id: session.id.clone(),
         turn_id: "turn-stale".into(),
+        agent_instance_id: turn_instance(),
         config_revision: 0,
         effective_config: effective_config(),
         user_content: serde_json::json!({"role": "user", "content": "stale"}),
@@ -379,6 +449,7 @@ async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     let session = make_session("model-ledger", SessionLifetime::Persistent);
     store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
     let effective = effective_config();
     store
         .update_config(
@@ -395,6 +466,7 @@ async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-model-ledger".into(),
+                agent_instance_id: turn_instance(),
                 config_revision: 1,
                 effective_config: effective,
                 user_content: serde_json::json!({"role":"user","content":"recover"}),
@@ -596,12 +668,14 @@ async fn tool_lifecycle_is_bound_to_one_running_turn_and_one_terminal() {
     let mut session = make_session("sess-1", SessionLifetime::Persistent);
     session.effective_config = Some(effective_config());
     store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
             &ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-tools".into(),
+                agent_instance_id: turn_instance(),
                 config_revision: 0,
                 effective_config: effective_config(),
                 user_content: serde_json::json!({"role": "user", "content": "inspect"}),
@@ -733,12 +807,14 @@ async fn interrupted_calls_are_classified_under_a_bounded_lease() {
     let mut session = make_session("sess-1", SessionLifetime::Persistent);
     session.effective_config = Some(effective_config());
     store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
             &ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-recovery".into(),
+                agent_instance_id: turn_instance(),
                 config_revision: 0,
                 effective_config: effective_config(),
                 user_content: serde_json::json!({"role": "user", "content": "mutate"}),
@@ -817,6 +893,7 @@ async fn interrupted_calls_are_classified_under_a_bounded_lease() {
                 TurnStart {
                     session_id: session.id.clone(),
                     turn_id: "turn-must-wait".into(),
+                    agent_instance_id: turn_instance(),
                     config_revision: 0,
                     effective_config: effective_config(),
                     user_content: serde_json::json!({"role": "user", "content": "next"}),
@@ -834,12 +911,14 @@ async fn tool_result_and_result_position_commit_atomically() {
     let mut session = make_session("sess-1", SessionLifetime::Persistent);
     session.effective_config = Some(effective_config());
     store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
             &ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-result".into(),
+                agent_instance_id: turn_instance(),
                 config_revision: 0,
                 effective_config: effective_config(),
                 user_content: serde_json::json!({"role": "user", "content": "read"}),
@@ -952,12 +1031,14 @@ async fn boot_recovery_persists_manual_decision_and_observes_it() {
     let mut session = make_session("sess-1", SessionLifetime::Persistent);
     session.effective_config = Some(effective_config());
     store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
             &ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-crashed".into(),
+                agent_instance_id: turn_instance(),
                 config_revision: 0,
                 effective_config: effective_config(),
                 user_content: serde_json::json!({"role": "user", "content": "send"}),
@@ -1044,12 +1125,14 @@ async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
     let mut session = make_session("sess-1", SessionLifetime::Persistent);
     session.effective_config = Some(effective_config());
     store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
             &ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-write".into(),
+                agent_instance_id: turn_instance(),
                 config_revision: 0,
                 effective_config: effective_config(),
                 user_content: serde_json::json!({"role": "user", "content": "write"}),

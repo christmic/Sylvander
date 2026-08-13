@@ -37,7 +37,7 @@ use sylvander_agent::workspace_executor::{
     WorkspaceRouter, WorkspaceTarget,
 };
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
-use sylvander_api::{BusMessage, Sender};
+use sylvander_api::{AgentInstanceId, BusMessage, Recipient, Sender};
 use sylvander_llm_core::{
     ChatMessage, ContentBlock, ImageContent, MediaSource, ModelResponse, ReasoningConfig,
     ReasoningEffort as ProviderReasoningEffort,
@@ -71,7 +71,33 @@ use crate::storage::session::{
     ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId, ToolResultPersistence,
     TurnStart, TurnState,
 };
+
 use crate::storage::workspace_journal::WorkspaceJournal;
+
+fn turn_agent_instance_id(
+    message: &BusMessage,
+    session_id: &SessionId,
+) -> Result<AgentInstanceId, AgentRunError> {
+    if session_id.0.trim().is_empty() {
+        return Err(AgentRunError::Configuration(
+            "turn Session identity cannot be empty".into(),
+        ));
+    }
+    if let Recipient::AgentInstance { instance_id, .. } = &message.recipient {
+        return Ok(instance_id.clone());
+    }
+    #[cfg(test)]
+    {
+        Ok(AgentInstanceId::new(format!("test:{}", session_id.0)))
+    }
+    #[cfg(not(test))]
+    {
+        let _ = session_id;
+        Err(AgentRunError::Configuration(
+            "durable turns require an addressed Agent instance".into(),
+        ))
+    }
+}
 
 fn find_durable_tool_input(
     history: &[crate::storage::session::StoredMessage],
@@ -811,6 +837,7 @@ impl AgentRunInner {
         if let (Some(store), Some(stored), Some(effective)) =
             (&self.session_store, &stored_session, &effective_config)
         {
+            let agent_instance_id = turn_agent_instance_id(&msg, &session_id)?;
             let user_id = match &msg.sender {
                 Sender::User(user_id) => user_id.as_str(),
                 _ => "unix-client",
@@ -829,6 +856,7 @@ impl AgentRunInner {
                     TurnStart {
                         session_id: session_id.clone(),
                         turn_id: turn_id.into(),
+                        agent_instance_id,
                         config_revision: stored.config_revision,
                         effective_config: effective.clone(),
                         user_content,

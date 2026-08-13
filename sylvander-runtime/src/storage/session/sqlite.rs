@@ -26,6 +26,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use sylvander_agent::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy};
+use sylvander_api::AgentInstanceId;
 use sylvander_api::session_context::Priority;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -511,6 +512,7 @@ CREATE TABLE session_usage (
 CREATE TABLE session_turns (
     session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     turn_id         TEXT NOT NULL,
+    agent_instance_id TEXT NOT NULL,
     config_revision INTEGER NOT NULL,
     effective_config TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
@@ -998,6 +1000,30 @@ impl SessionStore for SqliteSessionStore {
                     "turn configuration does not match the persisted session revision".into(),
                 ));
             }
+            let instance = transaction
+                .query_row(
+                    "SELECT agent_id,state FROM session_agent_instances \
+                     WHERE session_id=?1 AND instance_id=?2",
+                    params![start.session_id.0, start.agent_instance_id.0],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            let Some((instance_agent_id, instance_state)) = instance else {
+                return Err(SessionStoreError::Invalid(
+                    "turn Agent instance is not a durable Session member".into(),
+                ));
+            };
+            if instance_agent_id != start.effective_config.agent_id.0
+                || matches!(
+                    instance_state.as_str(),
+                    "completed" | "failed" | "cancelled" | "manual_reconciliation"
+                )
+            {
+                return Err(SessionStoreError::Invalid(
+                    "turn Agent instance is unavailable or has the wrong definition".into(),
+                ));
+            }
             let unresolved_effect: bool = transaction
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM session_tool_calls \
@@ -1016,11 +1042,12 @@ impl SessionStore for SqliteSessionStore {
             transaction
                 .execute(
                     "INSERT INTO session_turns \
-                     (session_id, turn_id, config_revision, effective_config, created_at, state) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'running')",
+                     (session_id, turn_id, agent_instance_id, config_revision, effective_config, created_at, state) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running')",
                     params![
                         start.session_id.0,
                         start.turn_id,
+                        start.agent_instance_id.0,
                         config_revision,
                         effective_json,
                         now,
@@ -1094,15 +1121,17 @@ impl SessionStore for SqliteSessionStore {
         self.run(move |connection| {
             connection
                 .query_row(
-                    "SELECT config_revision, effective_config, created_at, state, ended_at, failure_kind \
+                    "SELECT agent_instance_id, config_revision, effective_config, created_at, state, ended_at, failure_kind \
                      FROM session_turns WHERE session_id = ?1 AND turn_id = ?2",
                     params![session_id.0, turn_id],
                     |row| {
-                        let config_revision: i64 = row.get(0)?;
-                        let effective: String = row.get(1)?;
+                        let agent_instance_id: String = row.get(0)?;
+                        let config_revision: i64 = row.get(1)?;
+                        let effective: String = row.get(2)?;
                         Ok(TurnSnapshot {
                             session_id: session_id.clone(),
                             turn_id: turn_id.clone(),
+                            agent_instance_id: AgentInstanceId::new(agent_instance_id),
                             config_revision: config_revision.try_into().map_err(|error| {
                                 rusqlite::Error::FromSqlConversionFailure(
                                     0,
@@ -1110,12 +1139,12 @@ impl SessionStore for SqliteSessionStore {
                                     Box::new(error),
                                 )
                             })?,
-                            effective_config: decode_json(1, &effective)?,
-                            created_at: row.get(2)?,
-                            state: decode_turn_state(row.get::<_, String>(3)?.as_str())?,
-                            ended_at: row.get(4)?,
+                            effective_config: decode_json(2, &effective)?,
+                            created_at: row.get(3)?,
+                            state: decode_turn_state(row.get::<_, String>(4)?.as_str())?,
+                            ended_at: row.get(5)?,
                             failure_kind: row
-                                .get::<_, Option<String>>(5)?
+                                .get::<_, Option<String>>(6)?
                                 .map(|value| decode_turn_failure_kind(&value))
                                 .transpose()?,
                         })
