@@ -61,6 +61,11 @@ primary metric. Repeated runs are retained individually before aggregation.
 Every live gate records exact code, harness, dataset, environment, and model
 coordinates. Missing infrastructure, credentials, verifier output, or terminal
 trajectory evidence is `not_run`/`infrastructure_error`, never a skip-pass.
+The runner also checkpoints the public `AgentEvent` stream throughout the run;
+partial ATIF is retained after timeout or interruption and records request,
+retry, tool, usage/cache, and terminal lifecycle evidence without raw
+credentials. Verifier reward remains Harbor-owned and is never inferred from
+these operational events.
 
 ## Known capability gap
 

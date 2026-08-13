@@ -49,6 +49,29 @@ observations, provider usage becomes per-step metrics, and `AgentOutcome`
 becomes final metrics. Missing terminals, invalid event order, non-object tool
 arguments, and dangling observation references fail closed.
 
+## Observability boundary
+
+`AgentEvent` is the single source of truth for live Agent activity. Production
+Runtime consumes it for Session/runtime records; the benchmark independently
+projects the same public stream into benchmark evidence. The benchmark must not
+reimplement Agent state transitions or create a second event model.
+
+The runner atomically replaces `/logs/agent/trajectory.json` at iteration and
+tool lifecycle boundaries. Every checkpoint is valid ATIF, including a partial
+active iteration, so a Harbor timeout, executor cancellation, or runner crash
+leaves the previous complete JSON document available. High-volume text,
+reasoning, and tool-output deltas are accumulated in memory and checkpointed at
+the next lifecycle boundary rather than causing per-token filesystem writes.
+
+`extra.sylvander_observability` contains an ordered, timestamped event ledger
+with retry cause/delay, tool start/timeout/finish, response IDs, per-request
+token/cache usage, compression, interaction, plan, and terminal state. Its
+provider coordinate contains provider, protocol, model, base URL, and a short
+SHA-256 credential fingerprint for correlating an authorized live run. Raw
+credentials are never serialized. Prompts, reasoning, tool arguments, and tool
+results remain only in the access-controlled detailed trajectory; normalized
+and aggregate records remain content-safe.
+
 Harbor `result.json` ingestion follows the pinned `TrialResult`,
 `VerifierResult`, and `AgentContext` contracts. It cross-checks task/model
 coordinates and token totals against ATIF before emitting normalized evidence;
@@ -96,8 +119,10 @@ credentials, and benchmark secrets do not enter aggregate result records.
 Detailed trajectories remain separate artifacts with harness-controlled access.
 
 Credentials enter only through explicitly named environment variables during
-an explicit live run. Dataset downloads, container pulls, verifier commands,
-and billable model calls are never triggered by `cargo test`.
+an explicit live run. The detailed trajectory retains only a one-way truncated
+fingerprint, never the credential value. Dataset downloads, container pulls,
+verifier commands, and billable model calls are never triggered by `cargo
+test`.
 
 The Harbor runner constructs the selected production adapter for Anthropic
 Messages, OpenAI Responses, OpenAI Chat Completions, or native DashScope text

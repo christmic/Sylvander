@@ -31,12 +31,23 @@ binary.
 
 Add `sylvander-benchmark-agent/harbor` to Python's import path. Credentials are
 passed through Harbor's Agent environment mechanism and never appear in the
-command, trajectory, final answer, or aggregate evidence.
+command, final answer, or evidence. The detailed trajectory stores only a
+truncated SHA-256 fingerprint so an authorized call can be correlated without
+persisting the raw credential.
 
 The adapter writes the files Harbor expects:
 
 - `/logs/agent/trajectory.json` — ATIF v1.7;
 - `/logs/agent/final_answer.txt` — final user-visible Agent message.
+
+The Rust runner writes `trajectory.json` atomically throughout execution, not
+only after a successful terminal event. It is therefore a valid partial ATIF
+artifact after Harbor timeout, runner interruption, or tool-executor
+cancellation. `extra.sylvander_observability` is the ordered projection of the
+Agent's public `AgentEvent` stream: request response IDs, retries, tool
+lifecycle, per-request token/cache usage, and terminal state. Text/reasoning
+deltas and tool output are checkpointed at lifecycle boundaries to avoid
+per-token filesystem I/O.
 
 If the runner exits non-zero, the adapter retains a bounded stdout/stderr
 diagnostic in Harbor's exception artifact and replaces the active API key with
