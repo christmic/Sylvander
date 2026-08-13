@@ -1847,6 +1847,27 @@ async fn runtime_workflow_control_plane_uses_durable_fenced_tasks() {
         task.state,
         crate::coordination::task::CoordinationTaskState::Ready
     );
+    let doctor = runtime.session_doctor(&actor).await.unwrap();
+    assert_eq!(doctor.session_id, session_id);
+    assert_eq!(doctor.attention, SessionAttentionState::Active);
+    assert_eq!(doctor.agents.total, 1);
+    assert_eq!(doctor.tasks.total, 1);
+    assert_eq!(doctor.tasks.ready, 1);
+    assert_eq!(doctor.tasks.remaining_token_budget, 1_000);
+    assert_eq!(doctor.governance.topology_relations, 0);
+    assert_eq!(doctor.governance.open_arbitrations, 0);
+    assert_eq!(doctor.recovery.interrupted_models, 0);
+    assert_eq!(doctor.recovery.interrupted_tools, 0);
+
+    let forged = runtime
+        .configured_agent(&AgentId::new("assistant"))
+        .unwrap()
+        .run
+        .authenticated_session_handle(
+            session_id.clone(),
+            AgentInstanceId::new("not-a-session-member"),
+        );
+    assert!(runtime.session_doctor(&forged).await.is_err());
 
     let lease = runtime
         .claim_agent_task(
@@ -1876,6 +1897,9 @@ async fn runtime_workflow_control_plane_uses_durable_fenced_tasks() {
         completed.state,
         crate::coordination::task::CoordinationTaskState::Completed
     );
+    let doctor = runtime.session_doctor(&actor).await.unwrap();
+    assert_eq!(doctor.tasks.terminal, 1);
+    assert_eq!(doctor.tasks.remaining_token_budget, 0);
     let graph = runtime.agent_task_graph(&actor).await.unwrap().unwrap();
     assert_eq!(graph.tasks, vec![completed]);
     let observed = runtime.operational_snapshot().await.unwrap().observability;

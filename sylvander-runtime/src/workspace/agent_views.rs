@@ -61,6 +61,16 @@ impl AgentWorkspaceCoordinator {
             .map_err(AgentWorkspaceCoordinatorError::Store)
     }
 
+    pub async fn active_views(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<AgentWorkspaceView>, AgentWorkspaceCoordinatorError> {
+        self.store
+            .active_workspace_views(session_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)
+    }
+
     /// Provision an isolated worktree and persist its exact receipt.
     ///
     /// The worktree manager durably writes its manifest before this service
