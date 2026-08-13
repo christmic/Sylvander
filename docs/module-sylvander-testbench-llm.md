@@ -44,8 +44,10 @@ but the implementation and focused tests stay in their owning crates.
 
 Protocol and provider identities are independent. Multiple providers may
 implement one protocol, and one provider may expose multiple protocols. Every
-protocol binding enumerates multiple model deployments and declares protocol
-scenario support; every model separately advertises applicable scenarios.
+protocol binding enumerates multiple model deployments, declares protocol
+scenario support, and may select provider-deployment wire features. Official
+protocol behavior is the empty/default profile; compatibility overrides belong
+only to the provider binding and are never inferred from model names.
 
 Expansion emits every selected scenario and repetition for every
 `provider/protocol/model` coordinate. Unsupported cells are retained as

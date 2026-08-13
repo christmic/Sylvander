@@ -360,7 +360,7 @@ fn build_provider(
                     base_url: parse_url(&binding.base_url)?,
                     api_key: credential,
                     protocol,
-                    features: ProviderFeatures::default(),
+                    features: ProviderFeatures::new(binding.provider_features.iter().cloned()),
                 },
                 timeout,
             )
@@ -373,7 +373,7 @@ fn build_provider(
                     provider_id: binding.provider_id.clone(),
                     base_url: parse_url(&binding.base_url)?,
                     api_key: credential,
-                    features: DashScopeFeatures::default(),
+                    features: DashScopeFeatures::new(binding.provider_features.iter().cloned()),
                 },
                 timeout,
             )

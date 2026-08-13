@@ -11,6 +11,7 @@
       "protocol": "anthropic_messages",
       "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
       "credential_env": "SYLVANDER_BENCH_ALIYUN_TOKEN_PLAN_API_KEY",
+      "provider_features": [],
       "supported_scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"],
       "models": [
         {
@@ -36,6 +37,7 @@
       "protocol": "openai_chat_completions",
       "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
       "credential_env": "SYLVANDER_BENCH_ALIYUN_TOKEN_PLAN_API_KEY",
+      "provider_features": ["enable_thinking", "max_completion_tokens", "reasoning_content"],
       "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
       "models": [
         {
@@ -61,6 +63,7 @@
       "protocol": "openai_responses",
       "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
       "credential_env": "SYLVANDER_BENCH_ALIYUN_TOKEN_PLAN_API_KEY",
+      "provider_features": ["enable_thinking"],
       "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
       "models": [
         {
@@ -77,7 +80,7 @@
         },
         {
           "model_id": "glm-5.2",
-          "advertised_scenarios": []
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
         }
       ]
     }

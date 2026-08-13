@@ -48,6 +48,9 @@ pub struct ProtocolBinding {
     pub base_url: String,
     /// Name of the environment variable containing the credential, never its value.
     pub credential_env: String,
+    /// Provider-deployment wire extensions; never inferred from a model name.
+    #[serde(default)]
+    pub provider_features: BTreeSet<String>,
     pub supported_scenarios: BTreeSet<BenchScenario>,
     pub models: Vec<ModelBinding>,
 }
@@ -119,6 +122,7 @@ impl BenchMatrix {
                 || binding.protocol.is_empty()
                 || binding.base_url.is_empty()
                 || binding.credential_env.is_empty()
+                || binding.provider_features.iter().any(String::is_empty)
             {
                 return Err("protocol binding identifiers must not be empty");
             }

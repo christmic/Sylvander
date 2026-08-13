@@ -194,6 +194,7 @@ pub struct ResponseUsage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputTokensDetails {
+    #[serde(default)]
     pub cache_write_tokens: u64,
     pub cached_tokens: u64,
 }

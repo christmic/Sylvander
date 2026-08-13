@@ -51,7 +51,7 @@ async fn incomplete_is_a_terminal_response_with_max_output_reason() {
                 "\"id\":\"resp_incomplete\",\"model\":\"gpt-5.6\",\"status\":\"incomplete\",",
                 "\"output\":[],\"incomplete_details\":{\"reason\":\"max_output_tokens\"},",
                 "\"usage\":{\"input_tokens\":2,\"output_tokens\":128,\"total_tokens\":130,",
-                "\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0},",
+                "\"input_tokens_details\":{\"cached_tokens\":0},",
                 "\"output_tokens_details\":{\"reasoning_tokens\":64}}}}\n\n"
             ),
             "text/event-stream",
@@ -70,6 +70,7 @@ async fn incomplete_is_a_terminal_response_with_max_output_reason() {
     };
     assert_eq!(response.stop_reason, StopReason::MaxOutputTokens);
     assert_eq!(response.usage.output_tokens, 128);
+    assert_eq!(response.usage.cache_write_tokens, Some(0));
 }
 
 #[tokio::test]

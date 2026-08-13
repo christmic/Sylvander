@@ -25,6 +25,7 @@ fn expands_protocol_provider_model_scenario_and_run_dimensions() {
                 protocol: "openai_responses".into(),
                 base_url: "https://a.example/v1".into(),
                 credential_env: "PROVIDER_A_KEY".into(),
+                provider_features: BTreeSet::new(),
                 supported_scenarios: scenarios(&[BenchScenario::Connectivity]),
                 models: vec![
                     ModelBinding {
@@ -42,6 +43,7 @@ fn expands_protocol_provider_model_scenario_and_run_dimensions() {
                 protocol: "anthropic_messages".into(),
                 base_url: "https://b.example".into(),
                 credential_env: "PROVIDER_B_KEY".into(),
+                provider_features: BTreeSet::new(),
                 supported_scenarios: scenarios(&[
                     BenchScenario::Connectivity,
                     BenchScenario::RemoteTokenCount,
@@ -88,6 +90,7 @@ fn rejects_duplicate_provider_protocol_model_coordinates() {
         protocol: "openai_chat_completions".into(),
         base_url: "https://a.example/v1".into(),
         credential_env: "PROVIDER_A_KEY".into(),
+        provider_features: BTreeSet::new(),
         supported_scenarios: scenarios(&[BenchScenario::Connectivity]),
         models: vec![ModelBinding {
             model_id: "model-1".into(),
