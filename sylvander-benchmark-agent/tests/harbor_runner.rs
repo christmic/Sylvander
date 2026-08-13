@@ -115,3 +115,83 @@ async fn rejects_execution_without_harness_isolation_attestation() {
         Err(sylvander_benchmark_agent::RecorderError::HarnessNotIsolated)
     ));
 }
+
+#[tokio::test]
+async fn command_timeout_terminates_the_complete_process_group() {
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider {
+        responses: Mutex::new(VecDeque::from([
+            response(
+                vec![ContentBlock::ToolCall {
+                    id: "call-timeout".into(),
+                    name: "Command".into(),
+                    arguments: serde_json::json!({
+                        "command": "sleep 60 & echo $! > child.pid; wait"
+                    }),
+                }],
+                StopReason::ToolUse,
+            ),
+            response(
+                vec![ContentBlock::Text {
+                    text: "timeout handled".into(),
+                }],
+                StopReason::EndTurn,
+            ),
+        ])),
+    });
+
+    let trajectory = run_harbor_task(
+        provider,
+        HarborRunConfig {
+            session_id: "timeout-session".into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            workspace: workspace.path().into(),
+            instruction: "exercise command timeout".into(),
+            max_iterations: 4,
+            max_output_tokens: 128,
+            timeout: Duration::from_millis(100),
+            environment_isolated: true,
+        },
+    )
+    .await
+    .unwrap();
+
+    let child_pid = std::fs::read_to_string(workspace.path().join("child.pid"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    let mut child_is_alive = true;
+    for _ in 0..20 {
+        child_is_alive = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "kill -0 \"$1\" 2>/dev/null",
+                "check-child",
+                &child_pid,
+            ])
+            .status()
+            .unwrap()
+            .success();
+        if !child_is_alive {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        !child_is_alive,
+        "timed-out child process {child_pid} survived"
+    );
+    assert!(
+        trajectory
+            .steps
+            .iter()
+            .filter_map(|step| step.observation.as_ref())
+            .flat_map(|observation| observation.results.iter())
+            .filter_map(|result| result.content.as_deref())
+            .any(|content| content.contains("timed out")),
+        "trajectory did not retain the timeout: {:?}",
+        trajectory.steps
+    );
+}

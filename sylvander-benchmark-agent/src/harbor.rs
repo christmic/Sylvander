@@ -161,10 +161,19 @@ impl WorkspaceExecutor for HarborContainerExecutor {
             .current_dir(&target.workspace_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true);
-        let output = tokio::time::timeout(timeout, process.output())
-            .await
-            .map_err(|_| WorkspaceExecutorError::Timeout(timeout))??;
+        let child = process.spawn()?;
+        let process_group = child.id();
+        let output =
+            if let Ok(output) = tokio::time::timeout(timeout, child.wait_with_output()).await {
+                output?
+            } else {
+                if let Some(process_group) = process_group {
+                    terminate_process_group(process_group).await;
+                }
+                return Err(WorkspaceExecutorError::Timeout(timeout));
+            };
         let stdout_total_bytes = output.stdout.len() as u64;
         let stderr_total_bytes = output.stderr.len() as u64;
         Ok(WorkspaceCommandOutput {
@@ -178,4 +187,17 @@ impl WorkspaceExecutor for HarborContainerExecutor {
             stderr_total_bytes,
         })
     }
+}
+
+async fn terminate_process_group(process_group: u32) {
+    let process_group = process_group.to_string();
+    let _ = tokio::process::Command::new("sh")
+        .args([
+            "-c",
+            "kill -KILL -\"$1\" 2>/dev/null || true",
+            "sylvander-command-timeout",
+            &process_group,
+        ])
+        .status()
+        .await;
 }
