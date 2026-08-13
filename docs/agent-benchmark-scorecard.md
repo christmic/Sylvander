@@ -205,3 +205,23 @@ the certifiable level remains L0 until at least 80% of those cells execute and
 the Agent-error rate remains below 20%. No additional pass is required by the
 literal L1 threshold, but the first pass is repeated three times before L1 is
 called stable.
+
+## MiniMax-M3 staged baseline (`fbdfb7e3b`)
+
+The complete native-arm64 three-task round used MiniMax China OpenAI Chat,
+`MiniMax-M3`, runner SHA-256 `ae041108e1d6d817c9e60d458b7ebc6aa8f1aad9ff168941a20ec6a798921a5d`,
+and the three qualified image digests documented by the runbook. Raw credential
+scans found zero matches in every job tree.
+
+| Stage | Result | Runtime | Steps / commands | Prompt / completion / cache | Diagnostic |
+| --- | --- | ---: | ---: | ---: | --- |
+| small: `cancel-async-tasks` | Agent error, unscored | 1m29s | 10 / 5 | incomplete | 3 model retries, then invalid JSON tool arguments |
+| medium: `sanitize-git-repo` | reward 0, 1/3 tests | 2m59s | 53 / 50 | 465,819 / 6,617 / 186,232 | 48 model retries; two contaminated outputs remained incorrect |
+| large: `large-scale-text-editing` | reward 0, 0/5 tests | 2m01s | 8 / 3 | 21,938 / 2,588 / 8,543 | Agent inspected inputs but never created the required script/output |
+
+This is a completed baseline, not a passing capability baseline. Coverage is
+3/3, verifier passes are 0/2 scored tasks, and the Agent-error rate is 1/3, so
+it does not meet L1. The large task no longer exhibits the earlier 24-minute
+nested-scan stall, but correctness remains absent. M3 also shows severe model
+service/protocol instability on this coordinate; those retries are model-axis
+evidence and must not be charged solely to Agent design.

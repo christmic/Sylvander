@@ -96,6 +96,26 @@ The first qualified image is `cancel-async-tasks` at task revision
 `sha256:fa17b9590f1fe4aa1623fe906e867ecaa29bbdbbeed116acb2544e8cffaad5f2`.
 Its gold solution and first Sylvander run both passed all six verifier cases.
 
+## Staged baseline loop
+
+Use `sylvander-benchmark-agent/harbor/build_native_runner.py` followed by
+`run_native_benchmark.py`. The runner sidecar binds its SHA-256 and architecture
+to the exact Agent commit; the run script refuses drift. Execute `smoke`,
+`small`, `medium`, then `large`. A verifier failure, Agent error, or timeout is
+baseline data and does not stop the round. Stop only for an isolation,
+credential, architecture, corrupt-evidence, or harness failure. Do not change
+Agent code or model within a round.
+
+Analyze two axes separately after the round:
+
+- Agent axis: fix provider, protocol, model, task image, and dataset; compare
+  Agent commits for success, reliability, steps, commands, tokens, and latency.
+- Model axis: fix Agent commit, provider, protocol, task image, and dataset;
+  compare models using the same metrics.
+
+The interaction is reported explicitly, but a model gain is never attributed
+to Agent design and an Agent gain is never attributed to the model.
+
 ## Result classification
 
 | Condition | Classification | Waterline use |
