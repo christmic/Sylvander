@@ -349,3 +349,46 @@ async fn transient_retry_consumes_the_agent_owned_budget_then_succeeds() {
     assert_eq!(result["scenario"], "transient_retry");
     assert_eq!(result["attempts"], 3);
 }
+
+#[test]
+fn process_interruption_kills_a_child_and_runtime_recovers_interrupted_state() {
+    let matrix_path = std::env::temp_dir().join(format!(
+        "sylvander-llm-recovery-matrix-{}.json",
+        std::process::id()
+    ));
+    let matrix = json!({
+        "schema_version": 1,
+        "repetitions": 1,
+        "scenarios": ["process_interruption"],
+        "bindings": [{
+            "provider_id": "provider-recovery",
+            "protocol": "openai_responses",
+            "base_url": "https://recovery.example.test/v1",
+            "credential_env": "SYLVANDER_TESTBENCH_RECOVERY_NEEDS_NO_KEY",
+            "supported_scenarios": ["process_interruption"],
+            "models": [{
+                "model_id": "model-recovery",
+                "advertised_scenarios": ["process_interruption"]
+            }]
+        }]
+    });
+    fs::write(&matrix_path, serde_json::to_vec(&matrix).unwrap()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sylvander-llm-bench"))
+        .args(["run", matrix_path.to_str().unwrap()])
+        .env_remove("SYLVANDER_TESTBENCH_RECOVERY_NEEDS_NO_KEY")
+        .output()
+        .unwrap();
+    fs::remove_file(matrix_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "passed");
+    assert_eq!(result["scenario"], "process_interruption");
+    assert_eq!(result["attempts"], 1);
+}

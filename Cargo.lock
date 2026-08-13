@@ -3112,6 +3112,8 @@ dependencies = [
  "sylvander-llm-core",
  "sylvander-llm-dashscope",
  "sylvander-llm-openai",
+ "sylvander-runtime",
+ "tempfile",
  "tokio",
  "url",
  "wiremock",

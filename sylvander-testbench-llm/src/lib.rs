@@ -6,6 +6,7 @@
 
 mod live;
 mod matrix;
+mod recovery;
 mod result;
 
 pub use live::{LiveLimits, run_live_cell};
@@ -13,6 +14,7 @@ pub use matrix::{
     Applicability, BenchMatrix, BenchScenario, MatrixCell, MatrixCoordinate, ModelBinding,
     ProtocolBinding,
 };
+pub use recovery::{run_crash_fixture, run_process_interruption_cell};
 pub use result::{
     BenchObservation, BenchResult, BenchStatus, PassMetrics, RepositoryState, endpoint_origin,
 };

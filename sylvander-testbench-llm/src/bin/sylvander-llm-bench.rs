@@ -7,7 +7,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use sylvander_testbench_llm::{
-    BenchMatrix, BenchStatus, LiveLimits, ProtocolBinding, RepositoryState, run_live_cell,
+    BenchMatrix, BenchStatus, LiveLimits, ProtocolBinding, RepositoryState, run_crash_fixture,
+    run_live_cell, run_process_interruption_cell,
 };
 
 #[tokio::main]
@@ -26,6 +27,10 @@ async fn run(arguments: Vec<String>) -> Result<bool, String> {
     let [command, matrix_path] = arguments.as_slice() else {
         return Err("usage: sylvander-llm-bench <plan|run> <matrix.json>".into());
     };
+    if command == "crash-fixture" {
+        run_crash_fixture(Path::new(matrix_path)).await?;
+        return Ok(true);
+    }
     let matrix = read_matrix(Path::new(matrix_path))?;
     let cells = matrix.expand().map_err(str::to_owned)?;
     match command.as_str() {
@@ -64,7 +69,13 @@ async fn execute(
     let mut accepted = true;
     for cell in cells {
         let binding = binding_for(matrix, cell)?;
-        let result = run_live_cell(binding, cell, limits, repository.clone()).await;
+        let result = if cell.coordinate.scenario
+            == sylvander_testbench_llm::BenchScenario::ProcessInterruption
+        {
+            run_process_interruption_cell(binding, cell, repository.clone()).await
+        } else {
+            run_live_cell(binding, cell, limits, repository.clone()).await
+        };
         accepted &= matches!(
             result.status,
             BenchStatus::Passed | BenchStatus::NotApplicable
