@@ -102,6 +102,14 @@ The wire reader converts malformed or unknown messages into bounded diagnostic
 domain events. Raw message bodies are never copied into diagnostics or logs, so
 future event types remain visible without exposing prompt or credential data.
 
+Prompt submission sets a local in-flight lock immediately so the TUI cannot
+send two turns concurrently. `TurnStarted` is the distinct Runtime authority
+fact: it is emitted only after turn admission persistence and executable
+composition succeed, carries Runtime's opaque turn identity, and confirms the
+active status without exposing Agent-machine phases. `Done`, `Error`, and
+`TurnInterrupted` clear that state. A pre-admission failure never emits
+`TurnStarted` and arrives through the existing terminal error path.
+
 Optional platform facilities cross the same boundary as a redacted
 `PlatformSnapshot`. It contains semantic status, source/trust labels, auth state,
 and advertised capabilities only. MCP environment values, process arguments,
@@ -116,7 +124,7 @@ events. Terminal turn events clear the replay and retire the relay. This keeps
 recovery transport-owned without leaking socket or replay state into Panels.
 
 Every accepted chat envelope enters one `agent_turn` tracing span. The span
-carries `agent_id`, `session_id`, the bus `request_id`, and the Agent-owned
+carries `agent_id`, `session_id`, the bus `request_id`, and the Runtime-owned
 `turn_id`; `trace_id` uses that turn root through tool context and durable
 message metadata. Tool execution logs add the provider `call_id` while keeping
 the parent span, including work polled concurrently or by the stream consumer.

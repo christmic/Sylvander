@@ -18,6 +18,7 @@ impl WorkspaceMutationJournal for RecordingWorkspaceJournal {
         &self,
         session_id: &str,
         turn_id: &str,
+        _call_id: &str,
         _workspace: &Path,
         relative_path: &str,
         _after: &[u8],
@@ -81,8 +82,9 @@ async fn edit_is_recorded_by_the_workspace_journal() {
     fs::write(&file, "hello world").unwrap();
     let journal = Arc::new(RecordingWorkspaceJournal::default());
     let context = ToolContext::new(
-        AgentExecutionContext::restricted_for("u", "a", "s").with_trace_id("turn-1"),
+        AgentExecutionContext::restricted_for("u", "a", "s").with_turn_id("turn-1"),
     )
+    .with_invocation_call_id("call-1")
     .with_fs_root(dir.path())
     .with_capability(crate::tool_context::Cap::Write)
     .with_workspace_journal(journal.clone());

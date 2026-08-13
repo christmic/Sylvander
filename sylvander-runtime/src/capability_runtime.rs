@@ -446,6 +446,7 @@ impl ActorCapabilitySnapshot {
         &self,
         name: &str,
         input: &Value,
+        invocation_id: &str,
         invocation_revision: &str,
         now_unix_secs: i64,
     ) -> Result<ExternalCapabilityInvocation, CapabilityRuntimeError> {
@@ -463,12 +464,12 @@ impl ActorCapabilitySnapshot {
             input,
             now_unix_secs,
         )?;
-        if !invocation_revision.starts_with("sha256:") {
+        if invocation_id.trim().is_empty() || !invocation_revision.starts_with("sha256:") {
             return Err(CapabilityRuntimeError::AccessDenied);
         }
 
         let base = CapabilityAuditRecord {
-            invocation_id: Uuid::new_v4().to_string(),
+            invocation_id: invocation_id.to_owned(),
             phase: CapabilityAuditPhase::Authorized,
             actor: self.registry.actor,
             capability: definition.name,

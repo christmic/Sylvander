@@ -28,7 +28,7 @@ use tracing::{Instrument as _, warn};
 
 use sylvander_llm_core::{
     ChatMessage, ContentBlock, ModelCapabilities, ModelEventStream, ModelInfo, ModelProvider,
-    ModelRequest, ModelResponse, ProviderErrorKind, StopReason, TokenUsage,
+    ModelRequest, ModelResponse, ProviderErrorKind, StopReason,
 };
 
 use crate::execution::ports::AgentExecutionPorts;
@@ -36,9 +36,11 @@ use crate::execution::tool_context::ToolContext;
 use crate::interaction::approval::{ApprovalDecision, ToolUseRequest};
 use crate::interaction::plan::PlanDecision;
 use crate::tool::{AgentHookPhase, ToolRegistry};
-use crate::turn::conversation::ConversationSnapshot;
 use crate::turn::error::AgentLoopError;
 use crate::turn::event::{AgentEvent, ModelRetryCause};
+use crate::turn::machine::{
+    TurnContinuationReason, TurnMachine, TurnPhase, TurnTransition, TurnTransitionReason,
+};
 use crate::turn::outcome::AgentOutcome;
 use crate::turn::request::AgentTurnRequest;
 
@@ -206,39 +208,68 @@ pub fn run_stream(
         )
     });
     async_stream::stream! {
+        let mut machine = TurnMachine::new(&request.conversation);
+        yield AgentEvent::TurnTransition(required_turn_transition(
+            &mut machine,
+            TurnPhase::Validating,
+            TurnTransitionReason::ExecutionStarted
+        ));
         if let Err(error) = ports.validate_for(&request) {
+            yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
             yield AgentEvent::Error(error);
             return;
         }
-        let mut messages = request.conversation.messages().to_vec();
-        let mut cumulative_usage = TokenUsage::default();
-        let mut last_provider_usage = cumulative_usage;
-        let mut final_message: Option<ModelResponse> = None;
-        let mut completed_iterations = 0;
+        yield AgentEvent::TurnTransition(required_turn_transition(
+            &mut machine,
+            TurnPhase::RunningBeforeHooks,
+            TurnTransitionReason::RequestValidated
+        ));
 
         if let Err(blocked) = request
             .tools
             .run_turn_hooks(AgentHookPhase::BeforeTurn, &ports.tool_context)
             .await
         {
+            yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
             yield AgentEvent::Error(AgentLoopError::Tool(blocked.to_string()));
             return;
         }
+        yield AgentEvent::TurnTransition(required_turn_transition(
+            &mut machine,
+            TurnPhase::ReadyForIteration,
+            TurnTransitionReason::BeforeHooksCompleted
+        ));
 
         for iteration in 1..=config.max_iterations {
+            match machine.start_iteration(iteration) {
+                Ok(transition) => yield AgentEvent::TurnTransition(transition),
+                Err(error) => {
+                    yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
+                    yield AgentEvent::Error(AgentLoopError::Validation(error.to_string()));
+                    return;
+                }
+            }
             yield AgentEvent::IterationStart { iteration };
 
             // 1. Compression (pipeline: layers run in order, async)
             {
+                yield AgentEvent::TurnTransition(required_turn_transition(
+                    &mut machine,
+                    TurnPhase::Compacting,
+                    TurnTransitionReason::CompressionStarted
+                ));
                 let auto_threshold = (request.model.context_window as f32
                     * crate::context::compression::layers::auto_compact::DEFAULT_TRIGGER_RATIO)
                     as u64;
-                if last_provider_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
+                if machine.last_provider_usage().total_input_tokens() >= auto_threshold
+                    && machine.messages().len() > 4
+                {
                     yield AgentEvent::CompressionStarted;
                 }
                 let auto_llm = auto_compact_llm(&request, &ports);
+                let last_provider_usage = machine.last_provider_usage();
                 let mut compress_ctx = crate::context::compression::CompressContext {
-                    messages: &mut messages,
+                    messages: machine.messages_mut(),
                     last_usage: &last_provider_usage,
                     model_info: &request.model,
                     auto_compact_llm: Some(&auto_llm),
@@ -263,14 +294,19 @@ pub fn run_stream(
                         layers: meaningful.clone(),
                     };
                     yield AgentEvent::HistoryCompacted {
-                        history: messages.clone(),
+                        history: machine.messages().to_vec(),
                         layers: meaningful,
                     };
                 }
             }
+            yield AgentEvent::TurnTransition(required_turn_transition(
+                &mut machine,
+                TurnPhase::CallingModel,
+                TurnTransitionReason::CompressionCompleted
+            ));
 
             // 2. Build and validate one exact provider-qualified request.
-            let provider_request = AgentLoop::build_provider_request(&request, &messages);
+            let provider_request = AgentLoop::build_provider_request(&request, machine.messages());
 
             // 4. Open the provider stream. This is the only retry owner;
             //    provider adapters never retry and a failed streaming
@@ -291,10 +327,18 @@ pub fn run_stream(
                 }
             };
             let llm_stream = match call_result {
-                Ok(stream) => stream,
+                Ok(stream) => {
+                    yield AgentEvent::TurnTransition(required_turn_transition(
+                        &mut machine,
+                        TurnPhase::StreamingModel,
+                        TurnTransitionReason::ModelStreamOpened
+                    ));
+                    stream
+                }
                 Err(error) => {
+                    yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
                     yield AgentEvent::Error(error);
-                    break;
+                    return;
                 }
             };
 
@@ -324,31 +368,39 @@ pub fn run_stream(
 
             // Wait for the consumer's final result.
             let Ok(consumer_result) = done_rx.await else {
+                yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
                 yield AgentEvent::Error(AgentLoopError::Validation(
                     "stream consumer dropped oneshot".into(),
                 ));
-                break;
+                return;
             };
             let _ = consumer_task.await;
 
             if let Some(e) = stream_err {
+                yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
                 yield AgentEvent::Error(e);
-                break;
+                return;
             }
             let response = match consumer_result {
                 Ok(m) => m,
                 Err(e) => {
+                    yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
                     yield AgentEvent::Error(e);
-                    break;
+                    return;
                 }
             };
+            yield AgentEvent::TurnTransition(required_turn_transition(
+                &mut machine,
+                TurnPhase::FinalizingModelResponse,
+                TurnTransitionReason::ModelResponseCompleted
+            ));
 
-            let final_message_content = response.content.clone();
             let response_stop_reason = response.stop_reason.clone();
-            let response_id = response.id.clone();
 
             // 6. Re-feed assistant message
-            messages.push(assistant_message_from_response(&response));
+            machine
+                .messages_mut()
+                .push(assistant_message_from_response(&response));
 
             // 7. Execute tools (if any) — events are emitted INSIDE
             //    this iteration's window, before IterationEnd.
@@ -377,63 +429,116 @@ pub fn run_stream(
                 .collect();
 
             if !tool_blocks.is_empty() {
+                yield AgentEvent::ModelToolResponsePrepared {
+                    iteration,
+                    message: assistant_message_from_response(&response),
+                };
+                yield AgentEvent::TurnTransition(required_turn_transition(
+                    &mut machine,
+                    TurnPhase::PreparingTools,
+                    TurnTransitionReason::ToolPreparationStarted
+                ));
                 let tool_timeout = ports.tool_context.budget.timeout;
+                let prepared_calls = tool_blocks
+                    .iter()
+                    .map(|tool| request.tools.prepare(&tool.name, tool.input.clone()))
+                    .collect::<Vec<_>>();
+                for (tool, prepared) in tool_blocks.iter().zip(prepared_calls.iter()) {
+                    let (invocation_class, recovery_policy, input) = match prepared {
+                        Ok(call) => (
+                            Some(call.spec().invocation_class),
+                            call.spec().recovery_policy,
+                            call.input(),
+                        ),
+                        Err(_) => (
+                            None,
+                            crate::tool::invocation::ToolRecoveryPolicy::NeverReplay,
+                            &tool.input,
+                        ),
+                    };
+                    yield AgentEvent::ToolCallPrepared {
+                        id: tool.id.clone(),
+                        name: tool.name.clone(),
+                        invocation_class,
+                        recovery_policy,
+                        input_digest: crate::tool::invocation::prepared_input_digest(input),
+                        capability_revision: ports.invocation_snapshot.revision().to_owned(),
+                    };
+                }
 
-                // Check approval gate before executing tools.
+                // Validate and freeze each call before asking for approval.
                 // The loop PAUSES here if the gate waits for external input.
                 let decisions: Vec<ApprovalDecision> =
                     if let Some(gate) = &ports.approval_gate {
+                        yield AgentEvent::TurnTransition(required_turn_transition(
+                            &mut machine,
+                            TurnPhase::WaitingForApproval,
+                            TurnTransitionReason::ApprovalRequired
+                        ));
                         // `present_plan` is itself the consent UI. Requiring a
                         // tool approval before showing it would create two
                         // consecutive prompts for one decision.
                         let requests: Vec<ToolUseRequest> = tool_blocks
                             .iter()
-                            .filter(|t| {
-                                t.name != "present_plan" && t.name != "start_background_task"
-                                    && t.name != "update_plan"
-                            })
-                            .map(|t| ToolUseRequest {
-                                call_id: t.id.clone(),
-                                tool_name: t.name.clone(),
-                                input: t.input.clone(),
+                            .zip(prepared_calls.iter())
+                            .filter_map(|(tool, prepared)| {
+                                (!is_control_tool(&tool.name))
+                                    .then(|| prepared.as_ref().ok())
+                                    .flatten()
+                                    .map(|call| ToolUseRequest::from_prepared(&tool.id, call))
                             })
                             .collect();
                         let mut gated = gate.check_batch(&requests).await.decisions.into_iter();
-                        tool_blocks
+                        let decisions = tool_blocks
                             .iter()
-                            .map(|tool| {
-                                if tool.name == "present_plan"
-                                    || tool.name == "start_background_task"
-                                    || tool.name == "update_plan"
-                                {
-                                    ApprovalDecision::Approved
-                                } else {
-                                    gated.next().unwrap_or_else(|| {
+                            .zip(prepared_calls.iter())
+                            .map(|(tool, prepared)| match prepared {
+                                Err(error) => ApprovalDecision::Rejected {
+                                    reason: error.to_string(),
+                                },
+                                Ok(_) if is_control_tool(&tool.name) => ApprovalDecision::Approved,
+                                Ok(_) => gated.next().unwrap_or_else(|| {
                                         ApprovalDecision::Rejected {
                                             reason: "approval gate returned no decision".into(),
                                         }
-                                    })
-                                }
+                                    }),
+                            })
+                            .collect();
+                        yield AgentEvent::TurnTransition(required_turn_transition(
+                            &mut machine,
+                            TurnPhase::PreparingTools,
+                            TurnTransitionReason::ApprovalResolved
+                        ));
+                        decisions
+                    } else {
+                        prepared_calls
+                            .iter()
+                            .map(|prepared| match prepared {
+                                Ok(_) => ApprovalDecision::Approved,
+                                Err(error) => ApprovalDecision::Rejected {
+                                    reason: error.to_string(),
+                                },
                             })
                             .collect()
-                    } else {
-                        // No gate → auto-approve all (backward compatible)
-                        vec![
-                            ApprovalDecision::Approved;
-                            tool_blocks.len()
-                        ]
                     };
 
-                let has_control_tool = tool_blocks.iter().any(|tool| {
-                    matches!(
-                        tool.name.as_str(),
-                        "ask_user" | "present_plan" | "start_background_task" | "update_plan"
-                    )
-                });
+                yield AgentEvent::TurnTransition(required_turn_transition(
+                    &mut machine,
+                    TurnPhase::ExecutingTools,
+                    TurnTransitionReason::ToolExecutionStarted
+                ));
+
+                let has_control_tool = tool_blocks
+                    .iter()
+                    .any(|tool| is_control_tool(&tool.name));
                 if has_control_tool {
                 // Control tools own interactive gates and remain ordered.
                 let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
-                for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
+                for ((tool_use, decision), prepared_call) in tool_blocks
+                    .iter()
+                    .zip(decisions.iter())
+                    .zip(prepared_calls.iter())
+                {
                     match decision {
                         ApprovalDecision::Approved => {
                             yield AgentEvent::ToolCallStart {
@@ -444,6 +549,11 @@ pub fn run_stream(
 
                             // M18: intercept ask_user tool — pause loop, ask user
                             if tool_use.name == "ask_user" {
+                                yield AgentEvent::TurnTransition(required_turn_transition(
+                                    &mut machine,
+                                    TurnPhase::WaitingForUser,
+                                    TurnTransitionReason::UserInputRequired
+                                ));
                                 let question = tool_use.input["question"]
                                     .as_str()
                                     .unwrap_or("")
@@ -478,6 +588,11 @@ pub fn run_stream(
                                 } else {
                                     Vec::new()
                                 };
+                                yield AgentEvent::TurnTransition(required_turn_transition(
+                                    &mut machine,
+                                    TurnPhase::ExecutingTools,
+                                    TurnTransitionReason::UserInputResolved
+                                ));
 
                                 yield AgentEvent::UserAnswer {
                                     call_id: tool_use.id.clone(),
@@ -489,6 +604,7 @@ pub fn run_stream(
                                     name: "ask_user".into(),
                                     output: answer.join(", "),
                                     is_error: false,
+                                    failure_kind: None,
                                 };
                                 tool_result_blocks.push(ContentBlock::tool_result_text(
                                     tool_use.id.clone(),
@@ -499,6 +615,11 @@ pub fn run_stream(
                             }
 
                             if tool_use.name == "present_plan" {
+                                yield AgentEvent::TurnTransition(required_turn_transition(
+                                    &mut machine,
+                                    TurnPhase::WaitingForPlanReview,
+                                    TurnTransitionReason::PlanReviewRequired
+                                ));
                                 let steps: Vec<String> = tool_use.input["steps"]
                                     .as_array()
                                     .map(|values| {
@@ -519,6 +640,11 @@ pub fn run_stream(
                                 } else {
                                     PlanDecision::Approved
                                 };
+                                yield AgentEvent::TurnTransition(required_turn_transition(
+                                    &mut machine,
+                                    TurnPhase::ExecutingTools,
+                                    TurnTransitionReason::PlanReviewResolved
+                                ));
                                 yield AgentEvent::PlanResolved {
                                     plan_id: plan_id.clone(),
                                     decision: decision.clone(),
@@ -546,6 +672,8 @@ pub fn run_stream(
                                     name: "present_plan".into(),
                                     output: output.clone(),
                                     is_error,
+                                    failure_kind: is_error
+                                        .then_some(crate::tool::ToolFailureKind::Unclassified),
                                 };
                                 tool_result_blocks.push(ContentBlock::tool_result_text(
                                     plan_id, output, is_error,
@@ -579,6 +707,8 @@ pub fn run_stream(
                                     name: tool_use.name.clone(),
                                     output: output.clone(),
                                     is_error,
+                                    failure_kind: is_error
+                                        .then_some(crate::tool::ToolFailureKind::Unclassified),
                                 };
                                 tool_result_blocks.push(ContentBlock::tool_result_text(
                                     tool_use.id.clone(), output, is_error,
@@ -616,6 +746,8 @@ pub fn run_stream(
                                     name: tool_use.name.clone(),
                                     output: output.clone(),
                                     is_error,
+                                    failure_kind: is_error
+                                        .then_some(crate::tool::ToolFailureKind::Unclassified),
                                 };
                                 tool_result_blocks.push(ContentBlock::tool_result_text(
                                     tool_use.id.clone(), output, is_error,
@@ -623,9 +755,7 @@ pub fn run_stream(
                                 continue;
                             }
 
-                            let input = tool_use.input.clone();
                             let name = tool_use.name.clone();
-                            let prepared_call = request.tools.prepare(&name, input);
                             let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
                                 crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
                             );
@@ -637,7 +767,7 @@ pub fn run_stream(
                                 });
                             let execution = execute_registered_tool(
                                 RegisteredToolExecutionRequest {
-                                    prepared_call,
+                                    prepared_call: prepared_call.clone(),
                                     invocation_gateway: ports.invocation_gateway.clone(),
                                     invocation_snapshot: ports.invocation_snapshot.clone(),
                                     tool_context: ports.tool_context.clone(),
@@ -680,6 +810,7 @@ pub fn run_stream(
                                 output,
                                 is_error,
                                 timed_out_after,
+                                failure_kind,
                             } = execution;
                             if let Some(timeout) = timed_out_after {
                                 yield AgentEvent::ToolTimedOut {
@@ -688,12 +819,12 @@ pub fn run_stream(
                                     timeout_secs: timeout.as_secs(),
                                 };
                             }
-
                             yield AgentEvent::ToolCallEnd {
                                 id: tool_use.id.clone(),
                                 name: name.clone(),
                                 output: output.clone(),
                                 is_error,
+                                failure_kind,
                             };
                             tool_result_blocks.push(ContentBlock::tool_result_text(
                                 tool_use.id.clone(), output, is_error,
@@ -713,7 +844,9 @@ pub fn run_stream(
                         }
                     }
                 }
-                messages.push(ChatMessage::user_blocks(tool_result_blocks));
+                machine
+                    .messages_mut()
+                    .push(ChatMessage::user_blocks(tool_result_blocks));
                 } else {
                     // Ordinary tools are independent within one model batch. Emit every
                     // start first, execute concurrently, then publish results in model order.
@@ -730,12 +863,15 @@ pub fn run_stream(
                         crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
                     );
                     let execution_coordination = Arc::new(tokio::sync::RwLock::new(()));
-                    let executions = tool_blocks.iter().zip(decisions.iter()).map(|(tool_use, decision)| {
+                    let executions = tool_blocks
+                        .iter()
+                        .zip(decisions.iter())
+                        .zip(prepared_calls.iter())
+                        .map(|((tool_use, decision), prepared_call)| {
                         let id = tool_use.id.clone();
                         let name = tool_use.name.clone();
-                        let input = tool_use.input.clone();
                         let decision = decision.clone();
-                        let prepared_call = request.tools.prepare(&name, input);
+                        let prepared_call = prepared_call.clone();
                         let execution_mode = prepared_call.as_ref().map_or(
                             crate::tool::ToolExecutionMode::Exclusive,
                             crate::tool::PreparedToolCall::execution_mode,
@@ -830,6 +966,7 @@ pub fn run_stream(
                                     output,
                                     is_error,
                                     timed_out_after,
+                                    failure_kind,
                                 } = execution;
                                 if let Some(timeout) = timed_out_after {
                                     yield AgentEvent::ToolTimedOut {
@@ -843,6 +980,7 @@ pub fn run_stream(
                                     name,
                                     output: output.clone(),
                                     is_error,
+                                    failure_kind,
                                 };
                                 tool_result_blocks.push(ContentBlock::tool_result_text(
                                     id, output, is_error,
@@ -860,45 +998,31 @@ pub fn run_stream(
                             }
                         }
                     }
-                    messages.push(ChatMessage::user_blocks(tool_result_blocks));
+                    machine
+                        .messages_mut()
+                        .push(ChatMessage::user_blocks(tool_result_blocks));
                 }
             }
 
-            // 8. Keep the provider's latest context-window report separate
-            //    from turn-wide accounting. Compression must not compare a
-            //    sum of repeated prompts against one model context window.
-            last_provider_usage = response.usage;
-            cumulative_usage.saturating_add_assign(last_provider_usage);
+            let continuation = TurnMachine::continuation_for(&response);
+            machine.complete_iteration(response, continuation);
 
             // 9. Emit IterationEnd — only AFTER all iter-internal
             //    events (chunks + tool calls) have fired.
             yield AgentEvent::IterationEnd {
                 iteration,
-                usage: cumulative_usage,
-                provider_usage: last_provider_usage,
+                usage: machine.cumulative_usage(),
+                provider_usage: machine.last_provider_usage(),
             };
-            completed_iterations = iteration;
 
             // 10. Check stop_reason.
             //
             //    MaxTokens is NOT terminal — the loop continues so the
             //    model can pick up where it left off. The truncated
-            //    assistant message is already in `messages` (re-fed at
+            //    assistant message is already in the machine history (re-fed at
             //    step 6), so the next iteration sends the same
             //    conversation and the model continues naturally.
             //
-            //    Always save the latest response as final_message — if
-            //    the loop exits without seeing EndTurn (e.g. max_iterations
-            //    reached during a MaxTokens chain), the caller sees the
-            //    last partial result rather than nothing.
-            final_message = Some(ModelResponse {
-                id: response_id,
-                content: final_message_content,
-                model: request.model.reference.clone(),
-                stop_reason: response_stop_reason.clone(),
-                usage: cumulative_usage,
-            });
-
             let terminal = matches!(
                 response_stop_reason,
                 StopReason::EndTurn
@@ -909,36 +1033,59 @@ pub fn run_stream(
             );
 
             if terminal {
+                yield AgentEvent::TurnTransition(required_turn_transition(
+                    &mut machine,
+                    TurnPhase::RunningAfterHooks,
+                    TurnTransitionReason::TerminalModelResponse
+                ));
                 break;
             }
+            let reason = match continuation {
+                Some(TurnContinuationReason::MaxOutputTokens) => {
+                    TurnTransitionReason::ContinueAfterMaxOutputTokens
+                }
+                Some(
+                    TurnContinuationReason::ToolResultsReady
+                    | TurnContinuationReason::ProviderRequestedContinuation,
+                )
+                | None => TurnTransitionReason::ContinueAfterToolResults,
+            };
+            yield AgentEvent::TurnTransition(required_turn_transition(
+                &mut machine,
+                TurnPhase::ReadyForIteration,
+                reason,
+            ));
         }
 
-        // Final event: a blocking after-turn hook can reject completion;
-        // otherwise publish Done or MaxIterationsReached.
-        match final_message {
-            Some(msg) => {
-                match request
-                    .tools
-                    .run_turn_hooks(AgentHookPhase::AfterTurn, &ports.tool_context)
-                    .await
-                {
-                    Ok(()) => yield AgentEvent::Done(AgentOutcome {
-                        final_response: msg,
-                        conversation: ConversationSnapshot::new(messages),
-                        iterations: completed_iterations,
-                        total_usage: cumulative_usage,
-                    }),
-                    Err(blocked) => {
-                        yield AgentEvent::Error(AgentLoopError::Tool(blocked.to_string()));
-                    }
-                }
-            }
-            None => {
-                yield AgentEvent::Error(AgentLoopError::MaxIterationsReached(
-                    config.max_iterations,
-                ));
-            }
+        if machine.snapshot().phase == TurnPhase::ReadyForIteration {
+            yield AgentEvent::TurnTransition(required_turn_transition(
+                &mut machine,
+                TurnPhase::RunningAfterHooks,
+                TurnTransitionReason::IterationLimitReached
+            ));
         }
+        if let Err(blocked) = request
+            .tools
+            .run_turn_hooks(AgentHookPhase::AfterTurn, &ports.tool_context)
+            .await
+        {
+            yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
+            yield AgentEvent::Error(AgentLoopError::Tool(blocked.to_string()));
+            return;
+        }
+        let Ok(outcome) = machine.outcome() else {
+            yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
+            yield AgentEvent::Error(AgentLoopError::MaxIterationsReached(
+                config.max_iterations,
+            ));
+            return;
+        };
+        yield AgentEvent::TurnTransition(required_turn_transition(
+            &mut machine,
+            TurnPhase::Completed,
+            TurnTransitionReason::AfterHooksCompleted
+        ));
+        yield AgentEvent::Done(outcome);
     }
 }
 
@@ -1000,10 +1147,36 @@ struct PendingToolCall {
     input: serde_json::Value,
 }
 
+fn is_control_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "ask_user" | "present_plan" | "start_background_task" | "update_plan"
+    )
+}
+
+fn required_turn_transition(
+    machine: &mut TurnMachine,
+    phase: TurnPhase,
+    reason: TurnTransitionReason,
+) -> TurnTransition {
+    machine
+        .transition(phase, reason)
+        .unwrap_or_else(|error| panic!("Agent kernel emitted an invalid turn transition: {error}"))
+}
+
+fn failed_turn_transition(machine: &mut TurnMachine) -> TurnTransition {
+    required_turn_transition(
+        machine,
+        TurnPhase::Failed,
+        TurnTransitionReason::ExecutionFailed,
+    )
+}
+
 struct ToolExecutionOutcome {
     output: String,
     is_error: bool,
     timed_out_after: Option<std::time::Duration>,
+    failure_kind: Option<crate::tool::ToolFailureKind>,
 }
 
 struct RegisteredToolExecutionRequest {
@@ -1028,6 +1201,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         timeout,
         progress,
     } = request;
+    let tool_context = tool_context.with_invocation_call_id(call_id.clone());
     let session_id = tool_context.session_id();
     let trace_id = tool_context.trace_id().unwrap_or("");
     tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, "tool execution started");
@@ -1039,6 +1213,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                 output: error.to_string(),
                 is_error: true,
                 timed_out_after: None,
+                failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
             };
         }
     };
@@ -1046,6 +1221,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         &call_id,
         &route,
         Some(prepared_call.spec().invocation_class),
+        Some(prepared_call.spec().recovery_policy),
         &tool_context,
         prepared_call.input().clone(),
         invocation_snapshot,
@@ -1058,6 +1234,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                 output: format!("tool authorization failed: {error}"),
                 is_error: true,
                 timed_out_after: None,
+                failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
             };
         }
     };
@@ -1067,6 +1244,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
             output: error.to_string(),
             is_error: true,
             timed_out_after: None,
+            failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
         };
         if let Err(audit_error) = grant
             .finish(crate::tool::invocation::ToolInvocationOutcome::Failed)
@@ -1104,11 +1282,13 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                 output: format!("tool `{route}` timed out after {}s", timeout.as_secs()),
                 is_error: true,
                 timed_out_after: Some(timeout),
+                failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
             },
             crate::tool::invocation::ToolInvocationOutcome::TimedOut,
         ),
         (Some(Ok(output)), None) => {
             tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, is_error = output.is_error, "tool execution finished");
+            let failure_kind = output.failure_kind();
             let terminal = if output.is_error {
                 crate::tool::invocation::ToolInvocationOutcome::Failed
             } else {
@@ -1119,6 +1299,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                     output: output.content,
                     is_error: output.is_error,
                     timed_out_after: None,
+                    failure_kind,
                 },
                 terminal,
             )
@@ -1130,6 +1311,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
                     output: format!("tool execution failed: {error}"),
                     is_error: true,
                     timed_out_after: None,
+                    failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
                 },
                 crate::tool::invocation::ToolInvocationOutcome::Failed,
             )
@@ -1140,6 +1322,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         warn!(%session_id, %trace_id, %call_id, tool = %route, %error, "tool terminal audit failed");
         outcome.output = error.to_string();
         outcome.is_error = true;
+        outcome.failure_kind = Some(crate::tool::ToolFailureKind::Unclassified);
     }
     outcome
 }

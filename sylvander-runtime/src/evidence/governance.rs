@@ -8,7 +8,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use crate::mcp_stdio::{McpResultArtifact, McpResultArtifactSink};
+use crate::mcp::stdio::{McpResultArtifact, McpResultArtifactSink};
 use async_trait::async_trait;
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};

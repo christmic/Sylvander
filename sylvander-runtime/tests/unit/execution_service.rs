@@ -91,8 +91,11 @@ fn health_is_sorted_and_never_calls_unconfined_targets_sandboxes() {
         ["container:review", "local", "ssh:build"]
     );
     assert!(health[0].sandbox_enforced);
+    assert!(health[0].process_tree);
     assert!(!health[1].sandbox_enforced);
+    assert!(!health[1].process_tree);
     assert!(!health[2].sandbox_enforced);
+    assert!(!health[2].process_tree);
     assert_eq!(health[0].status, ExecutionTargetStatus::Unverified);
     assert_eq!(health[1].status, ExecutionTargetStatus::Ready);
 }

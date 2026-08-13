@@ -292,6 +292,7 @@ impl ToolRegistry {
                 ToolInvocationDescriptor {
                     name: spec.name,
                     class: spec.invocation_class,
+                    recovery_policy: spec.recovery_policy,
                     input_schema: spec.input_schema,
                 }
             })
@@ -346,6 +347,7 @@ impl ToolRegistry {
                     "description": spec.description,
                     "input_schema": spec.input_schema,
                     "class": invocation_class_name(spec.invocation_class),
+                    "recovery_policy": recovery_policy_name(spec.recovery_policy),
                     "exposure": match spec.exposure {
                         ToolExposure::Immediate => "immediate",
                         ToolExposure::Deferred => "deferred",
@@ -361,7 +363,7 @@ impl ToolRegistry {
             "hooks": self.hooks,
         });
         let mut hasher = Sha256::new();
-        hasher.update(b"sylvander.tool.capability.v1\0");
+        hasher.update(b"sylvander.tool.capability.v2\0");
         hasher.update(serde_json::to_vec(&revision).unwrap_or_default());
         format!("sha256:{:x}", hasher.finalize())
     }
@@ -453,6 +455,18 @@ const fn invocation_class_name(class: ToolInvocationClass) -> &'static str {
         ToolInvocationClass::MemoryCandidate => "memory_candidate",
         ToolInvocationClass::Control => "control",
         ToolInvocationClass::Extension => "extension",
+    }
+}
+
+const fn recovery_policy_name(policy: crate::tool::invocation::ToolRecoveryPolicy) -> &'static str {
+    match policy {
+        crate::tool::invocation::ToolRecoveryPolicy::NeverReplay => "never_replay",
+        crate::tool::invocation::ToolRecoveryPolicy::RetryWithSameInvocation => {
+            "retry_with_same_invocation"
+        }
+        crate::tool::invocation::ToolRecoveryPolicy::ReconcileBeforeRetry => {
+            "reconcile_before_retry"
+        }
     }
 }
 

@@ -3,8 +3,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::observability::{
-    RuntimeClock, RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind,
-    RuntimeObservability, RuntimeObservabilitySnapshot, RuntimePersistenceOperation,
+    DEBUG_OBSERVATION_LOG_MAX_FILES, DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES, RuntimeClock,
+    RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind, RuntimeObservability,
+    RuntimeObservabilitySnapshot, RuntimeObservationDebugLog, RuntimePersistenceOperation,
+    RuntimeToolFailureKind,
 };
 use sylvander_api::MessageId;
 
@@ -69,6 +71,112 @@ fn cloned_recorders_share_typed_lifecycle_counters() {
     );
 }
 
+#[tokio::test]
+async fn governance_bus_is_ordered_and_shared_across_clones() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let mut receiver = recorder.subscribe();
+    let publisher = recorder.clone();
+    let session_id = SessionId::new("session-1");
+    publisher.record(RuntimeEvent::TurnStarted {
+        request_id: "request-1".into(),
+        trace_id: "trace-1".into(),
+        turn_id: "turn-1".into(),
+        session_id: session_id.clone(),
+        agent_id: AgentId::new("agent-1"),
+    });
+    publisher.record(RuntimeEvent::TurnCompleted {
+        turn_id: "turn-1".into(),
+        session_id,
+    });
+
+    assert!(matches!(
+        receiver.recv().await.unwrap(),
+        RuntimeEvent::TurnStarted { .. }
+    ));
+    assert!(matches!(
+        receiver.recv().await.unwrap(),
+        RuntimeEvent::TurnCompleted { .. }
+    ));
+    assert_eq!(recorder.snapshot().turns_completed, 1);
+}
+
+#[tokio::test]
+async fn debug_projection_writes_bounded_typed_jsonl_without_agent_content() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let debug_log = RuntimeObservationDebugLog::start(directory.path(), recorder.subscribe())
+        .await
+        .unwrap();
+    let path = debug_log.path().to_path_buf();
+    recorder.record(RuntimeEvent::TurnStarted {
+        request_id: "request-1".into(),
+        trace_id: "trace-1".into(),
+        turn_id: "turn-1".into(),
+        session_id: SessionId::new("session-1"),
+        agent_id: AgentId::new("agent-1"),
+    });
+    debug_log.shutdown().await;
+
+    let content = tokio::fs::read_to_string(path).await.unwrap();
+    let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+    assert_eq!(record["event"], "turn_started");
+    assert_eq!(record["turn_id"], "turn-1");
+    assert!(record.get("recorded_at_unix_ms").is_some());
+    assert!(!content.contains("prompt"));
+    assert!(!content.contains("output"));
+}
+
+#[tokio::test]
+async fn debug_projection_prunes_only_its_oldest_managed_files_across_restarts() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let debug_directory = directory.path().join("debug");
+    tokio::fs::create_dir_all(&debug_directory).await.unwrap();
+    let mut old_paths = Vec::new();
+    for sequence in 1..=DEBUG_OBSERVATION_LOG_MAX_FILES + 2 {
+        let path = debug_directory.join(format!(
+            "runtime-observations-00000000-0000-0000-0000-{sequence:012}.jsonl"
+        ));
+        tokio::fs::write(&path, b"old\n").await.unwrap();
+        old_paths.push(path);
+    }
+    let unrelated = debug_directory.join("runtime-observations-manual-notes.jsonl");
+    tokio::fs::write(&unrelated, b"keep\n").await.unwrap();
+
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let debug_log = RuntimeObservationDebugLog::start(directory.path(), recorder.subscribe())
+        .await
+        .unwrap();
+    let current = debug_log.path().to_path_buf();
+    debug_log.shutdown().await;
+
+    let retained_old = old_paths.iter().filter(|path| path.exists()).count();
+    assert!(retained_old < DEBUG_OBSERVATION_LOG_MAX_FILES);
+    assert!(retained_old + usize::from(current.exists()) <= DEBUG_OBSERVATION_LOG_MAX_FILES);
+    assert!(unrelated.exists());
+}
+
+#[tokio::test]
+async fn debug_projection_removes_oversized_managed_history_before_start() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let debug_directory = directory.path().join("debug");
+    tokio::fs::create_dir_all(&debug_directory).await.unwrap();
+    let oversized =
+        debug_directory.join("runtime-observations-00000000-0000-0000-0000-000000000001.jsonl");
+    let file = tokio::fs::File::create(&oversized).await.unwrap();
+    file.set_len(DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES)
+        .await
+        .unwrap();
+    drop(file);
+
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let debug_log = RuntimeObservationDebugLog::start(directory.path(), recorder.subscribe())
+        .await
+        .unwrap();
+    debug_log.shutdown().await;
+
+    assert!(!oversized.exists());
+}
+
 #[test]
 fn turn_tool_and_persistence_facts_reduce_to_content_safe_counts() {
     let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
@@ -92,13 +200,20 @@ fn turn_tool_and_persistence_facts_reduce_to_content_safe_counts() {
         tool_call_id: "call-1".into(),
         tool_name: "read".into(),
     });
-    for succeeded in [true, false] {
+    for (succeeded, failure_kind) in [
+        (true, None),
+        (
+            false,
+            Some(RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation),
+        ),
+    ] {
         recorder.record(RuntimeEvent::ToolFinished {
             turn_id: turn_id.clone(),
             session_id: session_id.clone(),
             tool_call_id: "call-1".into(),
             tool_name: "read".into(),
             succeeded,
+            failure_kind,
         });
     }
     for succeeded in [true, false] {
@@ -135,6 +250,7 @@ fn turn_tool_and_persistence_facts_reduce_to_content_safe_counts() {
             tools_started: 1,
             tools_succeeded: 1,
             tools_failed: 1,
+            filesystem_policy_violations: 1,
             persistence_succeeded: 1,
             persistence_failed: 1,
             unmatched_terminals: 3,
@@ -194,6 +310,7 @@ fn paired_lifecycles_report_active_work_and_bounded_latency() {
         tool_call_id: "call-1".into(),
         tool_name: "read".into(),
         succeeded: true,
+        failure_kind: None,
     });
     clock.set(600_000);
     recorder.record(RuntimeEvent::TurnCompleted {
@@ -225,4 +342,32 @@ fn paired_lifecycles_report_active_work_and_bounded_latency() {
         snapshot.turn_latency.bucket_counts,
         [0, 0, 0, 0, 1, 0, 0, 0]
     );
+}
+
+#[test]
+fn failed_turn_clears_unfinished_tool_timing_state() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let session_id = SessionId::new("session-abandoned");
+    recorder.record(RuntimeEvent::TurnStarted {
+        request_id: "request-abandoned".into(),
+        trace_id: "trace-abandoned".into(),
+        turn_id: "turn-abandoned".into(),
+        session_id: session_id.clone(),
+        agent_id: AgentId::new("agent"),
+    });
+    recorder.record(RuntimeEvent::ToolStarted {
+        turn_id: "turn-abandoned".into(),
+        session_id: session_id.clone(),
+        tool_call_id: "call-abandoned".into(),
+        tool_name: "read".into(),
+    });
+    recorder.record(RuntimeEvent::TurnFailed {
+        turn_id: "turn-abandoned".into(),
+        session_id,
+        kind: RuntimeFailureKind::Persistence,
+    });
+
+    let snapshot = recorder.snapshot();
+    assert_eq!(snapshot.active_turns, 0);
+    assert_eq!(snapshot.active_tools, 0);
 }

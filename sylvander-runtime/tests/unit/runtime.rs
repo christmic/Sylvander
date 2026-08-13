@@ -15,7 +15,8 @@ use sylvander_channel::BusError;
 
 use crate::execution::LocalExecutor;
 use sylvander_api::{
-    SessionWorkspaceBinding, SessionWorkspaceMount, WorkspaceCapabilityPolicy, WorkspaceMountRole,
+    SessionConfigFieldPatch, SessionConfigPatch, SessionWorkspaceBinding, SessionWorkspaceMount,
+    WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };
 use tokio::sync::Notify;
 use wiremock::matchers::{method, path};
@@ -771,18 +772,13 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         .await
         .unwrap();
     let operational = runtime.operational_snapshot().await.unwrap();
-    assert_eq!(
-        operational.observability,
-        RuntimeObservabilitySnapshot {
-            event_count: 8,
-            turns_started: 1,
-            turns_completed: 1,
-            tools_started: 1,
-            tools_succeeded: 1,
-            persistence_succeeded: 4,
-            ..RuntimeObservabilitySnapshot::default()
-        }
-    );
+    assert_eq!(operational.observability.turns_started, 1);
+    assert_eq!(operational.observability.turns_completed, 1);
+    assert_eq!(operational.observability.tools_started, 1);
+    assert_eq!(operational.observability.tools_succeeded, 1);
+    assert_eq!(operational.observability.persistence_succeeded, 8);
+    assert_eq!(operational.observability.active_turns, 0);
+    assert_eq!(operational.observability.active_tools, 0);
     assert_eq!(operational.execution_targets.len(), 1);
     assert_eq!(operational.execution_targets[0].target_id, "local");
     assert_eq!(
@@ -827,13 +823,15 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
             expected_revision: created.revision,
-            overrides: SessionConfigOverrides {
-                permissions: Some(sylvander_api::PermissionProfile {
-                    file_access: sylvander_api::FileAccess::ReadOnly,
-                    network_access: sylvander_api::NetworkAccess::Denied,
-                    approval_policy: sylvander_api::ApprovalPolicy::Deny,
+            patch: SessionConfigPatch {
+                permissions: Some(SessionConfigFieldPatch::Set {
+                    value: sylvander_api::PermissionProfile {
+                        file_access: sylvander_api::FileAccess::ReadOnly,
+                        network_access: sylvander_api::NetworkAccess::Denied,
+                        approval_policy: sylvander_api::ApprovalPolicy::Deny,
+                    },
                 }),
-                ..initial_overrides.clone()
+                ..SessionConfigPatch::default()
             },
         },
     )
@@ -852,12 +850,14 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
             expected_revision: updated.revision,
-            overrides: SessionConfigOverrides {
-                user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
-                    path: changed_workspace,
-                    ..requested_workspace
+            patch: SessionConfigPatch {
+                user_workspace: Some(SessionConfigFieldPatch::Set {
+                    value: sylvander_api::SessionWorkspaceBinding {
+                        path: changed_workspace,
+                        ..requested_workspace
+                    },
                 }),
-                ..initial_overrides
+                ..SessionConfigPatch::default()
             },
         },
     )
@@ -3016,9 +3016,11 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
             expected_revision: created.revision,
-            overrides: SessionConfigOverrides {
-                system_prompt: Some("private\0prompt".into()),
-                ..SessionConfigOverrides::default()
+            patch: SessionConfigPatch {
+                system_prompt: Some(SessionConfigFieldPatch::Set {
+                    value: "private\0prompt".into(),
+                }),
+                ..SessionConfigPatch::default()
             },
         },
     )
@@ -3072,13 +3074,17 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
             expected_revision: created.revision,
-            overrides: SessionConfigOverrides {
-                model: Some(ModelSelection {
-                    provider_id: "primary".into(),
-                    model_id: "model-a".into(),
+            patch: SessionConfigPatch {
+                model: Some(SessionConfigFieldPatch::Set {
+                    value: ModelSelection {
+                        provider_id: "primary".into(),
+                        model_id: "model-a".into(),
+                    },
                 }),
-                permissions: Some(restricted.clone()),
-                ..SessionConfigOverrides::default()
+                permissions: Some(SessionConfigFieldPatch::Set {
+                    value: restricted.clone(),
+                }),
+                ..SessionConfigPatch::default()
             },
         },
     )

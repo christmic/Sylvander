@@ -379,6 +379,18 @@ fn model_retry_wire_event_preserves_backoff_context() {
 }
 
 #[test]
+fn turn_started_wire_event_preserves_runtime_identity() {
+    let event = parse_server_msg(ServerMsg::TurnStarted {
+        session_id: "s1".into(),
+        turn_id: "turn-1".into(),
+    });
+    assert!(matches!(
+        event,
+        Some(DomainEvent::TurnStarted { turn_id }) if turn_id == "turn-1"
+    ));
+}
+
+#[test]
 fn tool_call_adapter_preserves_identity_and_input() {
     let event = parse_server_msg(ServerMsg::ToolCall {
         session_id: "s1".into(),

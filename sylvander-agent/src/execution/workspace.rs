@@ -55,6 +55,18 @@ pub enum WorkspaceExecutorError {
     WriteConflict(String),
     #[error("execution target `{0}` cannot enforce conditional file writes")]
     ConditionalWriteUnavailable(String),
+    #[error("execution environment blocked a filesystem-boundary policy violation")]
+    PolicyViolation(WorkspacePolicyViolation),
+}
+
+/// A policy rejection explicitly identified by the selected environment.
+///
+/// Adapters must not infer this classification from an arbitrary non-zero
+/// process status or permission-denied message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspacePolicyViolation {
+    /// A resolved path crossed the workspace filesystem boundary.
+    FilesystemBoundary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +248,7 @@ pub struct ProcessIsolation {
     pub filesystem: bool,
     pub network_denied: bool,
     pub resource_limits: bool,
+    pub process_tree: bool,
 }
 
 impl ProcessIsolation {
@@ -245,6 +258,7 @@ impl ProcessIsolation {
             filesystem: false,
             network_denied: false,
             resource_limits: false,
+            process_tree: false,
         }
     }
 
@@ -254,12 +268,13 @@ impl ProcessIsolation {
             filesystem: true,
             network_denied: true,
             resource_limits: true,
+            process_tree: true,
         }
     }
 
     #[must_use]
     pub const fn enforces_sandbox(self) -> bool {
-        self.filesystem && self.network_denied && self.resource_limits
+        self.filesystem && self.network_denied && self.resource_limits && self.process_tree
     }
 }
 

@@ -7,8 +7,13 @@
 //! transaction. Compaction marks retired messages with `is_summarized`; they
 //! remain auditable on disk while the active loop view excludes them.
 
+mod execution_ledger;
 mod sqlite;
 
+pub use execution_ledger::{
+    RecoveryClassification, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
+    ToolRecoveryReason,
+};
 pub use sqlite::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 
 use std::collections::HashMap;
@@ -17,6 +22,7 @@ use std::ops::Range;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use sylvander_agent::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy};
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
@@ -255,6 +261,115 @@ pub struct TurnCompletion {
     pub model_id: String,
 }
 
+/// Durable lifecycle state of one tool call inside a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallState {
+    Running,
+    Succeeded,
+    Failed,
+    Rejected,
+    Abandoned,
+}
+
+/// Content-safe failure evidence supplied by the execution adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallFailureKind {
+    FilesystemBoundaryPolicyViolation,
+}
+
+/// Immutable identity persisted before a tool is executed or rejected.
+#[derive(Debug, Clone)]
+pub struct ToolCallStart {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub invocation_id: ToolInvocationId,
+    pub tool_name: String,
+    pub invocation_class: Option<ToolInvocationClass>,
+    pub declared_recovery_policy: ToolRecoveryPolicy,
+    pub effective_recovery_policy: ToolRecoveryPolicy,
+    pub capability_revision: String,
+    pub input_digest: String,
+}
+
+/// Optimistic request to advance exactly one durable effect boundary.
+#[derive(Debug, Clone)]
+pub struct ToolCallAdvance {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub expected_revision: u64,
+    pub expected_position: ToolExecutionPosition,
+    pub next_position: ToolExecutionPosition,
+}
+
+/// Terminal facts committed for one previously started tool call.
+#[derive(Debug, Clone)]
+pub struct ToolCallCompletion {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub state: ToolCallState,
+    pub failure_kind: Option<ToolCallFailureKind>,
+}
+
+/// Content-free durable tool record used for recovery and diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallSnapshot {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub invocation_id: ToolInvocationId,
+    pub tool_name: String,
+    pub invocation_class: Option<ToolInvocationClass>,
+    pub declared_recovery_policy: ToolRecoveryPolicy,
+    pub effective_recovery_policy: ToolRecoveryPolicy,
+    pub capability_revision: String,
+    pub input_digest: String,
+    pub position: ToolExecutionPosition,
+    pub ledger_revision: u64,
+    pub started_at: i64,
+    pub updated_at: i64,
+    pub state: ToolCallState,
+    pub ended_at: Option<i64>,
+    pub failure_kind: Option<ToolCallFailureKind>,
+    pub recovery_decision: Option<ToolRecoveryDecision>,
+    pub recovery_reason: Option<ToolRecoveryReason>,
+    pub operator_action_required: bool,
+    pub recovery_attempts: u32,
+    pub recovery_owner: Option<String>,
+    pub recovery_lease_expires_at: Option<i64>,
+    pub first_interrupted_at: Option<i64>,
+}
+
+/// Atomic lease acquisition plus classification for one interrupted call.
+#[derive(Debug, Clone)]
+pub struct ToolRecoveryWrite {
+    pub invocation_id: ToolInvocationId,
+    pub expected_revision: u64,
+    pub recovery_owner: String,
+    pub observed_at: i64,
+    pub lease_expires_at: i64,
+    pub classification: RecoveryClassification,
+}
+
+/// Exact model-visible observation, ledger boundary, and terminal state
+/// committed in one transaction.
+#[derive(Debug, Clone)]
+pub struct ToolResultPersistence {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub expected_revision: u64,
+    pub expected_position: ToolExecutionPosition,
+    pub content: JsonValue,
+    pub tool_name: String,
+    pub terminal_state: ToolCallState,
+    pub failure_kind: Option<ToolCallFailureKind>,
+}
+
 // ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
@@ -343,6 +458,42 @@ pub trait SessionStore: Send + Sync {
         state: TurnState,
         failure_kind: Option<TurnFailureKind>,
     ) -> Result<(), SessionStoreError>;
+
+    /// Persist tool identity before approval or execution can produce a
+    /// terminal. The addressed turn must currently be running.
+    async fn begin_tool_call(&self, start: ToolCallStart) -> Result<(), SessionStoreError>;
+
+    /// Advance one adjacent execution boundary using a monotonic CAS.
+    async fn advance_tool_call(&self, advance: ToolCallAdvance) -> Result<u64, SessionStoreError>;
+
+    /// Atomically append the model-visible observation and mark it durable.
+    async fn persist_tool_result(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        result: ToolResultPersistence,
+    ) -> Result<u64, SessionStoreError>;
+
+    /// Atomically replace a running tool call with exactly one terminal.
+    async fn finish_tool_call(
+        &self,
+        completion: ToolCallCompletion,
+    ) -> Result<(), SessionStoreError>;
+
+    /// Read durable tool lifecycle facts in start order for one turn.
+    async fn tool_calls(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<ToolCallSnapshot>, SessionStoreError>;
+
+    /// Scan running calls owned by turns that were non-terminal at boot.
+    async fn interrupted_tool_calls(&self) -> Result<Vec<ToolCallSnapshot>, SessionStoreError>;
+
+    /// Acquire/renew a bounded lease and persist one deterministic decision.
+    async fn classify_tool_recovery(
+        &self,
+        write: ToolRecoveryWrite,
+    ) -> Result<u64, SessionStoreError>;
 
     /// Soft-delete (sets `is_archived=1`). The row and its messages
     /// remain on disk for audit / undo; `get` returns `None`.

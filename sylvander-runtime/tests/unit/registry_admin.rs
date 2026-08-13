@@ -8,8 +8,8 @@ use crate::credential_audit::{
     CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
     CredentialOperationAuditLedger,
 };
+use crate::provider::request_scoped::ProviderFactoryError;
 use crate::registry_domain::CredentialBindingRevision;
-use crate::request_scoped_provider::ProviderFactoryError;
 
 const RAW_URL: &str = "https://user:RAW_URL_SECRET@example.invalid/path?token=leak";
 const RAW_BINDING: &str = "RAW_BINDING_SECRET";

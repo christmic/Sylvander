@@ -16,8 +16,9 @@ use sylvander_agent::workspace_executor::{
     COMMAND_OUTPUT_HEAD_BYTES, MAX_COMMAND_OUTPUT_BYTES_PER_STREAM, ProcessIsolation,
     WorkspaceCommandOutput, WorkspaceCommandProgressSink, WorkspaceCommandStream,
     WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListEntry,
-    WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits, WorkspaceReadResult,
-    WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
+    WorkspaceListRequest, WorkspaceListResult, WorkspacePolicyViolation, WorkspaceQueryLimits,
+    WorkspaceReadResult, WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult,
+    WorkspaceTarget,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -864,6 +865,11 @@ fn invalid(message: impl Into<String>) -> WorkspaceExecutorError {
 }
 
 fn container_failure(operation: &str, output: &std::process::Output) -> WorkspaceExecutorError {
+    if output.status.code() == Some(126) {
+        return WorkspaceExecutorError::PolicyViolation(
+            WorkspacePolicyViolation::FilesystemBoundary,
+        );
+    }
     let status = output
         .status
         .code()

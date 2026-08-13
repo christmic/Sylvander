@@ -10,7 +10,7 @@ license.workspace = true
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-api = { path = "../sylvander-api" }
 async-trait = "0.1"
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { workspace = true }

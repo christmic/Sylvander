@@ -25,6 +25,7 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
+use sylvander_agent::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy};
 use sylvander_api::session_context::Priority;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -34,8 +35,11 @@ use crate::session::SessionMetadata;
 
 use super::{
     MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch,
-    SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession, TurnCompletion,
-    TurnFailureKind, TurnSnapshot, TurnStart, TurnState,
+    SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession, ToolCallAdvance,
+    ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState,
+    ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason,
+    ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot,
+    TurnStart, TurnState,
 };
 
 /// SQLite-backed session store.
@@ -227,7 +231,7 @@ impl SqliteSessionStore {
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 2;
+const SESSION_SCHEMA_VERSION: i64 = 5;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -240,6 +244,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_messages",
     "session_usage",
     "session_turns",
+    "session_tool_calls",
     "idx_messages_user",
     "idx_messages_agent",
     "idx_messages_trace",
@@ -249,6 +254,9 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_session_agents_agent",
     "idx_messages_session",
     "idx_messages_unsummarized",
+    "idx_tool_calls_turn",
+    "idx_tool_calls_recovery",
+    "idx_running_turn_per_session",
 ];
 
 const SCHEMA_SQL: &str = r"
@@ -320,10 +328,44 @@ CREATE TABLE session_turns (
     config_revision INTEGER NOT NULL,
     effective_config TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
-    state           TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK(state IN ('running','completed','failed','interrupted')),
     ended_at        INTEGER,
     failure_kind    TEXT,
+    CHECK((state = 'running' AND ended_at IS NULL) OR (state != 'running' AND ended_at IS NOT NULL)),
+    CHECK(failure_kind IS NULL OR state = 'failed'),
     PRIMARY KEY (session_id, turn_id)
+);
+
+CREATE TABLE session_tool_calls (
+    session_id      TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    call_id         TEXT NOT NULL,
+    invocation_id   TEXT NOT NULL UNIQUE,
+    tool_name       TEXT NOT NULL,
+    invocation_class TEXT,
+    declared_recovery_policy TEXT NOT NULL,
+    effective_recovery_policy TEXT NOT NULL,
+    capability_revision TEXT NOT NULL,
+    input_digest    TEXT NOT NULL,
+    position        TEXT NOT NULL CHECK(position IN ('prepared','authorized','effect_started','effect_committed','result_persisted')),
+    ledger_revision INTEGER NOT NULL DEFAULT 0,
+    started_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    state           TEXT NOT NULL CHECK(state IN ('running','succeeded','failed','rejected','abandoned')),
+    ended_at        INTEGER,
+    failure_kind    TEXT,
+    recovery_decision TEXT,
+    recovery_reason TEXT,
+    operator_action_required INTEGER NOT NULL DEFAULT 0,
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    recovery_owner TEXT,
+    recovery_lease_expires_at INTEGER,
+    first_interrupted_at INTEGER,
+    CHECK((state = 'running' AND ended_at IS NULL) OR (state != 'running' AND ended_at IS NOT NULL)),
+    CHECK(failure_kind IS NULL OR state = 'failed'),
+    PRIMARY KEY (session_id, turn_id, call_id),
+    FOREIGN KEY (session_id, turn_id)
+        REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_messages_user
@@ -346,7 +388,13 @@ CREATE INDEX idx_messages_session
     ON session_messages(session_id, seq);
 CREATE INDEX idx_messages_unsummarized
     ON session_messages(session_id, is_summarized);
-PRAGMA user_version=2;
+CREATE INDEX idx_tool_calls_turn
+    ON session_tool_calls(session_id, turn_id, started_at, call_id);
+CREATE INDEX idx_tool_calls_recovery
+    ON session_tool_calls(state, position, updated_at, invocation_id);
+CREATE UNIQUE INDEX idx_running_turn_per_session
+    ON session_turns(session_id) WHERE state = 'running';
+PRAGMA user_version=5;
 COMMIT;
 ";
 
@@ -719,6 +767,19 @@ impl SessionStore for SqliteSessionStore {
                     "turn configuration does not match the persisted session revision".into(),
                 ));
             }
+            let unresolved_effect: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_tool_calls \
+                     WHERE session_id=?1 AND state='running')",
+                    [&start.session_id.0],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_err)?;
+            if unresolved_effect {
+                return Err(SessionStoreError::Invalid(
+                    "session has an unresolved tool execution".into(),
+                ));
+            }
 
             let now = crate::session::now_secs();
             transaction
@@ -867,6 +928,19 @@ impl SessionStore for SqliteSessionStore {
                     "only a running turn can be completed".into(),
                 ));
             }
+            let active_tools: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM session_tool_calls \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running'",
+                    params![completion.session_id.0, completion.turn_id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_err)?;
+            if active_tools != 0 {
+                return Err(SessionStoreError::Invalid(
+                    "turn cannot complete while a durable tool call is running".into(),
+                ));
+            }
             let now = crate::session::now_secs();
             let next_seq: i64 = transaction
                 .query_row(
@@ -950,13 +1024,324 @@ impl SessionStore for SqliteSessionStore {
         let session_id = session_id.clone();
         let turn_id = turn_id.to_string();
         self.run(move |connection| {
-            let changed = connection
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let now = crate::session::now_secs();
+            let changed = transaction
                 .execute(
                     "UPDATE session_turns SET state = ?3, ended_at = ?4, failure_kind = ?5 \
                      WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running'",
+                    params![session_id.0, turn_id, state, now, failure_kind],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 0 {
+                return Err(SessionStoreError::Invalid(
+                    "durable turn is missing or already terminal".into(),
+                ));
+            }
+            transaction
+                .execute(
+                    "UPDATE session_tool_calls SET state = 'abandoned', ended_at = ?3 \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running' \
+                       AND position IN ('prepared','authorized')",
+                    params![session_id.0, turn_id, now],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn begin_tool_call(&self, start: ToolCallStart) -> Result<(), SessionStoreError> {
+        if start.turn_id.trim().is_empty()
+            || start.call_id.trim().is_empty()
+            || start.tool_name.trim().is_empty()
+            || !start.capability_revision.starts_with("sha256:")
+            || !start.input_digest.starts_with("sha256:")
+            || !recovery_policy_allows(
+                start.declared_recovery_policy,
+                start.effective_recovery_policy,
+            )
+        {
+            return Err(SessionStoreError::Invalid(
+                "tool execution identity or frozen recovery contract is invalid".into(),
+            ));
+        }
+        self.run(move |connection| {
+            let turn_state = connection
+                .query_row(
+                    "SELECT state FROM session_turns WHERE session_id = ?1 AND turn_id = ?2",
+                    params![start.session_id.0, start.turn_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            if turn_state.as_deref() != Some("running") {
+                return Err(SessionStoreError::Invalid(
+                    "tool call requires a running durable turn".into(),
+                ));
+            }
+            let now = crate::session::now_secs();
+            let changed = connection.execute(
+                    "INSERT INTO session_tool_calls \
+                     (session_id, turn_id, call_id, invocation_id, tool_name, invocation_class, \
+                      declared_recovery_policy, effective_recovery_policy, capability_revision, \
+                      input_digest, position, ledger_revision, started_at, updated_at, state) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'prepared', 0, ?11, ?11, 'running') \
+                     ON CONFLICT(session_id, turn_id, call_id) DO NOTHING",
                     params![
-                        session_id.0,
-                        turn_id,
+                        &start.session_id.0,
+                        &start.turn_id,
+                        &start.call_id,
+                        start.invocation_id.as_str(),
+                        &start.tool_name,
+                        start.invocation_class.map(tool_invocation_class_str),
+                        tool_recovery_policy_str(start.declared_recovery_policy),
+                        tool_recovery_policy_str(start.effective_recovery_policy),
+                        &start.capability_revision,
+                        &start.input_digest,
+                        now,
+                    ],
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::SqliteFailure(ref inner, _)
+                        if inner.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        SessionStoreError::Invalid("conflicting durable invocation identity".into())
+                    }
+                    error => sqlite_err(error),
+                })?;
+            if changed == 1 {
+                return Ok(());
+            }
+            let existing = connection
+                .query_row(
+                    "SELECT invocation_id, tool_name, invocation_class, \
+                            declared_recovery_policy, effective_recovery_policy, \
+                            capability_revision, input_digest \
+                     FROM session_tool_calls \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND call_id = ?3",
+                    params![start.session_id.0, start.turn_id, start.call_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, String>(6)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            let expected_class = start.invocation_class.map(tool_invocation_class_str);
+            match existing {
+                Some((invocation_id, tool_name, class, declared, effective, revision, digest))
+                    if invocation_id == start.invocation_id.as_str()
+                        && tool_name == start.tool_name
+                        && class.as_deref() == expected_class
+                        && declared == tool_recovery_policy_str(start.declared_recovery_policy)
+                        && effective == tool_recovery_policy_str(start.effective_recovery_policy)
+                        && revision == start.capability_revision
+                        && digest == start.input_digest =>
+                {
+                    Ok(())
+                }
+                _ => Err(SessionStoreError::Invalid(
+                    "conflicting durable tool call fingerprint".into(),
+                )),
+            }
+        })
+        .await
+    }
+
+    async fn advance_tool_call(&self, advance: ToolCallAdvance) -> Result<u64, SessionStoreError> {
+        if !advance
+            .expected_position
+            .can_advance_to(advance.next_position)
+        {
+            return Err(SessionStoreError::Invalid(
+                "tool execution position must advance one boundary".into(),
+            ));
+        }
+        self.run(move |connection| {
+            let next_revision = advance.expected_revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("tool ledger revision overflow".into())
+            })?;
+            let expected_revision_sql = i64::try_from(advance.expected_revision).map_err(|_| {
+                SessionStoreError::Invalid("tool ledger revision exceeds SQLite range".into())
+            })?;
+            let next_revision_sql = i64::try_from(next_revision).map_err(|_| {
+                SessionStoreError::Invalid("tool ledger revision exceeds SQLite range".into())
+            })?;
+            let changed = connection
+                .execute(
+                    "UPDATE session_tool_calls \
+                     SET position = ?6, ledger_revision = ?5, updated_at = ?7 \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND call_id = ?3 \
+                       AND ledger_revision = ?4 AND position = ?8 AND state = 'running'",
+                    params![
+                        advance.session_id.0,
+                        advance.turn_id,
+                        advance.call_id,
+                        expected_revision_sql,
+                        next_revision_sql,
+                        tool_execution_position_str(advance.next_position),
+                        crate::session::now_secs(),
+                        tool_execution_position_str(advance.expected_position),
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 1 {
+                return Ok(next_revision);
+            }
+            let existing = connection
+                .query_row(
+                    "SELECT position, ledger_revision FROM session_tool_calls \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND call_id = ?3",
+                    params![advance.session_id.0, advance.turn_id, advance.call_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            match existing {
+                Some((position, revision))
+                    if position == tool_execution_position_str(advance.next_position)
+                        && revision == next_revision_sql =>
+                {
+                    Ok(next_revision)
+                }
+                _ => Err(SessionStoreError::Invalid(
+                    "tool execution position compare-and-swap conflict".into(),
+                )),
+            }
+        })
+        .await
+    }
+
+    async fn persist_tool_result(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        result: ToolResultPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        let (terminal_state, failure_kind) = match (result.terminal_state, result.failure_kind) {
+            (ToolCallState::Succeeded, None) => ("succeeded", None),
+            (ToolCallState::Failed, kind) => ("failed", kind.map(tool_call_failure_kind_str)),
+            _ => {
+                return Err(SessionStoreError::Invalid(
+                    "tool result terminal state and failure kind are inconsistent".into(),
+                ));
+            }
+        };
+        if result.tool_name.trim().is_empty()
+            || !matches!(
+                result.expected_position,
+                ToolExecutionPosition::EffectStarted | ToolExecutionPosition::EffectCommitted
+            )
+        {
+            return Err(SessionStoreError::Invalid(
+                "tool result persistence boundary is invalid".into(),
+            ));
+        }
+        let content_json = serde_json::to_string(&result.content)
+            .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
+        let user_id = ctx.identity.user_id.0.clone();
+        let agent_id = ctx.identity.agent_id.0.clone();
+        let trace_id = ctx.request.trace_id.clone();
+        let priority = priority_str(ctx.request.priority);
+        self.run(move |connection| {
+            let expected_revision = i64::try_from(result.expected_revision).map_err(|_| {
+                SessionStoreError::Invalid("tool ledger revision exceeds SQLite range".into())
+            })?;
+            let next_revision = expected_revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("tool ledger revision overflow".into())
+            })?;
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let now = crate::session::now_secs();
+            let advanced = transaction
+                .execute(
+                    "UPDATE session_tool_calls \
+                     SET position='result_persisted', ledger_revision=?5, updated_at=?6, \
+                         state=?8, ended_at=?6, failure_kind=?9 \
+                     WHERE session_id=?1 AND turn_id=?2 AND call_id=?3 \
+                       AND ledger_revision=?4 AND position=?7 AND state='running'",
+                    params![
+                        result.session_id.0,
+                        result.turn_id,
+                        result.call_id,
+                        expected_revision,
+                        next_revision,
+                        now,
+                        tool_execution_position_str(result.expected_position),
+                        terminal_state,
+                        failure_kind,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if advanced != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "tool result position compare-and-swap conflict".into(),
+                ));
+            }
+            let next_seq = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages \
+                     WHERE session_id=?1",
+                    [&result.session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(sqlite_err)?;
+            transaction
+                .execute(
+                    "INSERT INTO session_messages \
+                     (session_id,seq,role,content_json,user_id,agent_id,trace_id,priority, \
+                      tool_name,is_summarized,created_at) \
+                     VALUES (?1,?2,'tool',?3,?4,?5,?6,?7,?8,0,?9)",
+                    params![
+                        result.session_id.0,
+                        next_seq,
+                        content_json,
+                        user_id,
+                        agent_id,
+                        trace_id,
+                        priority,
+                        result.tool_name,
+                        now,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)?;
+            u64::try_from(next_revision)
+                .map_err(|_| SessionStoreError::Invalid("negative tool ledger revision".into()))
+        })
+        .await
+    }
+
+    async fn finish_tool_call(
+        &self,
+        completion: ToolCallCompletion,
+    ) -> Result<(), SessionStoreError> {
+        let (state, failure_kind) = match (completion.state, completion.failure_kind) {
+            (ToolCallState::Succeeded, None) => ("succeeded", None),
+            (ToolCallState::Failed, kind) => ("failed", kind.map(tool_call_failure_kind_str)),
+            (ToolCallState::Rejected, None) => ("rejected", None),
+            _ => {
+                return Err(SessionStoreError::Invalid(
+                    "tool terminal state and failure kind are inconsistent".into(),
+                ));
+            }
+        };
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE session_tool_calls SET state = ?4, ended_at = ?5, failure_kind = ?6 \
+                     WHERE session_id = ?1 AND turn_id = ?2 AND call_id = ?3 AND state = 'running'",
+                    params![
+                        completion.session_id.0,
+                        completion.turn_id,
+                        completion.call_id,
                         state,
                         crate::session::now_secs(),
                         failure_kind
@@ -965,10 +1350,125 @@ impl SessionStore for SqliteSessionStore {
                 .map_err(sqlite_err)?;
             if changed == 0 {
                 return Err(SessionStoreError::Invalid(
-                    "durable turn is missing or already terminal".into(),
+                    "durable tool call is missing or already terminal".into(),
                 ));
             }
             Ok(())
+        })
+        .await
+    }
+
+    async fn tool_calls(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<ToolCallSnapshot>, SessionStoreError> {
+        let session_id = session_id.clone();
+        let turn_id = turn_id.to_owned();
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT call_id, invocation_id, tool_name, invocation_class, \
+                            declared_recovery_policy, effective_recovery_policy, \
+                            capability_revision, input_digest, position, ledger_revision, \
+                            started_at, updated_at, state, ended_at, failure_kind, \
+                            recovery_decision, recovery_reason, operator_action_required, \
+                            recovery_attempts, recovery_owner, recovery_lease_expires_at, \
+                            first_interrupted_at \
+                     FROM session_tool_calls WHERE session_id = ?1 AND turn_id = ?2 \
+                     ORDER BY started_at, call_id",
+                )
+                .map_err(sqlite_err)?;
+            statement
+                .query_map(params![session_id.0, turn_id], |row| {
+                    decode_tool_call_row(row, session_id.clone(), turn_id.clone(), 0)
+                })
+                .map_err(sqlite_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_err)
+        })
+        .await
+    }
+
+    async fn interrupted_tool_calls(&self) -> Result<Vec<ToolCallSnapshot>, SessionStoreError> {
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT calls.session_id, calls.turn_id, calls.call_id, calls.invocation_id, \
+                            calls.tool_name, calls.invocation_class, \
+                            calls.declared_recovery_policy, calls.effective_recovery_policy, \
+                            calls.capability_revision, calls.input_digest, calls.position, \
+                            calls.ledger_revision, calls.started_at, calls.updated_at, calls.state, \
+                            calls.ended_at, calls.failure_kind, calls.recovery_decision, \
+                            calls.recovery_reason, calls.operator_action_required, \
+                            calls.recovery_attempts, calls.recovery_owner, \
+                            calls.recovery_lease_expires_at, calls.first_interrupted_at \
+                     FROM session_tool_calls AS calls \
+                     JOIN session_turns AS turns \
+                       ON turns.session_id = calls.session_id AND turns.turn_id = calls.turn_id \
+                     WHERE calls.state = 'running' \
+                     ORDER BY calls.started_at, calls.invocation_id",
+                )
+                .map_err(sqlite_err)?;
+            statement
+                .query_map([], |row| {
+                    decode_tool_call_row(row, SessionId::new(row.get::<_, String>(0)?), row.get(1)?, 2)
+                })
+                .map_err(sqlite_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_err)
+        })
+        .await
+    }
+
+    async fn classify_tool_recovery(
+        &self,
+        write: ToolRecoveryWrite,
+    ) -> Result<u64, SessionStoreError> {
+        if write.recovery_owner.trim().is_empty() || write.lease_expires_at <= write.observed_at {
+            return Err(SessionStoreError::Invalid(
+                "recovery owner and lease interval are invalid".into(),
+            ));
+        }
+        self.run(move |connection| {
+            let expected = i64::try_from(write.expected_revision).map_err(|_| {
+                SessionStoreError::Invalid("tool ledger revision exceeds SQLite range".into())
+            })?;
+            let next = expected.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("tool ledger revision overflow".into())
+            })?;
+            let changed = connection
+                .execute(
+                    "UPDATE session_tool_calls \
+                     SET recovery_decision = ?3, recovery_reason = ?4, \
+                         operator_action_required = ?5, recovery_attempts = recovery_attempts + 1, \
+                         recovery_owner = ?6, recovery_lease_expires_at = ?7, \
+                         first_interrupted_at = COALESCE(first_interrupted_at, ?8), \
+                         ledger_revision = ?9, updated_at = ?8 \
+                     WHERE invocation_id = ?1 AND ledger_revision = ?2 AND state = 'running' \
+                       AND (recovery_owner IS NULL OR recovery_owner = ?6 \
+                            OR recovery_lease_expires_at <= ?8)",
+                    params![
+                        write.invocation_id.as_str(),
+                        expected,
+                        tool_recovery_decision_str(write.classification.decision),
+                        tool_recovery_reason_str(write.classification.reason),
+                        write.classification.operator_action_required,
+                        write.recovery_owner,
+                        write.lease_expires_at,
+                        write.observed_at,
+                        next,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 1 {
+                u64::try_from(next)
+                    .map_err(|_| SessionStoreError::Invalid("negative tool ledger revision".into()))
+            } else {
+                Err(SessionStoreError::Invalid(
+                    "tool recovery lease or revision compare-and-swap conflict".into(),
+                ))
+            }
         })
         .await
     }
@@ -1713,6 +2213,223 @@ fn decode_turn_failure_kind(value: &str) -> rusqlite::Result<TurnFailureKind> {
         "agent_loop" => Ok(TurnFailureKind::AgentLoop),
         "configuration" => Ok(TurnFailureKind::Configuration),
         "persistence" => Ok(TurnFailureKind::Persistence),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn tool_call_failure_kind_str(kind: ToolCallFailureKind) -> &'static str {
+    match kind {
+        ToolCallFailureKind::FilesystemBoundaryPolicyViolation => {
+            "filesystem_boundary_policy_violation"
+        }
+    }
+}
+
+fn decode_tool_call_row(
+    row: &rusqlite::Row<'_>,
+    session_id: SessionId,
+    turn_id: String,
+    offset: usize,
+) -> rusqlite::Result<ToolCallSnapshot> {
+    let failure_kind = row
+        .get::<_, Option<String>>(offset + 14)?
+        .map(|value| decode_tool_call_failure_kind(&value))
+        .transpose()?;
+    let recovery_decision = row
+        .get::<_, Option<String>>(offset + 15)?
+        .map(|value| decode_tool_recovery_decision(&value))
+        .transpose()?;
+    let recovery_reason = row
+        .get::<_, Option<String>>(offset + 16)?
+        .map(|value| decode_tool_recovery_reason(&value))
+        .transpose()?;
+    Ok(ToolCallSnapshot {
+        session_id,
+        turn_id,
+        call_id: row.get(offset)?,
+        invocation_id: ToolInvocationId::parse(row.get(offset + 1)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(offset + 1, Type::Text, Box::new(error))
+        })?,
+        tool_name: row.get(offset + 2)?,
+        invocation_class: row
+            .get::<_, Option<String>>(offset + 3)?
+            .map(|value| decode_tool_invocation_class(&value))
+            .transpose()?,
+        declared_recovery_policy: decode_tool_recovery_policy(&row.get::<_, String>(offset + 4)?)?,
+        effective_recovery_policy: decode_tool_recovery_policy(&row.get::<_, String>(offset + 5)?)?,
+        capability_revision: row.get(offset + 6)?,
+        input_digest: row.get(offset + 7)?,
+        position: decode_tool_execution_position(&row.get::<_, String>(offset + 8)?)?,
+        ledger_revision: u64::try_from(row.get::<_, i64>(offset + 9)?)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        started_at: row.get(offset + 10)?,
+        updated_at: row.get(offset + 11)?,
+        state: decode_tool_call_state(&row.get::<_, String>(offset + 12)?)?,
+        ended_at: row.get(offset + 13)?,
+        failure_kind,
+        recovery_decision,
+        recovery_reason,
+        operator_action_required: row.get(offset + 17)?,
+        recovery_attempts: u32::try_from(row.get::<_, i64>(offset + 18)?)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        recovery_owner: row.get(offset + 19)?,
+        recovery_lease_expires_at: row.get(offset + 20)?,
+        first_interrupted_at: row.get(offset + 21)?,
+    })
+}
+
+const fn recovery_policy_allows(
+    declared: ToolRecoveryPolicy,
+    effective: ToolRecoveryPolicy,
+) -> bool {
+    matches!(effective, ToolRecoveryPolicy::NeverReplay) || declared as u8 == effective as u8
+}
+
+const fn tool_invocation_class_str(class: ToolInvocationClass) -> &'static str {
+    match class {
+        ToolInvocationClass::Read => "read",
+        ToolInvocationClass::FilesystemMutation => "filesystem_mutation",
+        ToolInvocationClass::Terminal => "terminal",
+        ToolInvocationClass::Browser => "browser",
+        ToolInvocationClass::HostControl => "host_control",
+        ToolInvocationClass::ArbitraryMcp => "arbitrary_mcp",
+        ToolInvocationClass::MemoryCandidate => "memory_candidate",
+        ToolInvocationClass::Control => "control",
+        ToolInvocationClass::Extension => "extension",
+    }
+}
+
+fn decode_tool_invocation_class(value: &str) -> rusqlite::Result<ToolInvocationClass> {
+    match value {
+        "read" => Ok(ToolInvocationClass::Read),
+        "filesystem_mutation" => Ok(ToolInvocationClass::FilesystemMutation),
+        "terminal" => Ok(ToolInvocationClass::Terminal),
+        "browser" => Ok(ToolInvocationClass::Browser),
+        "host_control" => Ok(ToolInvocationClass::HostControl),
+        "arbitrary_mcp" => Ok(ToolInvocationClass::ArbitraryMcp),
+        "memory_candidate" => Ok(ToolInvocationClass::MemoryCandidate),
+        "control" => Ok(ToolInvocationClass::Control),
+        "extension" => Ok(ToolInvocationClass::Extension),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn tool_recovery_policy_str(policy: ToolRecoveryPolicy) -> &'static str {
+    match policy {
+        ToolRecoveryPolicy::NeverReplay => "never_replay",
+        ToolRecoveryPolicy::RetryWithSameInvocation => "retry_with_same_invocation",
+        ToolRecoveryPolicy::ReconcileBeforeRetry => "reconcile_before_retry",
+    }
+}
+
+fn decode_tool_recovery_policy(value: &str) -> rusqlite::Result<ToolRecoveryPolicy> {
+    match value {
+        "never_replay" => Ok(ToolRecoveryPolicy::NeverReplay),
+        "retry_with_same_invocation" => Ok(ToolRecoveryPolicy::RetryWithSameInvocation),
+        "reconcile_before_retry" => Ok(ToolRecoveryPolicy::ReconcileBeforeRetry),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn tool_recovery_decision_str(decision: ToolRecoveryDecision) -> &'static str {
+    match decision {
+        ToolRecoveryDecision::ResumeAuthorization => "resume_authorization",
+        ToolRecoveryDecision::StartEffect => "start_effect",
+        ToolRecoveryDecision::RetrySameInvocation => "retry_same_invocation",
+        ToolRecoveryDecision::Reconcile => "reconcile",
+        ToolRecoveryDecision::RecoverResult => "recover_result",
+        ToolRecoveryDecision::ContinueTurn => "continue_turn",
+        ToolRecoveryDecision::ManualReconciliation => "manual_reconciliation",
+    }
+}
+
+fn decode_tool_recovery_decision(value: &str) -> rusqlite::Result<ToolRecoveryDecision> {
+    match value {
+        "resume_authorization" => Ok(ToolRecoveryDecision::ResumeAuthorization),
+        "start_effect" => Ok(ToolRecoveryDecision::StartEffect),
+        "retry_same_invocation" => Ok(ToolRecoveryDecision::RetrySameInvocation),
+        "reconcile" => Ok(ToolRecoveryDecision::Reconcile),
+        "recover_result" => Ok(ToolRecoveryDecision::RecoverResult),
+        "continue_turn" => Ok(ToolRecoveryDecision::ContinueTurn),
+        "manual_reconciliation" => Ok(ToolRecoveryDecision::ManualReconciliation),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn tool_recovery_reason_str(reason: ToolRecoveryReason) -> &'static str {
+    match reason {
+        ToolRecoveryReason::EffectNotStarted => "effect_not_started",
+        ToolRecoveryReason::SameIdentityReplayAllowed => "same_identity_replay_allowed",
+        ToolRecoveryReason::ReconciliationRequired => "reconciliation_required",
+        ToolRecoveryReason::ReconciliationConfirmedNoEffect => "reconciliation_confirmed_no_effect",
+        ToolRecoveryReason::ReconciliationConfirmedRollback => "reconciliation_confirmed_rollback",
+        ToolRecoveryReason::ReconciliationUncertain => "reconciliation_uncertain",
+        ToolRecoveryReason::ReplayForbiddenAfterEffectStart => {
+            "replay_forbidden_after_effect_start"
+        }
+        ToolRecoveryReason::EffectAlreadyCommitted => "effect_already_committed",
+        ToolRecoveryReason::ResultAlreadyPersisted => "result_already_persisted",
+    }
+}
+
+fn decode_tool_recovery_reason(value: &str) -> rusqlite::Result<ToolRecoveryReason> {
+    match value {
+        "effect_not_started" => Ok(ToolRecoveryReason::EffectNotStarted),
+        "same_identity_replay_allowed" => Ok(ToolRecoveryReason::SameIdentityReplayAllowed),
+        "reconciliation_required" => Ok(ToolRecoveryReason::ReconciliationRequired),
+        "reconciliation_confirmed_no_effect" => {
+            Ok(ToolRecoveryReason::ReconciliationConfirmedNoEffect)
+        }
+        "reconciliation_confirmed_rollback" => {
+            Ok(ToolRecoveryReason::ReconciliationConfirmedRollback)
+        }
+        "reconciliation_uncertain" => Ok(ToolRecoveryReason::ReconciliationUncertain),
+        "replay_forbidden_after_effect_start" => {
+            Ok(ToolRecoveryReason::ReplayForbiddenAfterEffectStart)
+        }
+        "effect_already_committed" => Ok(ToolRecoveryReason::EffectAlreadyCommitted),
+        "result_already_persisted" => Ok(ToolRecoveryReason::ResultAlreadyPersisted),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn tool_execution_position_str(position: ToolExecutionPosition) -> &'static str {
+    match position {
+        ToolExecutionPosition::Prepared => "prepared",
+        ToolExecutionPosition::Authorized => "authorized",
+        ToolExecutionPosition::EffectStarted => "effect_started",
+        ToolExecutionPosition::EffectCommitted => "effect_committed",
+        ToolExecutionPosition::ResultPersisted => "result_persisted",
+    }
+}
+
+fn decode_tool_execution_position(value: &str) -> rusqlite::Result<ToolExecutionPosition> {
+    match value {
+        "prepared" => Ok(ToolExecutionPosition::Prepared),
+        "authorized" => Ok(ToolExecutionPosition::Authorized),
+        "effect_started" => Ok(ToolExecutionPosition::EffectStarted),
+        "effect_committed" => Ok(ToolExecutionPosition::EffectCommitted),
+        "result_persisted" => Ok(ToolExecutionPosition::ResultPersisted),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn decode_tool_call_state(value: &str) -> rusqlite::Result<ToolCallState> {
+    match value {
+        "running" => Ok(ToolCallState::Running),
+        "succeeded" => Ok(ToolCallState::Succeeded),
+        "failed" => Ok(ToolCallState::Failed),
+        "rejected" => Ok(ToolCallState::Rejected),
+        "abandoned" => Ok(ToolCallState::Abandoned),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn decode_tool_call_failure_kind(value: &str) -> rusqlite::Result<ToolCallFailureKind> {
+    match value {
+        "filesystem_boundary_policy_violation" => {
+            Ok(ToolCallFailureKind::FilesystemBoundaryPolicyViolation)
+        }
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }

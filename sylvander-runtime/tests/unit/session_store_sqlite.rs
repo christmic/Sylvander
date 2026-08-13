@@ -1,5 +1,8 @@
 use super::*;
 use std::path::PathBuf;
+use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
+
+use crate::storage::workspace_journal::WorkspaceJournal;
 
 /// Default session context used by every test. Identity is the
 /// stable "user-1" from `test_meta` so ownership assertions share one
@@ -314,6 +317,552 @@ async fn metadata_patch_cannot_roll_back_a_prompt_config_update() {
     assert_eq!(loaded.config_revision, 1);
     assert_eq!(loaded.config_overrides, overrides);
     assert_eq!(loaded.effective_config, Some(effective));
+}
+
+#[tokio::test]
+async fn tool_lifecycle_is_bound_to_one_running_turn_and_one_terminal() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-tools".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "inspect"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let start = ToolCallStart {
+        session_id: session.id.clone(),
+        turn_id: "turn-tools".into(),
+        call_id: "call-1".into(),
+        invocation_id: ToolInvocationId::new(),
+        tool_name: "Read".into(),
+        invocation_class: Some(ToolInvocationClass::Read),
+        declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+        effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+        capability_revision: "sha256:test-surface".into(),
+        input_digest: "sha256:test-input".into(),
+    };
+    store.begin_tool_call(start.clone()).await.unwrap();
+    store.begin_tool_call(start.clone()).await.unwrap();
+    let mut conflicting = start.clone();
+    conflicting.input_digest = "sha256:different-input".into();
+    assert!(store.begin_tool_call(conflicting).await.is_err());
+    let calls = store.tool_calls(&session.id, "turn-tools").await.unwrap();
+    assert_eq!(calls[0].invocation_id, start.invocation_id);
+    assert_eq!(calls[0].invocation_class, Some(ToolInvocationClass::Read));
+    assert_eq!(calls[0].position, ToolExecutionPosition::Prepared);
+    assert_eq!(calls[0].ledger_revision, 0);
+
+    let advance = ToolCallAdvance {
+        session_id: session.id.clone(),
+        turn_id: "turn-tools".into(),
+        call_id: "call-1".into(),
+        expected_revision: 0,
+        expected_position: ToolExecutionPosition::Prepared,
+        next_position: ToolExecutionPosition::Authorized,
+    };
+    assert_eq!(store.advance_tool_call(advance.clone()).await.unwrap(), 1);
+    assert_eq!(store.advance_tool_call(advance).await.unwrap(), 1);
+    assert!(
+        store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session.id.clone(),
+                turn_id: "turn-tools".into(),
+                call_id: "call-1".into(),
+                expected_revision: 1,
+                expected_position: ToolExecutionPosition::Authorized,
+                next_position: ToolExecutionPosition::ResultPersisted,
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .complete_turn(
+                &ctx(),
+                TurnCompletion {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-tools".into(),
+                    assistant_content: serde_json::json!({"role": "assistant", "content": "early"}),
+                    model_id: "model-a".into(),
+                },
+            )
+            .await
+            .is_err()
+    );
+    store
+        .finish_tool_call(ToolCallCompletion {
+            session_id: session.id.clone(),
+            turn_id: "turn-tools".into(),
+            call_id: "call-1".into(),
+            state: ToolCallState::Failed,
+            failure_kind: Some(ToolCallFailureKind::FilesystemBoundaryPolicyViolation),
+        })
+        .await
+        .unwrap();
+    assert!(
+        store
+            .finish_tool_call(ToolCallCompletion {
+                session_id: session.id.clone(),
+                turn_id: "turn-tools".into(),
+                call_id: "call-1".into(),
+                state: ToolCallState::Succeeded,
+                failure_kind: None,
+            })
+            .await
+            .is_err()
+    );
+
+    let calls = store.tool_calls(&session.id, "turn-tools").await.unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].state, ToolCallState::Failed);
+    assert_eq!(
+        calls[0].failure_kind,
+        Some(ToolCallFailureKind::FilesystemBoundaryPolicyViolation)
+    );
+    assert!(calls[0].ended_at.is_some());
+
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-tools".into(),
+            call_id: "call-2".into(),
+            invocation_id: ToolInvocationId::new(),
+            tool_name: "Command".into(),
+            invocation_class: Some(ToolInvocationClass::Terminal),
+            declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            capability_revision: "sha256:test-surface".into(),
+            input_digest: "sha256:test-input-2".into(),
+        })
+        .await
+        .unwrap();
+    store
+        .finish_turn(&session.id, "turn-tools", TurnState::Interrupted, None)
+        .await
+        .unwrap();
+    let calls = store.tool_calls(&session.id, "turn-tools").await.unwrap();
+    assert_eq!(calls[1].state, ToolCallState::Abandoned);
+    assert!(calls[1].ended_at.is_some());
+}
+
+#[tokio::test]
+async fn interrupted_calls_are_classified_under_a_bounded_lease() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-recovery".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "mutate"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let invocation_id = ToolInvocationId::new();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-recovery".into(),
+            call_id: "call-recovery".into(),
+            invocation_id: invocation_id.clone(),
+            tool_name: "Write".into(),
+            invocation_class: Some(ToolInvocationClass::FilesystemMutation),
+            declared_recovery_policy: ToolRecoveryPolicy::ReconcileBeforeRetry,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            capability_revision: "sha256:recovery-surface".into(),
+            input_digest: "sha256:recovery-input".into(),
+        })
+        .await
+        .unwrap();
+
+    let interrupted = store.interrupted_tool_calls().await.unwrap();
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(interrupted[0].invocation_id, invocation_id);
+    let classification = super::super::RecoveryClassification::for_interrupted(
+        interrupted[0].position,
+        interrupted[0].effective_recovery_policy,
+    );
+    let write = ToolRecoveryWrite {
+        invocation_id: invocation_id.clone(),
+        expected_revision: 0,
+        recovery_owner: "runtime-a".into(),
+        observed_at: 100,
+        lease_expires_at: 200,
+        classification,
+    };
+    assert_eq!(
+        store.classify_tool_recovery(write.clone()).await.unwrap(),
+        1
+    );
+    let mut competing = write.clone();
+    competing.expected_revision = 1;
+    competing.recovery_owner = "runtime-b".into();
+    competing.observed_at = 150;
+    competing.lease_expires_at = 250;
+    assert!(
+        store
+            .classify_tool_recovery(competing.clone())
+            .await
+            .is_err()
+    );
+
+    competing.expected_revision = 1;
+    competing.observed_at = 201;
+    assert_eq!(store.classify_tool_recovery(competing).await.unwrap(), 2);
+    let recovered = store
+        .tool_calls(&session.id, "turn-recovery")
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered[0].recovery_decision,
+        Some(ToolRecoveryDecision::ResumeAuthorization),
+    );
+    assert_eq!(recovered[0].recovery_attempts, 2);
+    assert_eq!(recovered[0].recovery_owner.as_deref(), Some("runtime-b"));
+    assert_eq!(recovered[0].first_interrupted_at, Some(100));
+
+    assert!(
+        store
+            .begin_turn(
+                &ctx(),
+                TurnStart {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-must-wait".into(),
+                    config_revision: 0,
+                    effective_config: effective_config(),
+                    user_content: serde_json::json!({"role": "user", "content": "next"}),
+                    model_id: "model-a".into(),
+                },
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn tool_result_and_result_position_commit_atomically() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-result".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "read"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-result".into(),
+            call_id: "call-result".into(),
+            invocation_id: ToolInvocationId::new(),
+            tool_name: "Read".into(),
+            invocation_class: Some(ToolInvocationClass::Read),
+            declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            capability_revision: "sha256:result-surface".into(),
+            input_digest: "sha256:result-input".into(),
+        })
+        .await
+        .unwrap();
+    let mut revision = 0;
+    for (current, next) in [
+        (
+            ToolExecutionPosition::Prepared,
+            ToolExecutionPosition::Authorized,
+        ),
+        (
+            ToolExecutionPosition::Authorized,
+            ToolExecutionPosition::EffectStarted,
+        ),
+        (
+            ToolExecutionPosition::EffectStarted,
+            ToolExecutionPosition::EffectCommitted,
+        ),
+    ] {
+        revision = store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session.id.clone(),
+                turn_id: "turn-result".into(),
+                call_id: "call-result".into(),
+                expected_revision: revision,
+                expected_position: current,
+                next_position: next,
+            })
+            .await
+            .unwrap();
+    }
+    let content = serde_json::to_value(sylvander_llm_core::ChatMessage::user_blocks(vec![
+        sylvander_llm_core::ContentBlock::tool_result_text("call-result", "value", false),
+    ]))
+    .unwrap();
+    assert_eq!(
+        store
+            .persist_tool_result(
+                &ctx().with_trace_id("turn-result"),
+                ToolResultPersistence {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-result".into(),
+                    call_id: "call-result".into(),
+                    expected_revision: revision,
+                    expected_position: ToolExecutionPosition::EffectCommitted,
+                    content: content.clone(),
+                    tool_name: "Read".into(),
+                    terminal_state: ToolCallState::Succeeded,
+                    failure_kind: None,
+                },
+            )
+            .await
+            .unwrap(),
+        4,
+    );
+    let calls = store.tool_calls(&session.id, "turn-result").await.unwrap();
+    assert_eq!(calls[0].position, ToolExecutionPosition::ResultPersisted);
+    assert_eq!(calls[0].state, ToolCallState::Succeeded);
+    assert!(calls[0].ended_at.is_some());
+    let history = store
+        .read_history(&ctx(), &session.id, false, None)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[1].role, MessageRole::Tool);
+    assert_eq!(history[1].content, content);
+    assert!(
+        store
+            .persist_tool_result(
+                &ctx(),
+                ToolResultPersistence {
+                    session_id: session.id,
+                    turn_id: "turn-result".into(),
+                    call_id: "call-result".into(),
+                    expected_revision: revision,
+                    expected_position: ToolExecutionPosition::EffectCommitted,
+                    content: serde_json::json!({}),
+                    tool_name: "Read".into(),
+                    terminal_state: ToolCallState::Succeeded,
+                    failure_kind: None,
+                },
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn boot_recovery_persists_manual_decision_and_observes_it() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-crashed".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "send"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-crashed".into(),
+            call_id: "call-send".into(),
+            invocation_id: ToolInvocationId::new(),
+            tool_name: "Send".into(),
+            invocation_class: Some(ToolInvocationClass::Extension),
+            declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            capability_revision: "sha256:send-surface".into(),
+            input_digest: "sha256:send-input".into(),
+        })
+        .await
+        .unwrap();
+    for (revision, current, next) in [
+        (
+            0,
+            ToolExecutionPosition::Prepared,
+            ToolExecutionPosition::Authorized,
+        ),
+        (
+            1,
+            ToolExecutionPosition::Authorized,
+            ToolExecutionPosition::EffectStarted,
+        ),
+    ] {
+        store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session.id.clone(),
+                turn_id: "turn-crashed".into(),
+                call_id: "call-send".into(),
+                expected_revision: revision,
+                expected_position: current,
+                next_position: next,
+            })
+            .await
+            .unwrap();
+    }
+    store
+        .finish_turn(
+            &session.id,
+            "turn-crashed",
+            TurnState::Failed,
+            Some(TurnFailureKind::Persistence),
+        )
+        .await
+        .unwrap();
+
+    let observability = crate::observability::RuntimeObservability::new();
+    let summary = crate::agent::run::recovery::classify_interrupted_tool_calls(
+        std::sync::Arc::new(store.clone()),
+        &observability,
+        None,
+        1_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.discovered, 1);
+    assert_eq!(summary.classified, 1);
+    assert_eq!(summary.manual_reconciliation, 1);
+    let calls = store.tool_calls(&session.id, "turn-crashed").await.unwrap();
+    assert_eq!(
+        calls[0].recovery_decision,
+        Some(ToolRecoveryDecision::ManualReconciliation),
+    );
+    assert!(calls[0].operator_action_required);
+    let observed = observability.snapshot();
+    assert_eq!(observed.tool_recoveries_classified, 1);
+    assert_eq!(observed.tool_recoveries_manual, 1);
+}
+
+#[tokio::test]
+async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-write".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "write"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let invocation_id = ToolInvocationId::new();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-write".into(),
+            call_id: "call-write".into(),
+            invocation_id,
+            tool_name: "Write".into(),
+            invocation_class: Some(ToolInvocationClass::FilesystemMutation),
+            declared_recovery_policy: ToolRecoveryPolicy::ReconcileBeforeRetry,
+            effective_recovery_policy: ToolRecoveryPolicy::ReconcileBeforeRetry,
+            capability_revision: "sha256:write-surface".into(),
+            input_digest: "sha256:write-input".into(),
+        })
+        .await
+        .unwrap();
+    for (revision, current, next) in [
+        (
+            0,
+            ToolExecutionPosition::Prepared,
+            ToolExecutionPosition::Authorized,
+        ),
+        (
+            1,
+            ToolExecutionPosition::Authorized,
+            ToolExecutionPosition::EffectStarted,
+        ),
+    ] {
+        store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session.id.clone(),
+                turn_id: "turn-write".into(),
+                call_id: "call-write".into(),
+                expected_revision: revision,
+                expected_position: current,
+                next_position: next,
+            })
+            .await
+            .unwrap();
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let journal_root = tempfile::tempdir().unwrap();
+    let journal = WorkspaceJournal::new(journal_root.path());
+    let prepared = journal
+        .prepare(
+            "sess-1",
+            "turn-write",
+            "call-write",
+            workspace.path(),
+            "result.txt",
+            b"committed once",
+        )
+        .unwrap();
+    std::fs::write(workspace.path().join("result.txt"), "committed once").unwrap();
+    journal.commit(&prepared).unwrap();
+
+    let observability = crate::observability::RuntimeObservability::new();
+    let summary = crate::agent::run::recovery::classify_interrupted_tool_calls(
+        std::sync::Arc::new(store.clone()),
+        &observability,
+        Some(&journal),
+        1_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.manual_reconciliation, 0);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("result.txt")).unwrap(),
+        "committed once"
+    );
+    let calls = store.tool_calls(&session.id, "turn-write").await.unwrap();
+    assert_eq!(calls[0].position, ToolExecutionPosition::EffectCommitted);
+    assert_eq!(
+        calls[0].recovery_decision,
+        Some(ToolRecoveryDecision::RecoverResult),
+    );
 }
 
 #[tokio::test]

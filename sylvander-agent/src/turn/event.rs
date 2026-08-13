@@ -17,7 +17,10 @@ use sylvander_llm_core::{ChatMessage, TokenUsage};
 
 use crate::context::compression::layer::LayerReport;
 use crate::interaction::plan::PlanDecision;
+use crate::tool::ToolFailureKind;
+use crate::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy};
 use crate::turn::error::AgentLoopError;
+use crate::turn::machine::TurnTransition;
 use crate::turn::outcome::AgentOutcome;
 
 /// Provider-neutral reason for retrying a model request.
@@ -40,6 +43,9 @@ pub enum ModelRetryCause {
 /// underlying stream — there is one source of truth for the iteration.
 #[derive(Debug)]
 pub enum AgentEvent {
+    /// Authoritative content-free transition of the current turn machine.
+    TurnTransition(TurnTransition),
+
     /// A new iteration is starting (LLM call about to fire).
     IterationStart {
         /// Iteration number, 1-indexed.
@@ -66,7 +72,30 @@ pub enum AgentEvent {
         cause: ModelRetryCause,
     },
 
-    /// The model invoked a tool — about to execute it.
+    /// Complete provider-neutral assistant message persisted before tools.
+    ModelToolResponsePrepared {
+        iteration: u32,
+        message: ChatMessage,
+    },
+
+    /// A provider tool call was parsed and is about to enter approval.
+    ///
+    /// Runtime uses this content-free identity boundary for durable lifecycle
+    /// admission before any approval or execution side effect.
+    ToolCallPrepared {
+        id: String,
+        name: String,
+        /// Trusted authority class, absent when preparation found no route.
+        invocation_class: Option<ToolInvocationClass>,
+        /// Frozen default-deny recovery declaration.
+        recovery_policy: ToolRecoveryPolicy,
+        /// Content-safe digest of the exact prepared input.
+        input_digest: String,
+        /// Frozen executable surface used for this invocation.
+        capability_revision: String,
+    },
+
+    /// An approved tool call is about to execute.
     ToolCallStart {
         /// Tool call ID (matches `tool_use.id`).
         id: String,
@@ -99,6 +128,9 @@ pub enum AgentEvent {
         output: String,
         /// `true` if the tool returned `is_error: true`.
         is_error: bool,
+        /// Trusted classification supplied by the executor, independent from
+        /// model-visible error text.
+        failure_kind: Option<ToolFailureKind>,
     },
 
     /// Tool execution was rejected by the approval gate (not executed).

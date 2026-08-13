@@ -96,6 +96,13 @@ environment validation -> execution -> terminal audit**. Provider protocols
 only translate the neutral specification at the wire edge. Models do not
 select executors, workspaces, sandbox strength, network authority, or owners.
 
+Crash recovery extends this boundary with an independent, fail-closed recovery
+contract and monotonic durable effect positions. The normative state machine,
+layer ownership, reconciliation rules, privacy boundary, and implementation
+gates are specified in
+[`agent-execution-recovery.md`](agent-execution-recovery.md). Authorization
+class must never be used as a proxy for replay safety.
+
 This combines Codex's specification/executor separation, Gemini's prepared
 invocation boundary, Anthropic's fail-closed OS isolation requirements, Claude
 Code's public Bash sandbox scope, and pi's conservative mutation coordination.

@@ -26,8 +26,10 @@ stable UserId
   before-tool hooks.
 - The operation is the exact tool name.
 - The resource fingerprint is a domain-separated SHA-256 digest of canonical
-  JSON input. Raw paths, commands, content, and other arguments are not written
-  to the approval store.
+  prepared JSON input plus trusted invocation class, concurrency mode,
+  filesystem/network/sandbox policy, and process-launch fact. Raw paths,
+  commands, content, and other arguments are not written to the approval
+  store.
 
 Changing any dimension is an automatic invalidation: the new request no longer
 matches the old key and must be approved again. This includes relinking to
@@ -40,6 +42,15 @@ changing any argument.
 Dynamic tool sources are frozen once at the start of a turn. The same immutable
 tool snapshot is used for the model request, approval revision, and execution.
 A capability refresh applies to the next turn.
+
+Each model tool call is schema-validated and prepared exactly once before an
+approval gate runs. Invalid or unavailable calls become model-visible
+rejections without prompting the user. The resulting `PreparedToolCall` is the
+same value used for approval facts, batch scheduling, environment validation,
+authorization, and execution. This order prevents approval of an input that
+the tool would later reinterpret and lets policy distinguish input-specific
+read-only/parallel work from exclusive or mutating work without trusting a
+model-supplied safety flag.
 
 - `once` approves only the pending call and writes no grant.
 - `session` stores the exact grant under that session and removes it when the

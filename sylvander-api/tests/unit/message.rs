@@ -67,3 +67,14 @@ fn terminal_error_has_a_stable_typed_wire_shape() {
     assert_eq!(json["message"], "provider unavailable");
     assert_eq!(serde_json::from_value::<StreamEvent>(json).unwrap(), event);
 }
+
+#[test]
+fn turn_started_has_a_stable_typed_wire_shape() {
+    let event = StreamEvent::TurnStarted {
+        turn_id: "turn-1".into(),
+    };
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["type"], "turn_started");
+    assert_eq!(json["turn_id"], "turn-1");
+    assert_eq!(serde_json::from_value::<StreamEvent>(json).unwrap(), event);
+}

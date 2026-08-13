@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::agent_definition::{AgentSpec, ToolRef};
+use crate::mcp::stdio::McpResultArtifactSink;
 use crate::mcp::{SessionMcpBinding, SessionMcpRuntimeService};
-use crate::mcp_stdio::McpResultArtifactSink;
 use crate::observability::RuntimeObservability;
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use sylvander_agent::memory::curated::MemoryCandidateSink;
@@ -40,22 +40,22 @@ use crate::agent_run::{
 use crate::config::{AgentDefinitionConfig, ExecutionTransportConfig, ServerConfig};
 #[cfg(test)]
 use crate::config::{ModelDefinitionConfig, ModelProviderConfig, SecretResolver};
-use crate::credential_audit::CredentialOperationAuditLedger;
-use crate::credential_registry::CredentialSecretResolver;
+use crate::credential::audit::CredentialOperationAuditLedger;
+use crate::credential::registry::CredentialSecretResolver;
 use crate::execution::{
     ContainerExecutor, ContainerPersistentProcessEnvironment, ContainerResourcePolicy,
     ExecutionTargetRegistration, RuntimeExecutionService, SshExecutor,
 };
-use crate::guardian_runtime::WorkerToolGatewayFactory;
-use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
-#[doc(hidden)]
-pub use crate::registry_domain::ModelCapabilityIssue;
-use crate::registry_domain::{
-    CanonicalModelCapability, ModelDefinition, ProviderDefinition, parse_model_capabilities,
-};
-use crate::request_scoped_provider::{
+use crate::guardian::runtime::WorkerToolGatewayFactory;
+use crate::provider::request_scoped::{
     AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
     RegistryCredentialSource, RenewableExternalSecretProvider,
+};
+use crate::registry::composition::VersionedRegistryCompositionSnapshot;
+#[doc(hidden)]
+pub use crate::registry::domain::ModelCapabilityIssue;
+use crate::registry::domain::{
+    CanonicalModelCapability, ModelDefinition, ProviderDefinition, parse_model_capabilities,
 };
 use crate::storage::artifact::RuntimeArtifactService;
 use crate::storage::session::SessionStore;
@@ -261,7 +261,7 @@ pub(crate) fn build_agent(
 pub(crate) async fn build_registry_agent_versioned_with_resolver(
     config: &ServerConfig,
     snapshot: VersionedRegistryCompositionSnapshot,
-    registry: crate::agent_registry::AgentRegistry,
+    registry: crate::registry::agent::AgentRegistry,
     bus: Arc<dyn MessageBus>,
     observability: RuntimeObservability,
     execution_service: RuntimeExecutionService,

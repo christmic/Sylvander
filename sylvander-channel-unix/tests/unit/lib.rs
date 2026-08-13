@@ -1639,6 +1639,25 @@ async fn reconnect_replays_the_complete_in_flight_turn() {
     bus.publish(BusMessage::stream_event(
         SessionId::new("session-1"),
         agent_id.clone(),
+        StreamEvent::TurnStarted {
+            turn_id: "turn-1".into(),
+        },
+    ))
+    .await
+    .expect("turn start");
+    let started: serde_json::Value = serde_json::from_str(
+        &lines
+            .next_line()
+            .await
+            .unwrap()
+            .expect("turn start reaches the first client"),
+    )
+    .expect("turn start JSON");
+    assert_eq!(started["type"], "turn_started");
+    assert_eq!(started["turn_id"], "turn-1");
+    bus.publish(BusMessage::stream_event(
+        SessionId::new("session-1"),
+        agent_id.clone(),
         StreamEvent::TextDelta {
             delta: "before ".into(),
         },
@@ -1682,8 +1701,11 @@ async fn reconnect_replays_the_complete_in_flight_turn() {
     let replayed = [
         lines.next_line().await.unwrap().unwrap(),
         lines.next_line().await.unwrap().unwrap(),
+        lines.next_line().await.unwrap().unwrap(),
     ]
     .join(" ");
+    assert!(replayed.contains("turn_started"));
+    assert!(replayed.contains("turn-1"));
     assert!(replayed.contains("before"));
     assert!(replayed.contains("after"));
 

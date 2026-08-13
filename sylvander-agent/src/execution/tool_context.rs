@@ -76,6 +76,7 @@ pub struct ToolContext {
     /// Runtime-derived identity used by every memory-store operation. It is
     /// intentionally not replaceable through a public builder or model input.
     memory_context: crate::memory::store::MemoryExecutionContext,
+    invocation_call_id: Option<String>,
 }
 
 impl ToolContext {
@@ -96,6 +97,7 @@ impl ToolContext {
             execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
+            invocation_call_id: None,
         }
     }
 
@@ -115,6 +117,7 @@ impl ToolContext {
             execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
+            invocation_call_id: None,
         }
     }
 
@@ -233,6 +236,27 @@ impl ToolContext {
     /// Product Session identity used for authorization and correlation only.
     pub fn session_id(&self) -> &str {
         &self.execution.actor.session_id
+    }
+
+    /// Runtime-issued turn identity, absent outside admitted Runtime turns.
+    #[must_use]
+    pub fn turn_id(&self) -> Option<&str> {
+        self.execution.turn_id.as_deref()
+    }
+
+    /// Bind the Runtime-owned model call identifier for journal and receipt
+    /// correlation. The authorization gateway still validates it against the
+    /// frozen invocation ledger.
+    #[must_use]
+    pub fn with_invocation_call_id(mut self, call_id: impl Into<String>) -> Self {
+        self.invocation_call_id = Some(call_id.into());
+        self
+    }
+
+    /// Model call identity bound by the Agent loop, never by tool input.
+    #[must_use]
+    pub fn invocation_call_id(&self) -> Option<&str> {
+        self.invocation_call_id.as_deref()
     }
 
     /// Runtime-assigned turn correlation identifier.

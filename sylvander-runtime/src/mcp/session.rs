@@ -14,13 +14,13 @@ use thiserror::Error;
 
 use crate::agent_definition::{McpServerConfig, McpWorkspaceAccess, SessionId};
 use crate::config::SecretRef;
-use crate::credential_registry::CredentialSecretResolver;
+use crate::credential::registry::CredentialSecretResolver;
 use crate::execution::{
     PersistentFilesystemAuthority, PersistentNetworkAuthority, PersistentProcessAuthority,
     PersistentProcessOwner, PersistentResourceLimits, RuntimeExecutionService,
 };
 use crate::mcp::SECRET_REFERENCE_PREFIX;
-use crate::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
+use crate::mcp::stdio::{McpResultArtifactSink, McpStdioClient};
 use sylvander_agent::tool::ToolRegistry;
 use sylvander_api::{AgentId, AgentSecretReference};
 

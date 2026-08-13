@@ -19,6 +19,44 @@ Agent supervisor serializes work per Session, constructs one
 storage transaction. It maps internal events to API events only after applying
 product visibility and persistence rules.
 
+For an executing turn, Runtime reduces typed `TurnTransition` facts into one
+content-free `RuntimeTurnSnapshot` per Session. `active_turn_snapshot` exposes
+that typed view for diagnostics; it does not parse logs or copy state names.
+The snapshot is removed when the Runtime turn finishes, while the ordered
+transition facts remain available to observability for post-mortem analysis.
+Agent state completion and Runtime product completion remain separate: only
+Runtime may declare success after durable Session commit and publication.
+
+Runtime observability is a governance mechanism rather than part of Agent
+execution. The mandatory recorder publishes each typed, content-free lifecycle
+fact to a bounded broadcast bus after updating built-in tracing, counters, and
+timing. Consumers cannot apply backpressure to the execution path; a slow
+consumer observes an explicit lag count instead.
+
+When `server.observability.debug_log` is enabled, a governance task subscribes
+to that bus and writes one JSON object per line to a unique file under
+`<data_dir>/debug`. The file is capped at 16 MiB, contains no prompts, tool
+arguments, tool output, credentials, or user content, and is flushed when
+Runtime shuts down. Startup retains at most four recognized per-run files and
+64 MiB across that UUID-named log namespace; oldest managed files are removed
+before a new one is created, while unrelated debug files are untouched.
+`debug_observation_log_path` returns the exact file for the current process.
+This diagnostic projection is not authoritative storage and does not
+participate in Agent success or failure.
+
+The public event protocol deliberately exposes the coarser product lifecycle,
+not every Agent-machine phase. Runtime emits `TurnStarted` only after required
+turn admission persistence and executable composition have succeeded. Existing
+iteration, tool, and interaction events describe work inside that turn;
+`Done`, `Error`, and `TurnInterrupted` remain its public terminals, with
+`Done` emitted only after the durable assistant message and completed turn are
+committed. This follows the separation visible in local Codex app-server
+protocol (`TurnStarted`/`TurnCompleted` plus item events, commit
+`16fbfe557446a1af94da81e1144029ccc1311ad0`) and Kimi agent-core
+(`TurnStarted`/`TurnEnded`, step, and tool events, commit
+`93928066dc308052de8c4a48e9c10b2f3dba361b`) without copying either wire
+format.
+
 ## Execution service
 
 The execution service maps Agent logical workspace and target identifiers to
@@ -30,6 +68,21 @@ resource ceilings, cancellation, bounded output, artifact collection,
 violations, and cleanup. OCI is the current enforcing adapter. Local and SSH
 remain non-sandboxed adapters and cannot execute a tool whose prepared policy
 requires a sandbox.
+
+Full-sandbox health is the conjunction of filesystem isolation, denied
+network, resource ceilings, and process-tree ownership. Runtime publishes each
+truth separately and derives `sandbox_enforced`; it never upgrades a partially
+isolated adapter. OCI owns the named container tree and force-removes it when a
+timeout, cancellation, transport loss, or dropped future prevents ordinary
+completion.
+
+Tool failure observation is fact-based. Agent attaches a content-safe
+classification to the tool's single terminal only when an adapter-provided
+policy denial is preserved. Runtime records that fact independently from the
+provider-facing `is_error` result. Timeout interaction events do not create a
+second terminal. The built-in snapshot currently counts explicit filesystem-boundary
+violations. It does not inspect model-visible error text and is not replaceable
+by extensions.
 
 Current implementation status: Runtime boot constructs one crate-private,
 immutable `RuntimeExecutionService` from the built-in exact `local` target and
@@ -60,6 +113,14 @@ staging file. This gives readers atomic replacement visibility on conforming
 filesystems; it does not claim cross-device behavior or durable directory
 metadata after host power loss.
 
+Execution-policy violations are typed only from backend-owned evidence. The
+OCI adapter's fixed filesystem scripts reserve exit status 126 for a resolved
+path crossing the workspace mount, and only that path becomes a neutral
+`FilesystemBoundary` violation. Runtime does not label arbitrary command
+failures, `EPERM` text, or container exit codes as sandbox violations. Linux
+network/syscall attribution remains unimplemented until the selected backend
+can emit a correlated, trustworthy signal.
+
 Runtime now owns one bounded health worker for that service. Every 30 seconds
 it probes SSH targets with the executor's exact BatchMode, strict known-host,
 identity, and control-socket arguments and a fixed remote `true`; OCI targets
@@ -82,11 +143,23 @@ The initial backend is built-in SQLite. There is no storage plugin registry or
 public backend trait.
 
 Current implementation status: the crate-private `RuntimeStorage` composition
-root owns the exact Session and relationship-memory repository handles selected
-at boot. `Runtime` no longer exposes either repository as a public field.
-Session schema v2 stores explicit turn lifecycle. Turn admission is atomic
+root owns the exact Session, relationship-memory, and encrypted turn-artifact
+authorities selected at boot. `Runtime` no longer exposes those authorities as
+public fields.
+The Session schema stores explicit turn lifecycle. Turn admission is atomic
 with user input and immutable configuration; successful completion is atomic
 with assistant output.
+
+The latest-only Session schema v3 owns content-free tool lifecycle rows for
+`(session, turn, call, tool name)`. Agent emits a content-free preparation fact
+before approval; Runtime persists it before the event stream may continue.
+Execution start remains a separate fact, so a rejected call is never described
+as executed. Runtime then persists exactly one `succeeded`, `failed`, or
+`rejected` terminal before publishing observation or client output. A
+successful turn cannot commit while any tool row is still running; an
+interrupted or failed turn atomically marks its remaining calls `abandoned`.
+Tool arguments and results belong in provider-neutral conversation history or
+the governed artifact domain, not this operational table.
 
 Production composition also retains concrete, non-extensible health probes in
 this facade. Each operational request checks Session, relationship memory,
@@ -115,7 +188,11 @@ required configured store.
 
 Turn artifacts now enter one Runtime-owned encrypted service bound to the
 authenticated user, Agent, Session, and turn. Agent receives only a
-location-neutral port and opaque locator. There is not yet an authorized
+location-neutral port and opaque locator. Runtime boot clones that bounded
+factory from `RuntimeStorage`; no sibling service selects another backend.
+Messages remain the turn terminal authority, so this ownership closure does
+not claim an atomic transaction across the Session and evidence databases.
+There is not yet an authorized
 retrieval service, cross-domain transaction, or unified backup lifecycle;
 callers must not infer those target capabilities today.
 

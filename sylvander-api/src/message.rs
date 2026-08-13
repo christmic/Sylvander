@@ -67,6 +67,12 @@ pub enum AgentStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
+    /// Runtime admitted the turn and completed all required pre-execution
+    /// persistence and composition. This is not emitted for a rejected turn.
+    TurnStarted {
+        /// Opaque Runtime correlation identity for this turn.
+        turn_id: String,
+    },
     TextDelta {
         delta: String,
     },

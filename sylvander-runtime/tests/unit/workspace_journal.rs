@@ -14,12 +14,12 @@ fn multiple_edits_in_one_turn_roll_back_in_reverse_order() {
     let journal = WorkspaceJournal::new(data.path());
 
     let first = journal
-        .prepare("s", "turn-1", root.path(), "src.txt", b"one")
+        .prepare("s", "turn-1", "call-1", root.path(), "src.txt", b"one")
         .unwrap();
     fs::write(&file, "one").unwrap();
     journal.commit(&first).unwrap();
     let second = journal
-        .prepare("s", "turn-1", root.path(), "src.txt", b"two")
+        .prepare("s", "turn-1", "call-2", root.path(), "src.txt", b"two")
         .unwrap();
     fs::write(&file, "two").unwrap();
     journal.commit(&second).unwrap();
@@ -38,7 +38,7 @@ fn conflict_refuses_to_overwrite_external_changes() {
     fs::write(&file, "before").unwrap();
     let journal = WorkspaceJournal::new(data.path());
     let mutation = journal
-        .prepare("s", "turn-1", root.path(), "src.txt", b"agent")
+        .prepare("s", "turn-1", "call-1", root.path(), "src.txt", b"agent")
         .unwrap();
     fs::write(&file, "agent").unwrap();
     journal.commit(&mutation).unwrap();
@@ -60,12 +60,42 @@ fn prepared_crash_record_and_new_file_are_recoverable() {
     let file = root.path().join("new.txt");
     let journal = WorkspaceJournal::new(data.path());
     let _pending = journal
-        .prepare("s", "turn-1", root.path(), "new.txt", b"created")
+        .prepare("s", "turn-1", "call-1", root.path(), "new.txt", b"created")
         .unwrap();
     fs::write(&file, "created").unwrap();
 
     journal.rollback_latest_turn("s", "turn-1").unwrap();
     assert!(!file.exists());
+}
+
+#[test]
+fn exact_tool_call_reconciliation_never_guesses_from_missing_or_conflicting_state() {
+    let root = tempfile::tempdir().unwrap();
+    let journal_root = tempfile::tempdir().unwrap();
+    let journal = WorkspaceJournal::new(journal_root.path());
+    std::fs::write(root.path().join("src.txt"), "before").unwrap();
+    let prepared = journal
+        .prepare("s", "turn-1", "call-1", root.path(), "src.txt", b"after")
+        .unwrap();
+    assert_eq!(
+        journal.reconcile_tool_call("s", "turn-1", "call-1"),
+        WorkspaceMutationRecovery::NotCommitted,
+    );
+    std::fs::write(root.path().join("src.txt"), "after").unwrap();
+    assert_eq!(
+        journal.reconcile_tool_call("s", "turn-1", "call-1"),
+        WorkspaceMutationRecovery::Committed,
+    );
+    journal.commit(&prepared).unwrap();
+    std::fs::write(root.path().join("src.txt"), "external").unwrap();
+    assert_eq!(
+        journal.reconcile_tool_call("s", "turn-1", "call-1"),
+        WorkspaceMutationRecovery::Unknown,
+    );
+    assert_eq!(
+        journal.reconcile_tool_call("s", "turn-1", "missing"),
+        WorkspaceMutationRecovery::Unknown,
+    );
 }
 
 #[cfg(unix)]

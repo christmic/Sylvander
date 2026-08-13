@@ -1,5 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt as _;
 use std::sync::{Arc, Mutex};
 
 use tempfile::TempDir;
@@ -237,7 +238,31 @@ fn container_reports_the_isolation_it_actually_enforces() {
     assert!(isolation.filesystem);
     assert!(isolation.network_denied);
     assert!(isolation.resource_limits);
+    assert!(isolation.process_tree);
     assert!(isolation.enforces_sandbox());
+}
+
+#[test]
+fn only_the_reserved_boundary_status_is_a_policy_violation() {
+    let boundary = std::process::Output {
+        status: std::process::ExitStatus::from_raw(126 << 8),
+        stdout: Vec::new(),
+        stderr: b"ignored".to_vec(),
+    };
+    let ordinary = std::process::Output {
+        status: std::process::ExitStatus::from_raw(1 << 8),
+        stdout: Vec::new(),
+        stderr: b"permission denied".to_vec(),
+    };
+
+    assert!(matches!(
+        container_failure("read", &boundary),
+        WorkspaceExecutorError::PolicyViolation(WorkspacePolicyViolation::FilesystemBoundary)
+    ));
+    assert!(matches!(
+        container_failure("read", &ordinary),
+        WorkspaceExecutorError::Io(_)
+    ));
 }
 
 #[tokio::test]

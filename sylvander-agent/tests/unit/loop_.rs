@@ -1,6 +1,8 @@
 use super::*;
+use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::test_support::MockTool;
 use crate::tool_invocation::ToolInvocationGateway as _;
+use crate::turn::conversation::ConversationSnapshot;
 use serde_json::json;
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ChatRole, ContentBlock as ProviderBlock, DocumentContent, ImageContent,
@@ -16,6 +18,21 @@ type ProviderOpen = Result<Vec<Result<ModelStreamEvent, ProviderError>>, Provide
 struct ScriptedProvider {
     opens: std::sync::Mutex<std::collections::VecDeque<ProviderOpen>>,
     requests: std::sync::Mutex<Vec<ModelRequest>>,
+}
+
+#[derive(Default)]
+struct RecordingApprovalGate {
+    requests: std::sync::Mutex<Vec<ToolUseRequest>>,
+}
+
+#[async_trait::async_trait]
+impl ApprovalGate for RecordingApprovalGate {
+    async fn check_batch(&self, tools: &[ToolUseRequest]) -> ApprovalBatchResult {
+        self.requests.lock().unwrap().extend_from_slice(tools);
+        ApprovalBatchResult {
+            decisions: vec![ApprovalDecision::Approved; tools.len()],
+        }
+    }
 }
 
 impl ScriptedProvider {
@@ -84,6 +101,107 @@ async fn tool_deadline_is_a_typed_outcome() {
     );
     assert!(outcome.is_error);
     assert!(outcome.output.contains("timed out"));
+}
+
+#[tokio::test]
+async fn timed_out_tool_emits_one_authoritative_terminal() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "call-slow".into(),
+                name: "slow".into(),
+                arguments: json!({}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let tools = crate::tool::ToolRegistry::new().register(SlowTool);
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let mut ports = turn_ports(provider, &request);
+    ports.tool_context.budget.timeout = Some(std::time::Duration::from_millis(1));
+    let kernel = kernel();
+    let mut events = Box::pin(run_stream(&kernel, request, ports));
+    let mut timeout_events = 0;
+    let mut terminal_events = 0;
+
+    while let Some(event) = events.next().await {
+        match event {
+            AgentEvent::ToolTimedOut { id, .. } if id == "call-slow" => timeout_events += 1,
+            AgentEvent::ToolCallEnd {
+                id,
+                is_error: true,
+                failure_kind: Some(crate::tool::ToolFailureKind::Unclassified),
+                ..
+            } if id == "call-slow" => terminal_events += 1,
+            _ => {}
+        }
+    }
+
+    assert_eq!(timeout_events, 1);
+    assert_eq!(terminal_events, 1);
+}
+
+#[tokio::test]
+async fn turn_transitions_describe_the_real_multi_iteration_path() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "call-1".into(),
+                name: "echo".into(),
+                arguments: json!({}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let tools = crate::tool::ToolRegistry::new().register(MockTool::new(
+        "echo",
+        "echoes",
+        crate::tool::ToolOutput::ok("ok"),
+    ));
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let ports = turn_ports(provider, &request);
+    let kernel = kernel();
+    let mut events = Box::pin(run_stream(&kernel, request, ports));
+    let mut transitions = Vec::new();
+
+    while let Some(event) = events.next().await {
+        if let AgentEvent::TurnTransition(transition) = event {
+            transitions.push(transition);
+        }
+    }
+
+    assert!(
+        transitions
+            .windows(2)
+            .all(|pair| pair[1].sequence == pair[0].sequence + 1)
+    );
+    assert_eq!(transitions.last().unwrap().to, TurnPhase::Completed);
+    let continued = transitions
+        .iter()
+        .find(|transition| transition.reason == TurnTransitionReason::ContinueAfterToolResults)
+        .unwrap();
+    assert_eq!(continued.to, TurnPhase::ReadyForIteration);
+    assert_eq!(
+        continued.continuation,
+        Some(TurnContinuationReason::ToolResultsReady)
+    );
+    assert_eq!(continued.iteration, 1);
+    assert_eq!(
+        crate::turn::machine::TurnSnapshot::from(*continued).phase,
+        continued.to
+    );
 }
 
 fn provider_model() -> ProviderModelInfo {
@@ -422,6 +540,197 @@ async fn provider_backend_runs_tool_then_text_with_qualified_requests() {
         message.content.iter().any(|block|
             matches!(block, ProviderBlock::ToolResult { call_id, .. } if call_id == "call-1")
         )
+    }));
+}
+
+#[tokio::test]
+async fn trusted_tool_failure_classification_reaches_the_event_stream() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "call-policy".into(),
+                name: "guarded".into(),
+                arguments: json!({}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let tool = MockTool::new(
+        "guarded",
+        "returns an explicit policy denial",
+        crate::tool::ToolOutput::classified_err(
+            "workspace boundary denied",
+            crate::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation,
+        ),
+    );
+    let tools = crate::tool::ToolRegistry::new().register(tool);
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let ports = turn_ports(provider, &request);
+    let kernel = kernel();
+    let mut events = Box::pin(run_stream(&kernel, request, ports));
+    let mut classified = false;
+
+    while let Some(event) = events.next().await {
+        if matches!(
+            event,
+            AgentEvent::ToolCallEnd {
+                id,
+                name,
+                failure_kind: Some(
+                    crate::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation
+                ),
+                ..
+            } if id == "call-policy" && name == "guarded"
+        ) {
+            classified = true;
+        }
+    }
+
+    assert!(classified);
+}
+
+#[tokio::test]
+async fn tool_identity_is_prepared_before_approval_and_execution() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "call-order".into(),
+                name: "guarded".into(),
+                arguments: json!({}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(Vec::new(), ProviderStopReason::EndTurn)),
+    ]));
+    let tools = crate::tool::ToolRegistry::new().register(MockTool::new(
+        "guarded",
+        "ordered tool",
+        crate::tool::ToolOutput::ok("done"),
+    ));
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let ports = turn_ports(provider, &request);
+    let kernel = kernel();
+    let events = run_stream(&kernel, request, ports)
+        .collect::<Vec<_>>()
+        .await;
+    let prepared = events
+        .iter()
+        .position(
+            |event| matches!(event, AgentEvent::ToolCallPrepared { id, .. } if id == "call-order"),
+        )
+        .unwrap();
+    let AgentEvent::ToolCallPrepared {
+        invocation_class,
+        recovery_policy,
+        input_digest,
+        capability_revision,
+        ..
+    } = &events[prepared]
+    else {
+        unreachable!();
+    };
+    assert_eq!(
+        *invocation_class,
+        Some(crate::tool_invocation::ToolInvocationClass::Extension),
+    );
+    assert_eq!(
+        *recovery_policy,
+        crate::tool_invocation::ToolRecoveryPolicy::NeverReplay,
+    );
+    assert!(input_digest.starts_with("sha256:"));
+    assert!(capability_revision.starts_with("sha256:"));
+    let started = events
+        .iter()
+        .position(
+            |event| matches!(event, AgentEvent::ToolCallStart { id, .. } if id == "call-order"),
+        )
+        .unwrap();
+
+    assert!(prepared < started);
+}
+
+#[tokio::test]
+async fn approval_receives_facts_from_the_exact_prepared_call() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "git-1".into(),
+                name: "Git".into(),
+                arguments: json!({"operation": "status"}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let gate = Arc::new(RecordingApprovalGate::default());
+    let tools = crate::tool::ToolRegistry::new().register(crate::tools::GitTool::new());
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("inspect")]);
+    let ports = turn_ports(provider, &request).with_approval_gate(gate.clone());
+
+    run(&kernel(), request, ports).await.unwrap();
+
+    let requests = gate.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].tool_name, "Git");
+    assert_eq!(
+        requests[0].facts.execution_mode,
+        crate::tool::ToolExecutionMode::Parallel
+    );
+    assert_eq!(
+        requests[0].facts.execution_policy,
+        crate::tool::ToolExecutionPolicy::read_only_process()
+    );
+}
+
+#[tokio::test]
+async fn invalid_tool_input_is_rejected_before_approval() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "command-1".into(),
+                name: "Command".into(),
+                arguments: json!({"command": "  "}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let gate = Arc::new(RecordingApprovalGate::default());
+    let tools = crate::tool::ToolRegistry::new().register(crate::tools::CommandTool::new());
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("run")]);
+    let ports = turn_ports(provider, &request).with_approval_gate(gate.clone());
+
+    let outcome = run(&kernel(), request, ports).await.unwrap();
+
+    assert!(gate.requests.lock().unwrap().is_empty());
+    assert_eq!(outcome.iterations, 2);
+    assert!(outcome.conversation.messages().iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ProviderBlock::ToolResult {
+                    call_id,
+                    is_error: true,
+                    ..
+                } if call_id == "command-1"
+            )
+        })
     }));
 }
 

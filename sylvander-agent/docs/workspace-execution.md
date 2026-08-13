@@ -63,6 +63,13 @@ progress. Each command runs in its own process group. Timeout or future
 cancellation terminates the whole group so descendants cannot outlive the
 Agent turn.
 
+`ProcessIsolation::enforces_sandbox()` requires four independent truths:
+filesystem isolation, denied network, resource ceilings, and owned process-tree
+cleanup. Missing any one dimension fails closed for a prepared call whose
+sandbox is required. This matches the persistent-process environment contract;
+a backend cannot claim a complete sandbox merely because its filesystem mount
+is restricted.
+
 Agent tests cover executor injection, logical mount routing, prepared-policy
 bounds, capability denial, conditional Edit behavior, and unavailable-target
 behavior through test doubles. Runtime tests prove that concurrent stale
@@ -81,3 +88,27 @@ reconciliation against the configured remote worktree root. The opt-in
 real-SSH journey is the deployment acceptance gate because it requires a
 disposable SSH daemon and repository. Container resource policy and managed
 sandboxes use the same Agent-facing contract.
+
+## Policy violations
+
+The neutral executor error contract distinguishes a policy violation only when
+the physical backend provides an explicit, trustworthy signal. OCI's fixed
+file-operation scripts reserve exit status 126 exclusively for a canonical
+path crossing the mounted workspace boundary, so Runtime maps only that status
+to `WorkspacePolicyViolation::FilesystemBoundary`. Other non-zero statuses,
+stderr text, and generic permission errors remain ordinary operation failures.
+
+Built-in workspace tools preserve that explicit denial on the single
+`ToolCallEnd` terminal as
+`ToolFailureKind::FilesystemBoundaryPolicyViolation` while keeping the
+human-readable result model-visible. All other model-visible failures default
+to `Unclassified`. Runtime can therefore count or persist policy facts without
+parsing tool output, and adapters that lack explicit evidence cannot fabricate
+a stronger classification.
+
+This conservative rule is intentional. Linux container and syscall sandboxes
+do not universally provide attribution for denied operations, and treating an
+arbitrary `EPERM` or exit code as a violation would fabricate observability.
+Future native adapters may add kinds only together with a backend-owned signal,
+per-invocation correlation, and tests proving that ordinary command failures
+cannot be misclassified.

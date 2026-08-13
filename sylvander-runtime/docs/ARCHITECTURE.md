@@ -23,6 +23,68 @@ The server binary supplies configuration and process lifetime only. Individual
 channels own their native protocol adapters; the Agent crate owns one run;
 Runtime owns the binding between them.
 
+## Physical source layout
+
+The internal source tree uses concrete Runtime responsibilities as directory
+names. It does not introduce generic top-level `domain`, `application`,
+`infrastructure`, or `ports` buckets: those names hide what the code actually
+does at this composition layer.
+
+```text
+src/
+├── lib.rs                 # public facade and compatibility exports only
+├── runtime/               # boot, lifecycle, ChannelHost, health, shutdown
+├── agent/                 # definition, run, supervision, approval, prompt
+│   └── run/               # cohesive services used by turn orchestration
+│       ├── builder.rs     # validated dependencies and immutable run assembly
+│       ├── orchestration.rs # event-driven turn admission through terminal
+│       ├── interaction.rs # approval, question, and plan decision gates
+│       ├── background.rs  # isolated background Agent task lifecycle
+│       ├── projection.rs  # Agent/storage facts mapped to public Runtime APIs
+│       ├── recovery.rs    # boot classification of interrupted tool effects
+│       └── error.rs       # run failures and persistence operation context
+├── session/               # context, authenticated boundary, identity binding
+├── registry/              # Agent/model/provider revision governance
+├── provider/              # catalogs and request-scoped provider routing
+├── credential/            # secret resolution and content-safe audit
+├── guardian/              # Guardian runtime and curation
+├── workspace/             # coding, local/remote worktrees, self-change
+├── execution/             # target selection and concrete executors
+├── storage/               # durable repositories and health composition
+├── evidence/              # evidence records and governed artifacts
+├── mcp/                   # Session MCP lifecycle and stdio transport
+├── observability/         # typed Runtime lifecycle facts
+└── config/                # validated server configuration
+```
+
+`lib.rs` may preserve stable external names such as `agent_run`,
+`git_worktree`, or `credential_audit` through re-exports. Internal production
+code imports the owning physical path (`agent::run`, `workspace::local`,
+`credential::audit`) so the repository layout remains the source of truth.
+`runtime/mod.rs` contains the process-level orchestration that previously
+occupied the crate root; it is not a second public facade.
+
+Large orchestration entrypoints are split only when a child owns a real
+responsibility and state boundary. `agent/run/builder.rs` validates the model
+catalog and injected Runtime services, constructs immutable execution policy,
+and assembles the shared run state. `agent/run/orchestration.rs` owns one
+event-driven turn from correlated admission through durable terminal state,
+including the frozen Agent request, event projection order, and turn-scoped
+tool/workspace context. `agent/run/interaction.rs` owns pending
+approval, question, and plan state together with their timeout and
+bus-publication rules. `agent/run/background.rs` owns cancellation, timeout,
+progress, and terminal publication for isolated background Agent work.
+`agent/run/projection.rs` is the type boundary from internal Agent and storage
+facts to public Runtime and governance DTOs; it contains no orchestration.
+`agent/run/recovery.rs` scans the Session execution ledger before Session
+attachment, acquires bounded recovery leases, persists deterministic
+classifications, and records content-free facts. It does not execute or replay
+a tool; concrete reconciliation and continuation are separate gates.
+`agent/run.rs` retains the shared run/Session state and coordinates these
+services but does not implement their protocols or construction.
+A directory containing only a renamed former file does not satisfy this
+physical-layout rule.
+
 More precisely, Runtime owns the product Session and constructs one immutable
 Agent turn from its durable snapshot. Agent owns only the bounded inference and
 tool state machine. The normative target dependency graph and Session
@@ -38,8 +100,8 @@ crate without retaining a second production path.
   references, and rejects unsupported legacy shapes rather than guessing.
 - `composition` builds configured Agent revisions, default tools, prompt
   layers, and selected provider adapters from Runtime-owned inputs.
-- `agent_registry` and the private registry modules make Agent/model revisions
-  immutable for a run and expose administrator-facing updates through explicit
+- `registry` makes Agent/model revisions immutable for a run and exposes
+  administrator-facing updates through explicit
   revision checks. A new database atomically creates only the current catalog
   and V3 snapshot schema with one current ledger row. Old, mixed, future, or
   damaged schemas are rejected during open-time fingerprint validation without
@@ -53,8 +115,9 @@ crate without retaining a second production path.
   partial, or obsolete objects fail closed. Registry operation entrypoints
   revalidate the union, so post-open schema injection cannot bypass the
   open-time check.
-- `principal_binding` and the private boundary/identity modules map trusted
-  transport principals to stable users without display-name inference.
+- `session` maps trusted transport principals to stable users, owns the
+  authenticated boundary and identity binding, and keeps Session context
+  separate from durable storage without display-name inference.
 - `evidence` records privacy-classified run/feedback/authorization metadata.
   Configured Runtime always starts the recorder; content policy and
   `do_not_learn` control payload/learning use without dropping runtime facts.
@@ -71,11 +134,11 @@ crate without retaining a second production path.
   events and generated artifacts: it binds one database to a tenant and
   AES-256-GCM key, enforces exact user scope, and owns retention,
   export/delete audit, and tombstones.
-- `request_scoped_provider::credential_lease` acquires and renews bounded
+- `provider::request_scoped::credential_lease` acquires and renews bounded
   Provider credentials per request. Production can inject an external lease
   source through `ProviderCredentialSources`; the built-in environment/file
   adapter uses the same fail-closed generation contract.
-- `credential_audit` owns the separate exact-schema
+- `credential::audit` owns the separate exact-schema
   `credential-operations.db` ledger. The live Provider request source,
   registry mutation service, and server-composed Channel credential source
   append content-safe create/acquire/renew/rotate/revoke/failure facts to it;
@@ -108,7 +171,7 @@ crate without retaining a second production path.
   exact frozen tool registry. Restricted background work recomputes that block
   after reducing its catalog to stable read-tool names; it never inherits
   guidance for tools it cannot invoke.
-- `guardian_runtime` and `guardian_curation` own the distinct Guardian service
+- `guardian::runtime` and `guardian::curation` own the distinct Guardian service
   identity, durable event/run/candidate/mutation state, deterministic policy,
   idempotent canonical-memory sink, live `do_not_learn` authorization,
   credential rotation, restart catch-up, and bounded drain. The detailed
@@ -119,7 +182,7 @@ crate without retaining a second production path.
   than the Guardian supervisor. Consequently a schema/page failure contributes
   `Storage`, while a supervisor-loop failure contributes
   `GuardianSupervisor`; neither can mask or impersonate the other.
-- `execution`, `git_worktree`, and `remote_git_worktree` own location-neutral
+- `execution` and `workspace::{coding,local,remote}` own location-neutral
   workspace selection, the concrete host-local/SSH/OCI adapters, and isolated
   local/host-backed and SSH coding worktrees. The local adapter enforces path,
   output, deadline, and process-tree cancellation bounds but truthfully
@@ -135,12 +198,16 @@ crate without retaining a second production path.
   provider-neutral memory values, validation rules, and `MemoryStore` port;
   Runtime selects, opens, maintains, and injects the concrete store.
 - `storage::RuntimeStorage` is the crate-private composition root for durable
-  repositories. It closes public access to the selected Session and
-  relationship-memory handles and aggregates live integrity for nine
+  repositories. It closes public access to the selected Session,
+  relationship-memory, and encrypted turn-artifact authorities and aggregates
+  live integrity for nine
   production stores. Session schema v2 makes turn lifecycle
   authoritative: admission commits user input, configuration, and `running`;
   successful completion commits assistant output and `completed` in one
-  transaction. Turn-bound artifacts use the encrypted governed store, an
+  transaction. The latest-only v3 schema adds content-free tool lifecycle:
+  one start and one terminal per call, no successful turn with a running call,
+  and atomic abandonment with failed/interrupted turns. Turn-bound artifacts
+  use the encrypted governed store, an
   independent health component, and opaque locators. Retrieval,
   cross-domain transactions, and unified backup remain incomplete; see
   [`application-services.md`](application-services.md) for exact status.
@@ -153,13 +220,13 @@ crate without retaining a second production path.
   separate asynchronous governance projection. Metric durability and sink
   health remain incomplete.
 - `mcp` owns authenticated Session bindings, secret resolution, persistent
-  sandbox selection, server lifecycles, and governed results. `mcp_stdio`
+  sandbox selection, server lifecycles, and governed results. `mcp::stdio`
   implements JSON-RPC, discovery, cancellation, health, and reconnection over
   Runtime's persistent-process port; production code has no host-spawn path.
   Discovered tools are composed through Agent's neutral Session-extension
   boundary and frozen with their exact authorization gateway for each turn.
-- `self_change` runs evidence-backed, isolated experiments and requires a
-  distinct human merge gate.
+- `workspace::self_change` runs evidence-backed, isolated experiments and
+  requires a distinct human merge gate.
 
 ## Critical lifecycle rules
 

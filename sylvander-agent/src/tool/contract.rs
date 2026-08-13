@@ -14,7 +14,7 @@ use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::execution::tool_context::ToolContext;
-use crate::tool::invocation::ToolInvocationClass;
+use crate::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy};
 
 pub(crate) const TOOL_PROGRESS_CHANNEL_CAPACITY: usize = 64;
 pub(crate) const TOOL_PROGRESS_OMITTED_MARKER: &str =
@@ -185,6 +185,8 @@ pub struct ToolSpec {
     /// the model. Runtime composes them from the frozen turn registry.
     pub prompt_guidelines: Vec<String>,
     pub invocation_class: ToolInvocationClass,
+    /// Crash recovery behavior, independent from invocation authority.
+    pub recovery_policy: ToolRecoveryPolicy,
 }
 
 impl ToolSpec {
@@ -204,6 +206,7 @@ impl ToolSpec {
             exposure: ToolExposure::Immediate,
             prompt_guidelines: Vec::new(),
             invocation_class,
+            recovery_policy: ToolRecoveryPolicy::NeverReplay,
         }
     }
 
@@ -235,6 +238,13 @@ impl ToolSpec {
             .map(Into::into)
             .filter(|guideline| !guideline.trim().is_empty())
             .collect();
+        self
+    }
+
+    /// Declare recovery behavior for an uncertain effect.
+    #[must_use]
+    pub const fn with_recovery_policy(mut self, recovery_policy: ToolRecoveryPolicy) -> Self {
+        self.recovery_policy = recovery_policy;
         self
     }
 }
@@ -347,6 +357,20 @@ pub struct ToolOutput {
     /// accordingly. Distinct from [`ToolError`] (which is a system-level
     /// error that terminates the loop).
     pub is_error: bool,
+    /// Trusted, content-safe classification for a model-visible failure.
+    ///
+    /// This is deliberately independent from the human-readable content:
+    /// Runtime must never infer security facts by parsing error prose.
+    failure_kind: Option<ToolFailureKind>,
+}
+
+/// Trusted classification for a model-visible tool failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolFailureKind {
+    /// The tool failed without a stronger, adapter-provided classification.
+    Unclassified,
+    /// The execution environment explicitly rejected a filesystem boundary.
+    FilesystemBoundaryPolicyViolation,
 }
 
 impl ToolOutput {
@@ -356,6 +380,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            failure_kind: None,
         }
     }
 
@@ -365,7 +390,24 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            failure_kind: Some(ToolFailureKind::Unclassified),
         }
+    }
+
+    /// Model-visible failure carrying a trusted machine classification.
+    #[must_use]
+    pub fn classified_err(content: impl Into<String>, kind: ToolFailureKind) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            failure_kind: Some(kind),
+        }
+    }
+
+    /// Return the trusted failure classification, if this output failed.
+    #[must_use]
+    pub const fn failure_kind(&self) -> Option<ToolFailureKind> {
+        self.failure_kind
     }
 }
 

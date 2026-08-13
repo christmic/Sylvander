@@ -114,7 +114,9 @@ pub use interaction::{
 };
 pub use kernel::agent_loop as loop_;
 pub use memory::curated as curated_memory;
-pub use turn::{conversation, error, event, execution_context, identity, outcome, request, time};
+pub use turn::{
+    conversation, error, event, execution_context, identity, machine, outcome, request, time,
+};
 /// Tool contracts, authorization, registration, and built-in implementations.
 pub mod tool;
 pub use tool::{builtins as tools, invocation as tool_invocation};
@@ -148,8 +150,9 @@ pub mod prelude {
     pub use crate::execution::workspace::{
         ProcessIsolation, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
         WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
-        WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
-        WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
+        WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspacePolicyViolation,
+        WorkspaceQueryLimits, WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult,
+        WorkspaceTarget,
     };
     pub use crate::interaction::plan::PlanDecision;
     pub use crate::kernel::agent_loop::{
@@ -172,15 +175,19 @@ pub mod prelude {
     pub use crate::tool::{
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
         ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
-        ToolExposure, ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput, ToolPreparation,
-        ToolPrepareError, ToolProgressSink, ToolRegistry, ToolSourceFeature, ToolSourceKind,
-        ToolSourceStatus, ToolSpec,
+        ToolExposure, ToolFailureKind, ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput,
+        ToolPreparation, ToolPrepareError, ToolProgressSink, ToolRegistry, ToolSourceFeature,
+        ToolSourceKind, ToolSourceStatus, ToolSpec,
     };
     pub use crate::turn::conversation::ConversationSnapshot;
     pub use crate::turn::error::AgentLoopError;
     pub use crate::turn::event::{AgentEvent, ModelRetryCause};
     pub use crate::turn::execution_context::{
         AgentExecutionContext, ExecutionActor, ExecutionCapability, ExecutionWorkspace,
+    };
+    pub use crate::turn::machine::{
+        TurnContinuationReason, TurnPhase, TurnSnapshot, TurnStateError, TurnTransition,
+        TurnTransitionReason,
     };
     pub use crate::turn::outcome::AgentOutcome;
     pub use crate::turn::request::AgentTurnRequest;

@@ -10,6 +10,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 
+use crate::tool::invocation::ToolInvocationClass;
+use crate::tool::{
+    PreparedToolCall, SandboxRequirement, ToolExecutionMode, ToolExecutionPolicy,
+    ToolFilesystemPolicy, ToolNetworkPolicy,
+};
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -23,6 +29,97 @@ pub struct ToolUseRequest {
     pub tool_name: String,
     /// Parsed input arguments.
     pub input: JsonValue,
+    /// Trusted input-specific scheduling and environment facts.
+    pub facts: ToolApprovalFacts,
+}
+
+impl ToolUseRequest {
+    /// Build an approval request from the exact immutable call that may run.
+    #[must_use]
+    pub fn from_prepared(call_id: &str, call: &PreparedToolCall) -> Self {
+        Self {
+            call_id: call_id.to_owned(),
+            tool_name: call.spec().name.clone(),
+            input: call.input().clone(),
+            facts: ToolApprovalFacts::from_prepared(call),
+        }
+    }
+}
+
+/// Trusted input-specific facts presented to approval policy and UI adapters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolApprovalFacts {
+    /// Stable capability class declared by the selected tool route.
+    pub invocation_class: ToolInvocationClass,
+    /// Input-specific batch coordination requirement.
+    pub execution_mode: ToolExecutionMode,
+    /// Input-specific physical environment policy.
+    pub execution_policy: ToolExecutionPolicy,
+}
+
+impl ToolApprovalFacts {
+    /// Construct trusted facts in a Runtime approval-policy test or adapter.
+    #[must_use]
+    pub const fn new(
+        invocation_class: ToolInvocationClass,
+        execution_mode: ToolExecutionMode,
+        execution_policy: ToolExecutionPolicy,
+    ) -> Self {
+        Self {
+            invocation_class,
+            execution_mode,
+            execution_policy,
+        }
+    }
+
+    fn from_prepared(call: &PreparedToolCall) -> Self {
+        Self::new(
+            call.spec().invocation_class,
+            call.execution_mode(),
+            call.execution_policy().clone(),
+        )
+    }
+
+    /// Stable material included in persistent approval fingerprints.
+    #[must_use]
+    pub fn fingerprint_material(&self) -> JsonValue {
+        serde_json::json!({
+            "invocation_class": invocation_class_name(self.invocation_class),
+            "execution_mode": match self.execution_mode {
+                ToolExecutionMode::Parallel => "parallel",
+                ToolExecutionMode::Exclusive => "exclusive",
+            },
+            "sandbox": match self.execution_policy.sandbox {
+                SandboxRequirement::NotApplicable => "not_applicable",
+                SandboxRequirement::Preferred => "preferred",
+                SandboxRequirement::Required => "required",
+            },
+            "filesystem": match self.execution_policy.filesystem {
+                ToolFilesystemPolicy::None => "none",
+                ToolFilesystemPolicy::WorkspaceRead => "workspace_read",
+                ToolFilesystemPolicy::WorkspaceWrite => "workspace_write",
+            },
+            "network": match self.execution_policy.network {
+                ToolNetworkPolicy::Denied => "denied",
+                ToolNetworkPolicy::FullAfterApproval => "full_after_approval",
+            },
+            "launches_processes": self.execution_policy.launches_processes,
+        })
+    }
+}
+
+const fn invocation_class_name(class: ToolInvocationClass) -> &'static str {
+    match class {
+        ToolInvocationClass::Read => "read",
+        ToolInvocationClass::FilesystemMutation => "filesystem_mutation",
+        ToolInvocationClass::Terminal => "terminal",
+        ToolInvocationClass::Browser => "browser",
+        ToolInvocationClass::HostControl => "host_control",
+        ToolInvocationClass::ArbitraryMcp => "arbitrary_mcp",
+        ToolInvocationClass::MemoryCandidate => "memory_candidate",
+        ToolInvocationClass::Control => "control",
+        ToolInvocationClass::Extension => "extension",
+    }
 }
 
 /// Result of approving a batch of tool calls.

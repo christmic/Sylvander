@@ -166,19 +166,52 @@ fn session_config_update_contract_preserves_optimistic_revision() {
     let request = SessionConfigUpdateRequest {
         session_id: SessionId::new("session-1"),
         expected_revision: 7,
-        overrides: SessionConfigOverrides {
-            model: Some(model("provider-b", "model-b")),
-            reasoning_effort: Some(ReasoningEffort::High),
-            ..SessionConfigOverrides::default()
+        patch: SessionConfigPatch {
+            model: Some(SessionConfigFieldPatch::Set {
+                value: model("provider-b", "model-b"),
+            }),
+            reasoning_effort: Some(SessionConfigFieldPatch::Set {
+                value: ReasoningEffort::High,
+            }),
+            ..SessionConfigPatch::default()
         },
     };
     let json = serde_json::to_value(&request).unwrap();
     assert_eq!(json["expected_revision"], 7);
-    assert_eq!(json["overrides"]["model"]["provider_id"], "provider-b");
-    assert_eq!(json["overrides"]["model"]["model_id"], "model-b");
+    assert_eq!(json["patch"]["model"]["value"]["provider_id"], "provider-b");
+    assert_eq!(json["patch"]["model"]["value"]["model_id"], "model-b");
     assert_eq!(
         serde_json::from_value::<SessionConfigUpdateRequest>(json).unwrap(),
         request
+    );
+}
+
+#[test]
+fn field_patch_preserves_omitted_write_only_values() {
+    let mut overrides = SessionConfigOverrides {
+        model: Some(model("provider-a", "model-a")),
+        permissions: Some(PermissionProfile::default()),
+        system_prompt: Some("private session sentinel".into()),
+        ..SessionConfigOverrides::default()
+    };
+    let patch = SessionConfigPatch {
+        model: Some(SessionConfigFieldPatch::Set {
+            value: model("provider-b", "model-b"),
+        }),
+        permissions: Some(SessionConfigFieldPatch::Inherit),
+        ..SessionConfigPatch::default()
+    };
+    let encoded = serde_json::to_value(&patch).unwrap();
+    assert_eq!(encoded["model"]["operation"], "set");
+    assert_eq!(encoded["permissions"]["operation"], "inherit");
+    assert!(encoded.get("system_prompt").is_none());
+
+    patch.apply_to(&mut overrides);
+    assert_eq!(overrides.model, Some(model("provider-b", "model-b")));
+    assert!(overrides.permissions.is_none());
+    assert_eq!(
+        overrides.system_prompt.as_deref(),
+        Some("private session sentinel")
     );
 }
 

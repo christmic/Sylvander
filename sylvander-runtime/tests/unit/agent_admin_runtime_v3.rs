@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use sylvander_api::{
     AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, ModelCapability, ModelSelection,
-    RegistryAdminResponse, SessionConfigOverrides, SessionConfigUpdateRequest,
-    SessionCreateRequest,
+    RegistryAdminResponse, SessionConfigFieldPatch, SessionConfigOverrides, SessionConfigPatch,
+    SessionConfigUpdateRequest, SessionCreateRequest,
 };
 use tempfile::TempDir;
 
@@ -401,9 +401,11 @@ allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
         SessionConfigUpdateRequest {
             session_id: created.session_id.clone(),
             expected_revision: created.revision,
-            overrides: SessionConfigOverrides {
-                model: Some(model("beta")),
-                ..SessionConfigOverrides::default()
+            patch: SessionConfigPatch {
+                model: Some(SessionConfigFieldPatch::Set {
+                    value: model("beta"),
+                }),
+                ..SessionConfigPatch::default()
             },
         },
     )

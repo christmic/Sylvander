@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use sylvander_agent::tools::MemoryStore;
 
-use crate::agent_registry::AgentRegistry;
-use crate::credential_audit::CredentialOperationAuditLedger;
+use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::evidence::EvidenceStore;
-use crate::guardian_runtime::GuardianStorageProbe;
+use crate::guardian::runtime::GuardianStorageProbe;
+use crate::registry::agent::AgentRegistry;
+use crate::storage::artifact::RuntimeArtifactService;
 use crate::user_profile_store::UserProfileStore;
 
 use self::session::SessionStore;
@@ -77,6 +78,7 @@ pub(crate) struct RuntimeStorage {
     user_profile_probe: Option<UserProfileStore>,
     evidence_probe: Option<EvidenceStore>,
     artifact_probe: Option<EvidenceStore>,
+    artifact_service: Option<RuntimeArtifactService>,
     credential_audit_probe: Option<Arc<CredentialOperationAuditLedger>>,
     guardian_probe: Option<GuardianStorageProbe>,
 }
@@ -93,6 +95,7 @@ impl RuntimeStorage {
             user_profile_probe: None,
             evidence_probe: None,
             artifact_probe: None,
+            artifact_service: None,
             credential_audit_probe: None,
             guardian_probe: None,
         }
@@ -124,6 +127,20 @@ impl RuntimeStorage {
     pub(crate) fn with_guardian_probe(mut self, guardian: GuardianStorageProbe) -> Self {
         self.guardian_probe = Some(guardian);
         self
+    }
+
+    /// Attach the encrypted artifact write authority selected at boot.
+    pub(crate) fn with_artifact_service(
+        mut self,
+        artifact_service: Option<RuntimeArtifactService>,
+    ) -> Self {
+        self.artifact_service = artifact_service;
+        self
+    }
+
+    /// Clone the bounded factory without exposing its evidence backend.
+    pub(crate) fn artifact_service(&self) -> Option<RuntimeArtifactService> {
+        self.artifact_service.clone()
     }
 
     /// Access Session persistence inside Runtime-owned application services.

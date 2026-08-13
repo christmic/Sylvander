@@ -60,6 +60,35 @@ The execution boundary therefore has four conceptual layers:
 4. chronological progress and terminal computation result (`AgentEvent` and
    `AgentOutcome`).
 
+## Turn state machine
+
+`TurnMachine` is the single mutable owner of one turn's phase, iteration,
+continuation reason, working conversation, usage, and final response. The loop
+does not infer state from the last yielded event and does not keep parallel
+locals for those values. Every legal change passes through `transition`; an
+invalid or post-terminal transition fails closed.
+
+`AgentEvent::TurnTransition` is an observation of that change, not the state
+authority. It contains a monotonic sequence, iteration, typed source and target
+phases, typed reason, and typed continuation. Runtime can therefore reconstruct
+a content-free current snapshot without reading model output or guessing which
+branch executed.
+
+The stable textual vocabulary is centralized on the enums themselves:
+`TurnPhase::as_str`, `TurnTransitionReason::as_str`, and
+`TurnContinuationReason::as_str` return associated constants. Internal code
+uses enum variants; tracing, persistence, and future API projections use only
+those methods. Rust `Debug` names and handwritten string literals are not
+protocol identifiers.
+
+The lifecycle split is intentional:
+
+1. `TurnMachine` is current execution truth inside Agent;
+2. ordered `TurnTransition` values are immutable observation facts;
+3. `AgentOutcome` is the terminal computational result;
+4. Runtime remains responsible for cancellation, durable commit, and public
+   product completion.
+
 ## Local source evidence
 
 The boundary is based on inspected local source, not API-shape inference:

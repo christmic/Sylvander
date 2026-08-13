@@ -5,12 +5,47 @@ use serde_json::json;
 
 use super::*;
 use crate::execution_context::AgentExecutionContext;
+use crate::tool::ToolFailureKind;
 use crate::tool_context::{Cap, ToolContext};
 use crate::tools::{CommandTool, EditTool, GitTool, ListTool, ReadTool, SearchTool, WriteTool};
 
 #[derive(Debug, Default)]
 struct RecordingExecutor {
     reads: Mutex<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Default)]
+struct BoundaryDenyingExecutor;
+
+#[async_trait]
+impl WorkspaceExecutor for BoundaryDenyingExecutor {
+    async fn read_file(
+        &self,
+        _target: &WorkspaceTarget,
+        _relative_path: &str,
+    ) -> Result<Vec<u8>, WorkspaceExecutorError> {
+        Err(WorkspaceExecutorError::PolicyViolation(
+            WorkspacePolicyViolation::FilesystemBoundary,
+        ))
+    }
+
+    async fn write_file(
+        &self,
+        _target: &WorkspaceTarget,
+        _relative_path: &str,
+        _content: &[u8],
+    ) -> Result<(), WorkspaceExecutorError> {
+        unreachable!("read contract does not write")
+    }
+
+    async fn run_command(
+        &self,
+        _target: &WorkspaceTarget,
+        _command: &str,
+        _timeout: Duration,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        unreachable!("read contract does not spawn")
+    }
 }
 
 #[async_trait]
@@ -67,6 +102,30 @@ async fn tool_uses_injected_executor_and_preserves_target_identity() {
     assert_eq!(
         *executor.reads.lock().unwrap(),
         [("container:dev".into(), "src/lib.rs".into())]
+    );
+}
+
+#[tokio::test]
+async fn explicit_workspace_denial_keeps_a_typed_tool_failure() {
+    let context = ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
+        .with_executor(
+            Arc::new(BoundaryDenyingExecutor),
+            WorkspaceTarget {
+                id: "container:dev".into(),
+                workspace_path: "/workspace".into(),
+                read_only: false,
+            },
+        )
+        .with_capability(Cap::Read);
+    let output = ReadTool::new()
+        .execute(&context, json!({"file_path":"outside"}))
+        .await
+        .unwrap();
+
+    assert!(output.is_error);
+    assert_eq!(
+        output.failure_kind(),
+        Some(ToolFailureKind::FilesystemBoundaryPolicyViolation)
     );
 }
 

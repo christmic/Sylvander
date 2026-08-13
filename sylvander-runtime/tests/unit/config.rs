@@ -655,6 +655,19 @@ fn maintained_example_configuration_stays_valid() {
 }
 
 #[test]
+fn debug_observation_log_is_explicit_and_disabled_by_default() {
+    let default_config = ServerConfig::from_toml(&valid_toml()).unwrap();
+    assert!(!default_config.server.observability.debug_log);
+
+    let enabled = valid_toml().replace(
+        "[server.memory_maintenance.integrity]",
+        "[server.observability]\ndebug_log = true\n\n[server.memory_maintenance.integrity]",
+    );
+    let enabled_config = ServerConfig::from_toml(&enabled).unwrap();
+    assert!(enabled_config.server.observability.debug_log);
+}
+
+#[test]
 fn evidence_capture_is_bounded_and_metadata_only_by_default() {
     let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
     assert_eq!(

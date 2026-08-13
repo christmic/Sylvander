@@ -21,6 +21,8 @@ use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
 
+use super::workspace_error_output;
+
 const MAX_EDIT_FILE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Replace text in a file inside the invocation's explicit workspace.
@@ -63,6 +65,9 @@ impl ToolDefinition for EditTool {
             )
             .schema,
             crate::tool::invocation::ToolInvocationClass::FilesystemMutation,
+        )
+        .with_recovery_policy(
+            crate::tool::invocation::ToolRecoveryPolicy::ReconcileBeforeRetry,
         )
         .with_prompt_guidelines([
             "Use Edit for bounded changes to existing text; use the exact text most recently observed.",
@@ -112,7 +117,7 @@ impl ToolExecutor for EditTool {
 
         let target = match ctx.require_execution_target() {
             Ok(target) => target,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         if target.read_only {
             return Ok(ToolOutput::err(format!(
@@ -126,7 +131,7 @@ impl ToolExecutor for EditTool {
             .await
         {
             Ok(update) => update,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let WorkspaceFileUpdate { read, revision } = update;
         if read.truncated {
@@ -160,14 +165,18 @@ impl ToolExecutor for EditTool {
         };
 
         let prepared = if let Some(journal) = &ctx.workspace_journal {
-            let turn_id = ctx.trace_id().ok_or_else(|| {
-                ToolError::Other("workspace journal requires a turn trace id".into())
+            let turn_id = ctx.turn_id().ok_or_else(|| {
+                ToolError::Other("workspace journal requires a Runtime turn id".into())
+            })?;
+            let call_id = ctx.invocation_call_id().ok_or_else(|| {
+                ToolError::Other("workspace journal requires a tool call id".into())
             })?;
             Some(
                 journal
                     .prepare(
                         ctx.session_id(),
                         turn_id,
+                        call_id,
                         &target.workspace_path,
                         path_str,
                         new_content.as_bytes(),
@@ -200,7 +209,7 @@ impl ToolExecutor for EditTool {
                     path_str
                 )))
             }
-            Err(error) => Ok(ToolOutput::err(error.to_string())),
+            Err(error) => Ok(workspace_error_output(error)),
         }
     }
 }

@@ -14,6 +14,8 @@ use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
 
+use super::workspace_error_output;
+
 /// List files and directories through the invocation's workspace executor.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ListTool;
@@ -78,7 +80,7 @@ impl ToolExecutor for ListTool {
         };
         let target = match ctx.require_execution_target() {
             Ok(target) => target,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let result = match ctx
             .executor
@@ -93,7 +95,7 @@ impl ToolExecutor for ListTool {
             .await
         {
             Ok(result) => result,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let entries = result
             .entries
