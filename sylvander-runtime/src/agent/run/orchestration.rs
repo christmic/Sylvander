@@ -1639,7 +1639,7 @@ pub(super) fn tool_context_for_permissions(
         read_only,
     });
     if let Some(turn_id) = turn_id {
-        agent_execution = agent_execution.with_trace_id(turn_id);
+        agent_execution = agent_execution.with_turn_id(turn_id).with_trace_id(turn_id);
     }
     let mut context = if trusted_memory {
         ToolContext::for_runtime(agent_execution)

@@ -253,6 +253,12 @@ impl ToolInvocationRequest {
         &self.input
     }
 
+    /// Content-safe digest of the exact prepared input.
+    #[must_use]
+    pub fn input_digest(&self) -> String {
+        prepared_input_digest(&self.input)
+    }
+
     /// Exact immutable snapshot for this turn.
     #[must_use]
     pub fn snapshot(&self) -> &ToolInvocationSnapshot {
@@ -393,6 +399,15 @@ fn contains_owner_selector(value: &Value) -> bool {
         Value::Array(values) => values.iter().any(contains_owner_selector),
         _ => false,
     }
+}
+
+/// Domain-separated digest shared by Agent events and Runtime authorization.
+#[must_use]
+pub fn prepared_input_digest(input: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"sylvander.tool.prepared-input.v1\0");
+    hasher.update(serde_json::to_vec(input).unwrap_or_default());
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 fn snapshot_revision(

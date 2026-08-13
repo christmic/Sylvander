@@ -76,6 +76,8 @@ pub enum ExecutionCapability {
 pub struct AgentExecutionContext {
     /// Runtime-derived subject of the execution.
     pub actor: ExecutionActor,
+    /// Runtime-issued turn identity used to bind durable invocation records.
+    pub turn_id: Option<String>,
     /// Optional logical workspace; `None` means no filesystem authority.
     pub workspace: Option<ExecutionWorkspace>,
     /// Explicit capabilities granted for this execution.
@@ -94,6 +96,7 @@ impl AgentExecutionContext {
     pub fn restricted(actor: ExecutionActor) -> Self {
         Self {
             actor,
+            turn_id: None,
             workspace: None,
             capabilities: BTreeSet::new(),
             timeout: None,
@@ -130,6 +133,13 @@ impl AgentExecutionContext {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Bind this authority snapshot to one admitted Runtime turn.
+    #[must_use]
+    pub fn with_turn_id(mut self, turn_id: impl Into<String>) -> Self {
+        self.turn_id = Some(turn_id.into());
         self
     }
 

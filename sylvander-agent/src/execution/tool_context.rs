@@ -235,6 +235,12 @@ impl ToolContext {
         &self.execution.actor.session_id
     }
 
+    /// Runtime-issued turn identity, absent outside admitted Runtime turns.
+    #[must_use]
+    pub fn turn_id(&self) -> Option<&str> {
+        self.execution.turn_id.as_deref()
+    }
+
     /// Runtime-assigned turn correlation identifier.
     pub fn trace_id(&self) -> Option<&str> {
         self.execution.trace_id.as_deref()
