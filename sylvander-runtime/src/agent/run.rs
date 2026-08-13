@@ -94,6 +94,7 @@ use sylvander_agent::turn::execution_context::{AgentExecutionContext, ExecutionW
 use sylvander_agent::turn::identity::{
     AgentId as KernelAgentId, SessionId as KernelSessionId, UserId as KernelUserId,
 };
+use sylvander_agent::turn::machine::TurnSnapshot;
 use sylvander_agent::turn::request::AgentTurnRequest;
 use sylvander_agent::turn_context::{
     TurnContextBudgets, TurnContextCandidate, TurnContextInputs, TurnContextLayerKind,
@@ -282,6 +283,8 @@ pub(crate) struct AgentRunInner {
     /// One cancellation sender per session that currently owns its execution
     /// lock. Queued turns do not replace the active sender.
     active_turns: Mutex<HashMap<SessionId, ActiveTurn>>,
+    /// Latest typed Agent-machine state for each currently executing turn.
+    turn_snapshots: RwLock<HashMap<SessionId, RuntimeTurnSnapshot>>,
 }
 
 #[derive(Clone)]
@@ -469,6 +472,13 @@ fn usage_cost_nano_usd(pricing: sylvander_api::ModelPricing, usage: &TokenUsage)
 #[derive(Clone)]
 pub struct AgentRun {
     pub(crate) inner: Arc<AgentRunInner>,
+}
+
+/// Content-free current state of one actively executing Runtime turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTurnSnapshot {
+    pub turn_id: String,
+    pub state: TurnSnapshot,
 }
 
 #[derive(Debug)]
@@ -1077,6 +1087,19 @@ impl AgentRun {
     /// Get a session context.
     pub async fn get_session(&self, session_id: &SessionId) -> Option<SessionContext> {
         self.inner.sessions.read().await.get(session_id).cloned()
+    }
+
+    /// Return the latest Agent-machine state while this Session owns a turn.
+    pub async fn active_turn_snapshot(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<RuntimeTurnSnapshot> {
+        self.inner
+            .turn_snapshots
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
     }
 
     /// Return the latest content-free typed context manifest for this
@@ -2427,6 +2450,7 @@ impl AgentRunInner {
                     | AgentRunError::Configuration(_) => {}
                 }
             }
+            self.turn_snapshots.write().await.remove(&session_id);
             info!(succeeded = result.is_ok(), "turn finished");
             result
         }
@@ -3000,6 +3024,13 @@ impl AgentRunInner {
             };
             match event {
                 sylvander_agent::turn::event::AgentEvent::TurnTransition(transition) => {
+                    self.turn_snapshots.write().await.insert(
+                        session_id.clone(),
+                        RuntimeTurnSnapshot {
+                            turn_id: turn_id.to_owned(),
+                            state: transition.into(),
+                        },
+                    );
                     self.observability.record(RuntimeEvent::TurnTransitioned {
                         turn_id: turn_id.to_owned(),
                         session_id: session_id.clone(),
@@ -4168,6 +4199,7 @@ impl AgentRunBuilder {
                 background_tasks: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
                 active_turns: Mutex::new(HashMap::new()),
+                turn_snapshots: RwLock::new(HashMap::new()),
             }),
         };
         Ok((run, issuer))

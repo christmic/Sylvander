@@ -147,6 +147,63 @@ async fn timed_out_tool_emits_one_authoritative_terminal() {
     assert_eq!(terminal_events, 1);
 }
 
+#[tokio::test]
+async fn turn_transitions_describe_the_real_multi_iteration_path() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "call-1".into(),
+                name: "echo".into(),
+                arguments: json!({}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(
+            vec![ProviderBlock::Text {
+                text: "done".into(),
+            }],
+            ProviderStopReason::EndTurn,
+        )),
+    ]));
+    let tools = crate::tool::ToolRegistry::new().register(MockTool::new(
+        "echo",
+        "echoes",
+        crate::tool::ToolOutput::ok("ok"),
+    ));
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let ports = turn_ports(provider, &request);
+    let kernel = kernel();
+    let mut events = Box::pin(run_stream(&kernel, request, ports));
+    let mut transitions = Vec::new();
+
+    while let Some(event) = events.next().await {
+        if let AgentEvent::TurnTransition(transition) = event {
+            transitions.push(transition);
+        }
+    }
+
+    assert!(
+        transitions
+            .windows(2)
+            .all(|pair| pair[1].sequence == pair[0].sequence + 1)
+    );
+    assert_eq!(transitions.last().unwrap().to, TurnPhase::Completed);
+    let continued = transitions
+        .iter()
+        .find(|transition| transition.reason == TurnTransitionReason::ContinueAfterToolResults)
+        .unwrap();
+    assert_eq!(continued.to, TurnPhase::ReadyForIteration);
+    assert_eq!(
+        continued.continuation,
+        Some(TurnContinuationReason::ToolResultsReady)
+    );
+    assert_eq!(continued.iteration, 1);
+    assert_eq!(
+        crate::turn::machine::TurnSnapshot::from(*continued).phase,
+        continued.to
+    );
+}
+
 fn provider_model() -> ProviderModelInfo {
     provider_model_for("local", "test-model")
 }

@@ -158,6 +158,17 @@ pub struct TurnSnapshot {
     pub continuation: Option<TurnContinuationReason>,
 }
 
+impl From<TurnTransition> for TurnSnapshot {
+    fn from(transition: TurnTransition) -> Self {
+        Self {
+            sequence: transition.sequence,
+            iteration: transition.iteration,
+            phase: transition.to,
+            continuation: transition.continuation,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TurnStateError {
     #[error("turn state transition is not allowed: {from:?} -> {to:?} ({reason:?})")]
