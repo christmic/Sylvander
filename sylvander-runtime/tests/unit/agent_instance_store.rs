@@ -13,7 +13,7 @@ use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
 };
 use crate::coordination::service::{
-    CoordinationService, DispatchMessageOutcome, DispatchMessageRequest,
+    CoordinationService, DispatchMessageOutcome, DispatchMessageRequest, ProposeHandoffRequest,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -207,6 +207,57 @@ async fn coordination_service_persists_moderator_case_before_blocking_dispatch()
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn coordination_service_recovers_handoff_at_arbitration_boundary() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    store
+        .create_task(&CoordinationTask {
+            task_id: TaskId::new("handoff-task"),
+            session_id: SessionId::new("multi-session"),
+            membership_revision: 0,
+            parent_task_id: None,
+            created_by: AgentInstanceId::new("moderator-1"),
+            assigned_to: Some(AgentInstanceId::new("worker-1")),
+            objective: "produce evidence".into(),
+            state: CoordinationTaskState::Running,
+            token_budget: 1_000,
+            consumed_tokens: 100,
+            max_handoffs: 2,
+            handoff_count: 0,
+            revision: 0,
+            created_at: 10,
+            updated_at: 10,
+        })
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store, GovernancePolicy::default(), 30);
+    let request = ProposeHandoffRequest {
+        handoff_id: HandoffId::new("governed-handoff"),
+        session_id: SessionId::new("multi-session"),
+        task_id: TaskId::new("handoff-task"),
+        from_instance_id: AgentInstanceId::new("worker-1"),
+        to_instance_id: AgentInstanceId::new("coordinator-1"),
+        requested_by: AgentInstanceId::new("worker-1"),
+        reason: "specialist context required".into(),
+        expires_at: 100,
+    };
+
+    let handoff = service.propose_handoff(request.clone(), 20).await.unwrap();
+    assert_eq!(handoff.state, HandoffState::AwaitingArbitration);
+    assert_eq!(handoff.arbitrator_instance_id.0, "moderator-1");
+    assert_eq!(service.propose_handoff(request, 21).await.unwrap(), handoff);
 }
 
 #[tokio::test]

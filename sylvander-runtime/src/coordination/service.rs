@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use sylvander_api::HandoffId;
 use sylvander_api::{AgentInstanceId, CoordinationMessageId, GovernanceCaseId, SessionId, TaskId};
 
 use crate::agent::instance::AgentInstanceState;
@@ -9,6 +10,7 @@ use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
 use crate::coordination::governance::{
     GovernanceAssessment, GovernancePolicy, GovernanceSnapshot, assess,
 };
+use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
 };
@@ -39,6 +41,19 @@ pub enum DispatchMessageOutcome {
         case: ArbitrationCase,
         assessment: GovernanceAssessment,
     },
+}
+
+/// Stable handoff intent; Runtime derives revisions and the correct arbitrator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposeHandoffRequest {
+    pub handoff_id: HandoffId,
+    pub session_id: SessionId,
+    pub task_id: TaskId,
+    pub from_instance_id: AgentInstanceId,
+    pub to_instance_id: AgentInstanceId,
+    pub requested_by: AgentInstanceId,
+    pub reason: String,
+    pub expires_at: i64,
 }
 
 /// Single policy-enforcing entry point above coordination repositories.
@@ -194,6 +209,92 @@ where
             .await?;
         Ok(DispatchMessageOutcome::Enqueued(message))
     }
+
+    /// Persist and route a task ownership transfer to its governed arbitrator.
+    pub async fn propose_handoff(
+        &self,
+        request: ProposeHandoffRequest,
+        now: i64,
+    ) -> Result<TaskHandoff, CoordinationServiceError> {
+        let membership = self
+            .store
+            .session_membership(&request.session_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::MissingMembership(request.session_id.clone())
+            })?;
+        membership
+            .validate()
+            .map_err(|error| CoordinationServiceError::InvalidDurableFacts(error.to_string()))?;
+        ensure_available(&membership, &request.from_instance_id)?;
+        ensure_available(&membership, &request.to_instance_id)?;
+        ensure_available(&membership, &request.requested_by)?;
+        let topology = self
+            .store
+            .topology(&request.session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingTopology(request.session_id.clone()))?;
+        topology
+            .validate(&membership)
+            .map_err(|error| CoordinationServiceError::InvalidDurableFacts(error.to_string()))?;
+        let task = self
+            .store
+            .task(&request.task_id)
+            .await?
+            .ok_or(CoordinationServiceError::UnknownTask)?;
+        let arbitrator_instance_id = topology.arbitrator_for(
+            &request.from_instance_id,
+            &request.to_instance_id,
+            &membership,
+        );
+        ensure_available(&membership, &arbitrator_instance_id)?;
+        let proposal = TaskHandoff {
+            handoff_id: request.handoff_id,
+            session_id: request.session_id,
+            task_id: request.task_id,
+            from_instance_id: request.from_instance_id,
+            to_instance_id: request.to_instance_id,
+            requested_by: request.requested_by,
+            arbitrator_instance_id,
+            task_revision: task.revision,
+            topology_revision: topology.topology_revision,
+            reason: request.reason,
+            state: HandoffState::Proposed,
+            revision: 0,
+            expires_at: request.expires_at,
+            created_at: now,
+            updated_at: now,
+        };
+        proposal
+            .validate_proposal(&task, &topology, &membership, now)
+            .map_err(|error| CoordinationServiceError::InvalidHandoff(error.to_string()))?;
+
+        let durable = if let Some(existing) = self.store.handoff(&proposal.handoff_id).await? {
+            if !same_handoff_intent(&existing, &proposal) {
+                return Err(CoordinationServiceError::IdempotencyConflict);
+            }
+            existing
+        } else {
+            self.store
+                .create_handoff(&proposal, &membership, &topology, now)
+                .await?;
+            proposal
+        };
+        if durable.state == HandoffState::Proposed {
+            return self
+                .store
+                .transition_handoff(
+                    &durable.handoff_id,
+                    &durable.requested_by,
+                    HandoffState::AwaitingArbitration,
+                    durable.revision,
+                    now,
+                )
+                .await
+                .map_err(Into::into);
+        }
+        Ok(durable)
+    }
 }
 
 fn ensure_available(
@@ -227,6 +328,20 @@ fn same_dispatch_intent(existing: &CoordinationMessage, proposed: &CoordinationM
         && existing.expires_at == proposed.expires_at
 }
 
+fn same_handoff_intent(existing: &TaskHandoff, proposed: &TaskHandoff) -> bool {
+    existing.handoff_id == proposed.handoff_id
+        && existing.session_id == proposed.session_id
+        && existing.task_id == proposed.task_id
+        && existing.from_instance_id == proposed.from_instance_id
+        && existing.to_instance_id == proposed.to_instance_id
+        && existing.requested_by == proposed.requested_by
+        && existing.arbitrator_instance_id == proposed.arbitrator_instance_id
+        && existing.task_revision == proposed.task_revision
+        && existing.topology_revision == proposed.topology_revision
+        && existing.reason == proposed.reason
+        && existing.expires_at == proposed.expires_at
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CoordinationServiceError {
     #[error("Session {0} has no durable Agent membership")]
@@ -245,6 +360,8 @@ pub enum CoordinationServiceError {
     InvalidDurableFacts(String),
     #[error("coordination dispatch is invalid: {0}")]
     InvalidDispatch(String),
+    #[error("task handoff is invalid: {0}")]
+    InvalidHandoff(String),
     #[error("coordination idempotency key was reused for different intent")]
     IdempotencyConflict,
     #[error("coordination service configuration is invalid")]
