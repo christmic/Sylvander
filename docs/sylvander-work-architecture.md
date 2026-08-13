@@ -208,6 +208,57 @@ decision. Candidate summaries are never copied into Session history, logs,
 local storage, diagnostics, or feedback. This keeps Runtime's governed memory
 store and authenticated decision record as the only durable truth.
 
+### Account, identity, and administration surfaces
+
+Account state is not Session state. User Profile, Identity Binding, Agent
+Administration, and Registry Administration live in dedicated settings
+surfaces and are cleared independently from conversation projections. Desktop
+does not cache them in browser storage, append their values to a transcript, or
+use them as a source of Runtime authorization.
+
+`user_profile_v1` is an owner-scoped data-rights surface. Desktop sends no user
+selector because Runtime derives the stable owner from the authenticated
+boundary. Opening the profile surface issues `Read`; `NotFound` offers typed
+creation, while every existing-profile mutation carries the displayed non-zero
+revision. Create, update, and explicit correction submit the complete typed
+`UserProfileData` shape, including a privacy class per preference, rather than
+an arbitrary JSON object. Conflict discards the stale editable projection and
+reloads Runtime truth; it never retries a replacement automatically. Export is
+an explicit user action, and delete separately confirms that the durable
+do-not-learn tombstone is preserved. Profile values and exports may be shown to
+their owner, but must not enter diagnostics, logs, feedback, or local storage.
+
+`identity_binding_v1` is a two-sided proof flow, not an account selector.
+`Begin` contains no target principal and may issue a bounded challenge id plus
+a one-time bearer secret for the already authenticated stable user. Desktop may
+display and copy that secret only in the dedicated linking surface so the user
+can carry it to the intended external Channel; it clears the secret on close,
+disconnect, expiry, or terminal response and never records it in React
+diagnostics or transcript state. `Confirm` accepts only the pasted challenge
+and proof on the authenticated target ingress. `Resolve` obtains the current
+binding; `Unlink` echoes its exact revision and waits for Runtime confirmation.
+No response permits Desktop to choose a `UserId`, transport, Channel instance,
+or external principal.
+
+Administration is a separate privileged control plane. The negotiated
+`agent_administration` and `registry_administration` capabilities permit
+rendering entry points, but do not prove authorization; Runtime remains the
+only role and policy authority. Inspection renders only the protocol's
+redacted revision views and digests. Agent prompts, command templates,
+workspace paths, provider base URLs, pricing, credential locators, and secret
+values are never reconstructed from those views. A create or stage/update form
+must therefore collect a complete write DTO explicitly. Activation and
+rollback echo the currently inspected active revision/generation as the CAS
+precondition, remain pending until a typed success response, and reload after
+conflict. Credential administration accepts only typed environment/file
+references and never a credential value.
+
+These four protocols retain separate reducers and request correlation. A late
+response may settle only the operation and surface that issued it. Closing a
+surface cancels its local intent but never fabricates a server cancellation or
+success. Public content-safe errors may be rendered; sensitive request or
+response bodies are never interpolated into error text.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem
