@@ -915,6 +915,51 @@ impl SessionStore for FailingSessionStore {
             .await
     }
 
+    async fn begin_model_iteration(
+        &self,
+        start: crate::storage::session::ModelIterationStart,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
+        self.inner.begin_model_iteration(start).await
+    }
+
+    async fn persist_model_response(
+        &self,
+        context: &sylvander_api::SessionContext,
+        response: crate::storage::session::ModelResponsePersistence,
+    ) -> Result<
+        crate::storage::session::ModelResponseCommit,
+        crate::storage::session::SessionStoreError,
+    > {
+        self.inner.persist_model_response(context, response).await
+    }
+
+    async fn advance_model_iteration(
+        &self,
+        advance: crate::storage::session::ModelIterationAdvance,
+    ) -> Result<u64, crate::storage::session::SessionStoreError> {
+        self.inner.advance_model_iteration(advance).await
+    }
+
+    async fn model_iterations(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<
+        Vec<crate::storage::session::ModelIterationSnapshot>,
+        crate::storage::session::SessionStoreError,
+    > {
+        self.inner.model_iterations(session_id, turn_id).await
+    }
+
+    async fn interrupted_model_iterations(
+        &self,
+    ) -> Result<
+        Vec<crate::storage::session::ModelIterationSnapshot>,
+        crate::storage::session::SessionStoreError,
+    > {
+        self.inner.interrupted_model_iterations().await
+    }
+
     async fn begin_tool_call(
         &self,
         start: crate::storage::session::ToolCallStart,

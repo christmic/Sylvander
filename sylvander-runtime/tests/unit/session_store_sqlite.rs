@@ -2,6 +2,7 @@ use super::*;
 use std::path::PathBuf;
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
 
+use crate::storage::session::{ModelRecoveryClassification, ModelRecoveryDecision};
 use crate::storage::workspace_journal::WorkspaceJournal;
 
 /// Default session context used by every test. Identity is the
@@ -295,6 +296,114 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
             .unwrap()
             .len(),
         3
+    );
+}
+
+#[tokio::test]
+async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let session = make_session("model-ledger", SessionLifetime::Persistent);
+    store.save(&session).await.unwrap();
+    let effective = effective_config();
+    store
+        .update_config(&session.id, 0, Default::default(), effective.clone())
+        .await
+        .unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-model-ledger".into(),
+                config_revision: 1,
+                effective_config: effective,
+                user_content: serde_json::json!({"role":"user","content":"recover"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let invocation_id = ModelInvocationId::new();
+    store
+        .begin_model_iteration(ModelIterationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-model-ledger".into(),
+            iteration: 1,
+            invocation_id: invocation_id.clone(),
+            model_id: "model-a".into(),
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            request_digest: format!("sha256:{}", "b".repeat(64)),
+        })
+        .await
+        .unwrap();
+
+    let interrupted = store.interrupted_model_iterations().await.unwrap();
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(
+        interrupted[0].position,
+        ModelExecutionPosition::ModelStarted
+    );
+    let unknown = ModelRecoveryClassification::for_interrupted(
+        interrupted[0].position,
+        interrupted[0].response_message_id,
+        interrupted[0].response_terminal,
+    );
+    assert_eq!(
+        unknown.decision,
+        ModelRecoveryDecision::ManualReconciliation
+    );
+
+    let commit = store
+        .persist_model_response(
+            &ctx(),
+            ModelResponsePersistence {
+                invocation_id: invocation_id.clone(),
+                expected_revision: 0,
+                assistant_content: serde_json::json!({
+                    "role":"assistant",
+                    "content":[{"type":"tool_use","id":"call-1","name":"read","input":{}}]
+                }),
+                model_id: "model-a".into(),
+                terminal: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(commit.ledger_revision, 1);
+    assert_eq!(commit.message.role, MessageRole::Assistant);
+
+    let persisted = store
+        .model_iterations(&session.id, "turn-model-ledger")
+        .await
+        .unwrap();
+    assert_eq!(persisted[0].response_message_id, Some(commit.message.id));
+    assert_eq!(persisted[0].response_terminal, Some(false));
+    assert_eq!(
+        persisted[0].position,
+        ModelExecutionPosition::ResponsePersisted
+    );
+
+    let revision = store
+        .advance_model_iteration(ModelIterationAdvance {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 1,
+            expected_position: ModelExecutionPosition::ResponsePersisted,
+            next_position: ModelExecutionPosition::ToolsResolved,
+        })
+        .await
+        .unwrap();
+    assert_eq!(revision, 2);
+    assert!(
+        store
+            .advance_model_iteration(ModelIterationAdvance {
+                invocation_id,
+                expected_revision: 1,
+                expected_position: ModelExecutionPosition::ResponsePersisted,
+                next_position: ModelExecutionPosition::ToolsResolved,
+            })
+            .await
+            .is_err()
     );
 }
 

@@ -124,3 +124,7 @@ impl ModelRecoveryClassification {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/model_ledger.rs"]
+mod tests;
