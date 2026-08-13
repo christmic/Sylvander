@@ -242,6 +242,27 @@ impl<S> CoordinationService<S>
 where
     S: AgentInstanceStore + CoordinationStore,
 {
+    /// Read one validated durable Session topology for operator projections.
+    pub async fn topology(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<SessionTopology, CoordinationServiceError> {
+        let membership = self
+            .store
+            .session_membership(session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingMembership(session_id.clone()))?;
+        let topology = self
+            .store
+            .topology(session_id)
+            .await?
+            .ok_or_else(|| CoordinationServiceError::MissingTopology(session_id.clone()))?;
+        topology
+            .validate(&membership)
+            .map_err(|error| CoordinationServiceError::InvalidDurableFacts(error.to_string()))?;
+        Ok(topology)
+    }
+
     #[must_use]
     pub fn new(store: Arc<S>, policy: GovernancePolicy, arbitration_ttl_seconds: u64) -> Self {
         Self {

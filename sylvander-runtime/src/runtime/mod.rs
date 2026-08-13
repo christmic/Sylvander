@@ -1,10 +1,12 @@
 //! Runtime lifecycle orchestration and protocol-channel hosting.
 mod mailbox_scheduler;
 mod swarm;
+mod workspace_integration;
 
 pub use swarm::{
     SwarmCompositionOutcome, SwarmCompositionPlan, SwarmCompositionReceipt, SwarmMemberPlan,
 };
+pub use workspace_integration::ApproveAgentWorkspaceRequest;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;

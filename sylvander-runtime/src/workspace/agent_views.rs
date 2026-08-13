@@ -41,6 +41,26 @@ impl AgentWorkspaceCoordinator {
         Self { worktrees, store }
     }
 
+    pub async fn view(
+        &self,
+        view_id: &WorkspaceViewId,
+    ) -> Result<Option<AgentWorkspaceView>, AgentWorkspaceCoordinatorError> {
+        self.store
+            .workspace_view(view_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)
+    }
+
+    pub async fn integration(
+        &self,
+        integration_id: &WorkspaceIntegrationId,
+    ) -> Result<Option<WorkspaceIntegration>, AgentWorkspaceCoordinatorError> {
+        self.store
+            .workspace_integration(integration_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)
+    }
+
     /// Provision an isolated worktree and persist its exact receipt.
     ///
     /// The worktree manager durably writes its manifest before this service

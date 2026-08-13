@@ -885,6 +885,151 @@ async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
 }
 
 #[tokio::test]
+async fn moderator_approves_and_applies_the_exact_agent_workspace_revision() {
+    let directory = tempfile::tempdir().unwrap();
+    let repository = directory.path().join("project");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-b", "master"]);
+    git(&repository, &["config", "user.email", "test@example.com"]);
+    git(&repository, &["config", "user.name", "Sylvander Test"]);
+    std::fs::write(repository.join("tracked.txt"), "before\n").unwrap();
+    git(&repository, &["add", "tracked.txt"]);
+    git(&repository, &["commit", "-m", "initial"]);
+
+    let mut config = configured_memory_test_config(&directory, &["assistant"]);
+    config.agents[0].access.allow_authenticated = true;
+    let runtime = Runtime::boot_config(config).await.unwrap();
+    let boundary = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
+            "workspace-owner",
+            sylvander_api::AuthenticationMethod::UnixPeer,
+        ),
+        "tui-local",
+        "unix",
+        "request-workspace-integration",
+    );
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
+        &boundary,
+        SessionCreateRequest {
+            agent_id: AgentId::new("assistant"),
+            label: "reviewed coding".into(),
+            channel_id: Some("tui-local".into()),
+            overrides: SessionConfigOverrides {
+                user_workspace: Some(sylvander_api::SessionWorkspaceBinding {
+                    execution_target: "local".into(),
+                    path: repository.clone(),
+                    read_only: false,
+                    instruction_focus: None,
+                }),
+                ..SessionConfigOverrides::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let session_workspace = created
+        .effective
+        .user_workspace
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
+    let membership = runtime
+        .storage
+        .sessions()
+        .session_membership(&created.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let moderator = membership.governance.moderator_instance_id;
+    let actor = runtime
+        .configured_agent(&AgentId::new("assistant"))
+        .unwrap()
+        .run
+        .authenticated_session_handle(created.session_id.clone(), moderator.clone());
+    let worker = AgentInstanceId::new("workspace-worker");
+    let fork = runtime
+        .fork_agent_instance(
+            &actor,
+            ForkAgentRequest {
+                instance_id: worker.clone(),
+                session_id: created.session_id.clone(),
+                parent_instance_id: moderator,
+                branch_id: "workspace-review".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(fork, ForkAgentOutcome::Created(_)));
+    let view_id = sylvander_api::WorkspaceViewId::new(format!("agent:{}", worker.0));
+    let view = runtime
+        .agent_workspaces
+        .as_ref()
+        .unwrap()
+        .view(&view_id)
+        .await
+        .unwrap()
+        .unwrap();
+    std::fs::write(view.effective_workspace.join("tracked.txt"), "after\n").unwrap();
+
+    let review = runtime
+        .prepare_agent_workspace_review(&actor, &view_id)
+        .await
+        .unwrap();
+    assert!(review.diff.patch.contains("+after"));
+    let stale = runtime
+        .approve_agent_workspace(
+            &actor,
+            ApproveAgentWorkspaceRequest {
+                integration_id: sylvander_api::WorkspaceIntegrationId::new("integration-stale"),
+                view_id: view_id.clone(),
+                expected_review_digest: format!("sha256:{}", "0".repeat(64)),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(stale.to_string().contains("review changed"));
+
+    let integration_id = sylvander_api::WorkspaceIntegrationId::new("integration-exact");
+    let approved = runtime
+        .approve_agent_workspace(
+            &actor,
+            ApproveAgentWorkspaceRequest {
+                integration_id: integration_id.clone(),
+                view_id,
+                expected_review_digest: review.review_digest,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        approved.approval.candidate_revision,
+        review.candidate_revision
+    );
+    let outcome = runtime
+        .apply_agent_workspace(&actor, &integration_id)
+        .await
+        .unwrap();
+    let crate::workspace::agent_views::WorkspaceIntegrationOutcome::Applied(applied) = outcome
+    else {
+        panic!("approved exact workspace revision must apply");
+    };
+    assert!(applied.merge_revision.is_some());
+    assert_eq!(
+        std::fs::read_to_string(session_workspace.join("tracked.txt")).unwrap(),
+        "after\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+        "before\n",
+        "the Session target remains isolated from the user's source checkout"
+    );
+
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn coding_tool_review_and_resume_survive_runtime_restart() {
     let directory = tempfile::tempdir().unwrap();
     let repository = directory.path().join("project");
