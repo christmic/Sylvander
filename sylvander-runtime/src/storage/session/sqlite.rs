@@ -559,7 +559,7 @@ CREATE TABLE workspace_integrations (
 
 CREATE UNIQUE INDEX idx_one_active_workspace_integration
     ON workspace_integrations(view_id)
-    WHERE state IN ('approved','applying','conflicted','manual_reconciliation');
+    WHERE state IN ('approved','applying','manual_reconciliation');
 
 -- Messages (one row per user/assistant/tool message)
 --

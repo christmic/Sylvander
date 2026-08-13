@@ -6,7 +6,8 @@ use std::sync::Arc;
 use sylvander_api::{AgentInstanceId, WorkspaceViewId};
 
 use crate::coordination::workspace::{
-    AgentWorkspaceView, WorkspaceAccess, WorkspaceIsolation, WorkspaceViewState,
+    AgentWorkspaceView, WorkspaceAccess, WorkspaceIntegration, WorkspaceIntegrationApproval,
+    WorkspaceIntegrationState, WorkspaceIsolation, WorkspaceViewState,
 };
 use crate::session::membership::SessionMembership;
 use crate::storage::session::SessionStoreError;
@@ -98,6 +99,108 @@ impl AgentWorkspaceCoordinator {
         self.activate(view).await
     }
 
+    /// Persist moderator approval for one exact reviewed view revision.
+    pub async fn approve_integration(
+        &self,
+        approval: WorkspaceIntegrationApproval,
+        membership: &SessionMembership,
+        topology_revision: u64,
+    ) -> Result<WorkspaceIntegration, AgentWorkspaceCoordinatorError> {
+        let view = self
+            .store
+            .workspace_view(&approval.view_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?
+            .ok_or(AgentWorkspaceCoordinatorError::MissingWorkspaceView)?;
+        let integration = WorkspaceIntegration::new(approval, &view, membership, topology_revision)
+            .map_err(|error| AgentWorkspaceCoordinatorError::Approval(error.to_string()))?;
+        self.store
+            .create_workspace_integration(&integration, &view, membership, topology_revision)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?;
+        Ok(integration)
+    }
+
+    /// Apply or resume one approved integration using the same durable lease.
+    pub async fn apply_integration(
+        &self,
+        integration_id: &sylvander_api::WorkspaceIntegrationId,
+        now: i64,
+    ) -> Result<WorkspaceIntegrationOutcome, AgentWorkspaceCoordinatorError> {
+        let mut integration = self
+            .store
+            .workspace_integration(integration_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?
+            .ok_or(AgentWorkspaceCoordinatorError::MissingIntegration)?;
+        let mut view = self
+            .store
+            .workspace_view(&integration.approval.view_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?
+            .ok_or(AgentWorkspaceCoordinatorError::MissingWorkspaceView)?;
+        match (integration.state, view.state) {
+            (
+                WorkspaceIntegrationState::Approved,
+                WorkspaceViewState::Active | WorkspaceViewState::Conflicted,
+            ) => {
+                (integration, view) = self
+                    .store
+                    .advance_workspace_integration(
+                        integration_id,
+                        integration.revision,
+                        view.revision,
+                        view.lease_epoch,
+                        view.fencing_token,
+                        WorkspaceIntegrationState::Applying,
+                        WorkspaceViewState::Integrating,
+                        now,
+                    )
+                    .await
+                    .map_err(AgentWorkspaceCoordinatorError::Store)?;
+            }
+            (WorkspaceIntegrationState::Applying, WorkspaceViewState::Integrating) => {}
+            _ => return Err(AgentWorkspaceCoordinatorError::InvalidIntegrationPosition),
+        }
+        let merge = self
+            .worktrees
+            .accept(&view.view_id.0, view.target_id.as_deref())
+            .await;
+        let finished_at = crate::session::now_secs().max(now);
+        let (next_integration, next_view) = if merge.is_ok() {
+            (
+                WorkspaceIntegrationState::Applied,
+                WorkspaceViewState::Integrated,
+            )
+        } else {
+            (
+                WorkspaceIntegrationState::Conflicted,
+                WorkspaceViewState::Conflicted,
+            )
+        };
+        let (finished, _) = self
+            .store
+            .advance_workspace_integration(
+                integration_id,
+                integration.revision,
+                view.revision,
+                view.lease_epoch,
+                view.fencing_token,
+                next_integration,
+                next_view,
+                finished_at,
+            )
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?;
+        match merge {
+            Ok(()) => Ok(WorkspaceIntegrationOutcome::Applied(finished)),
+            Err(reason) => Ok(WorkspaceIntegrationOutcome::Conflicted {
+                integration: finished,
+                reason,
+            }),
+        }
+    }
+
     async fn activate(
         &self,
         view: &AgentWorkspaceView,
@@ -172,6 +275,23 @@ pub enum AgentWorkspaceCoordinatorError {
     InvalidRecoveryPosition,
     #[error("workspace worktree receipt does not match its durable view")]
     ReceiptMismatch,
+    #[error("workspace view does not exist")]
+    MissingWorkspaceView,
+    #[error("workspace integration approval is invalid: {0}")]
+    Approval(String),
+    #[error("workspace integration does not exist")]
+    MissingIntegration,
+    #[error("workspace integration is not at a recoverable execution position")]
+    InvalidIntegrationPosition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceIntegrationOutcome {
+    Applied(WorkspaceIntegration),
+    Conflicted {
+        integration: WorkspaceIntegration,
+        reason: String,
+    },
 }
 
 #[cfg(test)]

@@ -289,7 +289,7 @@ impl AgentWorkspaceStore for SqliteSessionStore {
             }
             let has_active = transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM workspace_integrations WHERE view_id=?1 \
-                 AND state IN ('approved','applying','conflicted','manual_reconciliation'))",
+                 AND state IN ('approved','applying','manual_reconciliation'))",
                 [&view.view_id.0],
                 |row| row.get::<_, bool>(0),
             )?;

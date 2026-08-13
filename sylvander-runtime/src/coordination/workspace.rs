@@ -255,18 +255,21 @@ pub enum WorkspaceIntegrationState {
 impl WorkspaceIntegrationState {
     #[must_use]
     pub fn can_transition_to(self, next: Self) -> bool {
-        if self == next || matches!(self, Self::Applied | Self::ManualReconciliation) {
+        if self == next
+            || matches!(
+                self,
+                Self::Applied | Self::Conflicted | Self::ManualReconciliation
+            )
+        {
             return false;
         }
         matches!(
             (self, next),
-            (
-                Self::Approved | Self::Conflicted,
-                Self::Applying | Self::ManualReconciliation
-            ) | (
-                Self::Applying,
-                Self::Applied | Self::Conflicted | Self::ManualReconciliation
-            )
+            (Self::Approved, Self::Applying | Self::ManualReconciliation)
+                | (
+                    Self::Applying,
+                    Self::Applied | Self::Conflicted | Self::ManualReconciliation
+                )
         )
     }
 }

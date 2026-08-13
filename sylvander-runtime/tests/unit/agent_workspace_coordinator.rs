@@ -5,13 +5,15 @@ use crate::agent::instance::{
     AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute,
     HistoryView, SessionAgentRole,
 };
+use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::SessionMetadata;
 use crate::session::membership::SessionGovernance;
 use crate::storage::agent_instance::AgentInstanceStore;
+use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{SessionLifetime, SessionStore, SqliteSessionStore, StoredSession};
 use crate::storage::workspace_coordination::AgentWorkspaceStore;
 use crate::workspace::local::GitWorktreeManager;
-use sylvander_api::{AgentId, SessionId};
+use sylvander_api::{AgentId, SessionId, WorkspaceIntegrationId};
 
 use super::*;
 
@@ -103,6 +105,25 @@ async fn store(repository: &Path) -> Arc<SqliteSessionStore> {
         .save_session_membership(&membership(), None)
         .await
         .unwrap();
+    let membership = membership();
+    let topology = SessionTopology::new(
+        membership.session_id.clone(),
+        0,
+        0,
+        vec![AgentRelation {
+            source: AgentInstanceId::new("moderator"),
+            target: AgentInstanceId::new("worker"),
+            kind: AgentRelationKind::ParentOf,
+            created_at: 1,
+        }],
+        1,
+        &membership,
+    )
+    .unwrap();
+    store
+        .save_topology(&topology, &membership, None)
+        .await
+        .unwrap();
     store
 }
 
@@ -137,9 +158,51 @@ async fn provisioning_commits_exact_worktree_receipt_before_activation() {
     assert_eq!(active.state, WorkspaceViewState::Active);
     assert_eq!(active.revision, 1);
     assert_ne!(active.source_workspace, active.effective_workspace);
+    fs::write(
+        active.effective_workspace.join("tracked.txt"),
+        "integrated\n",
+    )
+    .unwrap();
+    let integration = coordinator
+        .approve_integration(
+            WorkspaceIntegrationApproval {
+                integration_id: WorkspaceIntegrationId::new("integration-1"),
+                view_id: active.view_id.clone(),
+                session_id: active.session_id.clone(),
+                agent_instance_id: active.agent_instance_id.clone(),
+                approved_by: AgentInstanceId::new("moderator"),
+                membership_revision: 0,
+                topology_revision: 0,
+                view_revision: active.revision,
+                lease_epoch: active.lease_epoch,
+                fencing_token: active.fencing_token,
+                review_digest: "sha256:reviewed".into(),
+                approved_at: 11,
+            },
+            &membership(),
+            0,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        coordinator
+            .apply_integration(&integration.approval.integration_id, 12)
+            .await
+            .unwrap(),
+        WorkspaceIntegrationOutcome::Applied(_)
+    ));
     assert_eq!(
-        store.workspace_view(&active.view_id).await.unwrap(),
-        Some(active)
+        fs::read_to_string(repository.path().join("tracked.txt")).unwrap(),
+        "integrated\n"
+    );
+    assert_eq!(
+        store
+            .workspace_view(&active.view_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorkspaceViewState::Integrated
     );
 }
 
