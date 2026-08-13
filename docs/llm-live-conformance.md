@@ -89,6 +89,9 @@ place of `ANTHROPIC`; protocol-specific model variables may narrow one shared
 provider configuration when its supported wire contracts require different
 models.
 
+OpenAI uses `SYLVANDER_BENCH_OPENAI_RESPONSES_MODEL` and
+`SYLVANDER_BENCH_OPENAI_CHAT_MODEL` with the shared OpenAI endpoint and key.
+
 The runner may also accept provider/protocol selection, request timeout, retry
 budget, maximum output tokens, and maximum billed input tokens. Defaults must
 be conservative. Debug output and serialized results must never contain the
