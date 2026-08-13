@@ -36,9 +36,8 @@ fn spec() -> PersistentProcessSpec {
 #[tokio::test]
 async fn unavailable_environment_fails_closed_after_validation() {
     let environment = UnavailablePersistentProcessEnvironment::new("local");
-    let error = match environment.spawn(&spec(), &authority()).await {
-        Ok(_) => panic!("unavailable environment must reject spawn"),
-        Err(error) => error,
+    let Err(error) = environment.spawn(&spec(), &authority()).await else {
+        panic!("unavailable environment must reject spawn");
     };
 
     assert_eq!(environment.name(), "local");
@@ -68,9 +67,8 @@ async fn invalid_owner_is_rejected_before_backend_selection() {
     let mut invalid = authority();
     invalid.owner.session_id.clear();
 
-    let error = match environment.spawn(&spec(), &invalid).await {
-        Ok(_) => panic!("invalid owner must reject spawn"),
-        Err(error) => error,
+    let Err(error) = environment.spawn(&spec(), &invalid).await else {
+        panic!("invalid owner must reject spawn");
     };
     assert!(error.to_string().contains("owner"));
 }

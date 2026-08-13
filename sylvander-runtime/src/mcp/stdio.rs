@@ -871,7 +871,7 @@ async fn spawn_process(
             authority,
         } => environment.spawn(&spec, authority).await,
         #[cfg(test)]
-        McpProcessFactory::TestHost => spawn_test_host(&spec).await,
+        McpProcessFactory::TestHost => spawn_test_host(&spec),
     };
     result.map_err(|source| McpError::Process {
         server: config.name.clone(),
@@ -887,7 +887,7 @@ struct TestHostPersistentProcess {
 }
 
 #[cfg(test)]
-async fn spawn_test_host(
+fn spawn_test_host(
     spec: &PersistentProcessSpec,
 ) -> Result<Box<dyn PersistentProcess>, PersistentProcessError> {
     let mut command = Command::new(&spec.program);

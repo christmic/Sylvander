@@ -30,7 +30,7 @@ struct ProtocolProcess {
 
 #[async_trait]
 impl PersistentProcessEnvironment for RecordingEnvironment {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "sandbox"
     }
 
@@ -86,7 +86,6 @@ impl PersistentProcess for ProtocolProcess {
                 "content": [{"type": "text", "text": self.session_id}],
                 "isError": false
             }),
-            "ping" => json!({}),
             _ => json!({}),
         };
         self.responses.push_back(
