@@ -61,6 +61,19 @@ pub trait AgentWorkspaceStore: Send + Sync {
         next: WorkspaceIntegrationState,
         now: i64,
     ) -> Result<WorkspaceIntegration, SessionStoreError>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn advance_workspace_integration(
+        &self,
+        integration_id: &WorkspaceIntegrationId,
+        expected_integration_revision: u64,
+        expected_view_revision: u64,
+        lease_epoch: u64,
+        fencing_token: u64,
+        next_integration: WorkspaceIntegrationState,
+        next_view: WorkspaceViewState,
+        now: i64,
+    ) -> Result<(WorkspaceIntegration, AgentWorkspaceView), SessionStoreError>;
 }
 
 #[async_trait]
@@ -359,6 +372,80 @@ impl AgentWorkspaceStore for SqliteSessionStore {
             }
             transaction.commit()?;
             Ok(integration)
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn advance_workspace_integration(
+        &self,
+        integration_id: &WorkspaceIntegrationId,
+        expected_integration_revision: u64,
+        expected_view_revision: u64,
+        lease_epoch: u64,
+        fencing_token: u64,
+        next_integration: WorkspaceIntegrationState,
+        next_view: WorkspaceViewState,
+        now: i64,
+    ) -> Result<(WorkspaceIntegration, AgentWorkspaceView), SessionStoreError> {
+        let integration_id = integration_id.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let Some(mut integration) = load_integration(&transaction, &integration_id)? else {
+                return Err(SessionStoreError::Invalid(
+                    "workspace integration does not exist".into(),
+                ));
+            };
+            let Some(mut view) = load_view(&transaction, &integration.approval.view_id)? else {
+                return Err(SessionStoreError::Invalid(
+                    "workspace integration view does not exist".into(),
+                ));
+            };
+            integration
+                .transition(expected_integration_revision, next_integration, now)
+                .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+            view.transition(
+                expected_view_revision,
+                lease_epoch,
+                fencing_token,
+                next_view,
+                now,
+            )
+            .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+            let integration_changed = transaction.execute(
+                "UPDATE workspace_integrations SET state=?1,revision=?2,updated_at=?3 \
+                 WHERE integration_id=?4 AND revision=?5",
+                params![
+                    encode_integration_state(integration.state),
+                    checked_i64(integration.revision, "workspace integration revision")?,
+                    integration.updated_at,
+                    integration.approval.integration_id.0,
+                    checked_i64(
+                        expected_integration_revision,
+                        "expected integration revision"
+                    )?,
+                ],
+            )?;
+            let view_changed = transaction.execute(
+                "UPDATE agent_workspace_views SET state=?1,revision=?2,updated_at=?3 \
+                 WHERE view_id=?4 AND revision=?5 AND lease_epoch=?6 AND fencing_token=?7",
+                params![
+                    encode_state(view.state),
+                    checked_i64(view.revision, "workspace view revision")?,
+                    view.updated_at,
+                    view.view_id.0,
+                    checked_i64(expected_view_revision, "expected workspace view revision")?,
+                    checked_i64(lease_epoch, "workspace lease epoch")?,
+                    checked_i64(fencing_token, "workspace fencing token")?,
+                ],
+            )?;
+            if integration_changed != 1 || view_changed != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "workspace integration or view changed before atomic advance".into(),
+                ));
+            }
+            transaction.commit()?;
+            Ok((integration, view))
         })
         .await
     }

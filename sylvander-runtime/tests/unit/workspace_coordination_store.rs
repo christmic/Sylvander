@@ -143,6 +143,20 @@ async fn workspace_view_is_durable_unique_and_fenced() {
             .unwrap(),
         std::slice::from_ref(&active)
     );
+    assert!(matches!(
+        store
+            .transition_workspace_view(
+                &view.view_id,
+                1,
+                2,
+                2,
+                WorkspaceViewState::Integrating,
+                4,
+            )
+            .await
+            .unwrap_err(),
+        SessionStoreError::Invalid(reason) if reason.contains("superseded")
+    ));
     let approval = WorkspaceIntegrationApproval {
         integration_id: WorkspaceIntegrationId::new("integration-1"),
         view_id: active.view_id.clone(),
@@ -169,28 +183,34 @@ async fn workspace_view_is_durable_unique_and_fenced() {
             .unwrap(),
         Some(integration.clone())
     );
-    let applying = store
-        .transition_workspace_integration(
+    let (applying, integrating_view) = store
+        .advance_workspace_integration(
             &integration.approval.integration_id,
             0,
+            1,
+            2,
+            3,
             WorkspaceIntegrationState::Applying,
+            WorkspaceViewState::Integrating,
             5,
         )
         .await
         .unwrap();
     assert_eq!(applying.state, WorkspaceIntegrationState::Applying);
-    assert!(matches!(
-        store
-            .transition_workspace_view(
-                &view.view_id,
-                1,
-                2,
-                2,
-                WorkspaceViewState::Integrating,
-                4,
-            )
-            .await
-            .unwrap_err(),
-        SessionStoreError::Invalid(reason) if reason.contains("superseded")
-    ));
+    assert_eq!(integrating_view.state, WorkspaceViewState::Integrating);
+    let (applied, integrated_view) = store
+        .advance_workspace_integration(
+            &integration.approval.integration_id,
+            1,
+            2,
+            2,
+            3,
+            WorkspaceIntegrationState::Applied,
+            WorkspaceViewState::Integrated,
+            6,
+        )
+        .await
+        .unwrap();
+    assert_eq!(applied.state, WorkspaceIntegrationState::Applied);
+    assert_eq!(integrated_view.state, WorkspaceViewState::Integrated);
 }
