@@ -56,6 +56,12 @@ running a hook.
 - `tool` and `execution::tool_context` define the invocation boundary. Tools receive
   Runtime-derived identity, workspace, capability, and execution-budget data;
   model arguments are never authority.
+- `ToolSpec::prompt_guidelines` lets a tool carry concise usage rules beside
+  its neutral JSON Schema. The frozen registry emits guidelines only for
+  immediately visible tools, sorted by stable tool name. Guidelines are part
+  of the capability revision because changing model-visible operating rules
+  changes the executable contract. Provider adapters do not own or rewrite
+  these rules.
 - `execution::workspace` contains only the neutral workspace port, values,
   router, bounds, and fail-closed unavailable sentinel. Concrete local, SSH,
   and OCI implementations plus cross-Session workspace coordination live in
@@ -93,8 +99,11 @@ running a hook.
    an empty context workspace instead of falling back to constructor or process
    paths.
 5. Background tasks get a new explicit task prompt and a reduced read-only
-   capability set. They do not inherit private chain-of-thought or silently
-   mutate the parent session.
+   capability set. Runtime derives this set from stable built-in name
+   constants and recomposes tool guidelines from the reduced registry, so a
+   background prompt cannot advertise a parent-only mutating tool. Background
+   tasks do not inherit private chain-of-thought or silently mutate the parent
+   session.
 6. Schema ownership remains explicit even when Runtime deliberately shares one
    SQLite file between the session store and Agent registry. Standalone open
    accepts only the exact session object set. Shared open accepts only the

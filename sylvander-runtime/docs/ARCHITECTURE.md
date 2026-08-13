@@ -104,6 +104,10 @@ crate without retaining a second production path.
   Skills are bound into the same immutable turn revision as prompt context and
   deliberately grant no execution authority. Approval gates and bounded
   artifact sinks remain typed stages of the same Agent-loop execution path.
+  Runtime composes a separate, cache-stable system-instruction block from the
+  exact frozen tool registry. Restricted background work recomputes that block
+  after reducing its catalog to stable read-tool names; it never inherits
+  guidance for tools it cannot invoke.
 - `guardian_runtime` and `guardian_curation` own the distinct Guardian service
   identity, durable event/run/candidate/mutation state, deterministic policy,
   idempotent canonical-memory sink, live `do_not_learn` authorization,

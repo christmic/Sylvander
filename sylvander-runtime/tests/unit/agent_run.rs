@@ -6,6 +6,7 @@ use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::memory::store::InMemoryMemoryStore;
 use sylvander_agent::tool::DynamicToolSource;
 use sylvander_agent::tool::ToolExecutor as _;
+use sylvander_agent::tools::{ReadTool, WriteTool};
 use sylvander_api::Recipient;
 use sylvander_channel::{BusDiagnostics, BusError, InProcessMessageBus, MessageBus};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -181,6 +182,31 @@ fn direct_turn(
         snapshot,
     );
     (request, ports)
+}
+
+#[test]
+fn turn_instructions_follow_the_exact_restricted_tool_catalog() {
+    let model = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("anthropic", "test-model"),
+        context_window: 100_000,
+        max_output_tokens: 4_096,
+        capabilities: sylvander_llm_core::ModelCapabilities::PROMPT_CACHING,
+    };
+    let tools = ToolRegistry::new()
+        .register(ReadTool::new())
+        .register(WriteTool::new())
+        .register(MemoryReadTool::new(Arc::new(InMemoryMemoryStore::new())));
+    let restricted = tools.retain_named(&[ReadTool::NAME, MemoryReadTool::NAME]);
+
+    let instructions = turn_system_instructions("base", &model, &restricted);
+
+    assert_eq!(instructions.len(), 2);
+    assert_eq!(instructions[0].text, "base");
+    assert_eq!(instructions[0].cache_hint, Some(CacheHint::Ephemeral));
+    assert!(instructions[1].text.contains("[Read]"));
+    assert!(instructions[1].text.contains("[read_memory]"));
+    assert!(!instructions[1].text.contains("[Write]"));
+    assert_eq!(instructions[1].cache_hint, Some(CacheHint::Ephemeral));
 }
 
 #[tokio::test]

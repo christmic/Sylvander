@@ -17,6 +17,7 @@ pub(crate) struct MockTool {
     name: String,
     description: String,
     schema: InputSchema,
+    prompt_guidelines: Vec<String>,
     responses: Vec<ToolOutput>,
     calls: Arc<Mutex<Vec<JsonValue>>>,
 }
@@ -31,6 +32,7 @@ impl MockTool {
             name: name.into(),
             description: description.into(),
             schema: InputSchema::empty(),
+            prompt_guidelines: Vec::new(),
             responses: vec![response],
             calls: Arc::new(Mutex::new(Vec::new())),
         }
@@ -38,6 +40,14 @@ impl MockTool {
 
     pub(crate) fn with_responses(mut self, responses: Vec<ToolOutput>) -> Self {
         self.responses = responses;
+        self
+    }
+
+    pub(crate) fn with_prompt_guidelines(
+        mut self,
+        guidelines: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.prompt_guidelines = guidelines.into_iter().map(Into::into).collect();
         self
     }
 
@@ -58,6 +68,7 @@ impl ToolDefinition for MockTool {
             self.schema.schema.clone(),
             crate::tool_invocation::ToolInvocationClass::Extension,
         )
+        .with_prompt_guidelines(self.prompt_guidelines.clone())
     }
 }
 
