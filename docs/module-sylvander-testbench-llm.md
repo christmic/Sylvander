@@ -67,7 +67,8 @@ Repository-tracked templates live under `sylvander-testbench-llm/matrices`:
   never credential values;
 - `fault.example.json` targets disposable controlled endpoints. Production
   provider endpoints must never be used to provoke rate limits, timeouts, or
-  server failures.
+  server failures. Its bindings cover OpenAI Responses, OpenAI Chat
+  Completions, and Anthropic Messages independently.
 
 Review a completed matrix before executing it:
 
