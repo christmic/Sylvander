@@ -168,8 +168,9 @@ async fn workspace_view_is_durable_unique_and_fenced() {
         view_revision: 1,
         lease_epoch: 2,
         fencing_token: 3,
-        review_digest: "sha256:review".into(),
-        target_revision: "abc123".into(),
+        review_digest: format!("sha256:{}", "a".repeat(64)),
+        target_revision: "b".repeat(40),
+        candidate_revision: "c".repeat(40),
         approved_at: 4,
     };
     let integration = WorkspaceIntegration::new(approval, &active, &membership, 0).unwrap();
@@ -193,6 +194,7 @@ async fn workspace_view_is_durable_unique_and_fenced() {
             3,
             WorkspaceIntegrationState::Applying,
             WorkspaceViewState::Integrating,
+            None,
             5,
         )
         .await
@@ -208,6 +210,7 @@ async fn workspace_view_is_durable_unique_and_fenced() {
             3,
             WorkspaceIntegrationState::Applied,
             WorkspaceViewState::Integrated,
+            Some("d".repeat(40)),
             6,
         )
         .await

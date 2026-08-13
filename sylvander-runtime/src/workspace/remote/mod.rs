@@ -189,6 +189,31 @@ impl RemoteGitWorktreeManager {
             .await
     }
 
+    pub async fn inspect_commits(
+        &self,
+        lease: &RemoteWorkspaceLease,
+        target_revision: &str,
+        candidate_revision: &str,
+    ) -> Result<WorkspaceDiff, String> {
+        self.validate_remote(lease).await?;
+        Ok(WorkspaceDiff {
+            status: self
+                .git
+                .text(
+                    &lease.worktree_root,
+                    &["diff", "--name-status", target_revision, candidate_revision],
+                )
+                .await?,
+            patch: self
+                .git
+                .text(
+                    &lease.worktree_root,
+                    &["diff", "--binary", target_revision, candidate_revision],
+                )
+                .await?,
+        })
+    }
+
     /// Produce a bounded binary patch, including untracked files.
     pub async fn inspect(&self, lease: &RemoteWorkspaceLease) -> Result<WorkspaceDiff, String> {
         self.validate_remote(lease).await?;

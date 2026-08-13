@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
-use sylvander_api::{AgentInstanceId, WorkspaceViewId};
+use sylvander_api::{AgentInstanceId, SessionId, WorkspaceIntegrationId, WorkspaceViewId};
 
 use crate::coordination::workspace::{
     AgentWorkspaceView, WorkspaceAccess, WorkspaceIntegration, WorkspaceIntegrationApproval,
@@ -13,7 +13,22 @@ use crate::coordination::workspace::{
 use crate::session::membership::SessionMembership;
 use crate::storage::session::SessionStoreError;
 use crate::storage::workspace_coordination::AgentWorkspaceStore;
-use crate::workspace::coding::{CodingWorkspaceLease, CodingWorktreeService};
+use crate::workspace::coding::{
+    CodingWorkspaceLease, CodingWorktreeService, WorkspaceMergePosition,
+};
+use crate::workspace::local::WorkspaceDiff;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceReview {
+    pub view_id: WorkspaceViewId,
+    pub session_id: SessionId,
+    pub agent_instance_id: AgentInstanceId,
+    pub view_revision: u64,
+    pub target_revision: String,
+    pub candidate_revision: String,
+    pub review_digest: String,
+    pub diff: WorkspaceDiff,
+}
 
 pub struct AgentWorkspaceCoordinator {
     worktrees: Arc<CodingWorktreeService>,
@@ -215,30 +230,82 @@ impl AgentWorkspaceCoordinator {
         self.activate(view).await
     }
 
-    /// Persist moderator approval for one exact reviewed view revision.
-    pub async fn approve_integration(
+    /// Freeze one candidate commit and return the exact review evidence.
+    pub async fn prepare_review(
         &self,
-        approval: WorkspaceIntegrationApproval,
-        membership: &SessionMembership,
-        topology_revision: u64,
-    ) -> Result<WorkspaceIntegration, AgentWorkspaceCoordinatorError> {
+        view_id: &WorkspaceViewId,
+    ) -> Result<WorkspaceReview, AgentWorkspaceCoordinatorError> {
         let view = self
             .store
-            .workspace_view(&approval.view_id)
+            .workspace_view(view_id)
             .await
             .map_err(AgentWorkspaceCoordinatorError::Store)?
             .ok_or(AgentWorkspaceCoordinatorError::MissingWorkspaceView)?;
-        let receipt = self
+        if !matches!(
+            view.state,
+            WorkspaceViewState::Active | WorkspaceViewState::Conflicted
+        ) {
+            return Err(AgentWorkspaceCoordinatorError::InvalidReviewPosition);
+        }
+        let prepared = self
             .worktrees
-            .open(
+            .prepare_integration(
                 &workspace_lease_id(&view.view_id),
                 view.target_id.as_deref(),
             )
             .await
             .map_err(AgentWorkspaceCoordinatorError::Worktree)?;
-        if approval.target_revision != receipt.base_revision {
-            return Err(AgentWorkspaceCoordinatorError::StaleTargetRevision);
+        let review_digest = review_digest(&view, &prepared);
+        Ok(WorkspaceReview {
+            view_id: view.view_id,
+            session_id: view.session_id,
+            agent_instance_id: view.agent_instance_id,
+            view_revision: view.revision,
+            target_revision: prepared.target_revision,
+            candidate_revision: prepared.candidate_revision,
+            review_digest,
+            diff: prepared.diff,
+        })
+    }
+
+    /// Recompute and persist moderator approval for one exact reviewed commit.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn approve_integration(
+        &self,
+        integration_id: WorkspaceIntegrationId,
+        view_id: &WorkspaceViewId,
+        expected_review_digest: &str,
+        approved_by: AgentInstanceId,
+        membership: &SessionMembership,
+        topology_revision: u64,
+        now: i64,
+    ) -> Result<WorkspaceIntegration, AgentWorkspaceCoordinatorError> {
+        let review = self.prepare_review(view_id).await?;
+        if review.review_digest != expected_review_digest {
+            return Err(AgentWorkspaceCoordinatorError::ReviewChanged);
         }
+        let view = self
+            .store
+            .workspace_view(view_id)
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Store)?
+            .ok_or(AgentWorkspaceCoordinatorError::MissingWorkspaceView)?;
+        let approval = WorkspaceIntegrationApproval {
+            integration_id,
+            view_id: review.view_id,
+            session_id: review.session_id,
+            agent_instance_id: review.agent_instance_id,
+            approved_by,
+            membership_revision: membership.governance.membership_revision,
+            topology_revision,
+            view_revision: review.view_revision,
+            lease_epoch: view.lease_epoch,
+            fencing_token: view.fencing_token,
+            review_digest: review.review_digest,
+            target_revision: review.target_revision,
+            candidate_revision: review.candidate_revision,
+            approved_at: now,
+        };
         let integration = WorkspaceIntegration::new(approval, &view, membership, topology_revision)
             .map_err(|error| AgentWorkspaceCoordinatorError::Approval(error.to_string()))?;
         self.store
@@ -281,6 +348,7 @@ impl AgentWorkspaceCoordinator {
                         view.fencing_token,
                         WorkspaceIntegrationState::Applying,
                         WorkspaceViewState::Integrating,
+                        None,
                         now,
                     )
                     .await
@@ -289,23 +357,32 @@ impl AgentWorkspaceCoordinator {
             (WorkspaceIntegrationState::Applying, WorkspaceViewState::Integrating) => {}
             _ => return Err(AgentWorkspaceCoordinatorError::InvalidIntegrationPosition),
         }
-        let target = self
+        let lease_id = workspace_lease_id(&view.view_id);
+        let position = self
             .worktrees
-            .open(
-                &workspace_lease_id(&view.view_id),
+            .integration_position(
+                &lease_id,
                 view.target_id.as_deref(),
+                &integration.approval.target_revision,
+                &integration.approval.candidate_revision,
             )
             .await
             .map_err(AgentWorkspaceCoordinatorError::Worktree)?;
-        let merge = if target.base_revision == integration.approval.target_revision {
-            self.worktrees
-                .accept(
-                    &workspace_lease_id(&view.view_id),
-                    view.target_id.as_deref(),
-                )
-                .await
-        } else {
-            Err("workspace integration target advanced after approval".into())
+        let merge = match position {
+            WorkspaceMergePosition::Ready => {
+                self.worktrees
+                    .merge_integration(
+                        &lease_id,
+                        view.target_id.as_deref(),
+                        &integration.approval.target_revision,
+                        &integration.approval.candidate_revision,
+                    )
+                    .await
+            }
+            WorkspaceMergePosition::Applied { merge_revision } => Ok(merge_revision),
+            WorkspaceMergePosition::Diverged => {
+                Err("workspace integration target diverged after approval".into())
+            }
         };
         let finished_at = crate::session::now_secs().max(now);
         let (next_integration, next_view) = if merge.is_ok() {
@@ -319,6 +396,7 @@ impl AgentWorkspaceCoordinator {
                 WorkspaceViewState::Conflicted,
             )
         };
+        let merge_revision = merge.as_ref().ok().cloned();
         let (finished, _) = self
             .store
             .advance_workspace_integration(
@@ -329,12 +407,13 @@ impl AgentWorkspaceCoordinator {
                 view.fencing_token,
                 next_integration,
                 next_view,
+                merge_revision,
                 finished_at,
             )
             .await
             .map_err(AgentWorkspaceCoordinatorError::Store)?;
         match merge {
-            Ok(()) => Ok(WorkspaceIntegrationOutcome::Applied(finished)),
+            Ok(_) => Ok(WorkspaceIntegrationOutcome::Applied(finished)),
             Err(reason) => Ok(WorkspaceIntegrationOutcome::Conflicted {
                 integration: finished,
                 reason,
@@ -359,6 +438,28 @@ impl AgentWorkspaceCoordinator {
             .await
             .map_err(AgentWorkspaceCoordinatorError::Store)
     }
+}
+
+fn review_digest(
+    view: &AgentWorkspaceView,
+    prepared: &crate::workspace::coding::PreparedWorkspaceChange,
+) -> String {
+    let mut digest = Sha256::new();
+    for value in [
+        "sylvander-workspace-review-v1",
+        view.view_id.0.as_str(),
+        view.session_id.0.as_str(),
+        view.agent_instance_id.0.as_str(),
+        prepared.target_revision.as_str(),
+        prepared.candidate_revision.as_str(),
+        prepared.diff.status.as_str(),
+        prepared.diff.patch.as_str(),
+    ] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    digest.update(view.revision.to_be_bytes());
+    format!("sha256:{:x}", digest.finalize())
 }
 
 /// Derive the stable worktree key for a durable logical view identifier.
@@ -434,14 +535,16 @@ pub enum AgentWorkspaceCoordinatorError {
     ReceiptMismatch,
     #[error("workspace view does not exist")]
     MissingWorkspaceView,
+    #[error("workspace view is not ready for review")]
+    InvalidReviewPosition,
+    #[error("workspace review changed before approval")]
+    ReviewChanged,
     #[error("workspace integration approval is invalid: {0}")]
     Approval(String),
     #[error("workspace integration does not exist")]
     MissingIntegration,
     #[error("workspace integration is not at a recoverable execution position")]
     InvalidIntegrationPosition,
-    #[error("workspace integration target revision changed before approval")]
-    StaleTargetRevision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

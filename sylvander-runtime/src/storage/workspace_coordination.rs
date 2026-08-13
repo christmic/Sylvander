@@ -72,6 +72,7 @@ pub trait AgentWorkspaceStore: Send + Sync {
         fencing_token: u64,
         next_integration: WorkspaceIntegrationState,
         next_view: WorkspaceViewState,
+        merge_revision: Option<String>,
         now: i64,
     ) -> Result<(WorkspaceIntegration, AgentWorkspaceView), SessionStoreError>;
 }
@@ -303,8 +304,9 @@ impl AgentWorkspaceStore for SqliteSessionStore {
                 "INSERT INTO workspace_integrations \
                  (integration_id,view_id,session_id,agent_instance_id,approved_by_instance_id,
                   membership_revision,topology_revision,view_revision,lease_epoch,fencing_token,
-                  review_digest,target_revision,approved_at,state,revision,updated_at) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'approved',0,?14)",
+                  review_digest,target_revision,candidate_revision,merge_revision,approved_at,
+                  state,revision,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14,'approved',0,?15)",
                 params![
                     approval.integration_id.0,
                     approval.view_id.0,
@@ -318,6 +320,7 @@ impl AgentWorkspaceStore for SqliteSessionStore {
                     checked_i64(approval.fencing_token, "workspace fencing token")?,
                     approval.review_digest,
                     approval.target_revision,
+                    approval.candidate_revision,
                     approval.approved_at,
                     integration.updated_at,
                 ],
@@ -387,6 +390,7 @@ impl AgentWorkspaceStore for SqliteSessionStore {
         fencing_token: u64,
         next_integration: WorkspaceIntegrationState,
         next_view: WorkspaceViewState,
+        merge_revision: Option<String>,
         now: i64,
     ) -> Result<(WorkspaceIntegration, AgentWorkspaceView), SessionStoreError> {
         let integration_id = integration_id.clone();
@@ -403,7 +407,12 @@ impl AgentWorkspaceStore for SqliteSessionStore {
                 ));
             };
             integration
-                .transition(expected_integration_revision, next_integration, now)
+                .transition_with_receipt(
+                    expected_integration_revision,
+                    next_integration,
+                    merge_revision,
+                    now,
+                )
                 .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
             view.transition(
                 expected_view_revision,
@@ -414,10 +423,11 @@ impl AgentWorkspaceStore for SqliteSessionStore {
             )
             .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
             let integration_changed = transaction.execute(
-                "UPDATE workspace_integrations SET state=?1,revision=?2,updated_at=?3 \
-                 WHERE integration_id=?4 AND revision=?5",
+                "UPDATE workspace_integrations SET state=?1,merge_revision=?2,revision=?3,
+                 updated_at=?4 WHERE integration_id=?5 AND revision=?6",
                 params![
                     encode_integration_state(integration.state),
+                    integration.merge_revision,
                     checked_i64(integration.revision, "workspace integration revision")?,
                     integration.updated_at,
                     integration.approval.integration_id.0,
@@ -460,7 +470,8 @@ fn load_integration(
         .query_row(
             "SELECT view_id,session_id,agent_instance_id,approved_by_instance_id,
                     membership_revision,topology_revision,view_revision,lease_epoch,fencing_token,
-                    review_digest,target_revision,approved_at,state,revision,updated_at
+                    review_digest,target_revision,candidate_revision,merge_revision,approved_at,
+                    state,revision,updated_at
              FROM workspace_integrations WHERE integration_id=?1",
             [&integration_id.0],
             |row| {
@@ -476,10 +487,12 @@ fn load_integration(
                     row.get::<_, i64>(8)?,
                     row.get::<_, String>(9)?,
                     row.get::<_, String>(10)?,
-                    row.get::<_, i64>(11)?,
-                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                     row.get::<_, i64>(13)?,
-                    row.get::<_, i64>(14)?,
+                    row.get::<_, String>(14)?,
+                    row.get::<_, i64>(15)?,
+                    row.get::<_, i64>(16)?,
                 ))
             },
         )
@@ -499,11 +512,13 @@ fn load_integration(
                     fencing_token: checked_u64(row.8, "workspace fencing token")?,
                     review_digest: row.9,
                     target_revision: row.10,
-                    approved_at: row.11,
+                    candidate_revision: row.11,
+                    approved_at: row.13,
                 },
-                state: decode_integration_state(&row.12)?,
-                revision: checked_u64(row.13, "workspace integration revision")?,
-                updated_at: row.14,
+                merge_revision: row.12,
+                state: decode_integration_state(&row.14)?,
+                revision: checked_u64(row.15, "workspace integration revision")?,
+                updated_at: row.16,
             })
         })
         .transpose()

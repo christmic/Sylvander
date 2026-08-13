@@ -210,22 +210,39 @@ impl CodingWorktreeService {
         let _guard = self.integration_lock.lock().await;
         if let Some(manager) = self.remote_manager(target_id)? {
             let lease = manager.open(lease_id)?;
-            let diff = manager.inspect(&lease).await?;
-            let prepared = manager
-                .prepare_reviewed(&lease)
-                .await?
-                .ok_or_else(|| "workspace candidate has no changes".to_owned())?;
-            return Ok(prepared_workspace_change(prepared, diff));
+            let prepared = match manager.prepare_reviewed(&lease).await? {
+                Some(prepared) => prepared,
+                None => PreparedChange {
+                    previous_commit: manager.source_commit(&lease).await?,
+                    candidate_commit: manager.worktree_commit(&lease).await?,
+                },
+            };
+            let diff = manager
+                .inspect_commits(
+                    &lease,
+                    &prepared.previous_commit,
+                    &prepared.candidate_commit,
+                )
+                .await?;
+            return prepared_workspace_change(prepared, diff);
         }
         let manager = self.local.clone();
         let lease_id = lease_id.to_owned();
         tokio::task::spawn_blocking(move || {
             let lease = manager.open(&lease_id)?;
-            let diff = manager.inspect(&lease)?;
-            let prepared = manager
-                .prepare_reviewed(&lease)?
-                .ok_or_else(|| "workspace candidate has no changes".to_owned())?;
-            Ok(prepared_workspace_change(prepared, diff))
+            let prepared = match manager.prepare_reviewed(&lease)? {
+                Some(prepared) => prepared,
+                None => PreparedChange {
+                    previous_commit: manager.source_commit(&lease)?,
+                    candidate_commit: manager.worktree_commit(&lease)?,
+                },
+            };
+            let diff = manager.inspect_commits(
+                &lease,
+                &prepared.previous_commit,
+                &prepared.candidate_commit,
+            )?;
+            prepared_workspace_change(prepared, diff)
         })
         .await
         .map_err(|_| "worktree candidate preparation stopped".to_string())?
@@ -413,12 +430,15 @@ impl CodingWorktreeService {
 fn prepared_workspace_change(
     prepared: PreparedChange,
     diff: WorkspaceDiff,
-) -> PreparedWorkspaceChange {
-    PreparedWorkspaceChange {
+) -> Result<PreparedWorkspaceChange, String> {
+    if prepared.previous_commit == prepared.candidate_commit || diff.patch.is_empty() {
+        return Err("workspace candidate has no changes".into());
+    }
+    Ok(PreparedWorkspaceChange {
         target_revision: prepared.previous_commit,
         candidate_revision: prepared.candidate_commit,
         diff,
-    }
+    })
 }
 
 fn project_merge_position(position: PreparedMergePosition) -> WorkspaceMergePosition {

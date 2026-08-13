@@ -252,6 +252,26 @@ impl GitWorktreeManager {
         git_text(&lease.worktree_root, &["rev-parse", "HEAD"])
     }
 
+    pub fn inspect_commits(
+        &self,
+        lease: &WorkspaceLease,
+        target_revision: &str,
+        candidate_revision: &str,
+    ) -> Result<WorkspaceDiff, String> {
+        validate_commit_id(target_revision)?;
+        validate_commit_id(candidate_revision)?;
+        Ok(WorkspaceDiff {
+            status: git_text(
+                &lease.worktree_root,
+                &["diff", "--name-status", target_revision, candidate_revision],
+            )?,
+            patch: git_text(
+                &lease.worktree_root,
+                &["diff", "--binary", target_revision, candidate_revision],
+            )?,
+        })
+    }
+
     /// Commit the reviewed worktree contents and merge them into the source
     /// checkout. The lease remains active so the coding session can continue.
     pub fn accept(&self, lease: &WorkspaceLease) -> Result<(), String> {

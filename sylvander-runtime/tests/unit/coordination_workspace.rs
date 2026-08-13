@@ -116,8 +116,9 @@ fn only_moderator_can_approve_an_exact_reviewed_workspace_revision() {
         view_revision: 1,
         lease_epoch: 5,
         fencing_token: 9,
-        review_digest: "sha256:reviewed-candidate".into(),
-        target_revision: "abc123".into(),
+        review_digest: format!("sha256:{}", "a".repeat(64)),
+        target_revision: "b".repeat(40),
+        candidate_revision: "c".repeat(40),
         approved_at: 3,
     };
 
@@ -128,7 +129,12 @@ fn only_moderator_can_approve_an_exact_reviewed_workspace_revision() {
         .transition(0, WorkspaceIntegrationState::Applying, 4)
         .unwrap();
     integration
-        .transition(1, WorkspaceIntegrationState::Applied, 5)
+        .transition_with_receipt(
+            1,
+            WorkspaceIntegrationState::Applied,
+            Some("d".repeat(40)),
+            5,
+        )
         .unwrap();
     assert_eq!(integration.revision, 2);
     approval.approved_by = AgentInstanceId::new("worker");

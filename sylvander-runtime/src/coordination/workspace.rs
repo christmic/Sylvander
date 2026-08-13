@@ -204,6 +204,7 @@ pub struct WorkspaceIntegrationApproval {
     pub fencing_token: u64,
     pub review_digest: String,
     pub target_revision: String,
+    pub candidate_revision: String,
     pub approved_at: i64,
 }
 
@@ -235,8 +236,10 @@ impl WorkspaceIntegrationApproval {
         if !matches!(
             view.state,
             WorkspaceViewState::Active | WorkspaceViewState::Conflicted
-        ) || self.review_digest.trim().is_empty()
-            || self.target_revision.trim().is_empty()
+        ) || !is_sha256_digest(&self.review_digest)
+            || !is_git_revision(&self.target_revision)
+            || !is_git_revision(&self.candidate_revision)
+            || self.target_revision == self.candidate_revision
         {
             return Err(WorkspaceViewError::InvalidIntegrationApproval);
         }
@@ -280,6 +283,7 @@ impl WorkspaceIntegrationState {
 pub struct WorkspaceIntegration {
     pub approval: WorkspaceIntegrationApproval,
     pub state: WorkspaceIntegrationState,
+    pub merge_revision: Option<String>,
     pub revision: u64,
     pub updated_at: i64,
 }
@@ -296,6 +300,7 @@ impl WorkspaceIntegration {
         Ok(Self {
             approval,
             state: WorkspaceIntegrationState::Approved,
+            merge_revision: None,
             revision: 0,
             updated_at,
         })
@@ -307,20 +312,49 @@ impl WorkspaceIntegration {
         next: WorkspaceIntegrationState,
         now: i64,
     ) -> Result<(), WorkspaceViewError> {
+        self.transition_with_receipt(expected_revision, next, None, now)
+    }
+
+    pub fn transition_with_receipt(
+        &mut self,
+        expected_revision: u64,
+        next: WorkspaceIntegrationState,
+        merge_revision: Option<String>,
+        now: i64,
+    ) -> Result<(), WorkspaceViewError> {
         if self.revision != expected_revision {
             return Err(WorkspaceViewError::RevisionConflict);
         }
         if !self.state.can_transition_to(next) {
             return Err(WorkspaceViewError::InvalidIntegrationTransition);
         }
+        if (next == WorkspaceIntegrationState::Applied
+            && merge_revision
+                .as_deref()
+                .is_none_or(|value| !is_git_revision(value)))
+            || (next != WorkspaceIntegrationState::Applied && merge_revision.is_some())
+        {
+            return Err(WorkspaceViewError::InvalidMergeReceipt);
+        }
         self.revision = self
             .revision
             .checked_add(1)
             .ok_or(WorkspaceViewError::RevisionOverflow)?;
         self.state = next;
+        self.merge_revision = merge_revision;
         self.updated_at = now;
         Ok(())
     }
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn is_git_revision(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -359,6 +393,8 @@ pub enum WorkspaceViewError {
     InvalidIntegrationApproval,
     #[error("workspace integration lifecycle transition is invalid")]
     InvalidIntegrationTransition,
+    #[error("workspace integration applied state requires one exact merge receipt")]
+    InvalidMergeReceipt,
 }
 
 #[cfg(test)]

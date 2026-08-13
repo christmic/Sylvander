@@ -163,25 +163,16 @@ async fn provisioning_commits_exact_worktree_receipt_before_activation() {
         "integrated\n",
     )
     .unwrap();
+    let review = coordinator.prepare_review(&active.view_id).await.unwrap();
     let integration = coordinator
         .approve_integration(
-            WorkspaceIntegrationApproval {
-                integration_id: WorkspaceIntegrationId::new("integration-1"),
-                view_id: active.view_id.clone(),
-                session_id: active.session_id.clone(),
-                agent_instance_id: active.agent_instance_id.clone(),
-                approved_by: AgentInstanceId::new("moderator"),
-                membership_revision: 0,
-                topology_revision: 0,
-                view_revision: active.revision,
-                lease_epoch: active.lease_epoch,
-                fencing_token: active.fencing_token,
-                review_digest: "sha256:reviewed".into(),
-                target_revision: active.base_revision.clone().unwrap(),
-                approved_at: 11,
-            },
+            WorkspaceIntegrationId::new("integration-1"),
+            &active.view_id,
+            &review.review_digest,
+            AgentInstanceId::new("moderator"),
             &membership(),
             0,
+            11,
         )
         .await
         .unwrap();
@@ -344,25 +335,16 @@ async fn target_advance_after_review_is_fenced_as_conflict_without_merge() {
         .await
         .unwrap();
     fs::write(active.effective_workspace.join("tracked.txt"), "agent\n").unwrap();
+    let review = coordinator.prepare_review(&active.view_id).await.unwrap();
     let integration = coordinator
         .approve_integration(
-            WorkspaceIntegrationApproval {
-                integration_id: WorkspaceIntegrationId::new("integration-conflict"),
-                view_id: active.view_id.clone(),
-                session_id: active.session_id.clone(),
-                agent_instance_id: active.agent_instance_id.clone(),
-                approved_by: AgentInstanceId::new("moderator"),
-                membership_revision: 0,
-                topology_revision: 0,
-                view_revision: active.revision,
-                lease_epoch: active.lease_epoch,
-                fencing_token: active.fencing_token,
-                review_digest: "sha256:reviewed-before-target-change".into(),
-                target_revision: active.base_revision.clone().unwrap(),
-                approved_at: 11,
-            },
+            WorkspaceIntegrationId::new("integration-conflict"),
+            &active.view_id,
+            &review.review_digest,
+            AgentInstanceId::new("moderator"),
             &membership(),
             0,
+            11,
         )
         .await
         .unwrap();
@@ -390,7 +372,7 @@ async fn target_advance_after_review_is_fenced_as_conflict_without_merge() {
         outcome,
         WorkspaceIntegrationOutcome::Conflicted { integration, reason }
             if integration.state == WorkspaceIntegrationState::Conflicted
-                && reason.contains("target advanced")
+                && reason.contains("target diverged")
     ));
     assert_eq!(
         fs::read_to_string(repository.path().join("tracked.txt")).unwrap(),
@@ -405,5 +387,89 @@ async fn target_advance_after_review_is_fenced_as_conflict_without_merge() {
             .unwrap()
             .state,
         WorkspaceViewState::Conflicted
+    );
+}
+
+#[tokio::test]
+async fn applying_position_recovers_an_exact_merge_receipt_after_restart() {
+    let repository = repository();
+    let state = tempfile::tempdir().unwrap();
+    let store = store(repository.path()).await;
+    let worktrees = worktrees(state.path());
+    let coordinator = AgentWorkspaceCoordinator::new(worktrees.clone(), store.clone());
+    let active = coordinator
+        .provision(
+            WorkspaceViewId::new("view-recover-merge"),
+            &membership(),
+            AgentInstanceId::new("worker"),
+            WorkspaceAccess::ReadWrite,
+            "local",
+            repository.path(),
+            2,
+            3,
+            10,
+        )
+        .await
+        .unwrap();
+    fs::write(
+        active.effective_workspace.join("tracked.txt"),
+        "recovered\n",
+    )
+    .unwrap();
+    let review = coordinator.prepare_review(&active.view_id).await.unwrap();
+    let integration = coordinator
+        .approve_integration(
+            WorkspaceIntegrationId::new("integration-recover-merge"),
+            &active.view_id,
+            &review.review_digest,
+            AgentInstanceId::new("moderator"),
+            &membership(),
+            0,
+            11,
+        )
+        .await
+        .unwrap();
+    let (applying, integrating) = store
+        .advance_workspace_integration(
+            &integration.approval.integration_id,
+            integration.revision,
+            active.revision,
+            active.lease_epoch,
+            active.fencing_token,
+            WorkspaceIntegrationState::Applying,
+            WorkspaceViewState::Integrating,
+            None,
+            12,
+        )
+        .await
+        .unwrap();
+    let merge_revision = worktrees
+        .merge_integration(
+            &workspace_lease_id(&active.view_id),
+            active.target_id.as_deref(),
+            &integration.approval.target_revision,
+            &integration.approval.candidate_revision,
+        )
+        .await
+        .unwrap();
+    drop(coordinator);
+
+    let recovered = AgentWorkspaceCoordinator::new(worktrees, store.clone())
+        .apply_integration(&integration.approval.integration_id, 13)
+        .await
+        .unwrap();
+    let WorkspaceIntegrationOutcome::Applied(recovered) = recovered else {
+        panic!("exact merge receipt must recover as applied");
+    };
+    assert_eq!(applying.state, WorkspaceIntegrationState::Applying);
+    assert_eq!(integrating.state, WorkspaceViewState::Integrating);
+    assert_eq!(
+        recovered.merge_revision.as_deref(),
+        Some(merge_revision.as_str())
+    );
+    assert_eq!(recovered.state, WorkspaceIntegrationState::Applied);
+    assert_eq!(
+        fs::read_to_string(repository.path().join("tracked.txt")).unwrap(),
+        "recovered\n"
     );
 }

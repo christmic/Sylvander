@@ -261,7 +261,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 16;
+const SESSION_SCHEMA_VERSION: i64 = 17;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -647,6 +647,8 @@ CREATE TABLE workspace_integrations (
     fencing_token       INTEGER NOT NULL CHECK(fencing_token > 0),
     review_digest       TEXT NOT NULL CHECK(length(trim(review_digest)) > 0),
     target_revision     TEXT NOT NULL CHECK(length(trim(target_revision)) > 0),
+    candidate_revision  TEXT NOT NULL CHECK(length(trim(candidate_revision)) > 0),
+    merge_revision      TEXT,
     approved_at         INTEGER NOT NULL,
     state               TEXT NOT NULL CHECK(state IN ('approved','applying','applied','conflicted','manual_reconciliation')),
     revision            INTEGER NOT NULL CHECK(revision >= 0),
@@ -823,7 +825,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=16;
+PRAGMA user_version=17;
 COMMIT;
 ";
 
