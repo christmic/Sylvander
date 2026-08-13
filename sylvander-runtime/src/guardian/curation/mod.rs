@@ -2590,5 +2590,5 @@ fn corrupt_sql(index: usize) -> rusqlite::Error {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/guardian_curation.rs"]
+#[path = "../../../tests/unit/guardian_curation.rs"]
 mod tests;

@@ -2333,5 +2333,5 @@ enum GuardianMutationError {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/guardian_runtime.rs"]
+#[path = "../../tests/unit/guardian_runtime.rs"]
 mod tests;

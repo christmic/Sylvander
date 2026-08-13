@@ -1,3 +1,5 @@
+//! Exact latest-only schema for Guardian curation persistence.
+
 use rusqlite::Connection;
 
 use super::{GuardianCurationError, storage_error};

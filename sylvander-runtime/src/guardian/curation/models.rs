@@ -1,3 +1,5 @@
+//! Durable Guardian curation values and bounded evidence vocabulary.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sylvander_api::{AgentId, UserId};

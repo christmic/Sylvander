@@ -71,8 +71,9 @@ pub mod evidence;
 pub mod execution;
 /// Isolated local Git worktree lease lifecycle for coding sessions.
 pub mod git_worktree;
-mod guardian_curation;
-mod guardian_runtime;
+mod guardian;
+use guardian::curation as guardian_curation;
+use guardian::runtime as guardian_runtime;
 #[allow(dead_code)] // runtime ownership/config wiring follows this isolated policy adapter
 mod identity_binding_service;
 #[cfg(test)]

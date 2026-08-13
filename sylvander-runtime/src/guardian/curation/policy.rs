@@ -1,3 +1,5 @@
+//! Deterministic Guardian candidate evaluation policy.
+
 use super::models::{
     CandidateOrigin, CandidateScope, ConsentState, MemoryCandidate, MutationAction, PolicyOutcome,
     Sensitivity,
