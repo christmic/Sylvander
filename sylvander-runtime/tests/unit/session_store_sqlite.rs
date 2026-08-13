@@ -405,6 +405,66 @@ async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
             .await
             .is_err()
     );
+
+    let terminal_id = ModelInvocationId::new();
+    store
+        .begin_model_iteration(ModelIterationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-model-ledger".into(),
+            iteration: 2,
+            invocation_id: terminal_id.clone(),
+            model_id: "model-a".into(),
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            request_digest: format!("sha256:{}", "c".repeat(64)),
+        })
+        .await
+        .unwrap();
+    let terminal = store
+        .persist_model_response(
+            &ctx(),
+            ModelResponsePersistence {
+                invocation_id: terminal_id.clone(),
+                expected_revision: 0,
+                assistant_content: serde_json::json!({"role":"assistant","content":"done"}),
+                model_id: "model-a".into(),
+                terminal: true,
+            },
+        )
+        .await
+        .unwrap();
+    let classification = ModelRecoveryClassification::for_interrupted(
+        ModelExecutionPosition::ResponsePersisted,
+        Some(terminal.message.id),
+        Some(true),
+    );
+    let classified_revision = store
+        .classify_model_recovery(ModelRecoveryWrite {
+            invocation_id: terminal_id.clone(),
+            expected_revision: terminal.ledger_revision,
+            recovery_owner: "test-recovery".into(),
+            observed_at: 100,
+            lease_expires_at: 130,
+            classification,
+        })
+        .await
+        .unwrap();
+    let completed = store
+        .complete_persisted_turn(PersistedTurnCompletion {
+            invocation_id: terminal_id,
+            expected_revision: classified_revision,
+        })
+        .await
+        .unwrap();
+    assert_eq!(completed.id, terminal.message.id);
+    assert_eq!(
+        store
+            .turn(&session.id, "turn-model-ledger")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        TurnState::Completed
+    );
 }
 
 #[tokio::test]

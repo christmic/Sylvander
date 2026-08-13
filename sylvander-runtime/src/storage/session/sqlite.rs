@@ -35,13 +35,14 @@ use crate::session::SessionMetadata;
 
 use super::{
     MessageRole, ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance,
-    ModelIterationSnapshot, ModelIterationStart, ModelResponseCommit, ModelResponsePersistence,
-    PersistedTurnCompletion, ReplacementMessage, SessionFilter, SessionLifetime,
-    SessionMetadataPatch, SessionStore, SessionStoreError, SessionUsage, StoredMessage,
-    StoredSession, ToolCallAdvance, ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot,
-    ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
-    ToolRecoveryReason, ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind,
-    TurnSnapshot, TurnStart, TurnState,
+    ModelIterationSnapshot, ModelIterationStart, ModelRecoveryDecision, ModelRecoveryReason,
+    ModelRecoveryWrite, ModelResponseCommit, ModelResponsePersistence, PersistedTurnCompletion,
+    ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch, SessionStore,
+    SessionStoreError, SessionUsage, StoredMessage, StoredSession, ToolCallAdvance,
+    ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState,
+    ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason,
+    ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot,
+    TurnStart, TurnState,
 };
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -378,6 +379,13 @@ CREATE TABLE session_turn_iterations (
     ledger_revision INTEGER NOT NULL DEFAULT 0,
     response_message_id INTEGER REFERENCES session_messages(id) ON DELETE RESTRICT,
     response_terminal INTEGER CHECK(response_terminal IN (0, 1)),
+    recovery_decision TEXT,
+    recovery_reason TEXT,
+    operator_action_required INTEGER NOT NULL DEFAULT 0,
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    recovery_owner TEXT,
+    recovery_lease_expires_at INTEGER,
+    first_interrupted_at INTEGER,
     started_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     CHECK((position = 'model_started' AND response_message_id IS NULL AND response_terminal IS NULL)
@@ -1410,6 +1418,55 @@ impl SessionStore for SqliteSessionStore {
         query_model_iterations(self, None).await
     }
 
+    async fn classify_model_recovery(
+        &self,
+        write: ModelRecoveryWrite,
+    ) -> Result<u64, SessionStoreError> {
+        if write.recovery_owner.trim().is_empty() || write.lease_expires_at <= write.observed_at {
+            return Err(SessionStoreError::Invalid(
+                "model recovery lease is invalid".into(),
+            ));
+        }
+        let expected = i64::try_from(write.expected_revision).map_err(|_| {
+            SessionStoreError::Invalid("model ledger revision exceeds SQLite range".into())
+        })?;
+        let next = write
+            .expected_revision
+            .checked_add(1)
+            .ok_or_else(|| SessionStoreError::Invalid("model ledger revision overflow".into()))?;
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE session_turn_iterations SET ledger_revision=ledger_revision+1, \
+                     recovery_decision=?1,recovery_reason=?2,operator_action_required=?3, \
+                     recovery_attempts=recovery_attempts+1,recovery_owner=?4, \
+                     recovery_lease_expires_at=?5,first_interrupted_at=COALESCE(first_interrupted_at,?6), \
+                     updated_at=?6 WHERE invocation_id=?7 AND ledger_revision=?8 \
+                     AND (recovery_lease_expires_at IS NULL OR recovery_lease_expires_at<=?6 \
+                          OR recovery_owner=?4)",
+                    params![
+                        model_recovery_decision_str(write.classification.decision),
+                        model_recovery_reason_str(write.classification.reason),
+                        write.classification.operator_action_required,
+                        write.recovery_owner,
+                        write.lease_expires_at,
+                        write.observed_at,
+                        write.invocation_id.as_str(),
+                        expected,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 1 {
+                Ok(next)
+            } else {
+                Err(SessionStoreError::Invalid(
+                    "model recovery lease or ledger CAS conflict".into(),
+                ))
+            }
+        })
+        .await
+    }
+
     async fn begin_tool_call(&self, start: ToolCallStart) -> Result<(), SessionStoreError> {
         if start.turn_id.trim().is_empty()
             || start.call_id.trim().is_empty()
@@ -2371,7 +2428,9 @@ async fn query_model_iterations(
             let selected = "SELECT i.session_id,i.turn_id,i.iteration,i.invocation_id,i.model_id,\
                 i.capability_revision,i.request_digest,i.position,i.ledger_revision,\
                 CASE WHEN m.session_id=i.session_id AND m.role='assistant' THEN m.id END,\
-                i.response_terminal,i.started_at,i.updated_at \
+                i.response_terminal,i.started_at,i.updated_at,i.recovery_decision,\
+                i.recovery_reason,i.operator_action_required,i.recovery_attempts,\
+                i.recovery_owner,i.recovery_lease_expires_at,i.first_interrupted_at \
                 FROM session_turn_iterations i \
                 LEFT JOIN session_messages m ON m.id=i.response_message_id";
             let mut snapshots = Vec::new();
@@ -2431,6 +2490,21 @@ fn decode_model_iteration_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model
         response_terminal: row.get(10)?,
         started_at: row.get(11)?,
         updated_at: row.get(12)?,
+        recovery_decision: row
+            .get::<_, Option<String>>(13)?
+            .map(|value| decode_model_recovery_decision(&value))
+            .transpose()?,
+        recovery_reason: row
+            .get::<_, Option<String>>(14)?
+            .map(|value| decode_model_recovery_reason(&value))
+            .transpose()?,
+        operator_action_required: row.get(15)?,
+        recovery_attempts: row.get::<_, i64>(16)?.try_into().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(16, Type::Integer, Box::new(error))
+        })?,
+        recovery_owner: row.get(17)?,
+        recovery_lease_expires_at: row.get(18)?,
+        first_interrupted_at: row.get(19)?,
     })
 }
 
@@ -2660,6 +2734,46 @@ fn decode_model_position(value: &str) -> rusqlite::Result<ModelExecutionPosition
         "model_started" => Ok(ModelExecutionPosition::ModelStarted),
         "response_persisted" => Ok(ModelExecutionPosition::ResponsePersisted),
         "tools_resolved" => Ok(ModelExecutionPosition::ToolsResolved),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn model_recovery_decision_str(decision: ModelRecoveryDecision) -> &'static str {
+    match decision {
+        ModelRecoveryDecision::ManualReconciliation => "manual_reconciliation",
+        ModelRecoveryDecision::RecoverTools => "recover_tools",
+        ModelRecoveryDecision::CompleteTurn => "complete_turn",
+        ModelRecoveryDecision::ContinueTurn => "continue_turn",
+    }
+}
+
+fn decode_model_recovery_decision(value: &str) -> rusqlite::Result<ModelRecoveryDecision> {
+    match value {
+        "manual_reconciliation" => Ok(ModelRecoveryDecision::ManualReconciliation),
+        "recover_tools" => Ok(ModelRecoveryDecision::RecoverTools),
+        "complete_turn" => Ok(ModelRecoveryDecision::CompleteTurn),
+        "continue_turn" => Ok(ModelRecoveryDecision::ContinueTurn),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn model_recovery_reason_str(reason: ModelRecoveryReason) -> &'static str {
+    match reason {
+        ModelRecoveryReason::ProviderOutcomeUnknown => "provider_outcome_unknown",
+        ModelRecoveryReason::DurableToolResponse => "durable_tool_response",
+        ModelRecoveryReason::DurableTerminalResponse => "durable_terminal_response",
+        ModelRecoveryReason::ToolsAlreadyResolved => "tools_already_resolved",
+        ModelRecoveryReason::IncompleteDurableFacts => "incomplete_durable_facts",
+    }
+}
+
+fn decode_model_recovery_reason(value: &str) -> rusqlite::Result<ModelRecoveryReason> {
+    match value {
+        "provider_outcome_unknown" => Ok(ModelRecoveryReason::ProviderOutcomeUnknown),
+        "durable_tool_response" => Ok(ModelRecoveryReason::DurableToolResponse),
+        "durable_terminal_response" => Ok(ModelRecoveryReason::DurableTerminalResponse),
+        "tools_already_resolved" => Ok(ModelRecoveryReason::ToolsAlreadyResolved),
+        "incomplete_durable_facts" => Ok(ModelRecoveryReason::IncompleteDurableFacts),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }

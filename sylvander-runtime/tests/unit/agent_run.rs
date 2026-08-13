@@ -972,6 +972,13 @@ impl SessionStore for FailingSessionStore {
         self.inner.interrupted_model_iterations().await
     }
 
+    async fn classify_model_recovery(
+        &self,
+        write: crate::storage::session::ModelRecoveryWrite,
+    ) -> Result<u64, crate::storage::session::SessionStoreError> {
+        self.inner.classify_model_recovery(write).await
+    }
+
     async fn begin_tool_call(
         &self,
         start: crate::storage::session::ToolCallStart,

@@ -4292,7 +4292,10 @@ impl Runtime {
             classified = recovery.classified,
             lease_deferred = recovery.lease_deferred,
             manual_reconciliation = recovery.manual_reconciliation,
-            "classified interrupted tool executions"
+            model_discovered = recovery.model_discovered,
+            model_classified = recovery.model_classified,
+            turns_completed = recovery.turns_completed,
+            "recovered interrupted agent executions"
         );
         let active_worktrees = persistent_sessions
             .iter()

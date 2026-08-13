@@ -264,6 +264,17 @@ fn event_json(event: &RuntimeEvent) -> Value {
             "tool_call_id": tool_call_id, "position": position, "decision": decision,
             "operator_action_required": operator_action_required,
         }),
+        RuntimeEvent::ModelRecoveryClassified {
+            turn_id,
+            session_id,
+            position,
+            decision,
+            operator_action_required,
+        } => json!({
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
+            "position": position, "decision": decision,
+            "operator_action_required": operator_action_required,
+        }),
         RuntimeEvent::PersistenceFinished {
             turn_id,
             session_id,

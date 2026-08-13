@@ -328,6 +328,24 @@ pub struct ModelIterationSnapshot {
     pub response_terminal: Option<bool>,
     pub started_at: i64,
     pub updated_at: i64,
+    pub recovery_decision: Option<ModelRecoveryDecision>,
+    pub recovery_reason: Option<ModelRecoveryReason>,
+    pub operator_action_required: bool,
+    pub recovery_attempts: u32,
+    pub recovery_owner: Option<String>,
+    pub recovery_lease_expires_at: Option<i64>,
+    pub first_interrupted_at: Option<i64>,
+}
+
+/// Atomic lease acquisition plus deterministic model recovery decision.
+#[derive(Debug, Clone)]
+pub struct ModelRecoveryWrite {
+    pub invocation_id: ModelInvocationId,
+    pub expected_revision: u64,
+    pub recovery_owner: String,
+    pub observed_at: i64,
+    pub lease_expires_at: i64,
+    pub classification: ModelRecoveryClassification,
 }
 
 /// Durable lifecycle state of one tool call inside a turn.
@@ -564,6 +582,12 @@ pub trait SessionStore: Send + Sync {
     async fn interrupted_model_iterations(
         &self,
     ) -> Result<Vec<ModelIterationSnapshot>, SessionStoreError>;
+
+    /// Acquire/renew a bounded lease and persist one deterministic decision.
+    async fn classify_model_recovery(
+        &self,
+        write: ModelRecoveryWrite,
+    ) -> Result<u64, SessionStoreError>;
 
     /// Persist tool identity before approval or execution can produce a
     /// terminal. The addressed turn must currently be running.
