@@ -454,6 +454,107 @@ async fn tool_lifecycle_is_bound_to_one_running_turn_and_one_terminal() {
 }
 
 #[tokio::test]
+async fn interrupted_calls_are_classified_under_a_bounded_lease() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-recovery".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "mutate"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let invocation_id = ToolInvocationId::new();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-recovery".into(),
+            call_id: "call-recovery".into(),
+            invocation_id: invocation_id.clone(),
+            tool_name: "Write".into(),
+            invocation_class: Some(ToolInvocationClass::FilesystemMutation),
+            declared_recovery_policy: ToolRecoveryPolicy::ReconcileBeforeRetry,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            capability_revision: "sha256:recovery-surface".into(),
+            input_digest: "sha256:recovery-input".into(),
+        })
+        .await
+        .unwrap();
+
+    let interrupted = store.interrupted_tool_calls().await.unwrap();
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(interrupted[0].invocation_id, invocation_id);
+    let classification = super::super::RecoveryClassification::for_interrupted(
+        interrupted[0].position,
+        interrupted[0].effective_recovery_policy,
+    );
+    let write = ToolRecoveryWrite {
+        invocation_id: invocation_id.clone(),
+        expected_revision: 0,
+        recovery_owner: "runtime-a".into(),
+        observed_at: 100,
+        lease_expires_at: 200,
+        classification,
+    };
+    assert_eq!(
+        store.classify_tool_recovery(write.clone()).await.unwrap(),
+        1
+    );
+    let mut competing = write.clone();
+    competing.expected_revision = 1;
+    competing.recovery_owner = "runtime-b".into();
+    competing.observed_at = 150;
+    competing.lease_expires_at = 250;
+    assert!(
+        store
+            .classify_tool_recovery(competing.clone())
+            .await
+            .is_err()
+    );
+
+    competing.expected_revision = 1;
+    competing.observed_at = 201;
+    assert_eq!(store.classify_tool_recovery(competing).await.unwrap(), 2);
+    let recovered = store
+        .tool_calls(&session.id, "turn-recovery")
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered[0].recovery_decision,
+        Some(ToolRecoveryDecision::ResumeAuthorization),
+    );
+    assert_eq!(recovered[0].recovery_attempts, 2);
+    assert_eq!(recovered[0].recovery_owner.as_deref(), Some("runtime-b"));
+    assert_eq!(recovered[0].first_interrupted_at, Some(100));
+
+    assert!(
+        store
+            .begin_turn(
+                &ctx(),
+                TurnStart {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-must-wait".into(),
+                    config_revision: 0,
+                    effective_config: effective_config(),
+                    user_content: serde_json::json!({"role": "user", "content": "next"}),
+                    model_id: "model-a".into(),
+                },
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn save_is_upsert() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     store

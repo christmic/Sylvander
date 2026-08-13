@@ -335,6 +335,24 @@ pub struct ToolCallSnapshot {
     pub state: ToolCallState,
     pub ended_at: Option<i64>,
     pub failure_kind: Option<ToolCallFailureKind>,
+    pub recovery_decision: Option<ToolRecoveryDecision>,
+    pub recovery_reason: Option<ToolRecoveryReason>,
+    pub operator_action_required: bool,
+    pub recovery_attempts: u32,
+    pub recovery_owner: Option<String>,
+    pub recovery_lease_expires_at: Option<i64>,
+    pub first_interrupted_at: Option<i64>,
+}
+
+/// Atomic lease acquisition plus classification for one interrupted call.
+#[derive(Debug, Clone)]
+pub struct ToolRecoveryWrite {
+    pub invocation_id: ToolInvocationId,
+    pub expected_revision: u64,
+    pub recovery_owner: String,
+    pub observed_at: i64,
+    pub lease_expires_at: i64,
+    pub classification: RecoveryClassification,
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +463,15 @@ pub trait SessionStore: Send + Sync {
         session_id: &SessionId,
         turn_id: &str,
     ) -> Result<Vec<ToolCallSnapshot>, SessionStoreError>;
+
+    /// Scan running calls owned by turns that were non-terminal at boot.
+    async fn interrupted_tool_calls(&self) -> Result<Vec<ToolCallSnapshot>, SessionStoreError>;
+
+    /// Acquire/renew a bounded lease and persist one deterministic decision.
+    async fn classify_tool_recovery(
+        &self,
+        write: ToolRecoveryWrite,
+    ) -> Result<u64, SessionStoreError>;
 
     /// Soft-delete (sets `is_archived=1`). The row and its messages
     /// remain on disk for audit / undo; `get` returns `None`.

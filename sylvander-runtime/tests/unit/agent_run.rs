@@ -951,6 +951,22 @@ impl SessionStore for FailingSessionStore {
         self.inner.tool_calls(session_id, turn_id).await
     }
 
+    async fn interrupted_tool_calls(
+        &self,
+    ) -> Result<
+        Vec<crate::storage::session::ToolCallSnapshot>,
+        crate::storage::session::SessionStoreError,
+    > {
+        self.inner.interrupted_tool_calls().await
+    }
+
+    async fn classify_tool_recovery(
+        &self,
+        write: crate::storage::session::ToolRecoveryWrite,
+    ) -> Result<u64, crate::storage::session::SessionStoreError> {
+        self.inner.classify_tool_recovery(write).await
+    }
+
     async fn archive(
         &self,
         id: &SessionId,
