@@ -208,8 +208,91 @@ export type RuntimeIdentityBindingResponse =
 export type RuntimeAgentAdminRequest =
   | { operation: "inspect_revision"; agent_id: string; revision: number }
   | { operation: "list_revisions"; agent_id: string; before_revision?: number; limit: number }
+  | { operation: "update_definition"; expected_active_revision: number; definition: RuntimeAgentDefinitionDraft }
   | { operation: "activate_revision"; agent_id: string; revision: number; expected_active_revision: number }
   | { operation: "rollback_revision"; agent_id: string; target_revision: number; expected_active_revision: number };
+
+export interface RuntimeModelSelection {
+  provider_id: string;
+  model_id: string;
+}
+
+export type RuntimeAgentSecretReference =
+  | { source: "environment"; name: string }
+  | { source: "file"; path: string };
+
+export type RuntimeAgentToolDraft =
+  | { type: "builtin"; name: string }
+  | {
+      type: "mcp_server";
+      name: string;
+      execution_environment: string;
+      workspace_access: "read" | "write";
+      command: string;
+      args: string[];
+      environment: Record<string, RuntimeAgentSecretReference>;
+    };
+
+export interface RuntimeWorkspaceBinding {
+  execution_target: string;
+  path: string;
+  read_only: boolean;
+  instruction_focus?: string;
+}
+
+export interface RuntimeWorkspaceMount {
+  reference: string;
+  role: "agent_home" | "task" | "dependency" | "artifact";
+  binding: RuntimeWorkspaceBinding;
+  capabilities: { read: boolean; write: boolean; command: boolean; git: boolean };
+}
+
+export interface RuntimeAgentDefinitionDraft {
+  agent_id: string;
+  revision: number;
+  name: string;
+  description: string;
+  provider_id: string;
+  default_model_id: string;
+  allowed_models: RuntimeModelSelection[];
+  temperature?: number;
+  max_tokens?: number;
+  system_prompt: string;
+  tools: RuntimeAgentToolDraft[];
+  memory_stores: Array<{ store_type: string; path: string }>;
+  ui_commands: Array<{
+    id: string;
+    name: string;
+    usage: string;
+    description: string;
+    hint: string;
+    prompt: string;
+  }>;
+  hooks: Array<{
+    name: string;
+    phase: "before_tool" | "after_tool" | "before_turn" | "after_turn";
+    command: string;
+    timeout_secs: number;
+    blocking: boolean;
+  }>;
+  tool_presentations: Array<{
+    tool_name: string;
+    label: string;
+    kind: "generic" | "command" | "file" | "search" | "resource";
+    target_field?: string;
+  }>;
+  behavior: { max_iterations: number; max_retries: number };
+  agent_workspace?: RuntimeWorkspaceBinding;
+  workspace_mounts: RuntimeWorkspaceMount[];
+  prompt_profiles: Array<{
+    id: string;
+    qualified_models: RuntimeModelSelection[];
+    system_prompt: string;
+  }>;
+  default_prompt_profile?: string;
+  allow_session_prompt: boolean;
+  access: { allow_authenticated: boolean; allowed_principals: string[]; allowed_roles: string[] };
+}
 
 export interface RuntimeAgentRevisionView {
   definition: {
@@ -242,6 +325,7 @@ export interface RuntimeAgentRevisionView {
 export type RuntimeAgentAdminResponse =
   | { status: "success"; result: { operation: "revision_inspected"; revision: RuntimeAgentRevisionView } }
   | { status: "success"; result: { operation: "revisions_listed"; agent_id: string; active_revision: number; revisions: RuntimeAgentRevisionView[]; next_before_revision?: number } }
+  | { status: "success"; result: { operation: "definition_updated"; revision: RuntimeAgentRevisionView } }
   | { status: "success"; result: { operation: "revision_activated" | "revision_rolled_back"; agent_id: string; active_revision: number } }
   | { status: "error"; error: { code: string; message: string; agent_id?: string; revision?: number; expected_active_revision?: number; actual_active_revision?: number } };
 

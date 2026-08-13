@@ -291,6 +291,57 @@ describe("useRuntime user profile", () => {
 
     await act(async () => {
       expect(await view.result.current.requestAgentAdministration({
+        operation: "update_definition",
+        expected_active_revision: 4,
+        definition: {
+          agent_id: "agent-1",
+          revision: 5,
+          name: "Coding Agent",
+          description: "Works on code",
+          provider_id: "openai",
+          default_model_id: "gpt-test",
+          allowed_models: [{ provider_id: "openai", model_id: "gpt-test" }],
+          system_prompt: "new write-only prompt",
+          tools: [{ type: "builtin", name: "Read" }],
+          memory_stores: [],
+          ui_commands: [],
+          hooks: [],
+          tool_presentations: [],
+          behavior: { max_iterations: 50, max_retries: 3 },
+          workspace_mounts: [],
+          prompt_profiles: [],
+          allow_session_prompt: false,
+          access: { allow_authenticated: true, allowed_principals: [], allowed_roles: [] },
+        },
+      })).toBe(true);
+    });
+    expect(view.result.current.state.agentAdministration.activeRevision).toBe(4);
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agent_admin",
+      response: {
+        status: "success",
+        result: {
+          operation: "definition_updated",
+          revision: {
+            ...revision,
+            definition: {
+              ...revision.definition,
+              revision: 5,
+              system_prompt_sha256: "sha256:new-prompt",
+            },
+            digest_sha256: "sha256:new-definition",
+            active: false,
+          },
+        },
+      },
+    } }));
+    expect(view.result.current.state.agentAdministration.revisions.some(
+      (candidate) => candidate.definition.revision === 5 && !candidate.active,
+    )).toBe(true);
+    expect(view.result.current.state.agentAdministration.notice).toMatch(/activation is still required/);
+
+    await act(async () => {
+      expect(await view.result.current.requestAgentAdministration({
         operation: "rollback_revision",
         agent_id: "agent-1",
         target_revision: 3,

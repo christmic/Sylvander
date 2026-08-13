@@ -731,6 +731,23 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           }));
           break;
         }
+        if (response.result.operation === "definition_updated") {
+          const result = response.result;
+          setState((current) => ({
+            ...current,
+            agentAdministration: {
+              ...current.agentAdministration,
+              status: "ready",
+              pendingOperation: undefined,
+              notice: "Agent definition staged; activation is still required",
+              revisions: replaceAgentRevision(
+                current.agentAdministration.revisions,
+                result.revision,
+              ),
+            },
+          }));
+          break;
+        }
         const result = response.result;
         setState((current) => ({
           ...current,
@@ -1589,10 +1606,11 @@ function identityErrorNotice(message: string, retryAfterMs?: number) {
 
 function agentAdminResponseMatches(
   request: RuntimeAgentAdminRequest["operation"],
-  response: "revision_inspected" | "revisions_listed" | "revision_activated" | "revision_rolled_back",
+  response: "revision_inspected" | "revisions_listed" | "definition_updated" | "revision_activated" | "revision_rolled_back",
 ) {
   return (request === "inspect_revision" && response === "revision_inspected")
     || (request === "list_revisions" && response === "revisions_listed")
+    || (request === "update_definition" && response === "definition_updated")
     || (request === "activate_revision" && response === "revision_activated")
     || (request === "rollback_revision" && response === "revision_rolled_back");
 }
