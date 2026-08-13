@@ -110,8 +110,8 @@ pub use execution::{
     workspace as workspace_executor,
 };
 pub use interaction::{
-    approval, ask_user as ask_user_gate, background_task as task_gate, plan as plan_gate,
-    workflow as workflow_gate,
+    approval, ask_user as ask_user_gate, background_task as task_gate, doctor as doctor_gate,
+    plan as plan_gate, workflow as workflow_gate,
 };
 pub use kernel::agent_loop as loop_;
 pub use memory::curated as curated_memory;

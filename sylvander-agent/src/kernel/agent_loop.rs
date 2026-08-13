@@ -781,6 +781,35 @@ pub fn run_stream(
                                 continue;
                             }
 
+                            if tool_use.name == "inspect_runtime" {
+                                let result = if let Some(gate) = &ports.doctor_gate {
+                                    gate.inspect().await.and_then(|report| {
+                                        serde_json::to_string(&report).map_err(|error| {
+                                            format!("runtime report serialization failed: {error}")
+                                        })
+                                    })
+                                } else {
+                                    Err("runtime inspection is unavailable".into())
+                                };
+                                let (output, is_error) = match result {
+                                    Ok(output) => (output, false),
+                                    Err(error) => (error, true),
+                                };
+                                yield AgentEvent::ToolCallEnd {
+                                    id: tool_use.id.clone(),
+                                    name: tool_use.name.clone(),
+                                    output: output.clone(),
+                                    is_error,
+                                    failure_kind: is_error.then_some(
+                                        crate::tool::ToolFailureKind::Unclassified,
+                                    ),
+                                };
+                                tool_result_blocks.push(ContentBlock::tool_result_text(
+                                    tool_use.id.clone(), output, is_error,
+                                ));
+                                continue;
+                            }
+
                             if tool_use.name == "update_plan" {
                                 let plan_id = tool_use.input["plan_id"]
                                     .as_str()
@@ -1221,7 +1250,12 @@ struct PendingToolCall {
 fn is_control_tool(name: &str) -> bool {
     matches!(
         name,
-        "ask_user" | "manage_workflow" | "present_plan" | "start_background_task" | "update_plan"
+        "ask_user"
+            | "inspect_runtime"
+            | "manage_workflow"
+            | "present_plan"
+            | "start_background_task"
+            | "update_plan"
     )
 }
 

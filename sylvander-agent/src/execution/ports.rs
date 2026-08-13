@@ -15,6 +15,7 @@ use crate::execution::tool_context::ToolContext;
 use crate::interaction::approval::ApprovalGate;
 use crate::interaction::ask_user::AskUserGate;
 use crate::interaction::background_task::TaskGate;
+use crate::interaction::doctor::DoctorGate;
 use crate::interaction::plan::PlanGate;
 use crate::interaction::workflow::WorkflowGate;
 use crate::tool::invocation::{ToolInvocationGateway, ToolInvocationSnapshot};
@@ -46,6 +47,8 @@ pub struct AgentExecutionPorts {
     pub(crate) task_gate: Option<Arc<dyn TaskGate>>,
     /// Optional Runtime-owned durable workflow port.
     pub(crate) workflow_gate: Option<Arc<dyn WorkflowGate>>,
+    /// Optional read-only Runtime environment inspection port.
+    pub(crate) doctor_gate: Option<Arc<dyn DoctorGate>>,
     /// Optional immutable artifact authority bound to this exact turn.
     pub(crate) artifact_store: Option<Arc<dyn TurnArtifactStore>>,
 }
@@ -69,6 +72,7 @@ impl AgentExecutionPorts {
             plan_gate: None,
             task_gate: None,
             workflow_gate: None,
+            doctor_gate: None,
             artifact_store: None,
         }
     }
@@ -111,6 +115,13 @@ impl AgentExecutionPorts {
     #[must_use]
     pub fn with_workflow_gate(mut self, gate: Arc<dyn WorkflowGate>) -> Self {
         self.workflow_gate = Some(gate);
+        self
+    }
+
+    /// Attach Runtime's read-only, content-safe diagnostic projection.
+    #[must_use]
+    pub fn with_doctor_gate(mut self, gate: Arc<dyn DoctorGate>) -> Self {
+        self.doctor_gate = Some(gate);
         self
     }
 
@@ -168,6 +179,7 @@ impl std::fmt::Debug for AgentExecutionPorts {
             .field("plan_gate", &self.plan_gate.is_some())
             .field("task_gate", &self.task_gate.is_some())
             .field("workflow_gate", &self.workflow_gate.is_some())
+            .field("doctor_gate", &self.doctor_gate.is_some())
             .field("artifact_store", &self.artifact_store.is_some())
             .finish_non_exhaustive()
     }
