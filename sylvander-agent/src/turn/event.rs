@@ -18,6 +18,7 @@ use sylvander_llm_core::{ChatMessage, TokenUsage};
 use crate::context::compression::layer::LayerReport;
 use crate::interaction::plan::PlanDecision;
 use crate::tool::ToolFailureKind;
+use crate::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy};
 use crate::turn::error::AgentLoopError;
 use crate::turn::machine::TurnTransition;
 use crate::turn::outcome::AgentOutcome;
@@ -78,6 +79,14 @@ pub enum AgentEvent {
     ToolCallPrepared {
         id: String,
         name: String,
+        /// Trusted authority class, absent when preparation found no route.
+        invocation_class: Option<ToolInvocationClass>,
+        /// Frozen default-deny recovery declaration.
+        recovery_policy: ToolRecoveryPolicy,
+        /// Content-safe digest of the exact prepared input.
+        input_digest: String,
+        /// Frozen executable surface used for this invocation.
+        capability_revision: String,
     },
 
     /// An approved tool call is about to execute.

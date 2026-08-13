@@ -22,6 +22,7 @@ use std::ops::Range;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use sylvander_agent::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy};
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
@@ -284,7 +285,24 @@ pub struct ToolCallStart {
     pub session_id: SessionId,
     pub turn_id: String,
     pub call_id: String,
+    pub invocation_id: ToolInvocationId,
     pub tool_name: String,
+    pub invocation_class: Option<ToolInvocationClass>,
+    pub declared_recovery_policy: ToolRecoveryPolicy,
+    pub effective_recovery_policy: ToolRecoveryPolicy,
+    pub capability_revision: String,
+    pub input_digest: String,
+}
+
+/// Optimistic request to advance exactly one durable effect boundary.
+#[derive(Debug, Clone)]
+pub struct ToolCallAdvance {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub expected_revision: u64,
+    pub expected_position: ToolExecutionPosition,
+    pub next_position: ToolExecutionPosition,
 }
 
 /// Terminal facts committed for one previously started tool call.
@@ -303,8 +321,17 @@ pub struct ToolCallSnapshot {
     pub session_id: SessionId,
     pub turn_id: String,
     pub call_id: String,
+    pub invocation_id: ToolInvocationId,
     pub tool_name: String,
+    pub invocation_class: Option<ToolInvocationClass>,
+    pub declared_recovery_policy: ToolRecoveryPolicy,
+    pub effective_recovery_policy: ToolRecoveryPolicy,
+    pub capability_revision: String,
+    pub input_digest: String,
+    pub position: ToolExecutionPosition,
+    pub ledger_revision: u64,
     pub started_at: i64,
+    pub updated_at: i64,
     pub state: ToolCallState,
     pub ended_at: Option<i64>,
     pub failure_kind: Option<ToolCallFailureKind>,
@@ -402,6 +429,9 @@ pub trait SessionStore: Send + Sync {
     /// Persist tool identity before approval or execution can produce a
     /// terminal. The addressed turn must currently be running.
     async fn begin_tool_call(&self, start: ToolCallStart) -> Result<(), SessionStoreError>;
+
+    /// Advance one adjacent execution boundary using a monotonic CAS.
+    async fn advance_tool_call(&self, advance: ToolCallAdvance) -> Result<u64, SessionStoreError>;
 
     /// Atomically replace a running tool call with exactly one terminal.
     async fn finish_tool_call(

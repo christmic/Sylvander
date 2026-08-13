@@ -341,10 +341,48 @@ async fn tool_lifecycle_is_bound_to_one_running_turn_and_one_terminal() {
         session_id: session.id.clone(),
         turn_id: "turn-tools".into(),
         call_id: "call-1".into(),
+        invocation_id: ToolInvocationId::new(),
         tool_name: "Read".into(),
+        invocation_class: Some(ToolInvocationClass::Read),
+        declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+        effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+        capability_revision: "sha256:test-surface".into(),
+        input_digest: "sha256:test-input".into(),
     };
     store.begin_tool_call(start.clone()).await.unwrap();
-    assert!(store.begin_tool_call(start).await.is_err());
+    store.begin_tool_call(start.clone()).await.unwrap();
+    let mut conflicting = start.clone();
+    conflicting.input_digest = "sha256:different-input".into();
+    assert!(store.begin_tool_call(conflicting).await.is_err());
+    let calls = store.tool_calls(&session.id, "turn-tools").await.unwrap();
+    assert_eq!(calls[0].invocation_id, start.invocation_id);
+    assert_eq!(calls[0].invocation_class, Some(ToolInvocationClass::Read));
+    assert_eq!(calls[0].position, ToolExecutionPosition::Prepared);
+    assert_eq!(calls[0].ledger_revision, 0);
+
+    let advance = ToolCallAdvance {
+        session_id: session.id.clone(),
+        turn_id: "turn-tools".into(),
+        call_id: "call-1".into(),
+        expected_revision: 0,
+        expected_position: ToolExecutionPosition::Prepared,
+        next_position: ToolExecutionPosition::Authorized,
+    };
+    assert_eq!(store.advance_tool_call(advance.clone()).await.unwrap(), 1);
+    assert_eq!(store.advance_tool_call(advance).await.unwrap(), 1);
+    assert!(
+        store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session.id.clone(),
+                turn_id: "turn-tools".into(),
+                call_id: "call-1".into(),
+                expected_revision: 1,
+                expected_position: ToolExecutionPosition::Authorized,
+                next_position: ToolExecutionPosition::ResultPersisted,
+            })
+            .await
+            .is_err()
+    );
     assert!(
         store
             .complete_turn(
@@ -396,7 +434,13 @@ async fn tool_lifecycle_is_bound_to_one_running_turn_and_one_terminal() {
             session_id: session.id.clone(),
             turn_id: "turn-tools".into(),
             call_id: "call-2".into(),
+            invocation_id: ToolInvocationId::new(),
             tool_name: "Command".into(),
+            invocation_class: Some(ToolInvocationClass::Terminal),
+            declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            capability_revision: "sha256:test-surface".into(),
+            input_digest: "sha256:test-input-2".into(),
         })
         .await
         .unwrap();

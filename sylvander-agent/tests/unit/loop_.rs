@@ -625,6 +625,26 @@ async fn tool_identity_is_prepared_before_approval_and_execution() {
             |event| matches!(event, AgentEvent::ToolCallPrepared { id, .. } if id == "call-order"),
         )
         .unwrap();
+    let AgentEvent::ToolCallPrepared {
+        invocation_class,
+        recovery_policy,
+        input_digest,
+        capability_revision,
+        ..
+    } = &events[prepared]
+    else {
+        unreachable!();
+    };
+    assert_eq!(
+        *invocation_class,
+        Some(crate::tool_invocation::ToolInvocationClass::Extension),
+    );
+    assert_eq!(
+        *recovery_policy,
+        crate::tool_invocation::ToolRecoveryPolicy::NeverReplay,
+    );
+    assert!(input_digest.starts_with("sha256:"));
+    assert!(capability_revision.starts_with("sha256:"));
     let started = events
         .iter()
         .position(

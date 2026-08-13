@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use futures_util::{Stream, StreamExt};
+use sha2::{Digest, Sha256};
 use tracing::{Instrument as _, warn};
 
 use sylvander_llm_core::{
@@ -439,10 +440,26 @@ pub fn run_stream(
                     .iter()
                     .map(|tool| request.tools.prepare(&tool.name, tool.input.clone()))
                     .collect::<Vec<_>>();
-                for tool in &tool_blocks {
+                for (tool, prepared) in tool_blocks.iter().zip(prepared_calls.iter()) {
+                    let (invocation_class, recovery_policy, input) = match prepared {
+                        Ok(call) => (
+                            Some(call.spec().invocation_class),
+                            call.spec().recovery_policy,
+                            call.input(),
+                        ),
+                        Err(_) => (
+                            None,
+                            crate::tool::invocation::ToolRecoveryPolicy::NeverReplay,
+                            &tool.input,
+                        ),
+                    };
                     yield AgentEvent::ToolCallPrepared {
                         id: tool.id.clone(),
                         name: tool.name.clone(),
+                        invocation_class,
+                        recovery_policy,
+                        input_digest: tool_input_digest(input),
+                        capability_revision: ports.invocation_snapshot.revision().to_owned(),
                     };
                 }
 
@@ -1067,6 +1084,13 @@ pub fn run_stream(
         ));
         yield AgentEvent::Done(outcome);
     }
+}
+
+fn tool_input_digest(input: &serde_json::Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"sylvander.tool.prepared-input.v1\0");
+    hasher.update(serde_json::to_vec(input).unwrap_or_default());
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 /// Convenience wrapper around [`run_stream`] that consumes the

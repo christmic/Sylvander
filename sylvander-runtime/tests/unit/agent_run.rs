@@ -933,6 +933,13 @@ impl SessionStore for FailingSessionStore {
         self.inner.finish_tool_call(completion).await
     }
 
+    async fn advance_tool_call(
+        &self,
+        advance: crate::storage::session::ToolCallAdvance,
+    ) -> Result<u64, crate::storage::session::SessionStoreError> {
+        self.inner.advance_tool_call(advance).await
+    }
+
     async fn tool_calls(
         &self,
         session_id: &SessionId,

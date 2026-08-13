@@ -65,7 +65,7 @@ use crate::session::{SessionMetadata, now_secs};
 use crate::storage::artifact::ArtifactTurnBinding;
 use crate::storage::session::{
     SessionStoreError, ToolCallCompletion, ToolCallFailureKind as StoredToolCallFailureKind,
-    ToolCallStart, ToolCallState, TurnCompletion, TurnStart, TurnState,
+    ToolCallStart, ToolCallState, ToolInvocationId, TurnCompletion, TurnStart, TurnState,
 };
 use crate::storage::workspace_journal::WorkspaceJournal;
 
@@ -866,14 +866,28 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::turn::event::AgentEvent::ToolCallPrepared { id, name } => {
+                sylvander_agent::turn::event::AgentEvent::ToolCallPrepared {
+                    id,
+                    name,
+                    invocation_class,
+                    recovery_policy,
+                    input_digest,
+                    capability_revision,
+                } => {
                     if let Some(store) = &self.session_store {
                         store
                             .begin_tool_call(ToolCallStart {
                                 session_id: session_id.clone(),
                                 turn_id: turn_id.to_owned(),
                                 call_id: id.clone(),
+                                invocation_id: ToolInvocationId::new(),
                                 tool_name: name.clone(),
+                                invocation_class,
+                                declared_recovery_policy: recovery_policy,
+                                effective_recovery_policy:
+                                    sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay,
+                                capability_revision,
+                                input_digest,
                             })
                             .await
                             .map_err(|source| {
