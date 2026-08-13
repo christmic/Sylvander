@@ -13,6 +13,7 @@ export type RuntimeCommand =
   | { type: "interrupt"; session_id: string }
   | { type: "answer"; session_id: string; call_id: string; answer: string }
   | { type: "resolve_plan"; session_id: string; plan_id: string; decision: PlanDecision }
+  | { type: "cancel_task"; session_id: string; task_id: string }
   | { type: "get_runtime_info" };
 
 export type PlanDecision =

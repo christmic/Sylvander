@@ -338,7 +338,14 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       : current);
   }, [state.activePlan, submit]);
 
-  return { state, submit, selectSession, answerQuestion, resolvePlan };
+  const cancelTask = useCallback((taskId: string) => {
+    const sessionId = selectedRef.current;
+    const running = state.tasks.some((task) => task.id === taskId && task.state === "running");
+    if (!sessionId || !running) return Promise.resolve();
+    return submit({ type: "cancel_task", session_id: sessionId, task_id: taskId });
+  }, [state.tasks, submit]);
+
+  return { state, submit, selectSession, answerQuestion, resolvePlan, cancelTask };
 }
 
 function appendDelta(entries: TranscriptEntry[], delta: string): TranscriptEntry[] {

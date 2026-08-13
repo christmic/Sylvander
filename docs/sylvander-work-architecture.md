@@ -123,6 +123,11 @@ complete. Revised steps remain represented by the same protocol decision and
 will be enabled with the dedicated editor surface rather than an ad-hoc wire
 message.
 
+Running task rows may issue the public `CancelTask` command with Runtime's
+`session_id` and `task_id`. Submission does not optimistically mark the row;
+only the subsequent `TaskCancelled` event changes its state and records the
+authoritative reason. Terminal tasks expose no cancellation control.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem

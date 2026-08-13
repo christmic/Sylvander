@@ -9,7 +9,7 @@ export interface AppProps {
 }
 
 export default function App({ gateway }: AppProps) {
-  const { state, selectSession, submit, answerQuestion, resolvePlan } = useRuntime(gateway);
+  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [inspector, setInspector] = useState<"plan" | "tasks" | "changes">("plan");
@@ -196,7 +196,7 @@ export default function App({ gateway }: AppProps) {
       </div>
       {inspector === "plan" && <ol className="plan-list">{state.plan.map((step, index) => <li key={`${index}-${step.label}`} data-state={step.state}><span>{step.state === "complete" ? "✓" : index + 1}</span><p>{step.label}</p></li>)}</ol>}
       {inspector === "plan" && state.activePlan && <div className="decision-actions"><button className="secondary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "rejected", reason: "cancelled by user" })}>Reject plan</button><button className="primary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "approved" })}>Approve plan</button></div>}
-      {inspector === "tasks" && <div className="task-list">{state.tasks.map((task) => <article key={task.id}><span className={`presence ${task.state}`} /><div><strong>{task.purpose}</strong><p>{task.owner} · {task.state}{task.detail ? ` · ${task.detail}` : ""}</p></div></article>)}</div>}
+      {inspector === "tasks" && <div className="task-list">{state.tasks.map((task) => <article key={task.id}><span className={`presence ${task.state}`} /><div><strong>{task.purpose}</strong><p>{task.owner} · {task.state}{task.detail ? ` · ${task.detail}` : ""}</p></div>{task.state === "running" && <button className="secondary-button" onClick={() => void cancelTask(task.id)}>Cancel</button>}</article>)}</div>}
       {inspector === "changes" && <div className="empty-inspector"><span>±</span><h3>No reviewable diff</h3><p>Runtime-owned changes will appear here.</p></div>}
       <footer className="inspector-summary"><span>Protocol</span><strong>v5</strong><div><span style={{ width: state.connection === "live" ? "100%" : "0%" }} /></div></footer>
     </aside>}

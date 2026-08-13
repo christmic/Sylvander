@@ -288,5 +288,17 @@ describe("Sylvander Work", () => {
     expect(screen.getByText("agent · cancelled · User stopped")).toBeTruthy();
     expect(screen.getByText("agent · running · Still running")).toBeTruthy();
     expect(screen.getAllByText("Verify build")).toHaveLength(1);
+    act(() => screen.getByRole("button", { name: "Cancel" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "cancel_task",
+      session_id: "session-1",
+      task_id: "task-4",
+    }));
+    expect(screen.getByText("agent · running · Still running")).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "task_cancelled", session_id: "session-1", task_id: "task-4", reason: "Cancelled by user",
+    } }));
+    expect(await screen.findByText("agent · cancelled · Cancelled by user")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
   });
 });
