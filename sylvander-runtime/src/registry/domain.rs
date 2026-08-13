@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use sylvander_api::{ModelLifecycle, ModelPricing};
 
-use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::config::SecretRef;
+use crate::registry::agent::{AgentRegistry, AgentRegistryError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -503,5 +503,5 @@ fn decode_stored<T: DeserializeOwned + ValidateIdentity>(
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/registry_domain_capability_tests.rs"]
+#[path = "../../tests/unit/registry_domain_capability_tests.rs"]
 mod capability_tests;

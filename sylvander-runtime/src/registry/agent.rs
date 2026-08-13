@@ -11,11 +11,11 @@ use sylvander_api::AgentId;
 use tokio::sync::Mutex;
 use tokio::task;
 
-use crate::agent_registry_snapshot_v3::{
+use crate::config::{AgentDefinitionConfig, ServerConfig};
+use crate::registry::snapshot::{
     AgentRegistrySnapshotV3, AgentSnapshotSelectionV3, AgentSnapshotV3Error,
     stage_snapshot_v3_in_transaction,
 };
-use crate::config::{AgentDefinitionConfig, ServerConfig};
 
 #[derive(Clone)]
 pub struct AgentRegistry {
@@ -980,5 +980,5 @@ CREATE TABLE IF NOT EXISTS agent_registry_heads (
 ";
 
 #[cfg(test)]
-#[path = "../tests/unit/agent_registry.rs"]
+#[path = "../../tests/unit/agent_registry.rs"]
 mod tests;

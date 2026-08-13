@@ -2,12 +2,12 @@
 
 use sylvander_api::ModelLifecycle;
 
-use crate::agent_registry::AgentRegistry;
 use crate::config::{ConfigError, ServerConfig};
 use crate::credential_registry::CredentialRegistryError;
 use crate::provider::model_registry::ModelRegistryError;
 use crate::provider::registry::ProviderRegistryError;
-use crate::registry_domain::{
+use crate::registry::agent::AgentRegistry;
+use crate::registry::domain::{
     CredentialBindingRevision, ModelCapabilityError, ModelDefinition, ProviderDefinition,
     canonicalize_model_capabilities,
 };
@@ -271,5 +271,5 @@ pub(crate) enum RegistryBootstrapError {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/registry_bootstrap_capability_tests.rs"]
+#[path = "../../tests/unit/registry_bootstrap_capability_tests.rs"]
 mod capability_tests;

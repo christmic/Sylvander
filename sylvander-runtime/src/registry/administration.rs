@@ -11,7 +11,6 @@ use sylvander_api::{
 };
 
 use crate::agent_admin::is_agent_administrator;
-use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::config::SecretRef;
 use crate::credential_audit::{
     CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
@@ -21,7 +20,8 @@ use crate::credential_registry::{CredentialRegistryError, CredentialSecretResolv
 use crate::provider::model_registry::ModelRegistryError;
 use crate::provider::registry::ProviderRegistryError;
 use crate::provider::request_scoped::AnthropicProviderFactory;
-use crate::registry_domain::{
+use crate::registry::agent::{AgentRegistry, AgentRegistryError};
+use crate::registry::domain::{
     CredentialBindingView, ModelDefinition, ProviderDefinition, SecretReferenceKind,
     StoredRevision, canonicalize_model_capabilities,
 };
@@ -675,7 +675,7 @@ impl<'a> CredentialRegistryMutationService<'a> {
         expected_active: u64,
         reference: CredentialSecretReferenceDraft,
     ) -> RegistryAdminResponse {
-        let definition = crate::registry_domain::CredentialBindingRevision {
+        let definition = crate::registry::domain::CredentialBindingRevision {
             binding_id: binding_id.clone(),
             generation,
             reference: secret_reference(reference),
@@ -978,7 +978,7 @@ fn redact_credential_generation(view: &CredentialBindingView) -> CredentialGener
 }
 
 fn redact_stored_credential(
-    revision: &StoredRevision<crate::registry_domain::CredentialBindingRevision>,
+    revision: &StoredRevision<crate::registry::domain::CredentialBindingRevision>,
 ) -> CredentialGenerationView {
     CredentialGenerationView {
         binding_id_sha256: sha256(&revision.definition.binding_id),
@@ -1455,5 +1455,5 @@ fn sha256(value: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/registry_admin.rs"]
+#[path = "../../tests/unit/registry_admin.rs"]
 mod tests;

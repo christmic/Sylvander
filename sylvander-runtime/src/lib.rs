@@ -28,10 +28,16 @@ mod agent_admin;
 mod agent_admin_runtime_v3_tests;
 /// Runtime-owned declarative Agent configuration.
 pub mod agent_definition;
+/// Runtime-owned Agent, provider, model, and credential revision governance.
+pub mod registry;
+use registry::administration as registry_admin;
 /// Versioned Agent definitions and active-revision lookup.
-pub mod agent_registry;
-#[allow(dead_code)] // versioned contract staged before SQL composition wiring
-mod agent_registry_snapshot_v3;
+pub use registry::agent as agent_registry;
+#[cfg(test)]
+use registry::bootstrap as registry_bootstrap;
+use registry::composition as registry_composition_v3;
+use registry::domain as registry_domain;
+use registry::snapshot as agent_registry_snapshot_v3;
 #[cfg(test)]
 #[path = "../tests/unit/agent_registry_snapshot_v3_contract.rs"]
 mod agent_registry_snapshot_v3_tests;
@@ -96,20 +102,12 @@ pub use provider::catalog_sync as provider_catalog_sync;
 #[cfg(test)]
 #[path = "../tests/unit/provider_registry.rs"]
 mod provider_registry_tests;
-#[allow(dead_code)] // production handler wiring follows the audited transport seam
-mod registry_admin;
-#[allow(dead_code)] // pure bootstrap plan; executor wiring follows registry snapshots
-mod registry_bootstrap;
 #[cfg(test)]
 #[path = "../tests/unit/registry_bootstrap.rs"]
 mod registry_bootstrap_tests;
-#[allow(dead_code)] // versioned composition is wired into Agent construction next
-mod registry_composition_v3;
 #[cfg(test)]
 #[path = "../tests/unit/registry_composition_v3.rs"]
 mod registry_composition_v3_tests;
-#[allow(dead_code)] // consumed by the staged registry mutation batches
-mod registry_domain;
 #[cfg(test)]
 #[path = "../tests/unit/registry_domain.rs"]
 mod registry_domain_tests;

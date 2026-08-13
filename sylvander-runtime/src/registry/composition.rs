@@ -8,11 +8,11 @@ use std::collections::BTreeMap;
 
 use sylvander_api::{AgentId, ModelSelection};
 
-use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::agent_registry_snapshot_v3::AgentSnapshotV3Error;
 use crate::config::AgentDefinitionConfig;
 use crate::credential_registry::CredentialRegistryError;
-use crate::registry_domain::{ModelDefinition, ProviderDefinition};
+use crate::registry::agent::{AgentRegistry, AgentRegistryError};
+use crate::registry::domain::{ModelDefinition, ProviderDefinition};
+use crate::registry::snapshot::AgentSnapshotV3Error;
 
 /// Complete immutable registry closure for one Agent revision.
 #[derive(Debug, Clone)]

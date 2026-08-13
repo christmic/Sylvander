@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sylvander_api::ModelSelection;
 
-use crate::agent_registry::{AgentRegistry, AgentRegistryError, ensure_current_registry_schema};
+use crate::registry::agent::{AgentRegistry, AgentRegistryError, ensure_current_registry_schema};
 
 /// Qualified model policy supplied when materializing one Agent revision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,5 +524,5 @@ pub(crate) enum AgentSnapshotV3Error {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/agent_registry_snapshot_v3.rs"]
+#[path = "../../tests/unit/agent_registry_snapshot_v3.rs"]
 mod tests;
