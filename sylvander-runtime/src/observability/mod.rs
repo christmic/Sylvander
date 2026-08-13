@@ -105,6 +105,10 @@ pub(crate) enum RuntimePersistenceOperation {
     RestoreHistory,
     /// Atomically persist the user message and immutable turn snapshot.
     BeginTurn,
+    /// Persist tool identity before approval or execution.
+    BeginToolCall,
+    /// Persist the tool's unique terminal state.
+    FinishToolCall,
     /// Accumulate one provider iteration's usage.
     RecordUsage,
     /// Atomically persist the terminal assistant message and completed turn.

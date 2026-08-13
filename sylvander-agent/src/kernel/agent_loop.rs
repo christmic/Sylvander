@@ -439,6 +439,12 @@ pub fn run_stream(
                     .iter()
                     .map(|tool| request.tools.prepare(&tool.name, tool.input.clone()))
                     .collect::<Vec<_>>();
+                for tool in &tool_blocks {
+                    yield AgentEvent::ToolCallPrepared {
+                        id: tool.id.clone(),
+                        name: tool.name.clone(),
+                    };
+                }
 
                 // Validate and freeze each call before asking for approval.
                 // The loop PAUSES here if the gate waits for external input.

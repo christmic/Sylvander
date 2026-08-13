@@ -120,15 +120,16 @@ The Session schema stores explicit turn lifecycle. Turn admission is atomic
 with user input and immutable configuration; successful completion is atomic
 with assistant output.
 
-The latest-only Session schema v3 provides content-free tool lifecycle rows
-for `(session, turn, call, tool name)`. The storage contract permits exactly
-one `succeeded`, `failed`, or `rejected` terminal. A successful turn cannot
-commit while any tool row is still running; an interrupted or failed turn
-atomically marks its remaining calls `abandoned`. Wiring AgentRun events into
-this contract remains required before Runtime can claim durable tool-call
-lifecycle coverage. Tool arguments and results belong in provider-neutral
-conversation history or the governed artifact domain, not this operational
-table.
+The latest-only Session schema v3 owns content-free tool lifecycle rows for
+`(session, turn, call, tool name)`. Agent emits a content-free preparation fact
+before approval; Runtime persists it before the event stream may continue.
+Execution start remains a separate fact, so a rejected call is never described
+as executed. Runtime then persists exactly one `succeeded`, `failed`, or
+`rejected` terminal before publishing observation or client output. A
+successful turn cannot commit while any tool row is still running; an
+interrupted or failed turn atomically marks its remaining calls `abandoned`.
+Tool arguments and results belong in provider-neutral conversation history or
+the governed artifact domain, not this operational table.
 
 Production composition also retains concrete, non-extensible health probes in
 this facade. Each operational request checks Session, relationship memory,

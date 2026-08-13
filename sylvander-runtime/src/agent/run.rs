@@ -59,7 +59,9 @@ use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::storage::artifact::{ArtifactTurnBinding, RuntimeArtifactService};
 use crate::storage::session::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
-    SessionStoreError, StoredSession, TurnCompletion, TurnFailureKind, TurnStart, TurnState,
+    SessionStoreError, StoredSession, ToolCallCompletion,
+    ToolCallFailureKind as StoredToolCallFailureKind, ToolCallStart, ToolCallState, TurnCompletion,
+    TurnFailureKind, TurnStart, TurnState,
 };
 use crate::storage::workspace_journal::{RollbackPreview, RollbackReport, WorkspaceJournal};
 use sylvander_agent::approval::{
@@ -83,7 +85,8 @@ use sylvander_agent::tool::invocation::{
     CapabilityFeatureKind, ToolInvocationDescriptor, ToolInvocationGateway,
 };
 use sylvander_agent::tool::{
-    RegisteredTool, ToolRegistry, ToolSourceFeature, ToolSourceKind, ToolSourceStatus,
+    RegisteredTool, ToolFailureKind as AgentToolFailureKind, ToolRegistry, ToolSourceFeature,
+    ToolSourceKind, ToolSourceStatus,
 };
 use sylvander_agent::tool_context::{Cap, NetworkPolicy, ToolContext};
 use sylvander_agent::tools::{MemoryReadTool, ReadTool};
@@ -3075,13 +3078,38 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                sylvander_agent::turn::event::AgentEvent::ToolCallStart { id, name, input } => {
+                sylvander_agent::turn::event::AgentEvent::ToolCallPrepared { id, name } => {
+                    if let Some(store) = &self.session_store {
+                        store
+                            .begin_tool_call(ToolCallStart {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.to_owned(),
+                                call_id: id.clone(),
+                                tool_name: name.clone(),
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::BeginToolCall,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::BeginToolCall,
+                                succeeded: true,
+                            });
+                    }
                     self.observability.record(RuntimeEvent::ToolStarted {
                         turn_id: turn_id.to_owned(),
                         session_id: session_id.clone(),
-                        tool_call_id: id.clone(),
-                        tool_name: name.clone(),
+                        tool_call_id: id,
+                        tool_name: name,
                     });
+                }
+                sylvander_agent::turn::event::AgentEvent::ToolCallStart { id, name, input } => {
                     if matches!(
                         name.as_str(),
                         "present_plan" | "update_plan" | "start_background_task"
@@ -3136,19 +3164,53 @@ impl AgentRunInner {
                     is_error,
                     failure_kind,
                 } => {
-                    let failure_kind = match failure_kind {
-                        Some(
-                            sylvander_agent::tool::ToolFailureKind::FilesystemBoundaryPolicyViolation,
-                        ) => Some(RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation),
-                        Some(sylvander_agent::tool::ToolFailureKind::Unclassified) | None => None,
+                    let runtime_failure_kind = match failure_kind {
+                        Some(AgentToolFailureKind::FilesystemBoundaryPolicyViolation) => {
+                            Some(RuntimeToolFailureKind::FilesystemBoundaryPolicyViolation)
+                        }
+                        Some(AgentToolFailureKind::Unclassified) | None => None,
                     };
+                    if let Some(store) = &self.session_store {
+                        let stored_failure_kind = match failure_kind {
+                            Some(AgentToolFailureKind::FilesystemBoundaryPolicyViolation) => {
+                                Some(StoredToolCallFailureKind::FilesystemBoundaryPolicyViolation)
+                            }
+                            Some(AgentToolFailureKind::Unclassified) | None => None,
+                        };
+                        store
+                            .finish_tool_call(ToolCallCompletion {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.to_owned(),
+                                call_id: id.clone(),
+                                state: if is_error {
+                                    ToolCallState::Failed
+                                } else {
+                                    ToolCallState::Succeeded
+                                },
+                                failure_kind: stored_failure_kind,
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::FinishToolCall,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::FinishToolCall,
+                                succeeded: true,
+                            });
+                    }
                     self.observability.record(RuntimeEvent::ToolFinished {
                         turn_id: turn_id.to_owned(),
                         session_id: session_id.clone(),
                         tool_call_id: id.clone(),
                         tool_name: name.clone(),
                         succeeded: !is_error,
-                        failure_kind,
+                        failure_kind: runtime_failure_kind,
                     });
                     if matches!(
                         name.as_str(),
@@ -3168,6 +3230,30 @@ impl AgentRunInner {
                     .await;
                 }
                 sylvander_agent::turn::event::AgentEvent::ToolRejected { id, name, reason } => {
+                    if let Some(store) = &self.session_store {
+                        store
+                            .finish_tool_call(ToolCallCompletion {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.to_owned(),
+                                call_id: id.clone(),
+                                state: ToolCallState::Rejected,
+                                failure_kind: None,
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::FinishToolCall,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::FinishToolCall,
+                                succeeded: true,
+                            });
+                    }
                     self.observability.record(RuntimeEvent::ToolFinished {
                         turn_id: turn_id.to_owned(),
                         session_id: session_id.clone(),
@@ -3668,6 +3754,8 @@ fn runtime_persistence_operation(
         SessionPersistenceOperation::CreateSession => RuntimePersistenceOperation::CreateSession,
         SessionPersistenceOperation::RestoreHistory => RuntimePersistenceOperation::RestoreHistory,
         SessionPersistenceOperation::BeginTurn => RuntimePersistenceOperation::BeginTurn,
+        SessionPersistenceOperation::BeginToolCall => RuntimePersistenceOperation::BeginToolCall,
+        SessionPersistenceOperation::FinishToolCall => RuntimePersistenceOperation::FinishToolCall,
         SessionPersistenceOperation::RecordUsage => RuntimePersistenceOperation::RecordUsage,
         SessionPersistenceOperation::CompleteTurn => RuntimePersistenceOperation::CompleteTurn,
         SessionPersistenceOperation::FinishTurn => RuntimePersistenceOperation::FinishTurn,
@@ -4220,6 +4308,8 @@ pub enum SessionPersistenceOperation {
     CreateSession,
     RestoreHistory,
     BeginTurn,
+    BeginToolCall,
+    FinishToolCall,
     RecordUsage,
     CompleteTurn,
     FinishTurn,
@@ -4233,6 +4323,8 @@ impl std::fmt::Display for SessionPersistenceOperation {
             Self::CreateSession => "create_session",
             Self::RestoreHistory => "restore_history",
             Self::BeginTurn => "begin_turn",
+            Self::BeginToolCall => "begin_tool_call",
+            Self::FinishToolCall => "finish_tool_call",
             Self::RecordUsage => "record_usage",
             Self::CompleteTurn => "complete_turn",
             Self::FinishTurn => "finish_turn",

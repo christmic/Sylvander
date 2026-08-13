@@ -596,6 +596,46 @@ async fn trusted_tool_failure_classification_reaches_the_event_stream() {
 }
 
 #[tokio::test]
+async fn tool_identity_is_prepared_before_approval_and_execution() {
+    let provider = Arc::new(ScriptedProvider::new([
+        Ok(completed_events(
+            vec![ProviderBlock::ToolCall {
+                id: "call-order".into(),
+                name: "guarded".into(),
+                arguments: json!({}),
+            }],
+            ProviderStopReason::ToolUse,
+        )),
+        Ok(completed_events(Vec::new(), ProviderStopReason::EndTurn)),
+    ]));
+    let tools = crate::tool::ToolRegistry::new().register(MockTool::new(
+        "guarded",
+        "ordered tool",
+        crate::tool::ToolOutput::ok("done"),
+    ));
+    let request = turn_request(provider_model(), tools, vec![ChatMessage::user("start")]);
+    let ports = turn_ports(provider, &request);
+    let kernel = kernel();
+    let events = run_stream(&kernel, request, ports)
+        .collect::<Vec<_>>()
+        .await;
+    let prepared = events
+        .iter()
+        .position(
+            |event| matches!(event, AgentEvent::ToolCallPrepared { id, .. } if id == "call-order"),
+        )
+        .unwrap();
+    let started = events
+        .iter()
+        .position(
+            |event| matches!(event, AgentEvent::ToolCallStart { id, .. } if id == "call-order"),
+        )
+        .unwrap();
+
+    assert!(prepared < started);
+}
+
+#[tokio::test]
 async fn approval_receives_facts_from_the_exact_prepared_call() {
     let provider = Arc::new(ScriptedProvider::new([
         Ok(completed_events(

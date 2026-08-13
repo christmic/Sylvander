@@ -19,8 +19,8 @@ use crate::context::compression::layer::LayerReport;
 use crate::interaction::plan::PlanDecision;
 use crate::tool::ToolFailureKind;
 use crate::turn::error::AgentLoopError;
-use crate::turn::outcome::AgentOutcome;
 use crate::turn::machine::TurnTransition;
+use crate::turn::outcome::AgentOutcome;
 
 /// Provider-neutral reason for retrying a model request.
 ///
@@ -71,7 +71,16 @@ pub enum AgentEvent {
         cause: ModelRetryCause,
     },
 
-    /// The model invoked a tool — about to execute it.
+    /// A provider tool call was parsed and is about to enter approval.
+    ///
+    /// Runtime uses this content-free identity boundary for durable lifecycle
+    /// admission before any approval or execution side effect.
+    ToolCallPrepared {
+        id: String,
+        name: String,
+    },
+
+    /// An approved tool call is about to execute.
     ToolCallStart {
         /// Tool call ID (matches `tool_use.id`).
         id: String,

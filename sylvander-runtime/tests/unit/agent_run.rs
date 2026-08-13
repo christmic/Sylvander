@@ -755,6 +755,50 @@ impl sylvander_llm_core::ModelProvider for RecordingProvider {
     }
 }
 
+struct ToolCallingProvider;
+
+impl sylvander_llm_core::ModelProvider for ToolCallingProvider {
+    fn complete_stream(
+        &self,
+        request: sylvander_llm_core::ModelRequest,
+    ) -> sylvander_llm_core::ProviderFuture<'_> {
+        Box::pin(async move {
+            let has_tool_result = request.messages.iter().any(|message| {
+                message.content.iter().any(|block| {
+                    matches!(block, sylvander_llm_core::ContentBlock::ToolResult { .. })
+                })
+            });
+            let (content, stop_reason) = if has_tool_result {
+                (
+                    vec![sylvander_llm_core::ContentBlock::Text {
+                        text: "done".into(),
+                    }],
+                    sylvander_llm_core::StopReason::EndTurn,
+                )
+            } else {
+                (
+                    vec![sylvander_llm_core::ContentBlock::ToolCall {
+                        id: "durable-call".into(),
+                        name: "read".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                    sylvander_llm_core::StopReason::ToolUse,
+                )
+            };
+            let response = sylvander_llm_core::ModelResponse {
+                id: request.request_id,
+                model: request.model,
+                content,
+                stop_reason,
+                usage: sylvander_llm_core::TokenUsage::default(),
+            };
+            Ok(Box::pin(futures_util::stream::iter([Ok(
+                sylvander_llm_core::ModelStreamEvent::Completed(Box::new(response)),
+            )])) as sylvander_llm_core::ModelEventStream)
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionStoreFailPoint {
     Get,
@@ -1043,6 +1087,90 @@ impl SessionStore for FailingSessionStore {
         session_id: &SessionId,
     ) -> Result<u64, crate::storage::session::SessionStoreError> {
         self.inner.count_active_messages(context, session_id).await
+    }
+}
+
+async fn persistent_tool_lifecycle(
+    approval_policy: sylvander_api::ApprovalPolicy,
+) -> crate::RuntimeObservabilitySnapshot {
+    let store: Arc<dyn SessionStore> = Arc::new(
+        crate::storage::session::SqliteSessionStore::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let (spec, _) = test_spec_and_client();
+    let resolver = Arc::new(
+        sylvander_agent::prompt::PromptResolver::new(
+            "agent:test-agent@1".into(),
+            spec.persona.system_prompt.clone(),
+            Vec::new(),
+            None,
+            false,
+        )
+        .unwrap(),
+    );
+    let model = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new(
+            spec.model.provider.clone(),
+            spec.model.model_name.clone(),
+        ),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE,
+    };
+    let (run, issuer) =
+        AgentRun::qualified_router_builder(spec, Arc::new(ToolCallingProvider), model)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .session_store(store.clone())
+            .prompt_resolver(resolver)
+            .override_tools(ToolRegistry::new().register(SessionTestTool("read")))
+            .build_with_session_issuer()
+            .unwrap();
+    let session_id = SessionId::new(format!("durable-tool-{approval_policy:?}"));
+    let metadata = test_metadata();
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![run.id().clone()],
+    );
+    stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+    stored
+        .effective_config
+        .as_mut()
+        .unwrap()
+        .permissions
+        .approval_policy = approval_policy;
+    store.save(&stored).await.unwrap();
+    let lease = issuer.issue(session_id.clone(), metadata.clone()).unwrap();
+    run.attach_authenticated_session(lease).await.unwrap();
+
+    run.handle_message(BusMessage::user_chat(
+        session_id,
+        metadata.user_id,
+        "use the tool",
+    ))
+    .await
+    .unwrap();
+
+    run.inner.observability.snapshot()
+}
+
+#[tokio::test]
+async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
+    for (policy, succeeded, failed) in [
+        (sylvander_api::ApprovalPolicy::Allow, 1, 0),
+        (sylvander_api::ApprovalPolicy::Deny, 0, 1),
+    ] {
+        let snapshot = persistent_tool_lifecycle(policy).await;
+        assert_eq!(snapshot.turns_completed, 1);
+        assert_eq!(snapshot.tools_started, 1);
+        assert_eq!(snapshot.tools_succeeded, succeeded);
+        assert_eq!(snapshot.tools_failed, failed);
+        assert_eq!(snapshot.persistence_succeeded, 6);
+        assert_eq!(snapshot.persistence_failed, 0);
+        assert_eq!(snapshot.active_tools, 0);
     }
 }
 
