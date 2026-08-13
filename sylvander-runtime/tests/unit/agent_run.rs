@@ -4093,10 +4093,81 @@ fn typed_attachments_become_provider_content_blocks() {
             byte_count: 12,
         }],
     );
-    let value = serde_json::to_value(AgentRunInner::message_to_param(&message)).expect("json");
+    let value =
+        serde_json::to_value(AgentRunInner::message_to_param(&message).unwrap()).expect("json");
     let content = value["content"].as_array().expect("content blocks");
     assert_eq!(content.len(), 2);
     assert!(content[1]["text"].as_str().unwrap().contains("src/main.rs"));
+}
+
+#[test]
+fn typed_audio_attachment_becomes_a_validated_provider_block() {
+    let message = BusMessage::user_chat_with_attachments(
+        SessionId::new("s1"),
+        "u1",
+        "listen",
+        vec![sylvander_api::MessageAttachment {
+            id: "audio-1".into(),
+            kind: sylvander_api::AttachmentKind::Audio,
+            name: "sample.wav".into(),
+            mime_type: "audio/wav".into(),
+            content: sylvander_api::AttachmentContent::Base64 {
+                data: "UklGRg==".into(),
+            },
+            byte_count: 4,
+        }],
+    );
+    let value =
+        serde_json::to_value(AgentRunInner::message_to_param(&message).unwrap()).expect("json");
+    let content = value["content"].as_array().expect("content blocks");
+    assert_eq!(content.len(), 3);
+    assert_eq!(content[2]["type"], "audio");
+    assert_eq!(content[2]["audio"]["format"], "wav");
+    assert_eq!(content[2]["audio"]["data"], "UklGRg==");
+}
+
+#[test]
+fn binary_attachment_requires_valid_encoding_kind_and_exact_size() {
+    let attachment = |kind, mime_type: &str, data: &str, byte_count| {
+        BusMessage::user_chat_with_attachments(
+            SessionId::new("s1"),
+            "u1",
+            "listen",
+            vec![sylvander_api::MessageAttachment {
+                id: "audio-1".into(),
+                kind,
+                name: "sample".into(),
+                mime_type: mime_type.into(),
+                content: sylvander_api::AttachmentContent::Base64 { data: data.into() },
+                byte_count,
+            }],
+        )
+    };
+    for message in [
+        attachment(
+            sylvander_api::AttachmentKind::Audio,
+            "audio/wav",
+            "not-base64",
+            4,
+        ),
+        attachment(
+            sylvander_api::AttachmentKind::Audio,
+            "audio/wav",
+            "UklGRg==",
+            5,
+        ),
+        attachment(
+            sylvander_api::AttachmentKind::File,
+            "audio/wav",
+            "UklGRg==",
+            4,
+        ),
+    ] {
+        assert!(matches!(
+            AgentRunInner::message_to_param(&message),
+            Err(AgentRunError::Configuration(_))
+        ));
+    }
 }
 
 #[tokio::test]

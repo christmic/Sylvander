@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use futures_util::StreamExt;
 use tokio::sync::oneshot;
 use tracing::{Instrument as _, info};
@@ -39,8 +40,8 @@ use sylvander_agent::workspace_executor::{
 use sylvander_agent::workspace_journal::WorkspaceMutationJournal;
 use sylvander_api::{AgentInstanceId, BusMessage, Recipient, Sender};
 use sylvander_llm_core::{
-    ChatMessage, ContentBlock, ImageContent, MediaSource, ModelResponse, ReasoningConfig,
-    ReasoningEffort as ProviderReasoningEffort,
+    AudioContent, AudioFormat, ChatMessage, ContentBlock, ImageContent, MediaSource, ModelResponse,
+    ReasoningConfig, ReasoningEffort as ProviderReasoningEffort,
 };
 
 #[cfg(test)]
@@ -614,7 +615,7 @@ impl AgentRunInner {
     {
         let session_id = msg.session_id.clone();
         let agent_instance_id = turn_agent_instance_id(&msg, &session_id)?;
-        let user_message = Self::message_to_param(&msg);
+        let user_message = Self::message_to_param(&msg)?;
         let stored_session = if let Some(store) = &self.session_store {
             store.get(&session_id).await.map_err(|source| {
                 AgentRunError::session_persistence(
@@ -1964,9 +1965,9 @@ impl AgentRunInner {
         .await;
     }
 
-    pub(super) fn message_to_param(msg: &BusMessage) -> ChatMessage {
+    pub(super) fn message_to_param(msg: &BusMessage) -> Result<ChatMessage, AgentRunError> {
         if msg.attachments.is_empty() {
-            return ChatMessage::user(&msg.payload);
+            return Ok(ChatMessage::user(&msg.payload));
         }
         let mut blocks = Vec::new();
         if !msg.payload.is_empty() {
@@ -1985,24 +1986,63 @@ impl AgentRunInner {
                     });
                 }
                 sylvander_api::AttachmentContent::Base64 { data } => {
-                    if matches!(attachment.mime_type.as_str(), "image/png" | "image/jpeg") {
-                        blocks.push(ContentBlock::Text {
-                            text: format!("Attached image `{}`:", attachment.name),
-                        });
-                        blocks.push(ContentBlock::Image {
-                            image: ImageContent {
-                                source: MediaSource::Base64 {
-                                    media_type: attachment.mime_type.clone(),
-                                    data: data.clone(),
+                    let decoded = base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .map_err(|_| {
+                            AgentRunError::Configuration(
+                                "binary attachment encoding is invalid".into(),
+                            )
+                        })?;
+                    if decoded.is_empty() || decoded.len() != attachment.byte_count {
+                        return Err(AgentRunError::Configuration(
+                            "binary attachment size does not match its declared fact".into(),
+                        ));
+                    }
+                    match (attachment.kind.clone(), attachment.mime_type.as_str()) {
+                        (sylvander_api::AttachmentKind::Image, "image/png" | "image/jpeg") => {
+                            blocks.push(ContentBlock::Text {
+                                text: format!("Attached image `{}`:", attachment.name),
+                            });
+                            blocks.push(ContentBlock::Image {
+                                image: ImageContent {
+                                    source: MediaSource::Base64 {
+                                        media_type: attachment.mime_type.clone(),
+                                        data: data.clone(),
+                                    },
+                                    alt_text: Some(attachment.name.clone()),
                                 },
-                                alt_text: Some(attachment.name.clone()),
-                            },
-                        });
+                            });
+                        }
+                        (
+                            sylvander_api::AttachmentKind::Audio,
+                            "audio/wav" | "audio/x-wav" | "audio/mpeg",
+                        ) => {
+                            let format = if attachment.mime_type == "audio/mpeg" {
+                                AudioFormat::Mp3
+                            } else {
+                                AudioFormat::Wav
+                            };
+                            blocks.push(ContentBlock::Text {
+                                text: format!("Attached audio `{}`:", attachment.name),
+                            });
+                            blocks.push(ContentBlock::Audio {
+                                audio: AudioContent {
+                                    data: data.clone(),
+                                    format,
+                                    transcript: None,
+                                },
+                            });
+                        }
+                        _ => {
+                            return Err(AgentRunError::Configuration(
+                                "binary attachment type is unsupported".into(),
+                            ));
+                        }
                     }
                 }
             }
         }
-        ChatMessage::user_blocks(blocks)
+        Ok(ChatMessage::user_blocks(blocks))
     }
 }
 

@@ -17,6 +17,7 @@ sylvander-api = { path = "../sylvander-api" }
 tokio = { workspace = true, features = ["fs", "io-util", "process"] }
 futures-util = { workspace = true }
 async-trait = "0.1"
+base64 = "0.22"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

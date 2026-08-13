@@ -281,6 +281,7 @@ pub enum AttachmentKind {
     Paste,
     File,
     Image,
+    Audio,
     Selection,
     Diff,
     TerminalOutput,
