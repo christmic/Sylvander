@@ -406,7 +406,7 @@ impl RuntimeModels {
             .collect::<Vec<_>>();
         models.sort_by(|left, right| (&left.provider, &left.id).cmp(&(&right.provider, &right.id)));
         sylvander_api::RuntimeModelInfo {
-            current_model: self.current.model_id.clone(),
+            current: self.current.clone(),
             reasoning_effort: self.reasoning_effort,
             models,
         }
