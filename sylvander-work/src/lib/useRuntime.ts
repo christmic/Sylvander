@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimeSessionConfigState } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimePendingMemoryConfirmation, type RuntimeSessionConfigState } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -71,6 +71,8 @@ export interface RuntimeViewState {
     status: "ready" | "submitting" | "recorded";
     feedbackId?: string;
   };
+  memoryConfirmations: RuntimePendingMemoryConfirmation[];
+  memoryDecisionPending?: string;
   liveness: "idle" | "checking" | "healthy";
   diagnostic?: string;
 }
@@ -85,6 +87,7 @@ const initialState: RuntimeViewState = {
   tasks: [],
   interruptingSessionIds: [],
   contextRequestPending: false,
+  memoryConfirmations: [],
   liveness: "idle",
 };
 
@@ -109,8 +112,25 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const localTurnStateRef = useRef(new Map<string, "waiting" | "active">());
   const interruptingSessionsRef = useRef(new Set<string>());
   const contextRequestSessionRef = useRef<string | undefined>(undefined);
+  const protocolCapabilitiesRef = useRef(new Set<string>());
+  const memoryRequestSessionRef = useRef<string | undefined>(undefined);
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
+
+  // Memory candidates are Runtime-owned. Desktop only asks for the selected
+  // Session's latest bounded projection after capability negotiation.
+  const requestMemoryConfirmations = useCallback((sessionId: string) => {
+    if (!protocolCapabilitiesRef.current.has("memory_confirmation_v1")) return;
+    memoryRequestSessionRef.current = sessionId;
+    void submit({
+      type: "memory_confirmation",
+      request: { operation: "list", version: 1, session_id: sessionId },
+    }).catch((error: unknown) => {
+      if (memoryRequestSessionRef.current !== sessionId) return;
+      memoryRequestSessionRef.current = undefined;
+      setState((current) => ({ ...current, diagnostic: safeDiagnostic(error) }));
+    });
+  }, [submit]);
 
   const flushPendingDeltas = useCallback((sessionId: string) => {
     const pending = pendingDeltasRef.current;
@@ -126,12 +146,17 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const applyTurnStarted = useCallback((sessionId: string) => {
     if (localTurnStateRef.current.get(sessionId) === "active") return;
     localTurnStateRef.current.set(sessionId, "active");
+    if (selectedRef.current === sessionId) memoryRequestSessionRef.current = undefined;
     setState((current) => ({
       ...current,
       sessions: current.sessions.map((session) => session.id === sessionId
         ? { ...session, state: "active" }
         : session),
       feedback: current.selectedId === sessionId ? undefined : current.feedback,
+      memoryConfirmations: current.selectedId === sessionId ? [] : current.memoryConfirmations,
+      memoryDecisionPending: current.selectedId === sessionId
+        ? undefined
+        : current.memoryDecisionPending,
     }));
   }, []);
 
@@ -357,6 +382,49 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           feedback: { ...current.feedback, status: "recorded", feedbackId: message.feedback_id },
         } : current);
         break;
+      case "memory_confirmation": {
+        const response = message.response;
+        if (response.result === "pending") {
+          if (response.session_id !== selectedRef.current) break;
+          memoryRequestSessionRef.current = undefined;
+          setState((current) => ({
+            ...current,
+            memoryConfirmations: response.confirmations,
+            memoryDecisionPending: undefined,
+          }));
+          break;
+        }
+        if (response.result === "recorded") {
+          if (response.session_id !== selectedRef.current) break;
+          memoryRequestSessionRef.current = undefined;
+          setState((current) => current.memoryDecisionPending === response.candidate_id
+            ? {
+                ...current,
+                memoryConfirmations: current.memoryConfirmations.filter(
+                  (candidate) => candidate.candidate_id !== response.candidate_id,
+                ),
+                memoryDecisionPending: undefined,
+              }
+            : current);
+          break;
+        }
+        const requestSessionId = memoryRequestSessionRef.current;
+        memoryRequestSessionRef.current = undefined;
+        if (!requestSessionId || requestSessionId !== selectedRef.current) break;
+        terminalSequenceRef.current += 1;
+        setState((current) => ({
+          ...current,
+          memoryDecisionPending: undefined,
+          transcript: [...current.transcript, {
+            id: `notice-memory-${terminalSequenceRef.current}`,
+            kind: "notice",
+            body: `memory confirmation failed · ${response.message}`,
+            status: "failed",
+          }],
+        }));
+        if (response.code === "conflict") requestMemoryConfirmations(requestSessionId);
+        break;
+      }
       case "sessions_list": {
         const sessions: SessionSummary[] = [];
         const archivedSessions: SessionSummary[] = [];
@@ -416,6 +484,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             sourceSessionId: message.source_session_id,
           },
           feedback: undefined,
+          memoryConfirmations: [],
+          memoryDecisionPending: undefined,
           transcript: [
             ...(message.notice ? [{
               id: "history-notice",
@@ -431,6 +501,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           ],
         }));
         if (isFork) void submit({ type: "list_sessions", include_archived: false });
+        requestMemoryConfirmations(message.session.id);
         break;
       }
       case "session_created":
@@ -450,6 +521,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           codingReview: undefined,
           rollback: undefined,
           feedback: undefined,
+          memoryConfirmations: [],
+          memoryDecisionPending: undefined,
         }));
         void submit({ type: "list_sessions", include_archived: false });
         void submit({ type: "load_session", session_id: message.session_id });
@@ -758,6 +831,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
               ? { ...session, state: message.type === "error" ? "failed" : "idle" }
               : session),
           }));
+          requestMemoryConfirmations(message.session_id);
         } else {
           setState((current) => ({
             ...current,
@@ -773,7 +847,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       default:
         break;
     }
-  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, submit]);
+  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestMemoryConfirmations, submit]);
 
   useEffect(() => {
     let stopped = false;
@@ -806,6 +880,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         const reconnected = connectedOnce;
         connectedOnce = true;
         reconnectAttempt = 0;
+        protocolCapabilitiesRef.current = new Set(event.protocol.capabilities);
         setState((current) => ({
           ...current,
           connection: "live",
@@ -825,6 +900,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       } else if (event.type === "message") {
         applyMessage(event.message);
       } else {
+        protocolCapabilitiesRef.current.clear();
+        memoryRequestSessionRef.current = undefined;
         scheduleReconnect(event.reason);
       }
     };
@@ -857,6 +934,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const selectSession = useCallback((sessionId: string) => {
     selectedRef.current = sessionId;
     contextRequestSessionRef.current = undefined;
+    memoryRequestSessionRef.current = undefined;
     setState((current) => ({
       ...current,
       selectedId: sessionId,
@@ -874,6 +952,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       approval: undefined,
       question: undefined,
       feedback: undefined,
+      memoryConfirmations: [],
+      memoryDecisionPending: undefined,
     }));
     return submit({ type: "load_session", session_id: sessionId });
   }, [submit]);
@@ -950,6 +1030,44 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       return false;
     }
   }, [state.feedback, submit]);
+
+  const resolveMemoryConfirmation = useCallback(async (
+    candidateId: string,
+    decision: "confirm" | "reject",
+  ) => {
+    const sessionId = selectedRef.current;
+    const candidate = state.memoryConfirmations.find(
+      (confirmation) => confirmation.candidate_id === candidateId,
+    );
+    if (!sessionId || !candidate || state.memoryDecisionPending) return false;
+    // Keep the candidate visible until Runtime records this exact revision.
+    memoryRequestSessionRef.current = sessionId;
+    setState((current) => ({ ...current, memoryDecisionPending: candidateId }));
+    try {
+      await submit({
+        type: "memory_confirmation",
+        request: {
+          operation: "decide",
+          version: 1,
+          session_id: sessionId,
+          candidate_id: candidate.candidate_id,
+          expected_revision: candidate.expected_revision,
+          decision,
+        },
+      });
+      return true;
+    } catch (error) {
+      if (memoryRequestSessionRef.current === sessionId) {
+        memoryRequestSessionRef.current = undefined;
+      }
+      setState((current) => ({
+        ...current,
+        memoryDecisionPending: undefined,
+        diagnostic: safeDiagnostic(error),
+      }));
+      return false;
+    }
+  }, [state.memoryConfirmations, state.memoryDecisionPending, submit]);
 
   const sendChat = useCallback(async (sessionId: string, text: string) => {
     if (localTurnStateRef.current.has(sessionId)) return false;
@@ -1049,6 +1167,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     resolvePlan,
     cancelTask,
     submitFeedback,
+    resolveMemoryConfirmation,
     sendChat,
     interruptTurn,
     requestContext,

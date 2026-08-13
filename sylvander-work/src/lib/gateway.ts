@@ -35,6 +35,7 @@ export type RuntimeCommand =
   | { type: "get_session_config"; session_id: string }
   | { type: "update_session_config"; request: RuntimeSessionConfigUpdateRequest }
   | { type: "submit_feedback"; feedback: RuntimeFeedback }
+  | { type: "memory_confirmation"; request: RuntimeMemoryConfirmationRequest }
   | { type: "ping" };
 
 export type PlanDecision =
@@ -54,6 +55,46 @@ export interface RuntimeFeedback {
   validations: never[];
   privacy_class: "private";
 }
+
+export type RuntimeMemoryConfirmationRequest =
+  | { operation: "list"; version: 1; session_id: string }
+  | {
+      operation: "decide";
+      version: 1;
+      session_id: string;
+      candidate_id: string;
+      expected_revision: number;
+      decision: "confirm" | "reject";
+    };
+
+export interface RuntimePendingMemoryConfirmation {
+  candidate_id: string;
+  expected_revision: number;
+  scope: "relationship" | "user_profile" | "agent_canonical" | "workspace_knowledge";
+  summary: string;
+}
+
+type RuntimeMemoryConfirmationResponse =
+  | {
+      result: "pending";
+      version: 1;
+      session_id: string;
+      confirmations: RuntimePendingMemoryConfirmation[];
+    }
+  | {
+      result: "recorded";
+      version: 1;
+      session_id: string;
+      candidate_id: string;
+      decision: "confirm" | "reject";
+    }
+  | {
+      result: "error";
+      version: 1;
+      operation: string;
+      code: "unsupported_version" | "invalid_request" | "unauthenticated" | "forbidden" | "conflict" | "service_unavailable";
+      message: string;
+    };
 
 export interface RuntimePermissionProfile {
   file_access: "none" | "read_only" | "workspace_write";
@@ -242,6 +283,7 @@ export type RuntimeMessage =
   | { type: "error"; session_id: string; message: string; feedback_target?: string }
   | { type: "turn_interrupted"; session_id: string; reason: string; feedback_target?: string }
   | { type: "feedback_recorded"; feedback_id: string }
+  | { type: "memory_confirmation"; response: RuntimeMemoryConfirmationResponse }
   | { type: "session_created"; session_id: string; config?: RuntimeSessionConfigState }
   | { type: "session_updated"; session_id: string; label?: string; archived: boolean }
   | { type: "session_deleted"; session_id: string }

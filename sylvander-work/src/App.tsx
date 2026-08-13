@@ -9,7 +9,7 @@ export interface AppProps {
 }
 
 export default function App({ gateway }: AppProps) {
-  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
+  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, resolveMemoryConfirmation, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [inspector, setInspector] = useState<"plan" | "tasks" | "changes" | "context">("plan");
@@ -359,6 +359,11 @@ export default function App({ gateway }: AppProps) {
           <div className="decision-copy"><span className="eyebrow">Private turn feedback</span><h3 id="feedback-title">Was this response useful?</h3>{state.feedback.status === "recorded" ? <p role="status">Feedback recorded.</p> : <label>Optional note<input aria-label="Feedback note" maxLength={4096} value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} disabled={state.feedback.status === "submitting"} /></label>}</div>
           {state.feedback.status !== "recorded" && <div className="decision-actions"><button type="button" className="secondary-button" disabled={state.feedback.status === "submitting"} onClick={() => void recordFeedback("negative")}>Needs improvement</button><button type="button" className="primary-button" disabled={state.feedback.status === "submitting"} onClick={() => void recordFeedback("positive")}>Useful</button></div>}
         </section>}
+        {state.memoryConfirmations[0] && <section className="decision-dock" aria-labelledby="memory-title">
+          <div className="decision-icon" aria-hidden="true">◇</div>
+          <div className="decision-copy"><span className="eyebrow">Memory confirmation · {memoryScopeLabel(state.memoryConfirmations[0].scope)}</span><h3 id="memory-title">Save this governed memory?</h3><p>{state.memoryConfirmations[0].summary}</p></div>
+          <div className="decision-actions"><button type="button" className="secondary-button" disabled={Boolean(state.memoryDecisionPending)} onClick={() => void resolveMemoryConfirmation(state.memoryConfirmations[0].candidate_id, "reject")}>Do not save</button><button type="button" className="primary-button" disabled={Boolean(state.memoryDecisionPending)} onClick={() => void resolveMemoryConfirmation(state.memoryConfirmations[0].candidate_id, "confirm")}>Save memory</button></div>
+        </section>}
         <form className="composer" onSubmit={(event) => void send(event)}>
           <label htmlFor="composer-input" className="sr-only">Message Sylvander</label>
           <textarea id="composer-input" value={draft} onChange={(event) => updateDraft(event.target.value)} rows={2} placeholder="What should we work through?" onKeyDown={handleComposerKey} disabled={!selected || state.connection !== "live" || selected.state === "active" || selected.state === "waiting"} />
@@ -427,6 +432,15 @@ function approvalScopeLabel(scope: ApprovalScope) {
     case "once": return "Allow once";
     case "session": return "Allow for Session";
     case "persistent": return "Always allow";
+  }
+}
+
+function memoryScopeLabel(scope: "relationship" | "user_profile" | "agent_canonical" | "workspace_knowledge") {
+  switch (scope) {
+    case "relationship": return "our relationship";
+    case "user_profile": return "your profile";
+    case "agent_canonical": return "Agent knowledge";
+    case "workspace_knowledge": return "workspace knowledge";
   }
 }
 

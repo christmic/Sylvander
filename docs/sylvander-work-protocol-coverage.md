@@ -30,7 +30,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `GetRuntimeInfo` | complete end-to-end | Agent-scoped Runtime snapshot; no transport-local assembly |
 | `GetSessionConfig`, `UpdateSessionConfig` | complete | revision-bound field patch preserves omitted write-only state |
 | `SubmitFeedback` | complete | private rating and optional note preserve Runtime's opaque target |
-| `MemoryConfirmation` | designed | implement capability-gated latest-only list and explicit revision-bound decision |
+| `MemoryConfirmation` | complete | capability-gated latest-only list and explicit revision-bound decision |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
 | `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
 | `ForkSession` | complete end-to-end for checkpoints | completed-turn rewind editor |
@@ -62,7 +62,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `IterationStart`, `IterationEnd` | complete | cumulative usage/cost projection; never implies turn admission |
 | `SessionConfig` | complete | sparse overrides, effective values, revision, and provenance |
 | feedback responses | complete | acknowledgement settles only an in-flight feedback submission |
-| memory responses | designed | pending replaces selected-Session queue; recorded settles matching candidate; error preserves it |
+| memory responses | complete | pending replaces selected-Session queue; recorded settles matching candidate; conflict preserves and refreshes it |
 | admin, profile, identity responses | missing | matching command surfaces |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
 | workspace rollback lifecycle | complete | preview, restored files, and failure |
@@ -72,7 +72,7 @@ execution, persistence, or policy ownership moved into Desktop.
 
 ## Ordered implementation gates
 
-1. Complete feedback, memory, identity, administration, attachments, and
+1. Complete identity, administration, attachments, and
    liveness surfaces with protocol and accessibility tests.
 
 Every row moves to complete only with a typed command/event test and a product

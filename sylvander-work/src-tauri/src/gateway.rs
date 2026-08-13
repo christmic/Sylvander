@@ -344,7 +344,10 @@ mod tests {
 
         assert_eq!(
             message,
-            "Runtime rejected UI protocol [incompatible_protocol]: client and server ranges do not overlap (server supports 4..=5)"
+            format!(
+                "Runtime rejected UI protocol [incompatible_protocol]: client and server ranges do not overlap (server supports 4..={})",
+                sylvander_api::UI_PROTOCOL_VERSION
+            )
         );
     }
 }

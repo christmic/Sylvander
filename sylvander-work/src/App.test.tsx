@@ -413,6 +413,127 @@ describe("Sylvander Work", () => {
     expect(screen.queryByRole("button", { name: "Useful" })).toBeNull();
   });
 
+  it("settles governed memory only from revision-bound Runtime responses", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: {
+        server_name: "test-runtime",
+        version: 6,
+        capabilities: ["memory_confirmation_v1"],
+      },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      include_archived: false,
+      sessions: [{
+        id: "session-1",
+        label: "Memory",
+        workspace: "/workspace",
+        last_seen_secs: 1,
+        archived: false,
+      }],
+    } }));
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "load_session",
+      session_id: "session-1",
+    }));
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_history",
+      session: {
+        id: "session-1",
+        label: "Memory",
+        workspace: "/workspace",
+        last_seen_secs: 1,
+        archived: false,
+      },
+      messages: [],
+    } }));
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "memory_confirmation",
+      request: { operation: "list", version: 1, session_id: "session-1" },
+    }));
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "memory_confirmation",
+      response: {
+        result: "pending",
+        version: 1,
+        session_id: "session-1",
+        confirmations: [
+          {
+            candidate_id: "candidate-1",
+            expected_revision: 7,
+            scope: "user_profile",
+            summary: "Prefers concise release notes",
+          },
+          {
+            candidate_id: "candidate-2",
+            expected_revision: 3,
+            scope: "workspace_knowledge",
+            summary: "Builds release artifacts in CI",
+          },
+        ],
+      },
+    } }));
+    expect(await screen.findByText("Prefers concise release notes")).toBeTruthy();
+    expect(screen.getByText(/Memory confirmation · your profile/)).toBeTruthy();
+
+    act(() => screen.getByRole("button", { name: "Save memory" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "memory_confirmation",
+      request: {
+        operation: "decide",
+        version: 1,
+        session_id: "session-1",
+        candidate_id: "candidate-1",
+        expected_revision: 7,
+        decision: "confirm",
+      },
+    }));
+    expect(screen.getByText("Prefers concise release notes")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save memory" }).hasAttribute("disabled")).toBe(true);
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "memory_confirmation",
+      response: {
+        result: "recorded",
+        version: 1,
+        session_id: "session-1",
+        candidate_id: "candidate-1",
+        decision: "confirm",
+      },
+    } }));
+    expect(await screen.findByText("Builds release artifacts in CI")).toBeTruthy();
+    expect(screen.queryByText("Prefers concise release notes")).toBeNull();
+
+    act(() => screen.getByRole("button", { name: "Do not save" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toMatchObject({
+      type: "memory_confirmation",
+      request: { operation: "decide", candidate_id: "candidate-2", decision: "reject" },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "memory_confirmation",
+      response: {
+        result: "error",
+        version: 1,
+        operation: "decide",
+        code: "conflict",
+        message: "candidate revision changed",
+      },
+    } }));
+    expect(await screen.findByText("Builds release artifacts in CI")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Do not save" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByText(/memory confirmation failed · candidate revision changed/)).toBeTruthy();
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "memory_confirmation",
+      request: { operation: "list", version: 1, session_id: "session-1" },
+    }));
+  });
+
   it("requests interruption once and waits for the Runtime terminal", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);
