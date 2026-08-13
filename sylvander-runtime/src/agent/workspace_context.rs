@@ -582,5 +582,5 @@ fn discovery_limits() -> WorkspaceQueryLimits {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/workspace_context.rs"]
+#[path = "../../tests/unit/workspace_context.rs"]
 mod tests;

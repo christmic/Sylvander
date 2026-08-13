@@ -779,5 +779,5 @@ fn unknown_revision(agent_id: sylvander_api::AgentId, revision: u64) -> AgentAdm
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/agent_admin.rs"]
+#[path = "../../tests/unit/agent_admin.rs"]
 pub(crate) mod tests;

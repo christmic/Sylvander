@@ -463,5 +463,5 @@ pub enum AgentSpecError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../tests/unit/agent_definition.rs"]
+#[path = "../../tests/unit/agent_definition.rs"]
 mod tests;

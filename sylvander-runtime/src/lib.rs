@@ -22,12 +22,14 @@
 //! └──────────────────┘
 //! ```
 
-mod agent_admin;
+/// Runtime-owned Agent definitions, turn application service, and supervision.
+pub mod agent;
+use agent::administration as agent_admin;
 #[cfg(test)]
 #[path = "../tests/unit/agent_admin_runtime_v3.rs"]
 mod agent_admin_runtime_v3_tests;
 /// Runtime-owned declarative Agent configuration.
-pub mod agent_definition;
+pub use agent::definition as agent_definition;
 /// Runtime-owned Agent, provider, model, and credential revision governance.
 pub mod registry;
 #[cfg(test)]
@@ -46,10 +48,10 @@ use registry::snapshot as agent_registry_snapshot_v3;
 #[path = "../tests/unit/agent_registry_snapshot_v3_contract.rs"]
 mod agent_registry_snapshot_v3_tests;
 /// Runtime-owned execution facade for one configured Agent revision.
-pub mod agent_run;
+pub use agent::run as agent_run;
 /// Runtime-owned lifecycle supervisor for Agents and Sessions.
-pub mod agent_supervisor;
-mod approval_store;
+pub use agent::supervisor as agent_supervisor;
+use agent::approval as approval_store;
 use session::boundary;
 mod capability_runtime;
 /// Coding workspace selection, local and remote worktrees, and governed self-change.
@@ -101,7 +103,7 @@ pub use session::principal_binding;
 #[path = "../tests/unit/principal_binding.rs"]
 mod principal_binding_tests;
 /// Explicit translations between Agent prompt evidence and public DTOs.
-pub mod prompt_contract;
+pub use agent::prompt as prompt_contract;
 /// Provider catalogs, registry state, and request-scoped credential routing.
 mod provider;
 /// Controlled synchronization of provider model catalogs into the registry.

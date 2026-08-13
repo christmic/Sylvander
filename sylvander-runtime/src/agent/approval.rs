@@ -379,5 +379,5 @@ fn validate_digest(label: &str, value: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/approval_store.rs"]
+#[path = "../../tests/unit/approval_store.rs"]
 mod tests;

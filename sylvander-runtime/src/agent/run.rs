@@ -4233,5 +4233,5 @@ impl AgentRunError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../tests/unit/agent_run.rs"]
+#[path = "../../tests/unit/agent_run.rs"]
 mod tests;

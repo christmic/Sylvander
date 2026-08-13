@@ -712,5 +712,5 @@ pub enum EngineError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../tests/unit/agent_supervisor.rs"]
+#[path = "../../tests/unit/agent_supervisor.rs"]
 mod tests;
