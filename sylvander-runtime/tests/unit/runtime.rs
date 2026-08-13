@@ -1815,21 +1815,20 @@ async fn configured_runtime_executes_a_heterogeneous_defined_agent() {
         .unwrap()
         .definition
         .revision;
-    let outcome = runtime
-        .define_agent_instance(
-            &moderator,
-            DefinedAgentJoinRequest {
-                instance_id: reviewer_id.clone(),
-                session_id: session_id.clone(),
-                sponsor_instance_id: moderator_id.clone(),
-                agent_id: AgentId::new("reviewer"),
-                agent_revision: reviewer_revision,
-                role: SessionAgentRole::Reviewer,
-                config_overrides: SessionConfigOverrides::default(),
-            },
-        )
-        .await
-        .unwrap();
+    let outcome = Box::pin(runtime.define_agent_instance(
+        &moderator,
+        DefinedAgentJoinRequest {
+            instance_id: reviewer_id.clone(),
+            session_id: session_id.clone(),
+            sponsor_instance_id: moderator_id.clone(),
+            agent_id: AgentId::new("reviewer"),
+            agent_revision: reviewer_revision,
+            role: SessionAgentRole::Reviewer,
+            config_overrides: SessionConfigOverrides::default(),
+        },
+    ))
+    .await
+    .unwrap();
     let DefineAgentOutcome::Created(reviewer) = outcome else {
         panic!("heterogeneous Agent should be admitted");
     };
