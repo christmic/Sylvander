@@ -13,6 +13,7 @@ pub(super) fn prompt_integrity_error() -> AgentRunError {
 pub enum SessionPersistenceOperation {
     InspectSession,
     CreateSession,
+    RestoreMembership,
     RestoreHistory,
     BeginTurn,
     BeginModelIteration,
@@ -33,6 +34,7 @@ impl std::fmt::Display for SessionPersistenceOperation {
         formatter.write_str(match self {
             Self::InspectSession => "inspect_session",
             Self::CreateSession => "create_session",
+            Self::RestoreMembership => "restore_membership",
             Self::RestoreHistory => "restore_history",
             Self::BeginTurn => "begin_turn",
             Self::BeginModelIteration => "begin_model_iteration",

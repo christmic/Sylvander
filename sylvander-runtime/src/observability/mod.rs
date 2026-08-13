@@ -145,6 +145,8 @@ pub(crate) enum RuntimePersistenceOperation {
     InspectSession,
     /// Create the durable Session record.
     CreateSession,
+    /// Restore or initialize the Session's first-class Agent membership.
+    RestoreMembership,
     /// Restore the active conversation history.
     RestoreHistory,
     /// Atomically persist the user message and immutable turn snapshot.
@@ -172,6 +174,7 @@ pub(crate) enum RuntimePersistenceOperation {
 impl RuntimePersistenceOperation {
     const INSPECT_SESSION: &'static str = "inspect_session";
     const CREATE_SESSION: &'static str = "create_session";
+    const RESTORE_MEMBERSHIP: &'static str = "restore_membership";
     const RESTORE_HISTORY: &'static str = "restore_history";
     const BEGIN_TURN: &'static str = "begin_turn";
     const BEGIN_TOOL_CALL: &'static str = "begin_tool_call";
@@ -188,6 +191,7 @@ impl RuntimePersistenceOperation {
         match self {
             Self::InspectSession => Self::INSPECT_SESSION,
             Self::CreateSession => Self::CREATE_SESSION,
+            Self::RestoreMembership => Self::RESTORE_MEMBERSHIP,
             Self::RestoreHistory => Self::RESTORE_HISTORY,
             Self::BeginTurn => Self::BEGIN_TURN,
             Self::BeginToolCall => Self::BEGIN_TOOL_CALL,

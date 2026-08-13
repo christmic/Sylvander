@@ -869,6 +869,29 @@ impl FailingSessionStore {
 }
 
 #[async_trait::async_trait]
+impl crate::storage::agent_instance::AgentInstanceStore for FailingSessionStore {
+    async fn save_session_membership(
+        &self,
+        membership: &crate::session::membership::SessionMembership,
+        expected_revision: Option<u64>,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
+        self.inner
+            .save_session_membership(membership, expected_revision)
+            .await
+    }
+
+    async fn session_membership(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<
+        Option<crate::session::membership::SessionMembership>,
+        crate::storage::session::SessionStoreError,
+    > {
+        self.inner.session_membership(session_id).await
+    }
+}
+
+#[async_trait::async_trait]
 impl SessionStore for FailingSessionStore {
     async fn list_persistent(
         &self,
@@ -1208,10 +1231,13 @@ impl SessionStore for FailingSessionStore {
 
     async fn mark_summarized(
         &self,
+        context: &sylvander_api::SessionContext,
         session_id: &SessionId,
         seq_range: std::ops::Range<u32>,
     ) -> Result<(), crate::storage::session::SessionStoreError> {
-        self.inner.mark_summarized(session_id, seq_range).await
+        self.inner
+            .mark_summarized(context, session_id, seq_range)
+            .await
     }
 
     async fn replace_active_history(
@@ -1407,7 +1433,8 @@ async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
         .await
         .unwrap();
     let context =
-        sylvander_api::SessionContext::new("user-1", run.id().clone(), session_id.clone());
+        sylvander_api::SessionContext::new("user-1", run.id().clone(), session_id.clone())
+            .with_agent_instance(membership.governance.moderator_instance_id.clone());
     store
         .begin_turn(
             &context,
@@ -1652,6 +1679,15 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
         .unwrap()
         .path = source.path().to_path_buf();
     store.save(&stored).await.unwrap();
+    let membership = crate::runtime::initial_session_membership(
+        &stored,
+        stored.effective_config.as_ref().unwrap(),
+    )
+    .unwrap();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
 
     run.handle_message(BusMessage::user_chat(
         session_id,
@@ -1789,6 +1825,15 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
     effective.prompt_manifest = public_prompt_manifest(prompt_snapshot.manifest);
     stored.effective_config = Some(effective);
     store.save(&stored).await.unwrap();
+    let membership = crate::runtime::initial_session_membership(
+        &stored,
+        stored.effective_config.as_ref().unwrap(),
+    )
+    .unwrap();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
 
     run.handle_message(BusMessage::user_chat(
         session_id,
@@ -3443,6 +3488,15 @@ async fn persistent_terminal_write_failures_never_publish_done() {
             metadata.user_id,
             run.id().clone(),
             session_id.clone(),
+        )
+        .with_agent_instance(
+            inner
+                .session_membership(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .governance
+                .moderator_instance_id,
         );
         let history = inner
             .read_history(&caller, &session_id, false, None)

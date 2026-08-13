@@ -34,6 +34,8 @@ use crate::session::SessionMetadata;
 use sylvander_api::session::{SessionConfigOverrides, SessionEffectiveConfig};
 use sylvander_api::{AgentInstanceId, CoordinationMessageId, HandoffId, TaskId, UserId};
 
+use crate::storage::agent_instance::AgentInstanceStore;
+
 // ---------------------------------------------------------------------------
 // SessionLifetime
 // ---------------------------------------------------------------------------
@@ -189,6 +191,9 @@ pub struct StoredMessage {
     pub user_id: UserId,
     /// Denormalized from `SessionContext::identity.agent_id`.
     pub agent_id: AgentId,
+    /// Concrete Agent history owner. `None` is retained only for legacy and
+    /// administrative records created outside first-class Agent execution.
+    pub agent_instance_id: Option<AgentInstanceId>,
     /// Denormalized from `SessionContext::request.trace_id` (if set).
     pub trace_id: Option<String>,
     /// Denormalized from `SessionContext::request.priority`.
@@ -495,7 +500,7 @@ pub struct SessionFilter {
 /// Only one implementation is shipped today: `SqliteSessionStore`.
 /// The trait stays so callers can mock in tests if needed.
 #[async_trait]
-pub trait SessionStore: Send + Sync {
+pub trait SessionStore: AgentInstanceStore + Send + Sync {
     // ---- session metadata CRUD ----
 
     /// List persistent sessions for Runtime lifecycle and authorized UI paths.
@@ -734,6 +739,7 @@ pub trait SessionStore: Send + Sync {
     /// older messages.
     async fn mark_summarized(
         &self,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
         seq_range: Range<u32>,
     ) -> Result<(), SessionStoreError>;

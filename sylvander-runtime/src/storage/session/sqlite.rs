@@ -261,7 +261,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 10;
+const SESSION_SCHEMA_VERSION: i64 = 11;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -290,6 +290,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_tool_calls",
     "idx_messages_user",
     "idx_messages_agent",
+    "idx_messages_agent_instance",
     "idx_messages_trace",
     "idx_sessions_lifetime",
     "idx_sessions_user",
@@ -309,7 +310,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_tool_calls_turn",
     "idx_tool_calls_recovery",
     "idx_turn_iterations_recovery",
-    "idx_running_turn_per_session",
+    "idx_running_turn_per_agent_instance",
 ];
 
 const SCHEMA_SQL: &str = r"
@@ -577,6 +578,7 @@ CREATE TABLE session_messages (
     -- Denormalized identity (copied from SessionContext at write time).
     user_id         TEXT NOT NULL,
     agent_id        TEXT NOT NULL,
+    agent_instance_id TEXT,
     -- Denormalized request metadata (same — copied at write time).
     trace_id        TEXT,
     priority        TEXT,
@@ -585,7 +587,10 @@ CREATE TABLE session_messages (
     parent_msg_id   INTEGER REFERENCES session_messages(id) ON DELETE SET NULL,
     is_summarized   INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL,
-    UNIQUE(session_id, seq)
+    UNIQUE(session_id, seq),
+    FOREIGN KEY(session_id, agent_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE session_usage (
@@ -676,6 +681,8 @@ CREATE INDEX idx_messages_user
     ON session_messages(user_id, session_id);
 CREATE INDEX idx_messages_agent
     ON session_messages(agent_id);
+CREATE INDEX idx_messages_agent_instance
+    ON session_messages(session_id, agent_instance_id, seq);
 CREATE INDEX idx_messages_trace
     ON session_messages(trace_id) WHERE trace_id IS NOT NULL;
 
@@ -704,9 +711,9 @@ CREATE INDEX idx_tool_calls_recovery
     ON session_tool_calls(state, position, updated_at, invocation_id);
 CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
-CREATE UNIQUE INDEX idx_running_turn_per_session
-    ON session_turns(session_id) WHERE state = 'running';
-PRAGMA user_version=10;
+CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
+    ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
+PRAGMA user_version=11;
 COMMIT;
 ";
 
@@ -1053,6 +1060,14 @@ impl SessionStore for SqliteSessionStore {
             .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
+        let agent_instance_id = start.agent_instance_id.0.clone();
+        if ctx.identity.agent_instance_id.as_ref() != Some(&start.agent_instance_id)
+            || ctx.identity.agent_id != start.effective_config.agent_id
+        {
+            return Err(SessionStoreError::Invalid(
+                "turn context does not own the requested Agent instance".into(),
+            ));
+        }
         let trace_id = ctx.request.trace_id.clone();
         let priority = Some(priority_str(ctx.request.priority));
         let stored_priority = Some(ctx.request.priority);
@@ -1114,15 +1129,16 @@ impl SessionStore for SqliteSessionStore {
             }
             let unresolved_effect: bool = transaction
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM session_tool_calls \
-                     WHERE session_id=?1 AND state='running')",
-                    [&start.session_id.0],
+                    "SELECT EXISTS(SELECT 1 FROM session_tool_calls c \
+                     JOIN session_turns t ON t.session_id=c.session_id AND t.turn_id=c.turn_id \
+                     WHERE c.session_id=?1 AND t.agent_instance_id=?2 AND c.state='running')",
+                    params![start.session_id.0, start.agent_instance_id.0],
                     |row| row.get(0),
                 )
                 .map_err(sqlite_err)?;
             if unresolved_effect {
                 return Err(SessionStoreError::Invalid(
-                    "session has an unresolved tool execution".into(),
+                    "Agent instance has an unresolved tool execution".into(),
                 ));
             }
 
@@ -1153,15 +1169,16 @@ impl SessionStore for SqliteSessionStore {
             transaction
                 .execute(
                     "INSERT INTO session_messages \
-                     (session_id, seq, role, content_json, user_id, agent_id, trace_id, priority, \
-                      model_id, is_summarized, created_at) \
-                     VALUES (?1, ?2, 'user', ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+                     (session_id, seq, role, content_json, user_id, agent_id,agent_instance_id, \
+                      trace_id, priority, model_id, is_summarized, created_at) \
+                     VALUES (?1, ?2, 'user', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
                     params![
                         start.session_id.0,
                         next_seq,
                         content_json,
                         user_id,
                         agent_id,
+                        agent_instance_id,
                         trace_id,
                         priority,
                         start.model_id,
@@ -1182,6 +1199,7 @@ impl SessionStore for SqliteSessionStore {
                 session_id: start.session_id,
                 user_id: user_id.into(),
                 agent_id: AgentId::new(agent_id),
+                agent_instance_id: Some(start.agent_instance_id),
                 trace_id,
                 priority: stored_priority,
                 seq: next_seq.try_into().map_err(|_| {
@@ -1253,20 +1271,22 @@ impl SessionStore for SqliteSessionStore {
             .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
+        let agent_instance_id = ctx.identity.agent_instance_id.clone();
         let trace_id = ctx.request.trace_id.clone();
         let priority = priority_str(ctx.request.priority);
         let stored_priority = Some(ctx.request.priority);
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
-            let state: Option<String> = transaction
+            let turn: Option<(String, String)> = transaction
                 .query_row(
-                    "SELECT state FROM session_turns WHERE session_id = ?1 AND turn_id = ?2",
+                    "SELECT state,agent_instance_id FROM session_turns \
+                     WHERE session_id = ?1 AND turn_id = ?2",
                     params![completion.session_id.0, completion.turn_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(sqlite_err)?;
-            let Some(state) = state else {
+            let Some((state, turn_instance_id)) = turn else {
                 return Err(SessionStoreError::Invalid(
                     "durable turn does not exist".into(),
                 ));
@@ -1274,6 +1294,12 @@ impl SessionStore for SqliteSessionStore {
             if state != "running" {
                 return Err(SessionStoreError::Invalid(
                     "only a running turn can be completed".into(),
+                ));
+            }
+            if agent_instance_id.as_ref().map(|id| id.0.as_str()) != Some(turn_instance_id.as_str())
+            {
+                return Err(SessionStoreError::Invalid(
+                    "turn completion context does not own the durable Agent instance".into(),
                 ));
             }
             let active_tools: i64 = transaction
@@ -1300,15 +1326,16 @@ impl SessionStore for SqliteSessionStore {
             transaction
                 .execute(
                     "INSERT INTO session_messages \
-                     (session_id, seq, role, content_json, user_id, agent_id, trace_id, priority, \
-                      model_id, is_summarized, created_at) \
-                     VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+                     (session_id, seq, role, content_json, user_id, agent_id,agent_instance_id, \
+                      trace_id, priority, model_id, is_summarized, created_at) \
+                     VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
                     params![
                         completion.session_id.0,
                         next_seq,
                         content_json,
                         user_id,
                         agent_id,
+                        agent_instance_id.as_ref().map(|id| &id.0),
                         trace_id,
                         priority,
                         completion.model_id,
@@ -1336,6 +1363,7 @@ impl SessionStore for SqliteSessionStore {
                 session_id: completion.session_id,
                 user_id: user_id.into(),
                 agent_id: AgentId::new(agent_id),
+                agent_instance_id,
                 trace_id,
                 priority: stored_priority,
                 seq: next_seq.try_into().map_err(|_| {
@@ -1366,7 +1394,7 @@ impl SessionStore for SqliteSessionStore {
                 .query_row(
                     "SELECT m.id,m.session_id,m.seq,m.role,m.content_json,m.user_id,m.agent_id,\
                             m.trace_id,m.priority,m.model_id,m.tool_name,m.parent_msg_id,\
-                            m.is_summarized,m.created_at \
+                            m.is_summarized,m.created_at,m.agent_instance_id \
                      FROM session_turn_iterations i \
                      JOIN session_turns t ON t.session_id=i.session_id AND t.turn_id=i.turn_id \
                      JOIN session_messages m ON m.id=i.response_message_id \
@@ -1562,20 +1590,22 @@ impl SessionStore for SqliteSessionStore {
             .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
+        let agent_instance_id = ctx.identity.agent_instance_id.clone();
         let trace_id = ctx.request.trace_id.clone();
         let priority = priority_str(ctx.request.priority);
         let stored_priority = Some(ctx.request.priority);
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
-            let facts: Option<(String, String, i64, String, i64)> = transaction
+            let facts: Option<(String, String, i64, String, i64, String)> = transaction
                 .query_row(
                     "SELECT i.session_id, i.model_id, i.ledger_revision, i.position, \
-                            COALESCE(MAX(m.seq), -1) + 1 \
+                            COALESCE(MAX(m.seq), -1) + 1, t.agent_instance_id \
                      FROM session_turn_iterations i \
                      JOIN session_turns t ON t.session_id=i.session_id AND t.turn_id=i.turn_id \
                      LEFT JOIN session_messages m ON m.session_id=i.session_id \
                      WHERE i.invocation_id=?1 AND t.state='running' \
-                     GROUP BY i.session_id, i.model_id, i.ledger_revision, i.position",
+                     GROUP BY i.session_id, i.model_id, i.ledger_revision, i.position, \
+                              t.agent_instance_id",
                     [response.invocation_id.as_str()],
                     |row| {
                         Ok((
@@ -1584,16 +1614,26 @@ impl SessionStore for SqliteSessionStore {
                             row.get(2)?,
                             row.get(3)?,
                             row.get(4)?,
+                            row.get(5)?,
                         ))
                     },
                 )
                 .optional()
                 .map_err(sqlite_err)?;
-            let Some((session_id, frozen_model_id, revision, position, next_seq)) = facts else {
+            let Some((session_id, frozen_model_id, revision, position, next_seq, turn_instance_id)) =
+                facts
+            else {
                 return Err(SessionStoreError::Invalid(
                     "model response has no running durable invocation".into(),
                 ));
             };
+            if agent_instance_id.as_ref().map(|id| id.0.as_str())
+                != Some(turn_instance_id.as_str())
+            {
+                return Err(SessionStoreError::Invalid(
+                    "model response context does not own the durable Agent instance".into(),
+                ));
+            }
             if response.model_id != frozen_model_id
                 || revision
                     != i64::try_from(response.expected_revision).map_err(|_| {
@@ -1610,9 +1650,10 @@ impl SessionStore for SqliteSessionStore {
             let now = crate::session::now_secs();
             transaction.execute(
                 "INSERT INTO session_messages \
-                 (session_id,seq,role,content_json,user_id,agent_id,trace_id,priority,model_id,is_summarized,created_at) \
-                 VALUES (?1,?2,'assistant',?3,?4,?5,?6,?7,?8,0,?9)",
-                params![session_id, next_seq, content_json, user_id, agent_id, trace_id,
+                 (session_id,seq,role,content_json,user_id,agent_id,agent_instance_id,trace_id,priority,model_id,is_summarized,created_at) \
+                 VALUES (?1,?2,'assistant',?3,?4,?5,?6,?7,?8,?9,0,?10)",
+                params![session_id, next_seq, content_json, user_id, agent_id,
+                    agent_instance_id.as_ref().map(|id| &id.0), trace_id,
                     priority, response.model_id, now],
             ).map_err(sqlite_err)?;
             let message_id = transaction.last_insert_rowid();
@@ -1633,6 +1674,7 @@ impl SessionStore for SqliteSessionStore {
                     session_id: SessionId::new(session_id),
                     user_id: user_id.into(),
                     agent_id: AgentId::new(agent_id),
+                    agent_instance_id,
                     trace_id,
                     priority: stored_priority,
                     seq: next_seq.try_into().map_err(|_| SessionStoreError::Store(
@@ -1951,6 +1993,7 @@ impl SessionStore for SqliteSessionStore {
             .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
+        let agent_instance_id = ctx.identity.agent_instance_id.clone();
         let trace_id = ctx.request.trace_id.clone();
         let priority = priority_str(ctx.request.priority);
         self.run(move |connection| {
@@ -1961,6 +2004,20 @@ impl SessionStore for SqliteSessionStore {
                 SessionStoreError::Invalid("tool ledger revision overflow".into())
             })?;
             let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let turn_instance_id: Option<String> = transaction
+                .query_row(
+                    "SELECT agent_instance_id FROM session_turns \
+                     WHERE session_id=?1 AND turn_id=?2 AND state='running'",
+                    params![result.session_id.0, result.turn_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            if agent_instance_id.as_ref().map(|id| id.0.as_str()) != turn_instance_id.as_deref() {
+                return Err(SessionStoreError::Invalid(
+                    "tool result context does not own the durable Agent instance".into(),
+                ));
+            }
             let now = crate::session::now_secs();
             let advanced = transaction
                 .execute(
@@ -1998,15 +2055,16 @@ impl SessionStore for SqliteSessionStore {
             transaction
                 .execute(
                     "INSERT INTO session_messages \
-                     (session_id,seq,role,content_json,user_id,agent_id,trace_id,priority, \
-                      tool_name,is_summarized,created_at) \
-                     VALUES (?1,?2,'tool',?3,?4,?5,?6,?7,?8,0,?9)",
+                     (session_id,seq,role,content_json,user_id,agent_id,agent_instance_id, \
+                      trace_id,priority,tool_name,is_summarized,created_at) \
+                     VALUES (?1,?2,'tool',?3,?4,?5,?6,?7,?8,?9,0,?10)",
                     params![
                         result.session_id.0,
                         next_seq,
                         content_json,
                         user_id,
                         agent_id,
+                        agent_instance_id.as_ref().map(|id| &id.0),
                         trace_id,
                         priority,
                         result.tool_name,
@@ -2440,6 +2498,7 @@ impl SessionStore for SqliteSessionStore {
         // is denormalized for query efficiency.
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
+        let agent_instance_id = ctx.identity.agent_instance_id.clone();
         let trace_id = ctx.request.trace_id.clone();
         let priority = Some(priority_str(ctx.request.priority));
         let now = crate::session::now_secs();
@@ -2448,8 +2507,16 @@ impl SessionStore for SqliteSessionStore {
             // Verify session exists (and isn't archived) before insert.
             let exists: Option<i64> = c
                 .query_row(
-                    "SELECT 1 FROM sessions WHERE id = ?1 AND is_archived = 0",
-                    params![session_id.0],
+                    "SELECT 1 FROM sessions s WHERE s.id = ?1 AND s.is_archived = 0 \
+                     AND s.user_id = ?2 AND (?3 IS NULL OR EXISTS (\
+                       SELECT 1 FROM session_agent_instances a \
+                       WHERE a.session_id=s.id AND a.instance_id=?3 AND a.agent_id=?4))",
+                    params![
+                        session_id.0,
+                        user_id,
+                        agent_instance_id.as_ref().map(|id| &id.0),
+                        agent_id
+                    ],
                     |r| r.get(0),
                 )
                 .optional()?;
@@ -2468,10 +2535,9 @@ impl SessionStore for SqliteSessionStore {
 
             c.execute(
                 "INSERT INTO session_messages \
-                 (session_id, seq, role, content_json, user_id, agent_id, \
-                  trace_id, priority, model_id, tool_name, \
-                  parent_msg_id, is_summarized, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12)",
+                 (session_id, seq, role, content_json, user_id, agent_id,agent_instance_id, \
+                  trace_id, priority, model_id, tool_name,parent_msg_id,is_summarized,created_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,?13)",
                 params![
                     session_id.0,
                     next_seq,
@@ -2479,6 +2545,7 @@ impl SessionStore for SqliteSessionStore {
                     content_json,
                     user_id,
                     agent_id,
+                    agent_instance_id.as_ref().map(|id| &id.0),
                     trace_id,
                     priority,
                     model_id,
@@ -2502,7 +2569,7 @@ impl SessionStore for SqliteSessionStore {
                     "SELECT id, session_id, seq, role, content_json, \
                             user_id, agent_id, trace_id, priority, \
                             model_id, tool_name, parent_msg_id, \
-                            is_summarized, created_at \
+                            is_summarized, created_at, agent_instance_id \
                      FROM session_messages WHERE id = ?1",
                     params![id],
                     row_to_message,
@@ -2522,14 +2589,24 @@ impl SessionStore for SqliteSessionStore {
     ) -> Result<Vec<StoredMessage>, SessionStoreError> {
         let session_id = session_id.clone();
         let scope_user = ctx.identity.user_id.0.clone();
+        let scope_agent = ctx.identity.agent_id.0.clone();
+        let scope_instance = ctx
+            .identity
+            .agent_instance_id
+            .as_ref()
+            .map(|id| id.0.clone());
         self.run(move |c| {
             let mut sql = String::from(
                 "SELECT id, session_id, seq, role, content_json, \
                         user_id, agent_id, trace_id, priority, \
                         model_id, tool_name, parent_msg_id, \
-                        is_summarized, created_at \
+                        is_summarized, created_at, agent_instance_id \
                  FROM session_messages \
-                 WHERE session_id = ?1 AND user_id = ?2",
+                 WHERE session_id = ?1 AND user_id = ?2 \
+                   AND ((?3 IS NULL AND agent_instance_id IS NULL) \
+                        OR agent_instance_id = ?3) \
+                   AND (?3 IS NULL OR EXISTS (SELECT 1 FROM session_agent_instances a \
+                     WHERE a.session_id=?1 AND a.instance_id=?3 AND a.agent_id=?4))",
             );
             if !include_summarized {
                 sql.push_str(" AND is_summarized = 0");
@@ -2539,7 +2616,10 @@ impl SessionStore for SqliteSessionStore {
                 sql.push_str(&format!(" LIMIT {limit}"));
             }
             let mut stmt = c.prepare(&sql)?;
-            let rows = stmt.query_map(params![session_id.0, scope_user], row_to_message)?;
+            let rows = stmt.query_map(
+                params![session_id.0, scope_user, scope_instance, scope_agent],
+                row_to_message,
+            )?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -2551,16 +2631,36 @@ impl SessionStore for SqliteSessionStore {
 
     async fn mark_summarized(
         &self,
+        ctx: &sylvander_api::SessionContext,
         session_id: &SessionId,
         seq_range: Range<u32>,
     ) -> Result<(), SessionStoreError> {
         let session_id = session_id.clone();
+        let scope_user = ctx.identity.user_id.0.clone();
+        let scope_agent = ctx.identity.agent_id.0.clone();
+        let scope_instance = ctx
+            .identity
+            .agent_instance_id
+            .as_ref()
+            .map(|id| id.0.clone());
         self.run(move |c| {
             // Range is half-open: start inclusive, end exclusive.
             c.execute(
                 "UPDATE session_messages SET is_summarized = 1 \
-                 WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3",
-                params![session_id.0, seq_range.start, seq_range.end],
+                 WHERE session_id = ?1 AND user_id = ?2 \
+                   AND ((?3 IS NULL AND agent_instance_id IS NULL) \
+                        OR agent_instance_id = ?3) \
+                   AND (?3 IS NULL OR EXISTS (SELECT 1 FROM session_agent_instances a \
+                     WHERE a.session_id=?1 AND a.instance_id=?3 AND a.agent_id=?4)) \
+                   AND seq >= ?5 AND seq < ?6",
+                params![
+                    session_id.0,
+                    scope_user,
+                    scope_instance,
+                    scope_agent,
+                    seq_range.start,
+                    seq_range.end
+                ],
             )?;
             Ok(())
         })
@@ -2581,14 +2681,23 @@ impl SessionStore for SqliteSessionStore {
         let session_id = session_id.clone();
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
+        let agent_instance_id = ctx.identity.agent_instance_id.clone();
         let trace_id = ctx.request.trace_id.clone();
         let priority = priority_str(ctx.request.priority);
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
             let exists: Option<i64> = transaction
                 .query_row(
-                    "SELECT 1 FROM sessions WHERE id = ?1 AND is_archived = 0",
-                    params![session_id.0],
+                    "SELECT 1 FROM sessions s WHERE s.id = ?1 AND s.is_archived = 0 \
+                     AND s.user_id=?2 AND (?3 IS NULL OR EXISTS (\
+                       SELECT 1 FROM session_agent_instances a \
+                       WHERE a.session_id=s.id AND a.instance_id=?3 AND a.agent_id=?4))",
+                    params![
+                        session_id.0,
+                        user_id,
+                        agent_instance_id.as_ref().map(|id| &id.0),
+                        agent_id
+                    ],
                     |row| row.get(0),
                 )
                 .optional()
@@ -2599,8 +2708,15 @@ impl SessionStore for SqliteSessionStore {
             transaction
                 .execute(
                     "UPDATE session_messages SET is_summarized = 1 \
-                     WHERE session_id = ?1 AND is_summarized = 0",
-                    params![session_id.0],
+                     WHERE session_id = ?1 AND user_id = ?2 \
+                       AND ((?3 IS NULL AND agent_instance_id IS NULL) \
+                            OR agent_instance_id = ?3) \
+                       AND is_summarized = 0",
+                    params![
+                        session_id.0,
+                        user_id,
+                        agent_instance_id.as_ref().map(|id| &id.0)
+                    ],
                 )
                 .map_err(sqlite_err)?;
             let next_seq: i64 = transaction
@@ -2625,8 +2741,8 @@ impl SessionStore for SqliteSessionStore {
                     .execute(
                         "INSERT INTO session_messages \
                          (session_id, seq, role, content_json, user_id, agent_id, \
-                          trace_id, priority, tool_name, is_summarized, created_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
+                          agent_instance_id,trace_id,priority,tool_name,is_summarized,created_at) \
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,0,?11)",
                         params![
                             session_id.0,
                             next_seq,
@@ -2634,6 +2750,7 @@ impl SessionStore for SqliteSessionStore {
                             content,
                             user_id,
                             agent_id,
+                            agent_instance_id.as_ref().map(|id| &id.0),
                             trace_id,
                             priority,
                             message.tool_name,
@@ -2660,13 +2777,23 @@ impl SessionStore for SqliteSessionStore {
     ) -> Result<u64, SessionStoreError> {
         let session_id = session_id.clone();
         let scope_user = ctx.identity.user_id.0.clone();
+        let scope_agent = ctx.identity.agent_id.0.clone();
+        let scope_instance = ctx
+            .identity
+            .agent_instance_id
+            .as_ref()
+            .map(|id| id.0.clone());
         self.run(move |c| {
             let n: i64 = c.query_row(
                 "SELECT COUNT(*) FROM session_messages \
                  WHERE session_id = ?1 \
                    AND user_id = ?2 \
+                   AND ((?3 IS NULL AND agent_instance_id IS NULL) \
+                        OR agent_instance_id = ?3) \
+                   AND (?3 IS NULL OR EXISTS (SELECT 1 FROM session_agent_instances a \
+                     WHERE a.session_id=?1 AND a.instance_id=?3 AND a.agent_id=?4)) \
                    AND is_summarized = 0",
-                params![session_id.0, scope_user],
+                params![session_id.0, scope_user, scope_instance, scope_agent],
                 |r| r.get(0),
             )?;
             Ok(n as u64)
@@ -2913,6 +3040,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
     let parent_msg_id: Option<i64> = row.get(11)?;
     let is_summarized: i64 = row.get(12)?;
     let created_at: i64 = row.get(13)?;
+    let agent_instance_id: Option<String> = row.get(14)?;
 
     let role = match role.as_str() {
         "user" => MessageRole::User,
@@ -2940,6 +3068,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
         session_id: SessionId::new(session_id),
         user_id: sylvander_api::UserId::new(user_id),
         agent_id: sylvander_api::AgentId::new(agent_id),
+        agent_instance_id: agent_instance_id.map(AgentInstanceId::new),
         trace_id,
         priority,
         seq: u32::try_from(seq).unwrap_or(u32::MAX),

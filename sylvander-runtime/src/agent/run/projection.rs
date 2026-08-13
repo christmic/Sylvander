@@ -175,6 +175,9 @@ pub(super) fn runtime_persistence_operation(
     match operation {
         SessionPersistenceOperation::InspectSession => RuntimePersistenceOperation::InspectSession,
         SessionPersistenceOperation::CreateSession => RuntimePersistenceOperation::CreateSession,
+        SessionPersistenceOperation::RestoreMembership => {
+            RuntimePersistenceOperation::RestoreMembership
+        }
         SessionPersistenceOperation::RestoreHistory => RuntimePersistenceOperation::RestoreHistory,
         SessionPersistenceOperation::BeginTurn => RuntimePersistenceOperation::BeginTurn,
         SessionPersistenceOperation::BeginModelIteration

@@ -1591,7 +1591,7 @@ impl AgentRunInner {
             return Ok(context);
         };
 
-        match store.get(session_id).await {
+        let mut stored = match store.get(session_id).await {
             Ok(None) => {
                 let mut stored = StoredSession::new(
                     session_id.clone(),
@@ -1607,9 +1607,11 @@ impl AgentRunInner {
                         source,
                     )
                 })?;
+                stored
             }
             Ok(Some(stored)) => {
-                context.metadata = stored.metadata;
+                context.metadata = stored.metadata.clone();
+                stored
             }
             Err(source) => {
                 return Err(AgentRunError::session_persistence(
@@ -1617,14 +1619,56 @@ impl AgentRunInner {
                     source,
                 ));
             }
+        };
+
+        if stored.effective_config.is_none() {
+            stored.effective_config = Some(self.direct_session_config(&stored.metadata).await);
+            store.save(&stored).await.map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::RestoreMembership,
+                    source,
+                )
+            })?;
         }
+
+        let membership = if let Some(membership) = store
+            .session_membership(session_id)
+            .await
+            .map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::RestoreMembership,
+                    source,
+                )
+            })? {
+            membership
+        } else {
+            let effective = stored.effective_config.as_ref().ok_or_else(|| {
+                AgentRunError::Configuration(
+                    "persistent Session has no effective Agent configuration".into(),
+                )
+            })?;
+            let membership = crate::runtime::initial_session_membership(&stored, effective)
+                .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+            store
+                .save_session_membership(&membership, None)
+                .await
+                .map_err(|source| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::RestoreMembership,
+                        source,
+                    )
+                })?;
+            membership
+        };
+        let moderator_instance_id = membership.governance.moderator_instance_id;
 
         let caller = sylvander_api::SessionContext::new(
             metadata.user_id.clone(),
             self.id.clone(),
             session_id.clone(),
-        );
-        let messages = store
+        )
+        .with_agent_instance(moderator_instance_id);
+        let mut messages = store
             .read_history(&caller, session_id, false, None)
             .await
             .map_err(|source| {
@@ -1633,6 +1677,22 @@ impl AgentRunInner {
                     source,
                 )
             })?;
+        if messages.is_empty() {
+            let legacy_caller = sylvander_api::SessionContext::new(
+                metadata.user_id.clone(),
+                self.id.clone(),
+                session_id.clone(),
+            );
+            messages = store
+                .read_history(&legacy_caller, session_id, false, None)
+                .await
+                .map_err(|source| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::RestoreHistory,
+                        source,
+                    )
+                })?;
+        }
         for stored in messages {
             let message = serde_json::from_value(stored.content).map_err(|_| {
                 AgentRunError::session_persistence(

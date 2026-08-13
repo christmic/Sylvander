@@ -3246,7 +3246,10 @@ allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
     assert_eq!(routed.session_id, platform_session);
     assert_eq!(
         routed.recipient,
-        sylvander_api::Recipient::Agent(AgentId::new("assistant"))
+        sylvander_api::Recipient::AgentInstance {
+            instance_id: AgentInstanceId::new(format!("moderator:{platform_session}")),
+            agent_id: AgentId::new("assistant"),
+        }
     );
     let platform_stored = runtime
         .storage

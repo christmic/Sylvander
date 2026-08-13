@@ -24,6 +24,10 @@ fn turn_instance() -> AgentInstanceId {
     AgentInstanceId::new("test-instance")
 }
 
+fn turn_ctx() -> sylvander_api::SessionContext {
+    ctx().with_agent_instance(turn_instance())
+}
+
 async fn persist_turn_member(
     store: &SqliteSessionStore,
     session: &StoredSession,
@@ -119,7 +123,7 @@ async fn unknown_model_outcome_survives_restart_and_persists_manual_decision() {
         persist_turn_member(&store, &session, &effective_config()).await;
         store
             .begin_turn(
-                &ctx(),
+                &turn_ctx(),
                 TurnStart {
                     session_id: session.id.clone(),
                     turn_id: "turn-crash".into(),
@@ -343,7 +347,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
         user_content: serde_json::json!({"role": "user", "content": "hello"}),
         model_id: "model-a".into(),
     };
-    let message = store.begin_turn(&ctx(), start.clone()).await.unwrap();
+    let message = store.begin_turn(&turn_ctx(), start.clone()).await.unwrap();
     assert_eq!(message.seq, 0);
     let snapshot = store.turn(&session.id, "turn-1").await.unwrap().unwrap();
     assert_eq!(snapshot.agent_instance_id, turn_instance());
@@ -357,7 +361,10 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     unknown_instance.agent_instance_id = AgentInstanceId::new("unknown");
     assert!(matches!(
         store
-            .begin_turn(&ctx(), unknown_instance)
+            .begin_turn(
+                &ctx().with_agent_instance(AgentInstanceId::new("unknown")),
+                unknown_instance,
+            )
             .await
             .unwrap_err(),
         SessionStoreError::Invalid(_)
@@ -365,7 +372,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
 
     let assistant = store
         .complete_turn(
-            &ctx(),
+            &turn_ctx(),
             TurnCompletion {
                 session_id: session.id.clone(),
                 turn_id: "turn-1".into(),
@@ -384,7 +391,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     assert!(
         store
             .complete_turn(
-                &ctx(),
+                &turn_ctx(),
                 TurnCompletion {
                     session_id: session.id.clone(),
                     turn_id: "turn-1".into(),
@@ -399,7 +406,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     let mut failed_start = start.clone();
     failed_start.turn_id = "turn-2".into();
     failed_start.user_content = serde_json::json!({"role": "user", "content": "fail"});
-    store.begin_turn(&ctx(), failed_start).await.unwrap();
+    store.begin_turn(&turn_ctx(), failed_start).await.unwrap();
     store
         .finish_turn(
             &session.id,
@@ -413,7 +420,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     assert_eq!(failed.state, TurnState::Failed);
     assert_eq!(failed.failure_kind, Some(TurnFailureKind::AgentLoop));
 
-    assert!(store.begin_turn(&ctx(), start).await.is_err());
+    assert!(store.begin_turn(&turn_ctx(), start).await.is_err());
     let stale = TurnStart {
         session_id: session.id.clone(),
         turn_id: "turn-stale".into(),
@@ -424,7 +431,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
         model_id: "model-a".into(),
     };
     assert!(matches!(
-        store.begin_turn(&ctx(), stale).await,
+        store.begin_turn(&turn_ctx(), stale).await,
         Err(SessionStoreError::ConfigConflict { .. })
     ));
     assert!(
@@ -436,7 +443,7 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     );
     assert_eq!(
         store
-            .read_history(&ctx(), &session.id, false, None)
+            .read_history(&turn_ctx(), &session.id, false, None)
             .await
             .unwrap()
             .len(),
@@ -462,7 +469,7 @@ async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
         .unwrap();
     store
         .begin_turn(
-            &ctx(),
+            &turn_ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-model-ledger".into(),
@@ -508,7 +515,7 @@ async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
 
     let commit = store
         .persist_model_response(
-            &ctx(),
+            &turn_ctx(),
             ModelResponsePersistence {
                 invocation_id: invocation_id.clone(),
                 expected_revision: 0,
@@ -573,7 +580,7 @@ async fn model_iteration_facts_are_atomic_sequential_and_recoverable() {
         .unwrap();
     let terminal = store
         .persist_model_response(
-            &ctx(),
+            &turn_ctx(),
             ModelResponsePersistence {
                 invocation_id: terminal_id.clone(),
                 expected_revision: 0,
@@ -671,7 +678,7 @@ async fn tool_lifecycle_is_bound_to_one_running_turn_and_one_terminal() {
     persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
-            &ctx(),
+            &turn_ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-tools".into(),
@@ -734,7 +741,7 @@ async fn tool_lifecycle_is_bound_to_one_running_turn_and_one_terminal() {
     assert!(
         store
             .complete_turn(
-                &ctx(),
+                &turn_ctx(),
                 TurnCompletion {
                     session_id: session.id.clone(),
                     turn_id: "turn-tools".into(),
@@ -810,7 +817,7 @@ async fn interrupted_calls_are_classified_under_a_bounded_lease() {
     persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
-            &ctx(),
+            &turn_ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-recovery".into(),
@@ -889,7 +896,7 @@ async fn interrupted_calls_are_classified_under_a_bounded_lease() {
     assert!(
         store
             .begin_turn(
-                &ctx(),
+                &turn_ctx(),
                 TurnStart {
                     session_id: session.id.clone(),
                     turn_id: "turn-must-wait".into(),
@@ -914,7 +921,7 @@ async fn tool_result_and_result_position_commit_atomically() {
     persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
-            &ctx(),
+            &turn_ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-result".into(),
@@ -976,7 +983,7 @@ async fn tool_result_and_result_position_commit_atomically() {
     assert_eq!(
         store
             .persist_tool_result(
-                &ctx().with_trace_id("turn-result"),
+                &turn_ctx().with_trace_id("turn-result"),
                 ToolResultPersistence {
                     session_id: session.id.clone(),
                     turn_id: "turn-result".into(),
@@ -998,7 +1005,7 @@ async fn tool_result_and_result_position_commit_atomically() {
     assert_eq!(calls[0].state, ToolCallState::Succeeded);
     assert!(calls[0].ended_at.is_some());
     let history = store
-        .read_history(&ctx(), &session.id, false, None)
+        .read_history(&turn_ctx(), &session.id, false, None)
         .await
         .unwrap();
     assert_eq!(history.len(), 2);
@@ -1007,7 +1014,7 @@ async fn tool_result_and_result_position_commit_atomically() {
     assert!(
         store
             .persist_tool_result(
-                &ctx(),
+                &turn_ctx(),
                 ToolResultPersistence {
                     session_id: session.id,
                     turn_id: "turn-result".into(),
@@ -1034,7 +1041,7 @@ async fn boot_recovery_persists_manual_decision_and_observes_it() {
     persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
-            &ctx(),
+            &turn_ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-crashed".into(),
@@ -1128,7 +1135,7 @@ async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
     persist_turn_member(&store, &session, &effective_config()).await;
     store
         .begin_turn(
-            &ctx(),
+            &turn_ctx(),
             TurnStart {
                 session_id: session.id.clone(),
                 turn_id: "turn-write".into(),
@@ -1439,6 +1446,7 @@ async fn list_filters_by_user() {
         identity: Some(sylvander_api::Identity {
             user_id: sylvander_api::UserId::new("alice"),
             agent_id: sylvander_api::AgentId::new("agent-1"),
+            agent_instance_id: None,
             session_id: sylvander_api::SessionId::new("dummy"),
         }),
         ..Default::default()
@@ -1537,6 +1545,128 @@ async fn read_history_returns_in_order() {
 }
 
 #[tokio::test]
+async fn histories_and_compaction_are_isolated_by_agent_instance() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    let now = session.created_at;
+    let moderator_id = AgentInstanceId::new("moderator-instance");
+    let worker_id = AgentInstanceId::new("worker-instance");
+    let instance = |instance_id: AgentInstanceId, role: SessionAgentRole, ordinal| AgentInstance {
+        instance_id,
+        session_id: session.id.clone(),
+        definition: AgentDefinitionKey {
+            agent_id: AgentId::new("agent-1"),
+            revision: 1,
+        },
+        origin: AgentInstanceOrigin::Defined,
+        role,
+        history_view: HistoryView::ForkSnapshot {
+            base_sequence: 0,
+            branch_id: format!("branch-{ordinal}"),
+        },
+        approval_route: ApprovalRoute::User,
+        state: AgentInstanceState::Ready,
+        lifecycle_revision: ordinal,
+        capability_revision: format!("capability-{ordinal}"),
+        created_at: now,
+        updated_at: now,
+    };
+    let membership = SessionMembership::new(
+        session.id.clone(),
+        vec![
+            instance(moderator_id.clone(), SessionAgentRole::Moderator, 0),
+            instance(worker_id.clone(), SessionAgentRole::Worker, 1),
+        ],
+        SessionGovernance {
+            session_id: session.id.clone(),
+            moderator_instance_id: moderator_id.clone(),
+            governance_revision: "governance-v1".into(),
+            membership_revision: 0,
+            lease_epoch: 1,
+            fencing_token: 1,
+            updated_at: now,
+        },
+    )
+    .unwrap();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+
+    let moderator = ctx().with_agent_instance(moderator_id);
+    let worker = ctx().with_agent_instance(worker_id);
+    for (context, content) in [(&moderator, "moderator"), (&worker, "worker")] {
+        store
+            .append_message(
+                context,
+                &session.id,
+                MessageRole::User,
+                serde_json::json!({"content": content}),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    let moderator_history = store
+        .read_history(&moderator, &session.id, false, None)
+        .await
+        .unwrap();
+    let worker_history = store
+        .read_history(&worker, &session.id, false, None)
+        .await
+        .unwrap();
+    assert_eq!(moderator_history.len(), 1);
+    assert_eq!(moderator_history[0].content["content"], "moderator");
+    assert_eq!(worker_history.len(), 1);
+    assert_eq!(worker_history[0].content["content"], "worker");
+
+    store
+        .mark_summarized(&moderator, &session.id, 0..2)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .count_active_messages(&moderator, &session.id)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .count_active_messages(&worker, &session.id)
+            .await
+            .unwrap(),
+        1
+    );
+
+    for (context, instance_id, turn_id) in [
+        (&moderator, "moderator-instance", "moderator-turn"),
+        (&worker, "worker-instance", "worker-turn"),
+    ] {
+        store
+            .begin_turn(
+                context,
+                TurnStart {
+                    session_id: session.id.clone(),
+                    turn_id: turn_id.into(),
+                    agent_instance_id: AgentInstanceId::new(instance_id),
+                    config_revision: 0,
+                    effective_config: effective_config(),
+                    user_content: serde_json::json!({"content": turn_id}),
+                    model_id: "model-a".into(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn read_history_excludes_summarized() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     store
@@ -1559,7 +1689,7 @@ async fn read_history_excludes_summarized() {
     }
     // Mark seq 0..2 (i.e. seq 0 and 1) as summarized.
     store
-        .mark_summarized(&SessionId::new("s1"), 0..2)
+        .mark_summarized(&ctx(), &SessionId::new("s1"), 0..2)
         .await
         .unwrap();
 
@@ -1599,7 +1729,7 @@ async fn count_active_messages() {
             .unwrap();
     }
     store
-        .mark_summarized(&SessionId::new("s1"), 0..3)
+        .mark_summarized(&ctx(), &SessionId::new("s1"), 0..3)
         .await
         .unwrap();
 

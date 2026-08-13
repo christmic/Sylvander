@@ -29,7 +29,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::{AgentId, SessionId, UserId};
+use crate::identity::{AgentId, AgentInstanceId, SessionId, UserId};
 use crate::message::now_secs;
 
 // ===========================================================================
@@ -45,6 +45,8 @@ use crate::message::now_secs;
 pub struct Identity {
     pub user_id: UserId,
     pub agent_id: AgentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_instance_id: Option<AgentInstanceId>,
     pub session_id: SessionId,
 }
 
@@ -57,6 +59,7 @@ impl Identity {
         Self {
             user_id: UserId::system(),
             agent_id: AgentId::new("__system_agent__"),
+            agent_instance_id: None,
             session_id: SessionId::new("__system_session__"),
         }
     }
@@ -277,6 +280,7 @@ impl SessionContext {
             identity: Identity {
                 user_id: user_id.into(),
                 agent_id: agent_id.into(),
+                agent_instance_id: None,
                 session_id: session_id.into(),
             },
             origin: Origin::default(),
@@ -307,6 +311,12 @@ impl SessionContext {
     #[must_use]
     pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
         self.origin.workspace = Some(workspace.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_agent_instance(mut self, agent_instance_id: impl Into<AgentInstanceId>) -> Self {
+        self.identity.agent_instance_id = Some(agent_instance_id.into());
         self
     }
 

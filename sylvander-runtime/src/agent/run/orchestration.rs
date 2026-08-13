@@ -88,7 +88,7 @@ fn turn_agent_instance_id(
     }
     #[cfg(test)]
     {
-        Ok(AgentInstanceId::new(format!("test:{}", session_id.0)))
+        Ok(AgentInstanceId::new(format!("moderator:{}", session_id.0)))
     }
     #[cfg(not(test))]
     {
@@ -232,7 +232,8 @@ impl AgentRunInner {
             metadata.user_id.clone(),
             self.id.clone(),
             call.session_id.clone(),
-        );
+        )
+        .with_agent_instance(turn.agent_instance_id.clone());
         let history = store
             .read_history(&caller, &call.session_id, true, None)
             .await
@@ -843,7 +844,8 @@ impl AgentRunInner {
                 _ => "unix-client",
             };
             let caller =
-                sylvander_api::SessionContext::new(user_id, self.id.clone(), session_id.clone());
+                sylvander_api::SessionContext::new(user_id, self.id.clone(), session_id.clone())
+                    .with_agent_instance(agent_instance_id.clone());
             let user_content = serde_json::to_value(&user_message).map_err(|_| {
                 AgentRunError::session_persistence(
                     SessionPersistenceOperation::BeginTurn,
@@ -999,7 +1001,7 @@ impl AgentRunInner {
         let plan_gate: Arc<dyn PlanGate> = Arc::new(BusPlanGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
-            agent_instance_id,
+            agent_instance_id: agent_instance_id.clone(),
             session_id: session_id.clone(),
             pending_plans: self.pending_plans.clone(),
         });
@@ -1252,6 +1254,7 @@ impl AgentRunInner {
                             self.id.clone(),
                             session_id.clone(),
                         )
+                        .with_agent_instance(agent_instance_id.clone())
                         .with_trace_id(turn_id);
                         let content = serde_json::to_value(message).map_err(|_| {
                             AgentRunError::session_persistence(
@@ -1536,6 +1539,7 @@ impl AgentRunInner {
                             self.id.clone(),
                             session_id.clone(),
                         )
+                        .with_agent_instance(agent_instance_id.clone())
                         .with_trace_id(turn_id);
                         store
                             .persist_tool_result(
@@ -1817,12 +1821,6 @@ impl AgentRunInner {
         })?;
         let text = msg.text();
         if let Some(store) = &self.session_store {
-            let user_id = self.sessions.read().await.get(&session_id).map_or_else(
-                || "unix-client".into(),
-                |context| context.metadata.user_id.clone(),
-            );
-            let _caller =
-                sylvander_api::SessionContext::new(user_id, self.id.clone(), session_id.clone());
             let Some((invocation_id, revision, true)) = model_invocation.take() else {
                 return Err(AgentRunError::session_persistence(
                     SessionPersistenceOperation::CompleteTurn,
