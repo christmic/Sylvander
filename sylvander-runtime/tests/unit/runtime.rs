@@ -1785,6 +1785,146 @@ async fn configured_runtime_automatically_executes_a_fork_mailbox_turn() {
     runtime.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn configured_runtime_executes_a_heterogeneous_defined_agent() {
+    let model_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_defined_agent",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "review completed"}],
+            "model": "model-a",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 4, "output_tokens": 2}
+        })))
+        .mount(&model_server)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = configured_memory_test_config(&directory, &["moderator", "reviewer"]);
+    config.model_providers[0].base_url = model_server.uri();
+    config.model_providers[0].models[0].capabilities = vec!["tool_use".into()];
+    let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+    let moderator = attach_memory_session(&runtime, "moderator", "defined-user").await;
+    let session_id = moderator.id().clone();
+    let moderator_id = moderator.agent_instance_id().clone();
+    let reviewer_id = AgentInstanceId::new("defined-reviewer");
+    let reviewer_revision = runtime
+        .configured_agent(&AgentId::new("reviewer"))
+        .unwrap()
+        .definition
+        .revision;
+    let outcome = runtime
+        .define_agent_instance(
+            &moderator,
+            DefinedAgentJoinRequest {
+                instance_id: reviewer_id.clone(),
+                session_id: session_id.clone(),
+                sponsor_instance_id: moderator_id.clone(),
+                agent_id: AgentId::new("reviewer"),
+                agent_revision: reviewer_revision,
+                role: SessionAgentRole::Reviewer,
+                config_overrides: SessionConfigOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let DefineAgentOutcome::Created(reviewer) = outcome else {
+        panic!("heterogeneous Agent should be admitted");
+    };
+    assert_eq!(reviewer.state, AgentInstanceState::Ready);
+    assert_eq!(reviewer.definition.agent_id, AgentId::new("reviewer"));
+    let binding = runtime
+        .storage
+        .sessions()
+        .agent_instance_config(&session_id, &reviewer_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(binding.effective.agent_id, AgentId::new("reviewer"));
+
+    let message_id = CoordinationMessageId::new("defined-agent-message");
+    let outcome = runtime
+        .dispatch_agent_message(
+            &moderator,
+            DispatchMessageRequest {
+                message_id: message_id.clone(),
+                session_id: session_id.clone(),
+                sender_instance_id: moderator_id,
+                recipient_instance_id: reviewer_id,
+                task_id: None,
+                kind: CoordinationMessageKind::Task,
+                payload: "review the bounded result".into(),
+                max_hops: 4,
+                expires_at: crate::session::now_secs() + 60,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, DispatchMessageOutcome::Enqueued(_)));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let message = runtime
+            .storage
+            .coordination()
+            .unwrap()
+            .coordination_message(&message_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if message.state == MessageDeliveryState::Acknowledged {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let turn_id = format!(
+                "agent-message:{:x}",
+                Sha256::digest(message_id.0.as_bytes())
+            );
+            let turn = runtime
+                .storage
+                .sessions()
+                .turn(&session_id, &turn_id)
+                .await
+                .unwrap();
+            panic!(
+                "heterogeneous mailbox turn timed out in state {:?}, turn {turn:?}",
+                message.state
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let requests = model_server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    runtime.shutdown().await.unwrap();
+    drop(runtime);
+
+    let reopened = Runtime::boot_config(config).await.unwrap();
+    let membership = reopened
+        .storage
+        .sessions()
+        .session_membership(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let reviewer = membership
+        .participants
+        .iter()
+        .find(|participant| participant.instance_id.0 == "defined-reviewer")
+        .unwrap();
+    assert_eq!(reviewer.definition.agent_id, AgentId::new("reviewer"));
+    assert!(
+        reopened
+            .storage
+            .sessions()
+            .agent_instance_config(&session_id, &reviewer.instance_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    reopened.shutdown().await.unwrap();
+}
+
 #[test]
 fn resolved_paths_default_and_preserve_memory_database() {
     let directory = tempfile::tempdir().unwrap();

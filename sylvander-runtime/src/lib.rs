@@ -130,7 +130,7 @@ pub use observability::{
 pub(crate) use runtime::configure_test_memory_integrity;
 pub use runtime::{
     ChannelHealth, ChannelRegistration, ChannelRestartPolicy, ChannelStatus,
-    ProviderCredentialSources, Runtime, RuntimeError, RuntimeHealthIssue,
+    DefinedAgentJoinRequest, ProviderCredentialSources, Runtime, RuntimeError, RuntimeHealthIssue,
     RuntimeOperationalSnapshot, SessionBindingError,
 };
 #[cfg(test)]

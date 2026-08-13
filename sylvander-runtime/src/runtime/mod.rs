@@ -72,8 +72,8 @@ use crate::coordination::arbitration::{ArbitrationCase, ModeratorDecision};
 use crate::coordination::handoff::TaskHandoff;
 use crate::coordination::mailbox::{AgentMessageTurn, CoordinationMessage, MessageClaim};
 use crate::coordination::service::{
-    DispatchMessageOutcome, DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest,
-    ReportProgressRequest, ReportWaitRequest,
+    DefineAgentOutcome, DefineAgentRequest, DispatchMessageOutcome, DispatchMessageRequest,
+    ForkAgentOutcome, ForkAgentRequest, ReportProgressRequest, ReportWaitRequest,
 };
 use crate::coordination::workspace::WorkspaceAccess;
 use crate::credential::audit::CredentialOperationAuditLedger;
@@ -295,6 +295,18 @@ pub struct Runtime {
     channels: tokio::sync::Mutex<Vec<ChannelTask>>,
     channel_exit_tx: tokio::sync::mpsc::UnboundedSender<String>,
     channel_exits: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>,
+}
+
+/// Runtime-level request for a separately defined first-class Agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinedAgentJoinRequest {
+    pub instance_id: AgentInstanceId,
+    pub session_id: SessionId,
+    pub sponsor_instance_id: AgentInstanceId,
+    pub agent_id: AgentId,
+    pub agent_revision: u64,
+    pub role: SessionAgentRole,
+    pub config_overrides: SessionConfigOverrides,
 }
 
 struct ChannelTask {
@@ -4735,6 +4747,25 @@ impl Runtime {
                     .filter(|participant| !participant.state.is_terminal())
                 {
                     mailbox_recipients.push(participant.instance_id.clone());
+                    let mut participant_config = agent_instance_store
+                        .agent_instance_config(&session.id, &participant.instance_id)
+                        .await
+                        .map_err(|error| RuntimeError::Store(error.to_string()))?
+                        .ok_or_else(|| {
+                            RuntimeError::Config(format!(
+                                "Agent instance {} has no durable configuration",
+                                participant.instance_id
+                            ))
+                        })?;
+                    if participant_config.effective.agent_id != participant.definition.agent_id
+                        || participant_config.effective.agent_revision
+                            != participant.definition.revision
+                    {
+                        return Err(RuntimeError::Config(format!(
+                            "Agent instance {} configuration does not match its definition",
+                            participant.instance_id
+                        )));
+                    }
                     materialize_participant_history(
                         &session_store,
                         participant,
@@ -4760,7 +4791,26 @@ impl Runtime {
                         } else {
                             view
                         };
-                        participant_metadata.workspace = view.effective_workspace;
+                        participant_metadata
+                            .workspace
+                            .clone_from(&view.effective_workspace);
+                        let previous = participant_config.effective.clone();
+                        bind_effective_workspace(
+                            &mut participant_config.effective,
+                            &view.effective_workspace,
+                        );
+                        if participant_config.effective != previous {
+                            let expected = participant_config.config_revision;
+                            participant_config.config_revision =
+                                expected.checked_add(1).ok_or_else(|| {
+                                    RuntimeError::Config("Agent config revision overflow".into())
+                                })?;
+                            participant_config.updated_at = recovery_observed_at;
+                            agent_instance_store
+                                .save_agent_instance_config(&participant_config, Some(expected))
+                                .await
+                                .map_err(|error| RuntimeError::Store(error.to_string()))?;
+                        }
                     }
                     let configured = revision_provider
                         .configured_revision(
@@ -5051,19 +5101,133 @@ impl Runtime {
                 return Ok(outcome);
             }
         };
+        let ready = self.activate_agent_participant(&participant).await?;
+        Ok(match moderator_authorization {
+            Some(decision) => ForkAgentOutcome::CreatedByModerator {
+                participant: ready,
+                decision,
+            },
+            None => ForkAgentOutcome::Created(ready),
+        })
+    }
+
+    /// Resolve, persist, attach, and activate a heterogeneous Agent revision.
+    pub async fn define_agent_instance(
+        &self,
+        actor: &AuthenticatedSession,
+        request: DefinedAgentJoinRequest,
+    ) -> Result<DefineAgentOutcome, RuntimeError> {
+        validate_coordination_actor(actor, &request.session_id, &request.sponsor_instance_id)?;
+        if request.agent_revision == 0 {
+            return Err(RuntimeError::Coordination(
+                "defined Agent revision must be greater than zero".into(),
+            ));
+        }
+        let session = self
+            .storage
+            .sessions()
+            .get(&request.session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| {
+                RuntimeError::Coordination("defined Agent Session disappeared".into())
+            })?;
+        let configured = self
+            .configured_agent_revision(&request.agent_id, request.agent_revision)
+            .await?;
+        let mut effective =
+            resolve_session_config(&configured, &request.config_overrides, None, None)
+                .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        bind_effective_workspace(&mut effective, &session.metadata.workspace);
+        let capability_revision = format!(
+            "agent:{}:{}:provider:{}:model:{}",
+            effective.agent_id.0,
+            effective.agent_revision,
+            effective.provider_revision,
+            effective.model_revision
+        );
+        let outcome = self
+            .storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .define_agent(
+                DefineAgentRequest {
+                    instance_id: request.instance_id,
+                    session_id: request.session_id,
+                    sponsor_instance_id: request.sponsor_instance_id,
+                    definition: AgentDefinitionKey {
+                        agent_id: request.agent_id,
+                        revision: request.agent_revision,
+                    },
+                    role: request.role,
+                    capability_revision,
+                    effective_config: effective,
+                },
+                crate::session::now_secs(),
+            )
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        let (participant, decision) = match outcome {
+            DefineAgentOutcome::Created(participant) => (participant, None),
+            DefineAgentOutcome::CreatedByModerator {
+                participant,
+                decision,
+            } => (participant, Some(decision)),
+            outcome => return Ok(outcome),
+        };
+        let participant = self.activate_agent_participant(&participant).await?;
+        Ok(match decision {
+            Some(decision) => DefineAgentOutcome::CreatedByModerator {
+                participant,
+                decision,
+            },
+            None => DefineAgentOutcome::Created(participant),
+        })
+    }
+
+    async fn configured_agent_revision(
+        &self,
+        agent_id: &AgentId,
+        revision: u64,
+    ) -> Result<ConfiguredAgent, RuntimeError> {
+        if let Some(provider) = &self.revision_provider {
+            return provider.configured_revision(agent_id, revision).await;
+        }
+        self.configured_agents
+            .get(agent_id)
+            .filter(|configured| configured.definition.revision == revision)
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("Agent definition revision is unavailable".into())
+            })
+    }
+
+    async fn activate_agent_participant(
+        &self,
+        participant: &AgentInstance,
+    ) -> Result<AgentInstance, RuntimeError> {
         let mut session = self
             .storage
             .sessions()
             .get(&participant.session_id)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
-            .ok_or_else(|| RuntimeError::Coordination("fork Session disappeared".into()))?;
+            .ok_or_else(|| RuntimeError::Coordination("Agent Session disappeared".into()))?;
         materialize_participant_history(
             self.storage.sessions(),
-            &participant,
+            participant,
             crate::session::now_secs(),
         )
         .await?;
+        let mut config = self
+            .storage
+            .sessions()
+            .agent_instance_config(&participant.session_id, &participant.instance_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Coordination("Agent configuration disappeared".into()))?;
         if let Some(coordinator) = &self.agent_workspaces {
             let membership = self
                 .storage
@@ -5071,16 +5235,16 @@ impl Runtime {
                 .session_membership(&participant.session_id)
                 .await
                 .map_err(|error| RuntimeError::Store(error.to_string()))?
-                .ok_or_else(|| RuntimeError::Coordination("fork membership disappeared".into()))?;
-            let binding = session.effective_config.as_ref().and_then(|effective| {
-                effective
-                    .user_workspace
-                    .as_ref()
-                    .or(effective.agent_workspace.as_ref())
-            });
-            let view_id = WorkspaceViewId::new(format!("agent:{}", participant.instance_id.0));
-            let view = if let Some(binding) = binding {
-                let provisioned = if binding.read_only {
+                .ok_or_else(|| RuntimeError::Coordination("Agent membership disappeared".into()))?;
+            let binding = config
+                .effective
+                .user_workspace
+                .as_ref()
+                .or(config.effective.agent_workspace.as_ref())
+                .cloned();
+            if let Some(binding) = binding {
+                let view_id = WorkspaceViewId::new(format!("agent:{}", participant.instance_id.0));
+                let view = if binding.read_only {
                     coordinator
                         .ensure_shared_read_only(
                             view_id,
@@ -5108,56 +5272,46 @@ impl Runtime {
                         .await
                 }
                 .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
-                Some(provisioned)
-            } else {
-                None
-            };
-            if let Some(view) = view {
-                session.metadata.workspace = view.effective_workspace;
+                session
+                    .metadata
+                    .workspace
+                    .clone_from(&view.effective_workspace);
+                let previous = config.effective.clone();
+                bind_effective_workspace(&mut config.effective, &view.effective_workspace);
+                if config.effective != previous {
+                    let expected = config.config_revision;
+                    config.config_revision = expected.checked_add(1).ok_or_else(|| {
+                        RuntimeError::Coordination("Agent config revision overflow".into())
+                    })?;
+                    config.updated_at = crate::session::now_secs();
+                    self.storage
+                        .sessions()
+                        .save_agent_instance_config(&config, Some(expected))
+                        .await
+                        .map_err(|error| RuntimeError::Store(error.to_string()))?;
+                }
             }
         }
-        let configured = if let Some(provider) = &self.revision_provider {
-            provider
-                .configured_revision(
-                    &participant.definition.agent_id,
-                    participant.definition.revision,
-                )
-                .await?
-        } else {
-            self.configured_agents
-                .get(&participant.definition.agent_id)
-                .filter(|configured| {
-                    configured.definition.revision == participant.definition.revision
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    RuntimeError::Coordination(
-                        "fork Agent definition revision is unavailable".into(),
-                    )
-                })?
-        };
-        configured
-            .attach_agent_instance(
-                participant.session_id.clone(),
-                participant.instance_id.clone(),
-                session.metadata,
-            )
-            .await
-            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
-        let ready = self
-            .storage
+        self.configured_agent_revision(
+            &participant.definition.agent_id,
+            participant.definition.revision,
+        )
+        .await?
+        .attach_agent_instance(
+            participant.session_id.clone(),
+            participant.instance_id.clone(),
+            session.metadata,
+        )
+        .await
+        .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        self.storage
             .coordination()
-            .expect("coordination availability was checked before fork")
-            .mark_agent_ready(&participant, crate::session::now_secs())
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .mark_agent_ready(participant, crate::session::now_secs())
             .await
-            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
-        Ok(match moderator_authorization {
-            Some(decision) => ForkAgentOutcome::CreatedByModerator {
-                participant: ready,
-                decision,
-            },
-            None => ForkAgentOutcome::Created(ready),
-        })
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
     }
 
     /// Persist one authenticated wait-for edge for deadlock governance.
