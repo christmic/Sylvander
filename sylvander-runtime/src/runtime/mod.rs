@@ -70,19 +70,21 @@ use crate::guardian::curation as guardian_curation;
 use crate::guardian::runtime::{
     GuardianRuntime, GuardianRuntimeError, GuardianRuntimeSettings, WorkerToolGatewayFactory,
 };
-use crate::session::identity_binding::{
-    IdentityBindingService, IdentityIngress, TrustedIdentityIssuer,
-};
 use crate::memory_maintenance::{
     MemoryMaintenanceTask, RuntimeMemoryMaintenancePolicy, catch_up as memory_maintenance_catch_up,
 };
+use crate::provider::request_scoped::RenewableExternalSecretProvider;
+use crate::registry::administration::{CredentialRegistryMutationService, RegistryAdminService};
+use crate::registry::agent::{AgentRegistry, REGISTRY_SCHEMA_OBJECT_NAMES};
+use crate::registry::snapshot::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
+use crate::session::SessionMetadata;
 use crate::session::boundary::BoundaryGuard;
+use crate::session::identity_binding::{
+    IdentityBindingService, IdentityIngress, TrustedIdentityIssuer,
+};
 use crate::session::principal_binding::{
     PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey,
 };
-use crate::registry::administration::{CredentialRegistryMutationService, RegistryAdminService};
-use crate::registry::snapshot::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
-use crate::session::SessionMetadata;
 use crate::storage::artifact::RuntimeArtifactService;
 use crate::storage::memory::{
     HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, MemoryIntegrityConfig,
@@ -94,8 +96,6 @@ use crate::storage::session::{
 };
 use crate::storage::{RuntimeStorage, RuntimeStorageSnapshot, RuntimeStorageStatus};
 use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
-use crate::provider::request_scoped::RenewableExternalSecretProvider;
-use crate::registry::agent::{AgentRegistry, REGISTRY_SCHEMA_OBJECT_NAMES};
 use crate::workspace::{
     coding as coding_worktree, local as git_worktree, remote as remote_git_worktree,
 };
