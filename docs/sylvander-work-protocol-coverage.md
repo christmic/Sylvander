@@ -2,7 +2,7 @@
 
 > Status: active implementation ledger
 >
-> Verified against `sylvander-api/src/ui.rs` and Desktop commit `f0928cd0b`
+> Verified against `sylvander-api/src/ui.rs` and Desktop commit `8a4a9707c`
 > on 2026-08-13.
 
 ## Purpose
@@ -32,7 +32,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `SubmitFeedback` | missing | terminal feedback surface |
 | `MemoryConfirmation` | missing | governed memory decision surface |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
-| `ReattachSession` | UI command only | WebSocket bounded live-event replay and recovery response |
+| `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
 | `RestoreSession`, `ForkSession` | WebSocket complete, UI missing | archived/fork workflows |
 | `GetContext`, `Compact` | UI complete, WebSocket missing | transport dispatch to Runtime-owned lifecycle |
 | `PreviewWorkspaceRollback`, `RollbackWorkspace` | UI complete, WebSocket missing | transport dispatch for two-phase rollback |
@@ -70,11 +70,9 @@ execution, persistence, or policy ownership moved into Desktop.
 
 1. Complete WebSocket parity for Runtime info, context, compaction, coding
    review, and rollback before marking their existing UI projections complete.
-2. Add bounded WebSocket live-event replay, then implement `ReattachSession`;
-   a history-only response is not recovery.
-3. Integrate the authoritative Runtime lifecycle chain, including
+2. Integrate the authoritative Runtime lifecycle chain, including
    `TurnStarted`; do not infer it from local submission.
-4. Complete feedback, memory, identity, administration, attachments, and
+3. Complete feedback, memory, identity, administration, attachments, and
    liveness surfaces with protocol and accessibility tests.
 
 Every row moves to complete only with a typed command/event test and a product
