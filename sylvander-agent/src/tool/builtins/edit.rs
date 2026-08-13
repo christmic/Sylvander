@@ -66,6 +66,9 @@ impl ToolDefinition for EditTool {
             .schema,
             crate::tool::invocation::ToolInvocationClass::FilesystemMutation,
         )
+        .with_recovery_policy(
+            crate::tool::invocation::ToolRecoveryPolicy::ReconcileBeforeRetry,
+        )
         .with_prompt_guidelines([
             "Use Edit for bounded changes to existing text; use the exact text most recently observed.",
             "If Edit reports a revision conflict, read the file again before retrying.",
@@ -162,14 +165,18 @@ impl ToolExecutor for EditTool {
         };
 
         let prepared = if let Some(journal) = &ctx.workspace_journal {
-            let turn_id = ctx.trace_id().ok_or_else(|| {
-                ToolError::Other("workspace journal requires a turn trace id".into())
+            let turn_id = ctx.turn_id().ok_or_else(|| {
+                ToolError::Other("workspace journal requires a Runtime turn id".into())
+            })?;
+            let call_id = ctx.invocation_call_id().ok_or_else(|| {
+                ToolError::Other("workspace journal requires a tool call id".into())
             })?;
             Some(
                 journal
                     .prepare(
                         ctx.session_id(),
                         turn_id,
+                        call_id,
                         &target.workspace_path,
                         path_str,
                         new_content.as_bytes(),

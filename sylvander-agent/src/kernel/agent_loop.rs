@@ -1197,6 +1197,7 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
         timeout,
         progress,
     } = request;
+    let tool_context = tool_context.with_invocation_call_id(call_id.clone());
     let session_id = tool_context.session_id();
     let trace_id = tool_context.trace_id().unwrap_or("");
     tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, "tool execution started");

@@ -53,6 +53,7 @@ pub trait WorkspaceMutationJournal: Debug + Send + Sync {
         &self,
         session_id: &str,
         turn_id: &str,
+        call_id: &str,
         workspace: &Path,
         relative_path: &str,
         after: &[u8],

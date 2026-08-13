@@ -876,6 +876,15 @@ impl AgentRunInner {
                     capability_revision,
                 } => {
                     if let Some(store) = &self.session_store {
+                        let effective_recovery_policy = if self.workspace_journal.is_some()
+                            && matches!(name.as_str(), "Write" | "Edit")
+                            && recovery_policy
+                                == sylvander_agent::tool::invocation::ToolRecoveryPolicy::ReconcileBeforeRetry
+                        {
+                            recovery_policy
+                        } else {
+                            sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay
+                        };
                         store
                             .begin_tool_call(ToolCallStart {
                                 session_id: session_id.clone(),
@@ -885,8 +894,7 @@ impl AgentRunInner {
                                 tool_name: name.clone(),
                                 invocation_class,
                                 declared_recovery_policy: recovery_policy,
-                                effective_recovery_policy:
-                                    sylvander_agent::tool::invocation::ToolRecoveryPolicy::NeverReplay,
+                                effective_recovery_policy,
                                 capability_revision,
                                 input_digest,
                             })

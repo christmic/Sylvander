@@ -47,6 +47,7 @@ struct Manifest {
     sequence: u64,
     session_id: String,
     turn_id: String,
+    call_id: String,
     workspace: PathBuf,
     relative_path: String,
     before_blob: Option<PathBuf>,
@@ -102,6 +103,7 @@ impl WorkspaceJournal {
         &self,
         session_id: &str,
         turn_id: &str,
+        call_id: &str,
         workspace: &Path,
         relative_path: &str,
         after: &[u8],
@@ -147,6 +149,7 @@ impl WorkspaceJournal {
             sequence: next_sequence(&entries)?,
             session_id: session_id.into(),
             turn_id: turn_id.into(),
+            call_id: call_id.into(),
             workspace: workspace.to_path_buf(),
             relative_path: relative_path.into(),
             before_blob,
@@ -301,11 +304,19 @@ impl WorkspaceMutationJournal for WorkspaceJournal {
         &self,
         session_id: &str,
         turn_id: &str,
+        call_id: &str,
         workspace: &Path,
         relative_path: &str,
         after: &[u8],
     ) -> Result<PreparedMutation, String> {
-        self.prepare_mutation(session_id, turn_id, workspace, relative_path, after)
+        self.prepare_mutation(
+            session_id,
+            turn_id,
+            call_id,
+            workspace,
+            relative_path,
+            after,
+        )
     }
 
     fn commit(&self, prepared: &PreparedMutation) -> Result<(), String> {
