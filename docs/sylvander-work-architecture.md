@@ -329,6 +329,15 @@ clear gateway state and publish `Disconnected` only while its generation is
 still current. Replaced or explicitly closed tasks therefore cannot race a new
 handshake and schedule a redundant WebView reconnect.
 
+Window geometry is host-local presentation state. The Rust shell uses the
+official pinned `tauri-plugin-window-state` implementation to restore and save
+only size, monitor-valid position, and maximized state. It deliberately omits
+visibility, fullscreen, and decoration flags so a prior exit cannot make the
+next launch hidden or unexpectedly fullscreen. The plugin writes its own
+bounded JSON file under Tauri's application configuration directory. React
+does not receive the filename, the bytes, or any `window-state:*` capability;
+therefore this persistence cannot become a general WebView filesystem bridge.
+
 Handshake rejection preserves the protocol's public error code, bounded safe
 message, and supported version range. Native transport, TLS, and credential
 errors remain generic. This gives the user an actionable compatibility fact
