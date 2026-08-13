@@ -15,9 +15,9 @@ use sylvander_agent::prompt::{
     PromptModelSelection,
 };
 use sylvander_api::{
-    BusMessage, MessageId, MessageKind, PermissionProfile, PlanDecision, ReasoningEffort,
-    Recipient, Sender, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
-    SessionEffectiveConfig, SessionId, StreamEvent, SystemMessage,
+    AgentId, AgentInstanceId, BusMessage, MessageId, MessageKind, PermissionProfile, PlanDecision,
+    ReasoningEffort, Recipient, Sender, SessionConfigProvenance, SessionConfigSource,
+    SessionConfigSourceKind, SessionEffectiveConfig, SessionId, StreamEvent, SystemMessage,
 };
 use sylvander_channel::{InProcessMessageBus, MessageBus, SubscriptionFilter};
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
@@ -90,7 +90,14 @@ fn qualified_run_builder(spec: AgentSpec, client: AnthropicClient) -> AgentRunBu
     )
 }
 
-async fn build_agent(server: &MockServer) -> (AgentRun, Arc<InProcessMessageBus>, SessionId) {
+async fn build_agent(
+    server: &MockServer,
+) -> (
+    AgentRun,
+    Arc<InProcessMessageBus>,
+    SessionId,
+    AgentInstanceId,
+) {
     let bus = Arc::new(InProcessMessageBus::new());
     let spec = AgentSpec::builder()
         .id("stream-test")
@@ -105,22 +112,38 @@ async fn build_agent(server: &MockServer) -> (AgentRun, Arc<InProcessMessageBus>
         .expect("build");
 
     let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
-    run.attach_authenticated_session(
-        issuer
-            .issue(
-                sid.clone(),
-                SessionMetadata {
-                    workspace: "/tmp".into(),
-                    name: "test".into(),
-                    user_id: "user-1".into(),
-                },
-            )
-            .expect("issue session"),
-    )
-    .await
-    .expect("attach session");
+    let authenticated = run
+        .attach_authenticated_session(
+            issuer
+                .issue(
+                    sid.clone(),
+                    SessionMetadata {
+                        workspace: "/tmp".into(),
+                        name: "test".into(),
+                        user_id: "user-1".into(),
+                    },
+                )
+                .expect("issue session"),
+        )
+        .await
+        .expect("attach session");
 
-    (run, bus, sid)
+    let instance_id = authenticated.agent_instance_id().clone();
+    (run, bus, sid, instance_id)
+}
+
+fn addressed_user_chat(
+    session_id: SessionId,
+    agent_id: AgentId,
+    instance_id: AgentInstanceId,
+    text: &str,
+) -> BusMessage {
+    let mut message = BusMessage::user_chat(session_id.clone(), "user-1", text);
+    message.recipient = Recipient::AgentInstance {
+        instance_id,
+        agent_id,
+    };
+    message
 }
 
 /// Subscribe to all stream events for the agent
@@ -178,9 +201,14 @@ async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
     ))
     .await
     .expect("join");
-    bus.publish(BusMessage::user_chat(session_id.clone(), "user-1", "wait"))
-        .await
-        .expect("chat");
+    bus.publish(addressed_user_chat(
+        session_id.clone(),
+        agent_id.clone(),
+        AgentInstanceId::new(format!("moderator:{}", session_id.0)),
+        "wait",
+    ))
+    .await
+    .expect("chat");
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     bus.publish(BusMessage::system_interrupt_turn(
@@ -342,9 +370,15 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     ))
     .await
     .expect("join");
-    bus.publish(BusMessage::user_chat(sid.clone(), "user-1", "make a plan"))
-        .await
-        .expect("chat");
+    let instance_id = AgentInstanceId::new(format!("moderator:{}", sid.0));
+    bus.publish(addressed_user_chat(
+        sid.clone(),
+        agent_id.clone(),
+        instance_id.clone(),
+        "make a plan",
+    ))
+    .await
+    .expect("chat");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -363,7 +397,10 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     bus.publish(BusMessage {
         session_id: sid.clone(),
         sender: Sender::System,
-        recipient: Recipient::Agent(agent_id.clone()),
+        recipient: Recipient::AgentInstance {
+            instance_id,
+            agent_id: agent_id.clone(),
+        },
         kind: MessageKind::System(SystemMessage::ResolvePlan {
             plan_id: "plan_001".into(),
             decision: PlanDecision::Approved,
@@ -423,10 +460,10 @@ async fn text_deltas_published_to_bus() {
         .mount(&server)
         .await;
 
-    let (agent, bus, sid) = build_agent(&server).await;
+    let (agent, bus, sid, instance_id) = build_agent(&server).await;
     let mut rx = subscribe_stream(&bus).await;
 
-    let msg = BusMessage::user_chat(sid, "user-1", "Hi");
+    let msg = addressed_user_chat(sid, agent.id().clone(), instance_id, "Hi");
     agent.handle_message(msg).await.expect("handle_message");
 
     // Drain events
@@ -554,14 +591,6 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         .build_with_session_issuer()
         .expect("build");
     let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-    agent
-        .attach_authenticated_session(
-            issuer
-                .issue(session_id.clone(), metadata.clone())
-                .expect("issue session"),
-        )
-        .await
-        .expect("attach session");
     let mut stored = StoredSession::new(
         session_id.clone(),
         "configured",
@@ -572,8 +601,21 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
     stored.config_overrides.prompt_profile = Some("session".into());
     stored.effective_config = Some(effective_config);
     store.save(&stored).await.expect("save session");
+    let authenticated = agent
+        .attach_authenticated_session(
+            issuer
+                .issue(session_id.clone(), stored.metadata.clone())
+                .expect("issue session"),
+        )
+        .await
+        .expect("attach session");
     agent
-        .handle_message(BusMessage::user_chat(session_id, "user-1", "use my config"))
+        .handle_message(addressed_user_chat(
+            session_id,
+            agent.id().clone(),
+            authenticated.agent_instance_id().clone(),
+            "use my config",
+        ))
         .await
         .expect("configured turn");
     let requests = server.received_requests().await.expect("provider requests");
@@ -664,7 +706,7 @@ async fn tool_call_events_published() {
         .expect("build");
 
     let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
-    agent
+    let authenticated = agent
         .attach_authenticated_session(
             issuer
                 .issue(
@@ -682,7 +724,12 @@ async fn tool_call_events_published() {
 
     let mut rx = subscribe_stream(&bus).await;
 
-    let msg = BusMessage::user_chat(sid, "user-1", "Run tool");
+    let msg = addressed_user_chat(
+        sid,
+        agent.id().clone(),
+        authenticated.agent_instance_id().clone(),
+        "Run tool",
+    );
     agent.handle_message(msg).await.expect("handle_message");
 
     let mut events = Vec::new();
@@ -725,9 +772,9 @@ async fn session_history_contains_complete_message_not_chunks() {
         .mount(&server)
         .await;
 
-    let (agent, _bus, sid) = build_agent(&server).await;
+    let (agent, _bus, sid, instance_id) = build_agent(&server).await;
 
-    let msg = BusMessage::user_chat(sid.clone(), "user-1", "Hi");
+    let msg = addressed_user_chat(sid.clone(), agent.id().clone(), instance_id, "Hi");
     agent.handle_message(msg).await.expect("handle_message");
 
     // Check session history
@@ -757,10 +804,10 @@ async fn done_event_contains_full_text() {
         .mount(&server)
         .await;
 
-    let (agent, bus, sid) = build_agent(&server).await;
+    let (agent, bus, sid, instance_id) = build_agent(&server).await;
     let mut rx = subscribe_stream(&bus).await;
 
-    let msg = BusMessage::user_chat(sid, "user-1", "Q");
+    let msg = addressed_user_chat(sid, agent.id().clone(), instance_id, "Q");
     agent.handle_message(msg).await.expect("handle_message");
 
     let mut done_event = None;
@@ -784,10 +831,10 @@ async fn agent_error_published_and_returns_err() {
         .mount(&server)
         .await;
 
-    let (agent, bus, sid) = build_agent(&server).await;
+    let (agent, bus, sid, instance_id) = build_agent(&server).await;
     let mut rx = subscribe_stream(&bus).await;
 
-    let msg = BusMessage::user_chat(sid, "user-1", "Hi");
+    let msg = addressed_user_chat(sid, agent.id().clone(), instance_id, "Hi");
     let result = agent.handle_message(msg).await;
 
     // Should return error
