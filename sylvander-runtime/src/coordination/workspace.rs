@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use sylvander_api::{AgentInstanceId, SessionId, WorkspaceViewId};
+use sylvander_api::{AgentInstanceId, SessionId, WorkspaceIntegrationId, WorkspaceViewId};
 
 use crate::agent::instance::AgentInstanceState;
 use crate::session::membership::SessionMembership;
@@ -189,6 +189,59 @@ impl AgentWorkspaceView {
     }
 }
 
+/// Immutable moderator approval for one exact reviewed workspace revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceIntegrationApproval {
+    pub integration_id: WorkspaceIntegrationId,
+    pub view_id: WorkspaceViewId,
+    pub session_id: SessionId,
+    pub agent_instance_id: AgentInstanceId,
+    pub approved_by: AgentInstanceId,
+    pub membership_revision: u64,
+    pub topology_revision: u64,
+    pub view_revision: u64,
+    pub lease_epoch: u64,
+    pub fencing_token: u64,
+    pub review_digest: String,
+    pub approved_at: i64,
+}
+
+impl WorkspaceIntegrationApproval {
+    pub fn validate(
+        &self,
+        view: &AgentWorkspaceView,
+        membership: &SessionMembership,
+        topology_revision: u64,
+    ) -> Result<(), WorkspaceViewError> {
+        if self.view_id != view.view_id
+            || self.session_id != view.session_id
+            || self.agent_instance_id != view.agent_instance_id
+        {
+            return Err(WorkspaceViewError::ApprovalMismatch);
+        }
+        if self.approved_by != membership.governance.moderator_instance_id {
+            return Err(WorkspaceViewError::UnauthorizedIntegrator);
+        }
+        if self.membership_revision != membership.governance.membership_revision
+            || self.membership_revision != view.membership_revision
+            || self.topology_revision != topology_revision
+            || self.view_revision != view.revision
+            || self.lease_epoch != view.lease_epoch
+            || self.fencing_token != view.fencing_token
+        {
+            return Err(WorkspaceViewError::StaleIntegrationApproval);
+        }
+        if !matches!(
+            view.state,
+            WorkspaceViewState::Active | WorkspaceViewState::Conflicted
+        ) || self.review_digest.trim().is_empty()
+        {
+            return Err(WorkspaceViewError::InvalidIntegrationApproval);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkspaceViewError {
     #[error("workspace view is not a new fenced lease")]
@@ -215,6 +268,14 @@ pub enum WorkspaceViewError {
     InvalidTransition,
     #[error("workspace view revision overflow")]
     RevisionOverflow,
+    #[error("workspace integration approval targets a different view")]
+    ApprovalMismatch,
+    #[error("only the Session moderator may approve final workspace integration")]
+    UnauthorizedIntegrator,
+    #[error("workspace integration approval was derived from stale facts")]
+    StaleIntegrationApproval,
+    #[error("workspace integration approval has no reviewed candidate or invalid state")]
+    InvalidIntegrationApproval,
 }
 
 #[cfg(test)]

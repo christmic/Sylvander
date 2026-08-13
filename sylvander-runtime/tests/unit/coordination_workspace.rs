@@ -99,3 +99,31 @@ fn workspace_lifecycle_requires_exact_revision_and_fencing() {
         Err(WorkspaceViewError::RevisionConflict)
     );
 }
+
+#[test]
+fn only_moderator_can_approve_an_exact_reviewed_workspace_revision() {
+    let mut view = isolated_view();
+    view.state = WorkspaceViewState::Active;
+    view.revision = 1;
+    let mut approval = WorkspaceIntegrationApproval {
+        integration_id: WorkspaceIntegrationId::new("integration"),
+        view_id: view.view_id.clone(),
+        session_id: view.session_id.clone(),
+        agent_instance_id: view.agent_instance_id.clone(),
+        approved_by: AgentInstanceId::new("moderator"),
+        membership_revision: 2,
+        topology_revision: 7,
+        view_revision: 1,
+        lease_epoch: 5,
+        fencing_token: 9,
+        review_digest: "sha256:reviewed-candidate".into(),
+        approved_at: 3,
+    };
+
+    approval.validate(&view, &membership(), 7).unwrap();
+    approval.approved_by = AgentInstanceId::new("worker");
+    assert_eq!(
+        approval.validate(&view, &membership(), 7),
+        Err(WorkspaceViewError::UnauthorizedIntegrator)
+    );
+}

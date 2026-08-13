@@ -119,6 +119,16 @@ impl WorkspaceViewId {
     }
 }
 
+/// Stable identity for one reviewed workspace integration attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceIntegrationId(pub String);
+
+impl WorkspaceIntegrationId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
 /// Stable identity for one durable unit of Agent work.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskId(pub String);
