@@ -19,14 +19,14 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
 
-use sylvander_agent::identity::{AgentId, SessionId, UserId};
-use sylvander_agent::tools::memory::{
+use sylvander_agent::memory::store::{
     Importance, MAX_MEMORY_QUERY_BYTES, MAX_MEMORY_RESULTS, MemoryAppend, MemoryEntry,
     MemoryExecutionContext, MemoryFilter, MemoryOwner, MemoryPatch, MemoryProvenance,
     MemoryProvenanceSource, MemoryStore, MemoryStoreError, RelationshipMemoryRetentionPolicy,
     apply_patch, memory_not_visible, next_revision, validate_append, validate_memory_id,
     validate_patch, validate_revision,
 };
+use sylvander_agent::turn::identity::{AgentId, SessionId, UserId};
 
 mod backup;
 mod checkpoint;
@@ -1631,22 +1631,22 @@ fn read_revision(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64>
         .ok_or(rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
 
-const fn actor_value(actor: sylvander_agent::tools::memory::MemoryActorKind) -> &'static str {
+const fn actor_value(actor: sylvander_agent::memory::store::MemoryActorKind) -> &'static str {
     match actor {
-        sylvander_agent::tools::memory::MemoryActorKind::Worker => "worker",
-        sylvander_agent::tools::memory::MemoryActorKind::Guardian => "guardian",
-        sylvander_agent::tools::memory::MemoryActorKind::SystemService => "system_service",
+        sylvander_agent::memory::store::MemoryActorKind::Worker => "worker",
+        sylvander_agent::memory::store::MemoryActorKind::Guardian => "guardian",
+        sylvander_agent::memory::store::MemoryActorKind::SystemService => "system_service",
     }
 }
 
 fn parse_actor(
     value: &str,
     index: usize,
-) -> rusqlite::Result<sylvander_agent::tools::memory::MemoryActorKind> {
+) -> rusqlite::Result<sylvander_agent::memory::store::MemoryActorKind> {
     match value {
-        "worker" => Ok(sylvander_agent::tools::memory::MemoryActorKind::Worker),
-        "guardian" => Ok(sylvander_agent::tools::memory::MemoryActorKind::Guardian),
-        "system_service" => Ok(sylvander_agent::tools::memory::MemoryActorKind::SystemService),
+        "worker" => Ok(sylvander_agent::memory::store::MemoryActorKind::Worker),
+        "guardian" => Ok(sylvander_agent::memory::store::MemoryActorKind::Guardian),
+        "system_service" => Ok(sylvander_agent::memory::store::MemoryActorKind::SystemService),
         _ => Err(invalid_text(index, "invalid memory actor")),
     }
 }

@@ -16,16 +16,16 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sylvander_agent::curated_memory::{
+use sylvander_agent::memory::curated::{
     CuratedContextEntry, CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope,
     MemoryCandidateError, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSubmission,
 };
-use sylvander_agent::tool_context::ToolContext;
-use sylvander_agent::tool_invocation::{
+use sylvander_agent::tool::invocation::{
     AuthorizedToolInvocation, CapabilityFeature, CapabilityFeatureKind, ToolInvocationClass,
     ToolInvocationDescriptor, ToolInvocationError, ToolInvocationGateway, ToolInvocationOutcome,
     ToolInvocationRequest, ToolInvocationSnapshot,
 };
+use sylvander_agent::tool_context::ToolContext;
 use sylvander_agent::tools::MemoryOwner;
 use sylvander_api::{AgentId, SessionContext, UserId};
 use thiserror::Error;

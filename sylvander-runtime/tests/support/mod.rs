@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
+use sylvander_agent::tool::invocation::ToolInvocationClass;
 use sylvander_agent::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
 use sylvander_agent::tool_context::ToolContext;
-use sylvander_agent::tool_invocation::ToolInvocationClass;
 use sylvander_llm_core::InputSchema;
 
 /// In-memory tool that records inputs and returns configured responses.

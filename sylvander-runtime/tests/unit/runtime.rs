@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use sylvander_agent::tools::memory::MemoryFilter;
+use sylvander_agent::memory::store::MemoryFilter;
 use sylvander_agent::tools::{MemoryActorKind, MemoryAppend, MemoryProvenanceSource};
 use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
 use sylvander_channel::BusError;

@@ -489,7 +489,7 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
     assert!(matches!(
         error,
         crate::agent_run::AgentRunError::Loop(
-            sylvander_agent::error::AgentLoopError::Provider { attempts: 1, source }
+            sylvander_agent::turn::error::AgentLoopError::Provider { attempts: 1, source }
         ) if source.kind == sylvander_llm_core::ProviderErrorKind::Authentication
     ));
 
@@ -640,7 +640,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         matches!(
         &beta_error,
         crate::agent_run::AgentRunError::Loop(
-            sylvander_agent::error::AgentLoopError::Provider { attempts: 1, source }
+            sylvander_agent::turn::error::AgentLoopError::Provider { attempts: 1, source }
         ) if source.kind == sylvander_llm_core::ProviderErrorKind::Authentication
         ),
         "unexpected beta failure: {beta_error:?}"

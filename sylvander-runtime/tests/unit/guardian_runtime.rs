@@ -7,11 +7,11 @@ use crate::storage::session::SessionLifetime;
 use async_trait::async_trait;
 use rusqlite::Connection;
 use serde_json::json;
-use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::identity::{
+use sylvander_agent::tool_context::ToolContext;
+use sylvander_agent::turn::execution_context::AgentExecutionContext;
+use sylvander_agent::turn::identity::{
     AgentId as KernelAgentId, SessionId as KernelSessionId, UserId as KernelUserId,
 };
-use sylvander_agent::tool_context::ToolContext;
 use sylvander_api::{AgentId, SessionContext, SessionId, SessionMetadata, UserId, UserProfileData};
 
 use super::*;
