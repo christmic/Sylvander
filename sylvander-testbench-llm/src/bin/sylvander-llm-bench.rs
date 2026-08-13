@@ -57,8 +57,8 @@ async fn execute(
 ) -> Result<bool, String> {
     let repository = RepositoryState::discover();
     let limits = LiveLimits {
-        request_timeout: Duration::from_mins(1),
-        max_output_tokens: 16,
+        request_timeout: Duration::from_millis(matrix.request_timeout_ms),
+        max_output_tokens: matrix.max_output_tokens,
     };
     let mut accepted = true;
     for cell in cells {

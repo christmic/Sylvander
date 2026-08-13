@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::process::Command;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path};
@@ -126,4 +127,51 @@ async fn run_uses_the_protocol_specific_remote_token_count_operation() {
     assert_eq!(result["scenario"], "remote_token_count");
     assert_eq!(result["counted_input_tokens"], 11);
     assert_eq!(result["input_tokens"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_timeout_passes_only_after_the_expected_typed_fault() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let matrix_path = std::env::temp_dir().join(format!(
+        "sylvander-llm-timeout-matrix-{}.json",
+        std::process::id()
+    ));
+    let matrix = json!({
+        "schema_version": 1,
+        "repetitions": 1,
+        "request_timeout_ms": 20,
+        "max_output_tokens": 8,
+        "scenarios": ["open_timeout"],
+        "bindings": [{
+            "provider_id": "provider-timeout",
+            "protocol": "openai_responses",
+            "base_url": server.uri(),
+            "credential_env": "SYLVANDER_TESTBENCH_TIMEOUT_CHILD_KEY",
+            "supported_scenarios": ["open_timeout"],
+            "models": [{
+                "model_id": "model-timeout",
+                "advertised_scenarios": ["open_timeout"]
+            }]
+        }]
+    });
+    fs::write(&matrix_path, serde_json::to_vec(&matrix).unwrap()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sylvander-llm-bench"))
+        .args(["run", matrix_path.to_str().unwrap()])
+        .env("SYLVANDER_TESTBENCH_TIMEOUT_CHILD_KEY", "timeout-key")
+        .output()
+        .unwrap();
+    fs::remove_file(matrix_path).unwrap();
+
+    assert!(output.status.success());
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "passed");
+    assert_eq!(result["scenario"], "open_timeout");
+    assert_eq!(result["attempts"], 1);
 }

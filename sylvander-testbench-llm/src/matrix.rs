@@ -56,6 +56,10 @@ pub struct ProtocolBinding {
 pub struct BenchMatrix {
     pub schema_version: u32,
     pub repetitions: u32,
+    #[serde(default = "default_request_timeout_ms")]
+    pub request_timeout_ms: u64,
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u32,
     pub scenarios: BTreeSet<BenchScenario>,
     pub bindings: Vec<ProtocolBinding>,
 }
@@ -90,6 +94,12 @@ impl BenchMatrix {
         }
         if self.repetitions == 0 {
             return Err("matrix repetitions must be positive");
+        }
+        if !(1..=120_000).contains(&self.request_timeout_ms) {
+            return Err("matrix request timeout must be between 1 and 120000 milliseconds");
+        }
+        if !(1..=128).contains(&self.max_output_tokens) {
+            return Err("matrix maximum output tokens must be between 1 and 128");
         }
         if self.scenarios.is_empty() {
             return Err("matrix must select at least one scenario");
@@ -165,4 +175,12 @@ impl BenchMatrix {
         }
         Ok(cells)
     }
+}
+
+const fn default_request_timeout_ms() -> u64 {
+    60_000
+}
+
+const fn default_max_output_tokens() -> u32 {
+    16
 }

@@ -101,6 +101,12 @@ pub async fn run_live_cell(
         BenchScenario::RemoteTokenCount => {
             run_remote_token_count(binding, cell, &credential, limits).await
         }
+        BenchScenario::OpenTimeout => {
+            run_expected_open_timeout(provider.as_ref(), cell, limits.max_output_tokens).await
+        }
+        BenchScenario::TruncatedStream => {
+            run_expected_truncated_stream(provider.as_ref(), cell, limits.max_output_tokens).await
+        }
         _ => Err(ProviderError::new(
             ProviderErrorKind::Unsupported,
             ProviderErrorPhase::Open,
@@ -129,6 +135,50 @@ pub async fn run_live_cell(
         repository,
         observation,
     )
+}
+
+async fn run_expected_open_timeout(
+    provider: &dyn ModelProvider,
+    cell: &MatrixCell,
+    max_output_tokens: u32,
+) -> Result<PassMetrics, ProviderError> {
+    match run_single(provider, cell, max_output_tokens).await {
+        Err(error)
+            if error.kind == ProviderErrorKind::Timeout
+                && error.phase == ProviderErrorPhase::Open =>
+        {
+            Ok(PassMetrics {
+                attempts: 1,
+                ..PassMetrics::default()
+            })
+        }
+        Err(error) => Err(error),
+        Ok(_) => Err(protocol_error("open-timeout fault unexpectedly completed")),
+    }
+}
+
+async fn run_expected_truncated_stream(
+    provider: &dyn ModelProvider,
+    cell: &MatrixCell,
+    max_output_tokens: u32,
+) -> Result<PassMetrics, ProviderError> {
+    match run_single(provider, cell, max_output_tokens).await {
+        Err(error)
+            if matches!(
+                error.kind,
+                ProviderErrorKind::Protocol | ProviderErrorKind::Transport
+            ) && error.phase == ProviderErrorPhase::Stream =>
+        {
+            Ok(PassMetrics {
+                attempts: 1,
+                ..PassMetrics::default()
+            })
+        }
+        Err(error) => Err(error),
+        Ok(_) => Err(protocol_error(
+            "truncated-stream fault unexpectedly completed",
+        )),
+    }
 }
 
 async fn run_remote_token_count(
