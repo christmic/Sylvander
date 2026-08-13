@@ -442,6 +442,26 @@ impl SqliteMemoryStore {
         operation(&mut connection)
     }
 
+    /// Revalidate schema, `SQLite` pages, and the independent integrity anchor.
+    ///
+    /// This is a Runtime operational probe, not an Agent memory capability.
+    /// Keeping it off [`MemoryStore`] prevents infrastructure health concerns
+    /// from leaking into the provider-neutral Agent port.
+    pub(crate) fn verify_health(&self) -> Result<(), MemoryStoreError> {
+        let connection = self.connection.lock().map_err(|_| store_failure())?;
+        verify_schema(&connection)?;
+        let quick_check = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+            .map_err(store_error)?;
+        if quick_check != "ok" {
+            return Err(store_failure());
+        }
+        if let Some(integrity) = &self.integrity {
+            integrity.verify(&connection)?;
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub(crate) fn maintenance(&self) -> SqliteMemoryMaintenance {
         SqliteMemoryMaintenance {

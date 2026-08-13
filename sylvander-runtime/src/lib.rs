@@ -218,7 +218,6 @@ use crate::memory_maintenance::{
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use crate::session::SessionMetadata;
-use crate::storage::RuntimeStorage;
 use crate::storage::memory::{
     HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, MemoryIntegrityConfig,
     SqliteMemoryStore,
@@ -227,6 +226,7 @@ use crate::storage::session::{
     MessageRole, SESSION_SCHEMA_OBJECT_NAMES, SessionLifetime, SessionMetadataPatch, SessionStore,
     SqliteSessionStore, StoredMessage, StoredSession,
 };
+use crate::storage::{RuntimeStorage, RuntimeStorageSnapshot, RuntimeStorageStatus};
 use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
 use agent_registry::{AgentRegistry, REGISTRY_SCHEMA_OBJECT_NAMES};
 use boundary::BoundaryGuard;
@@ -493,6 +493,8 @@ pub struct RuntimeOperationalSnapshot {
     pub evidence: Option<evidence::EvidenceCounts>,
     pub observability: RuntimeObservabilitySnapshot,
     pub execution_targets: Vec<ExecutionTargetHealth>,
+    /// Unified, redacted health of authoritative Runtime persistence.
+    pub storage: RuntimeStorageSnapshot,
     pub health_issues: Vec<RuntimeHealthIssue>,
 }
 
@@ -502,6 +504,7 @@ pub enum RuntimeHealthIssue {
     EvidenceRecorder,
     GuardianSupervisor,
     ExecutionTarget,
+    Storage,
 }
 
 struct RuntimeChannelHost {
@@ -4017,11 +4020,12 @@ impl Runtime {
             .map_err(|_| RuntimeError::Store("open credential audit ledger failed".into()))?,
         );
 
-        let session_store: Arc<dyn SessionStore> = Arc::new(
+        let sqlite_session_store =
             SqliteSessionStore::open_shared(session_db, REGISTRY_SCHEMA_OBJECT_NAMES)
                 .await
-                .map_err(|error| RuntimeError::Store(error.to_string()))?,
-        );
+                .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let storage_session_probe = sqlite_session_store.clone();
+        let session_store: Arc<dyn SessionStore> = Arc::new(sqlite_session_store);
         let agent_registry = AgentRegistry::open_shared(session_db, SESSION_SCHEMA_OBJECT_NAMES)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
@@ -4182,6 +4186,7 @@ impl Runtime {
             .map_err(|error| RuntimeError::Store(error.to_string()))?
         };
         let memory_maintenance_handle = sqlite_memory.maintenance();
+        let storage_memory_probe = sqlite_memory.clone();
         let memory_store: Arc<dyn MemoryStore> = Arc::new(sqlite_memory);
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
@@ -4469,7 +4474,8 @@ impl Runtime {
         let execution_health = Some(ExecutionHealthTask::start(execution_service.clone()));
         Ok(Self {
             engine,
-            storage: RuntimeStorage::new(session_store, memory_store),
+            storage: RuntimeStorage::new(session_store, memory_store)
+                .with_health_probes(storage_session_probe, storage_memory_probe),
             observability,
             execution_service,
             execution_health,
@@ -4772,13 +4778,9 @@ impl Runtime {
     /// diagnostics, metrics exporters, and alerting adapters.
     pub async fn operational_snapshot(&self) -> Result<RuntimeOperationalSnapshot, RuntimeError> {
         let agent_count = self.engine.list_agents().await.len();
-        let persistent_session_count = self
-            .storage
-            .sessions()
-            .list_persistent()
-            .await
-            .map_err(|error| RuntimeError::Store(error.to_string()))?
-            .len();
+        let persistent_sessions = self.storage.sessions().list_persistent().await;
+        let persistent_session_count = persistent_sessions.as_ref().map_or(0, Vec::len);
+        let storage = self.storage.operational_snapshot().await;
         let channels = self.channel_health().await;
         let evidence = if let Some(recorder) = &self.evidence {
             Some(
@@ -4810,6 +4812,14 @@ impl Runtime {
         {
             health_issues.push(RuntimeHealthIssue::ExecutionTarget);
         }
+        if persistent_sessions.is_err()
+            || storage
+                .components
+                .iter()
+                .any(|component| component.status == RuntimeStorageStatus::Degraded)
+        {
+            health_issues.push(RuntimeHealthIssue::Storage);
+        }
         let ready = agent_count == self.configured_agents.len()
             && channels
                 .iter()
@@ -4824,6 +4834,7 @@ impl Runtime {
             evidence,
             observability: self.observability.snapshot(),
             execution_targets: self.execution_service.health(),
+            storage,
             health_issues,
         })
     }

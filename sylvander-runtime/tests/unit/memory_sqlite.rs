@@ -11,6 +11,21 @@ fn worker(user: &str, agent: &str) -> MemoryExecutionContext {
     ))
 }
 
+#[test]
+fn health_revalidates_the_live_schema() {
+    let store = SqliteMemoryStore::open_in_memory().unwrap();
+    store.verify_health().unwrap();
+
+    store
+        .connection
+        .lock()
+        .unwrap()
+        .execute_batch("DROP INDEX relationship_memories_search;")
+        .unwrap();
+
+    assert!(store.verify_health().is_err());
+}
+
 #[tokio::test]
 async fn roundtrips_restarts_and_isolates_relationships() {
     let file = tempfile::NamedTempFile::new().unwrap();

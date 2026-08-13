@@ -48,6 +48,10 @@ struct StoreInner {
     /// Synchronous `SQLite` connection. Guarded by `Mutex` so async tasks
     /// serialize their `spawn_blocking` calls into a single thread.
     conn: Mutex<Connection>,
+    /// Exact non-Session objects admitted when this connection was opened.
+    /// Retaining the allowlist lets health checks revalidate the live schema
+    /// without weakening shared-database ownership rules.
+    allowed_foreign_objects: Vec<String>,
 }
 
 impl std::fmt::Debug for SqliteSessionStore {
@@ -100,6 +104,7 @@ impl SqliteSessionStore {
             Ok(Self {
                 inner: Arc::new(StoreInner {
                     conn: Mutex::new(conn),
+                    allowed_foreign_objects,
                 }),
             })
         })
@@ -118,6 +123,7 @@ impl SqliteSessionStore {
             Ok(Self {
                 inner: Arc::new(StoreInner {
                     conn: Mutex::new(conn),
+                    allowed_foreign_objects: Vec::new(),
                 }),
             })
         })
@@ -185,6 +191,35 @@ impl SqliteSessionStore {
         })
         .await
         .map_err(|e| SessionStoreError::Store(format!("blocking task panicked: {e}")))?
+    }
+
+    /// Revalidate the live database without exposing its path or contents.
+    ///
+    /// Runtime health uses the result as a boolean signal. The concrete error
+    /// remains inside the storage boundary because schema and filesystem
+    /// details are not part of the public operational contract.
+    pub(crate) async fn verify_health(&self) -> Result<(), SessionStoreError> {
+        let allowed = self.inner.allowed_foreign_objects.clone();
+        self.run(move |connection| {
+            let version = connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .map_err(sqlite_err)?;
+            let application_id = connection
+                .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+                .map_err(sqlite_err)?;
+            if version != SESSION_SCHEMA_VERSION || application_id != SESSION_APPLICATION_ID {
+                return Err(SessionStoreError::IncompatibleSchema);
+            }
+            validate_schema(connection, &allowed)?;
+            let quick_check = connection
+                .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+                .map_err(sqlite_err)?;
+            if quick_check != "ok" {
+                return Err(SessionStoreError::CorruptSchema);
+            }
+            validate_owned_foreign_keys(connection)
+        })
+        .await
     }
 }
 

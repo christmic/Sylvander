@@ -832,3 +832,22 @@ async fn file_backed_store_persists_across_opens() {
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].content["hello"], "world");
 }
+
+#[tokio::test]
+async fn health_revalidates_the_live_schema() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.verify_health().await.unwrap();
+
+    store
+        .inner
+        .conn
+        .lock()
+        .await
+        .execute_batch("DROP INDEX idx_sessions_updated;")
+        .unwrap();
+
+    assert!(matches!(
+        store.verify_health().await,
+        Err(SessionStoreError::IncompatibleSchema)
+    ));
+}

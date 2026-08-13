@@ -403,7 +403,15 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
     let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &[]))
         .await
         .expect("configured runtime");
-    assert!(runtime.operational_snapshot().await.unwrap().ready);
+    let initial = runtime.operational_snapshot().await.unwrap();
+    assert!(initial.ready);
+    assert!(
+        initial
+            .storage
+            .components
+            .iter()
+            .all(|component| { component.status == crate::storage::RuntimeStorageStatus::Ready })
+    );
     let guardian = runtime.guardian.as_ref().expect("Guardian runtime");
     guardian.set_last_error_for_test(true).await;
     let failed = runtime.operational_snapshot().await.unwrap();
