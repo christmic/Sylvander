@@ -27,6 +27,18 @@ fn user_id_serializes_as_inner_string() {
 #[test]
 fn three_id_types_share_a_constructor_pattern() {
     let _agent: AgentId = "a".into();
+    let _instance: AgentInstanceId = "i".into();
     let _session: SessionId = "s".into();
     let _user: UserId = "u".into();
+}
+
+#[test]
+fn definition_and_instance_identities_remain_distinct() {
+    let definition = AgentId::new("researcher");
+    let first = AgentInstanceId::new("researcher-1");
+    let second = AgentInstanceId::new("researcher-2");
+
+    assert_eq!(definition.to_string(), "researcher");
+    assert_ne!(first, second);
+    assert_eq!(first.to_string(), "researcher-1");
 }

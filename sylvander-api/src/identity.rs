@@ -1,7 +1,8 @@
 //! Stable public identities shared by API domains.
 //!
-//! These string newtypes prevent accidental interchange between Agent,
-//! Session, and User identities while preserving compact wire shapes.
+//! These string newtypes prevent accidental interchange between Agent
+//! definitions, concrete Agent instances, Sessions, tasks, and users while
+//! preserving compact wire shapes.
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,68 @@ impl From<&str> for AgentId {
 impl From<String> for AgentId {
     fn from(s: String) -> Self {
         Self(s)
+    }
+}
+
+/// Unique identifier for one concrete running instance of an Agent definition.
+///
+/// Multiple instances may resolve the same [`AgentId`] revision inside one
+/// Session. Runtime authorization, messaging, turns, leases, and recovery use
+/// this identity rather than the reusable definition identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentInstanceId(pub String);
+
+impl AgentInstanceId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+impl std::fmt::Display for AgentInstanceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for AgentInstanceId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<String> for AgentInstanceId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+/// Stable identity for one governed delegation between Agent instances.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DelegationId(pub String);
+
+impl DelegationId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+/// Stable identity for one durable unit of Agent work.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TaskId(pub String);
+
+impl TaskId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+/// Stable identity for one governed group of Agent instances.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SwarmId(pub String);
+
+impl SwarmId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
     }
 }
 
