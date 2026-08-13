@@ -309,5 +309,6 @@ pub(crate) mod memory;
 /// this module. The separate Evidence recorder is an asynchronous governance
 /// projection and must never be used as the Session commit authority.
 pub mod session;
+pub mod workspace_coordination;
 /// Filesystem-backed workspace mutation journal and rollback recovery.
 pub(crate) mod workspace_journal;
