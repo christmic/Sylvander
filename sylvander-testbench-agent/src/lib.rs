@@ -5,6 +5,7 @@
 //! production dependency.
 
 pub mod atif;
+pub mod harbor;
 pub mod recorder;
 
 pub use atif::{

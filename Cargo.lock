@@ -3104,11 +3104,17 @@ dependencies = [
 name = "sylvander-testbench-agent"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "futures-util",
  "serde",
  "serde_json",
  "sylvander-agent",
  "sylvander-llm-core",
+ "sylvander-llm-openai",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "url",
 ]
 
 [[package]]
