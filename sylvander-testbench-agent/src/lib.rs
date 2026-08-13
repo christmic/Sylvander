@@ -9,6 +9,7 @@ pub mod harbor;
 pub mod matrix;
 pub mod recorder;
 pub mod result;
+pub mod swebench;
 
 pub use atif::{
     Agent, FinalMetrics, Metrics, Observation, ObservationResult, Source, Step, ToolCall,
