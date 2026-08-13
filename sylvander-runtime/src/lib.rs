@@ -4438,6 +4438,7 @@ impl Runtime {
             .drain_once(guardian_now)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let storage_guardian_probe = guardian.storage_probe().await;
 
         info!(
             name = %config.server.name,
@@ -4478,14 +4479,16 @@ impl Runtime {
         let execution_health = Some(ExecutionHealthTask::start(execution_service.clone()));
         Ok(Self {
             engine,
-            storage: RuntimeStorage::new(session_store, memory_store).with_health_probes(
-                storage_session_probe,
-                storage_memory_probe,
-                storage_agent_registry_probe,
-                storage_user_profile_probe,
-                storage_evidence_probe,
-                storage_credential_audit_probe,
-            ),
+            storage: RuntimeStorage::new(session_store, memory_store)
+                .with_health_probes(
+                    storage_session_probe,
+                    storage_memory_probe,
+                    storage_agent_registry_probe,
+                    storage_user_profile_probe,
+                    storage_evidence_probe,
+                    storage_credential_audit_probe,
+                )
+                .with_guardian_probe(storage_guardian_probe),
             observability,
             execution_service,
             execution_health,

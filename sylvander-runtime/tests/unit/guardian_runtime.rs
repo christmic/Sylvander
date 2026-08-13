@@ -51,6 +51,30 @@ async fn preferences(directory: &std::path::Path) -> Arc<dyn LearningPreferenceS
     )
 }
 
+#[tokio::test]
+async fn health_and_reopen_reject_an_injected_canonical_schema_object() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("canonical.db");
+    let store = GuardianCanonicalStore::open(&path).await.unwrap();
+    store.verify_health().await.unwrap();
+    store
+        .connection
+        .lock()
+        .unwrap()
+        .execute_batch("CREATE TABLE injected_canonical_object(value TEXT);")
+        .unwrap();
+
+    assert_eq!(
+        store.verify_health().await,
+        Err(GuardianRuntimeError::IncompatibleCanonicalSchema)
+    );
+    drop(store);
+    assert!(matches!(
+        GuardianCanonicalStore::open(path).await,
+        Err(GuardianRuntimeError::IncompatibleCanonicalSchema)
+    ));
+}
+
 fn event(event_id: &str, occurred_at: i64) -> GuardianEvent {
     GuardianEvent::new(
         event_id,

@@ -426,6 +426,8 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
             crate::storage::RuntimeStorageComponent::UserProfiles,
             crate::storage::RuntimeStorageComponent::Evidence,
             crate::storage::RuntimeStorageComponent::CredentialAudit,
+            crate::storage::RuntimeStorageComponent::GuardianCuration,
+            crate::storage::RuntimeStorageComponent::GuardianCanonical,
         ]
     );
     let guardian = runtime.guardian.as_ref().expect("Guardian runtime");
@@ -487,6 +489,36 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
     let failed = runtime.operational_snapshot().await.unwrap();
     assert!(!failed.ready);
     assert_eq!(failed.health_issues, [RuntimeHealthIssue::EvidenceRecorder]);
+
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn operational_readiness_separates_guardian_storage_from_supervisor_health() {
+    let directory = tempfile::tempdir().expect("temporary runtime directory");
+    let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &[]))
+        .await
+        .expect("configured runtime");
+    let guardian = runtime.guardian.as_ref().expect("Guardian runtime");
+    assert!(guardian.last_error().await.is_none());
+    guardian.inject_canonical_schema_object_for_test();
+
+    let snapshot = runtime.operational_snapshot().await.unwrap();
+    assert!(!snapshot.ready);
+    assert_eq!(snapshot.health_issues, [RuntimeHealthIssue::Storage]);
+    let canonical = snapshot
+        .storage
+        .components
+        .iter()
+        .find(|component| {
+            component.component == crate::storage::RuntimeStorageComponent::GuardianCanonical
+        })
+        .unwrap();
+    assert_eq!(
+        canonical.status,
+        crate::storage::RuntimeStorageStatus::Degraded
+    );
+    assert!(guardian.last_error().await.is_none());
 
     runtime.shutdown().await.unwrap();
 }

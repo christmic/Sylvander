@@ -243,6 +243,26 @@ pub(crate) struct GuardianRuntime {
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
+/// Clone-only storage health authority detached from Guardian supervision.
+///
+/// `RuntimeStorage` receives this value instead of the supervisor, so storage
+/// health cannot enqueue work, rotate credentials, or control task lifetime.
+#[derive(Clone)]
+pub(crate) struct GuardianStorageProbe {
+    curation: GuardianCurationStore,
+    canonical: GuardianCanonicalStore,
+}
+
+impl GuardianStorageProbe {
+    pub(crate) async fn verify_curation(&self) -> Result<(), GuardianRuntimeError> {
+        self.curation.verify_health().await.map_err(Into::into)
+    }
+
+    pub(crate) async fn verify_canonical(&self) -> Result<(), GuardianRuntimeError> {
+        self.canonical.verify_health().await
+    }
+}
+
 /// Cloneable composition handle used for both boot-time and lazily rebuilt
 /// Agent revisions.
 #[derive(Clone)]
@@ -761,10 +781,29 @@ impl GuardianRuntime {
         self.inner.last_error.read().await.clone()
     }
 
+    /// Produce a health-only view of the currently composed durable stores.
+    pub(crate) async fn storage_probe(&self) -> GuardianStorageProbe {
+        GuardianStorageProbe {
+            curation: self.inner.epoch.read().await.store.clone(),
+            canonical: self.inner.canonical.clone(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) async fn set_last_error_for_test(&self, failed: bool) {
         *self.inner.last_error.write().await =
             failed.then(|| "private injected Guardian failure".into());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_canonical_schema_object_for_test(&self) {
+        self.inner
+            .canonical
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE injected_runtime_guardian_object(value TEXT);")
+            .unwrap();
     }
 
     #[cfg(test)]
@@ -1534,6 +1573,18 @@ impl GuardianCanonicalStore {
         })
     }
 
+    async fn verify_health(&self) -> Result<(), GuardianRuntimeError> {
+        let connection = self.connection.clone();
+        tokio::task::spawn_blocking(move || {
+            let connection = connection
+                .lock()
+                .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+            verify_canonical_schema(&connection)
+        })
+        .await
+        .map_err(|_| GuardianRuntimeError::Supervisor)?
+    }
+
     async fn stage_payload(
         &self,
         intake_id: &str,
@@ -2072,70 +2123,118 @@ fn initialize_canonical_schema(connection: &mut Connection) -> Result<(), Guardi
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
     if application_id == 0 && user_version == 0 {
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
-        transaction
-            .execute_batch(
-                "CREATE TABLE guardian_canonical_memory(
-                    candidate_id TEXT PRIMARY KEY,
-                    scope TEXT NOT NULL CHECK(scope IN ('relationship','user_profile','agent_canonical','workspace_knowledge')),
-                    owner_user_id TEXT,
-                    owner_agent_id TEXT NOT NULL,
-                    workspace_id TEXT,
-                    revision INTEGER NOT NULL CHECK(revision > 0),
-                    body_json TEXT,
-                    expires_at INTEGER,
-                    deleted INTEGER NOT NULL CHECK(deleted IN (0,1)),
-                    updated_at INTEGER NOT NULL,
-                    CHECK((scope='relationship' AND owner_user_id IS NOT NULL AND workspace_id IS NULL)
-                       OR (scope='user_profile' AND owner_user_id IS NOT NULL AND workspace_id IS NULL)
-                       OR (scope='agent_canonical' AND workspace_id IS NULL)
-                       OR (scope='workspace_knowledge' AND workspace_id IS NOT NULL))
-                ) STRICT;
-                CREATE INDEX guardian_canonical_visibility
-                    ON guardian_canonical_memory(scope,owner_agent_id,owner_user_id,workspace_id,deleted);
-                CREATE TABLE guardian_learning_payloads(
-                    intake_id TEXT PRIMARY KEY,
-                    owner_user_id TEXT,
-                    owner_agent_id TEXT NOT NULL,
-                    workspace_ids_json TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    payload_digest TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                ) STRICT;
-                CREATE TABLE guardian_confirmation_payloads(
-                    confirmation_id TEXT PRIMARY KEY,
-                    owner_user_id TEXT,
-                    owner_agent_id TEXT NOT NULL,
-                    workspace_ids_json TEXT NOT NULL,
-                    confirmation_json TEXT NOT NULL,
-                    payload_digest TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                ) STRICT;
-                CREATE TABLE guardian_mutation_receipts(
-                    idempotency_key TEXT PRIMARY KEY,
-                    mutation_id TEXT NOT NULL,
-                    body_digest TEXT NOT NULL,
-                    applied_at INTEGER NOT NULL
-                ) STRICT;",
-            )
-            .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
-        transaction
-            .pragma_update(None, "application_id", CANONICAL_APPLICATION_ID)
-            .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
-        transaction
-            .pragma_update(None, "user_version", CANONICAL_SCHEMA_VERSION)
-            .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
-        transaction
-            .commit()
-            .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+        create_canonical_schema(connection)?;
     } else if application_id != CANONICAL_APPLICATION_ID || user_version != CANONICAL_SCHEMA_VERSION
     {
         return Err(GuardianRuntimeError::IncompatibleCanonicalSchema);
     }
-    Ok(())
+    verify_canonical_schema(connection)
 }
+
+fn create_canonical_schema(connection: &mut Connection) -> Result<(), GuardianRuntimeError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    transaction
+        .execute_batch(CANONICAL_SCHEMA)
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    transaction
+        .pragma_update(None, "application_id", CANONICAL_APPLICATION_ID)
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    transaction
+        .pragma_update(None, "user_version", CANONICAL_SCHEMA_VERSION)
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    transaction
+        .commit()
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)
+}
+
+fn verify_canonical_schema(connection: &Connection) -> Result<(), GuardianRuntimeError> {
+    let application_id: i64 = connection
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    let user_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    if application_id != CANONICAL_APPLICATION_ID || user_version != CANONICAL_SCHEMA_VERSION {
+        return Err(GuardianRuntimeError::IncompatibleCanonicalSchema);
+    }
+    let mut expected =
+        Connection::open_in_memory().map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    create_canonical_schema(&mut expected)?;
+    if canonical_schema_objects(connection)? != canonical_schema_objects(&expected)? {
+        return Err(GuardianRuntimeError::IncompatibleCanonicalSchema);
+    }
+    let quick_check: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    if quick_check == "ok" {
+        Ok(())
+    } else {
+        Err(GuardianRuntimeError::CanonicalStorage)
+    }
+}
+
+fn canonical_schema_objects(
+    connection: &Connection,
+) -> Result<Vec<(String, String, String, String)>, GuardianRuntimeError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type,name,tbl_name,sql FROM sqlite_schema \
+             WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name,tbl_name",
+        )
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?;
+    statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| GuardianRuntimeError::CanonicalStorage)
+}
+
+const CANONICAL_SCHEMA: &str = "CREATE TABLE guardian_canonical_memory(
+    candidate_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK(scope IN ('relationship','user_profile','agent_canonical','workspace_knowledge')),
+    owner_user_id TEXT,
+    owner_agent_id TEXT NOT NULL,
+    workspace_id TEXT,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    body_json TEXT,
+    expires_at INTEGER,
+    deleted INTEGER NOT NULL CHECK(deleted IN (0,1)),
+    updated_at INTEGER NOT NULL,
+    CHECK((scope='relationship' AND owner_user_id IS NOT NULL AND workspace_id IS NULL)
+       OR (scope='user_profile' AND owner_user_id IS NOT NULL AND workspace_id IS NULL)
+       OR (scope='agent_canonical' AND workspace_id IS NULL)
+       OR (scope='workspace_knowledge' AND workspace_id IS NOT NULL))
+) STRICT;
+CREATE INDEX guardian_canonical_visibility
+    ON guardian_canonical_memory(scope,owner_agent_id,owner_user_id,workspace_id,deleted);
+CREATE TABLE guardian_learning_payloads(
+    intake_id TEXT PRIMARY KEY,
+    owner_user_id TEXT,
+    owner_agent_id TEXT NOT NULL,
+    workspace_ids_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE guardian_confirmation_payloads(
+    confirmation_id TEXT PRIMARY KEY,
+    owner_user_id TEXT,
+    owner_agent_id TEXT NOT NULL,
+    workspace_ids_json TEXT NOT NULL,
+    confirmation_json TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE guardian_mutation_receipts(
+    idempotency_key TEXT PRIMARY KEY,
+    mutation_id TEXT NOT NULL,
+    body_digest TEXT NOT NULL,
+    applied_at INTEGER NOT NULL
+) STRICT;";
 
 fn create_parent(path: &Path) -> Result<(), GuardianRuntimeError> {
     if let Some(parent) = path

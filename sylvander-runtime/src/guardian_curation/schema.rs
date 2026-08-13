@@ -31,7 +31,62 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), GuardianCura
     } else if application_id != APPLICATION_ID || schema_version != SCHEMA_VERSION {
         return Err(GuardianCurationError::IncompatibleSchema);
     }
-    verify_required_tables(connection)
+    verify(connection)
+}
+
+/// Verify the exact latest schema, database pages, and foreign keys.
+pub(super) fn verify(connection: &Connection) -> Result<(), GuardianCurationError> {
+    let application_id: i64 = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .map_err(storage_error)?;
+    let schema_version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(storage_error)?;
+    if application_id != APPLICATION_ID || schema_version != SCHEMA_VERSION {
+        return Err(GuardianCurationError::IncompatibleSchema);
+    }
+    let mut expected = Connection::open_in_memory().map_err(storage_error)?;
+    create_latest_schema(&mut expected)?;
+    if schema_objects(connection)? != schema_objects(&expected)? {
+        return Err(GuardianCurationError::IncompatibleSchema);
+    }
+    let quick_check: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(storage_error)?;
+    if quick_check != "ok" {
+        return Err(GuardianCurationError::Corrupt);
+    }
+    let mut foreign_keys = connection
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(storage_error)?;
+    if foreign_keys
+        .query([])
+        .map_err(storage_error)?
+        .next()
+        .map_err(storage_error)?
+        .is_some()
+    {
+        return Err(GuardianCurationError::Corrupt);
+    }
+    Ok(())
+}
+
+fn schema_objects(
+    connection: &Connection,
+) -> Result<Vec<(String, String, String, String)>, GuardianCurationError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type,name,tbl_name,sql FROM sqlite_schema \
+             WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name,tbl_name",
+        )
+        .map_err(storage_error)?;
+    statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)
 }
 
 fn create_latest_schema(connection: &mut Connection) -> Result<(), GuardianCurationError> {
@@ -174,28 +229,4 @@ fn create_latest_schema(connection: &mut Connection) -> Result<(), GuardianCurat
             ",
         )
         .map_err(storage_error)
-}
-
-fn verify_required_tables(connection: &Connection) -> Result<(), GuardianCurationError> {
-    for table in [
-        "guardian_outbox",
-        "curator_runs",
-        "memory_candidates",
-        "guardian_policy_decisions",
-        "guardian_mutation_outbox",
-        "guardian_curation_audit",
-        "capability_invocation_audit",
-    ] {
-        let present: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                [table],
-                |row| row.get(0),
-            )
-            .map_err(storage_error)?;
-        if present != 1 {
-            return Err(GuardianCurationError::IncompatibleSchema);
-        }
-    }
-    Ok(())
 }

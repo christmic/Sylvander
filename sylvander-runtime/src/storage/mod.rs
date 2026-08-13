@@ -11,6 +11,7 @@ use sylvander_agent::tools::MemoryStore;
 use crate::agent_registry::AgentRegistry;
 use crate::credential_audit::CredentialOperationAuditLedger;
 use crate::evidence::EvidenceStore;
+use crate::guardian_runtime::GuardianStorageProbe;
 use crate::user_profile_store::UserProfileStore;
 
 use self::session::SessionStore;
@@ -25,6 +26,8 @@ pub enum RuntimeStorageComponent {
     UserProfiles,
     Evidence,
     CredentialAudit,
+    GuardianCuration,
+    GuardianCanonical,
 }
 
 /// Content-safe availability state of one durable component.
@@ -69,6 +72,7 @@ pub(crate) struct RuntimeStorage {
     user_profile_probe: Option<UserProfileStore>,
     evidence_probe: Option<EvidenceStore>,
     credential_audit_probe: Option<Arc<CredentialOperationAuditLedger>>,
+    guardian_probe: Option<GuardianStorageProbe>,
 }
 
 impl RuntimeStorage {
@@ -83,6 +87,7 @@ impl RuntimeStorage {
             user_profile_probe: None,
             evidence_probe: None,
             credential_audit_probe: None,
+            guardian_probe: None,
         }
     }
 
@@ -107,6 +112,12 @@ impl RuntimeStorage {
         self
     }
 
+    /// Attach Guardian's health-only authority after its supervisor starts.
+    pub(crate) fn with_guardian_probe(mut self, guardian: GuardianStorageProbe) -> Self {
+        self.guardian_probe = Some(guardian);
+        self
+    }
+
     /// Access Session persistence inside Runtime-owned application services.
     pub(crate) fn sessions(&self) -> &Arc<dyn SessionStore> {
         &self.sessions
@@ -120,6 +131,8 @@ impl RuntimeStorage {
         let user_profile_probe = self.user_profile_probe.clone();
         let evidence_probe = self.evidence_probe.clone();
         let credential_audit_probe = self.credential_audit_probe.clone();
+        let guardian_curation_probe = self.guardian_probe.clone();
+        let guardian_canonical_probe = self.guardian_probe.clone();
         let session_health = async move {
             match session_probe {
                 Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
@@ -160,13 +173,40 @@ impl RuntimeStorage {
                 None => RuntimeStorageStatus::Unverified,
             }
         };
-        let (sessions, memory, agent_registry, user_profiles, evidence, credential_audit) = tokio::join!(
+        let guardian_curation_health = async move {
+            match guardian_curation_probe {
+                Some(store) if store.verify_curation().await.is_ok() => RuntimeStorageStatus::Ready,
+                Some(_) => RuntimeStorageStatus::Degraded,
+                None => RuntimeStorageStatus::Unverified,
+            }
+        };
+        let guardian_canonical_health = async move {
+            match guardian_canonical_probe {
+                Some(store) if store.verify_canonical().await.is_ok() => {
+                    RuntimeStorageStatus::Ready
+                }
+                Some(_) => RuntimeStorageStatus::Degraded,
+                None => RuntimeStorageStatus::Unverified,
+            }
+        };
+        let (
+            sessions,
+            memory,
+            agent_registry,
+            user_profiles,
+            evidence,
+            credential_audit,
+            guardian_curation,
+            guardian_canonical,
+        ) = tokio::join!(
             session_health,
             memory_health,
             agent_registry_health,
             user_profile_health,
             evidence_health,
-            credential_audit_health
+            credential_audit_health,
+            guardian_curation_health,
+            guardian_canonical_health
         );
         let memory = memory.unwrap_or(RuntimeStorageStatus::Degraded);
         RuntimeStorageSnapshot {
@@ -194,6 +234,14 @@ impl RuntimeStorage {
                 RuntimeStorageHealth {
                     component: RuntimeStorageComponent::CredentialAudit,
                     status: credential_audit,
+                },
+                RuntimeStorageHealth {
+                    component: RuntimeStorageComponent::GuardianCuration,
+                    status: guardian_curation,
+                },
+                RuntimeStorageHealth {
+                    component: RuntimeStorageComponent::GuardianCanonical,
+                    status: guardian_canonical,
                 },
             ],
         }

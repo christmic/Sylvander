@@ -107,6 +107,11 @@ impl GuardianCurationStore {
         .map_err(|_| GuardianCurationError::Task)?
     }
 
+    /// Revalidate the exact live curation database for Runtime health.
+    pub(crate) async fn verify_health(&self) -> Result<(), GuardianCurationError> {
+        self.run(|connection| schema::verify(connection)).await
+    }
+
     /// Idempotently enqueue an immutable source-reference event.
     pub(crate) async fn enqueue_event(
         &self,

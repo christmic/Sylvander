@@ -43,6 +43,32 @@ async fn open_store(path: &Path) -> GuardianCurationStore {
         .unwrap()
 }
 
+#[tokio::test]
+async fn health_and_reopen_reject_an_injected_curation_schema_object() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("curation.db");
+    let store = open_store(&path).await;
+    store.verify_health().await.unwrap();
+    store
+        .run(|connection| {
+            connection
+                .execute_batch("CREATE TABLE injected_guardian_object(value TEXT);")
+                .map_err(storage_error)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.verify_health().await,
+        Err(GuardianCurationError::IncompatibleSchema)
+    );
+    drop(store);
+    assert!(matches!(
+        GuardianCurationStore::open(path, identity(), 9).await,
+        Err(GuardianCurationError::IncompatibleSchema)
+    ));
+}
+
 async fn enqueue_and_claim(
     store: &GuardianCurationStore,
     event_id: &str,
