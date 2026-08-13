@@ -222,3 +222,7 @@ pub enum CorpusManifestError {
     #[error("paired benchmark coverage is incomplete")]
     IncompletePairCoverage,
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/corpus.rs"]
+mod tests;
