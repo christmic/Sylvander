@@ -35,6 +35,8 @@ src/
 ├── lib.rs                 # public facade and compatibility exports only
 ├── runtime/               # boot, lifecycle, ChannelHost, health, shutdown
 ├── agent/                 # definition, run, supervision, approval, prompt
+│   └── run/               # cohesive services used by turn orchestration
+│       └── interaction.rs # approval, question, and plan decision gates
 ├── session/               # context, authenticated boundary, identity binding
 ├── registry/              # Agent/model/provider revision governance
 ├── provider/              # catalogs and request-scoped provider routing
@@ -55,6 +57,13 @@ code imports the owning physical path (`agent::run`, `workspace::local`,
 `credential::audit`) so the repository layout remains the source of truth.
 `runtime/mod.rs` contains the process-level orchestration that previously
 occupied the crate root; it is not a second public facade.
+
+Large orchestration entrypoints are split only when a child owns a real
+responsibility and state boundary. `agent/run/interaction.rs`, for example,
+owns pending approval, question, and plan state together with their timeout
+and bus-publication rules. `agent/run.rs` composes those gates but does not
+implement their protocols. A directory containing only a renamed former file
+does not satisfy this physical-layout rule.
 
 More precisely, Runtime owns the product Session and constructs one immutable
 Agent turn from its durable snapshot. Agent owns only the bounded inference and

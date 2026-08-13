@@ -3,6 +3,7 @@ use crate::execution::LocalExecutor;
 use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
 use sylvander_agent::approval::ToolApprovalFacts;
+use sylvander_agent::approval::ToolUseRequest;
 use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::memory::store::InMemoryMemoryStore;
 use sylvander_agent::tool::DynamicToolSource;
