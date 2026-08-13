@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::*;
-use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryPatch};
+use sylvander_agent::memory::store::{MemoryAppend, MemoryExecutionContext, MemoryPatch};
+use sylvander_agent::turn::execution_context::AgentExecutionContext;
 
 #[derive(Debug)]
 struct TestClock(AtomicI64);

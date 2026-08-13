@@ -1,8 +1,8 @@
 use super::*;
-use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::tools::memory::{
+use sylvander_agent::memory::store::{
     MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryPatch,
 };
+use sylvander_agent::turn::execution_context::AgentExecutionContext;
 
 const SENTINEL: &str = "SECRET-injected-SQL-relationship_memories";
 

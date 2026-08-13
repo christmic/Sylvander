@@ -1,9 +1,9 @@
 use super::*;
-use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::tools::memory::{
+use sylvander_agent::memory::store::{
     Importance, MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryKind,
     MemoryReference,
 };
+use sylvander_agent::turn::execution_context::AgentExecutionContext;
 
 fn worker(user: &str, agent: &str) -> MemoryExecutionContext {
     MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(

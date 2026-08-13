@@ -5,10 +5,10 @@ use rusqlite::Connection;
 
 use super::*;
 use crate::storage::memory::{MemoryIntegrityConfig, SqliteMemoryAdmin, SqliteMemoryStore};
-use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::tools::memory::{
+use sylvander_agent::memory::store::{
     MemoryAppend, MemoryExecutionContext, MemoryStore, RelationshipMemoryRetentionPolicy,
 };
+use sylvander_agent::turn::execution_context::AgentExecutionContext;
 
 const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
 

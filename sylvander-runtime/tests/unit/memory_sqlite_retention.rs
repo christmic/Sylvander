@@ -1,8 +1,8 @@
 use super::*;
-use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::tools::memory::{
+use sylvander_agent::memory::store::{
     MemoryAppend, MemoryExecutionContext, MemoryExpiryPatch, MemoryPatch, MemoryStoreError,
 };
+use sylvander_agent::turn::execution_context::AgentExecutionContext;
 
 fn worker() -> MemoryExecutionContext {
     MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(
@@ -288,7 +288,7 @@ async fn maintenance_fault_rolls_back_rows_audit_ledgers_and_watermark() {
 
 #[test]
 fn worker_facing_memory_contract_has_no_maintenance_operation() {
-    let source = include_str!("../../../sylvander-agent/src/tools/memory.rs");
+    let source = include_str!("../../../sylvander-agent/src/memory/store.rs");
     let trait_body = source
         .split("pub trait MemoryStore")
         .nth(1)

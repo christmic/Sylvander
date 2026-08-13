@@ -1,6 +1,6 @@
 use super::*;
-use sylvander_agent::execution_context::AgentExecutionContext;
-use sylvander_agent::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryOwner};
+use sylvander_agent::memory::store::{MemoryAppend, MemoryExecutionContext, MemoryOwner};
+use sylvander_agent::turn::execution_context::AgentExecutionContext;
 
 fn worker(user: &str, agent: &str) -> MemoryExecutionContext {
     MemoryExecutionContext::for_runtime_worker(&AgentExecutionContext::restricted_for(
@@ -182,7 +182,7 @@ async fn malformed_cross_owner_inbound_link_fails_closed() {
 
 #[test]
 fn model_facing_memory_contract_has_no_chain_forget_operation() {
-    let source = include_str!("../../../sylvander-agent/src/tools/memory.rs");
+    let source = include_str!("../../../sylvander-agent/src/memory/store.rs");
     let trait_body = source
         .split("pub trait MemoryStore")
         .nth(1)
