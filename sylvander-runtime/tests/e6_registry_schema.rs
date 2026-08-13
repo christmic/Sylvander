@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use sylvander_runtime::agent_registry::{AgentRegistry, AgentRegistryError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 const COMPONENT: &str = "runtime_registry";
 const LEGACY_V2_TABLES: &str = "
 CREATE TABLE agent_registry_snapshots (
@@ -105,7 +105,7 @@ async fn non_current_missing_future_dual_and_damaged_registry_fail_closed() {
         ),
         (
             "future-ledger",
-            "UPDATE schema_migrations SET version=4 WHERE component='runtime_registry';",
+            "UPDATE schema_migrations SET version=5 WHERE component='runtime_registry';",
         ),
         (
             "damaged-ledger-time",
