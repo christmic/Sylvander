@@ -38,11 +38,14 @@ use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
 
 use super::{
-    ExecutionRecoveryAction, ExecutionRecoveryActionId, ExecutionRecoveryActionReceipt,
-    ExecutionRecoveryActionTarget, ExecutionRecoveryActionWrite, MessageRole,
-    ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance, ModelIterationSnapshot,
-    ModelIterationStart, ModelRecoveryDecision, ModelRecoveryReason, ModelRecoveryWrite,
-    ModelResponseCommit, ModelResponsePersistence, PerceptionAdvance,
+    CognitionAdvance, CognitionExecutionPosition, CognitionFailurePersistence,
+    CognitionInvocationId, CognitionInvocationSnapshot, CognitionInvocationStart,
+    CognitionOutputPersistence, CognitionPromptPersistence, CognitionReceiptPersistence,
+    CognitionRecoveryPolicy, ExecutionRecoveryAction, ExecutionRecoveryActionId,
+    ExecutionRecoveryActionReceipt, ExecutionRecoveryActionTarget, ExecutionRecoveryActionWrite,
+    MessageRole, ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance,
+    ModelIterationSnapshot, ModelIterationStart, ModelRecoveryDecision, ModelRecoveryReason,
+    ModelRecoveryWrite, ModelResponseCommit, ModelResponsePersistence, PerceptionAdvance,
     PerceptionArtifactPersistence, PerceptionExecutionPosition, PerceptionFailureKind,
     PerceptionFailurePersistence, PerceptionInvocationId, PerceptionInvocationSnapshot,
     PerceptionInvocationStart, PerceptionMediaPersistence, PerceptionReceiptPersistence,
@@ -270,7 +273,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 20;
+const SESSION_SCHEMA_VERSION: i64 = 21;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -303,6 +306,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_turns",
     "session_turn_iterations",
     "session_tool_calls",
+    "session_cognition_invocations",
     "session_perception_invocations",
     "execution_recovery_actions",
     "idx_messages_user",
@@ -330,6 +334,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_tool_calls_turn",
     "idx_tool_calls_recovery",
     "idx_turn_iterations_recovery",
+    "idx_cognition_recovery",
     "idx_perception_recovery",
     "idx_running_turn_per_agent_instance",
 ];
@@ -801,6 +806,38 @@ CREATE TABLE session_tool_calls (
         REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE
 );
 
+CREATE TABLE session_cognition_invocations (
+    session_id      TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    agent_instance_id TEXT NOT NULL,
+    invocation_id   TEXT NOT NULL UNIQUE,
+    cognitive_role  TEXT NOT NULL CHECK(cognitive_role IN ('fast_draft','deliberation','critic')),
+    provider_id     TEXT NOT NULL,
+    model_id        TEXT NOT NULL,
+    recovery_policy TEXT NOT NULL CHECK(recovery_policy='recover_from_receipt'),
+    capability_revision TEXT NOT NULL,
+    input_digest    TEXT NOT NULL,
+    input_bytes     INTEGER NOT NULL CHECK(input_bytes > 0),
+    position        TEXT NOT NULL CHECK(position IN ('prepared','prompt_persisted','inference_started','inference_completed','artifact_persisted','result_persisted','failed')),
+    ledger_revision INTEGER NOT NULL DEFAULT 0,
+    prompt_artifact_locator TEXT,
+    receipt_locator TEXT,
+    output_artifact_locator TEXT,
+    output_digest TEXT,
+    failure_kind TEXT CHECK(failure_kind IN ('provider','timed_out','invalid_response')),
+    started_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    CHECK((position='prepared' AND prompt_artifact_locator IS NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
+       OR (position IN ('prompt_persisted','inference_started') AND prompt_artifact_locator IS NOT NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
+       OR (position='inference_completed' AND prompt_artifact_locator IS NOT NULL AND receipt_locator IS NOT NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
+       OR (position IN ('artifact_persisted','result_persisted') AND prompt_artifact_locator IS NOT NULL AND receipt_locator IS NOT NULL AND output_artifact_locator IS NOT NULL AND output_digest IS NOT NULL)
+       OR (position='failed' AND prompt_artifact_locator IS NOT NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL AND failure_kind IS NOT NULL)),
+    CHECK((position='failed') = (failure_kind IS NOT NULL)),
+    PRIMARY KEY(session_id, turn_id, invocation_id),
+    FOREIGN KEY(session_id, turn_id) REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id, agent_instance_id) REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE
+);
+
 CREATE TABLE session_perception_invocations (
     session_id      TEXT NOT NULL,
     turn_id         TEXT NOT NULL,
@@ -896,9 +933,12 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE INDEX idx_perception_recovery
     ON session_perception_invocations(position, updated_at, invocation_id);
+
+CREATE INDEX idx_cognition_recovery
+    ON session_cognition_invocations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=20;
+PRAGMA user_version=21;
 COMMIT;
 ";
 
@@ -2028,6 +2068,211 @@ impl SessionStore for SqliteSessionStore {
             }
         })
         .await
+    }
+
+    async fn begin_cognition(
+        &self,
+        start: CognitionInvocationStart,
+    ) -> Result<(), SessionStoreError> {
+        if start.input_bytes == 0
+            || start.max_turn_calls == 0
+            || start.turn_id.trim().is_empty()
+            || start.provider_id.trim().is_empty()
+            || start.model_id.trim().is_empty()
+            || !matches!(
+                start.role,
+                CognitiveRole::FastDraft | CognitiveRole::Deliberation | CognitiveRole::Critic
+            )
+            || !valid_digest(&start.capability_revision)
+            || !valid_digest(&start.input_digest)
+        {
+            return Err(SessionStoreError::Invalid(
+                "cognition identity, budget, or frozen route facts are invalid".into(),
+            ));
+        }
+        let input_bytes = session_i64(start.input_bytes, "cognition input bytes")?;
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let count: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM session_cognition_invocations
+                     WHERE session_id=?1 AND turn_id=?2 AND agent_instance_id=?3",
+                    params![start.session_id.0, start.turn_id, start.agent_instance_id.0],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_err)?;
+            if count >= i64::from(start.max_turn_calls) {
+                return Err(SessionStoreError::Invalid(
+                    "cognition turn call budget is exhausted".into(),
+                ));
+            }
+            let now = crate::session::now_secs();
+            let changed = transaction
+                .execute(
+                    "INSERT INTO session_cognition_invocations
+                     (session_id,turn_id,agent_instance_id,invocation_id,cognitive_role,
+                      provider_id,model_id,recovery_policy,capability_revision,input_digest,
+                      input_bytes,position,ledger_revision,started_at,updated_at)
+                     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'prepared',0,?12,?12
+                     WHERE EXISTS (SELECT 1 FROM session_turns t WHERE t.session_id=?1
+                       AND t.turn_id=?2 AND t.agent_instance_id=?3 AND t.state='running')",
+                    params![
+                        start.session_id.0,
+                        start.turn_id,
+                        start.agent_instance_id.0,
+                        start.invocation_id.as_str(),
+                        cognitive_role_str(start.role),
+                        start.provider_id,
+                        start.model_id,
+                        cognition_policy_str(start.recovery_policy),
+                        start.capability_revision,
+                        start.input_digest,
+                        input_bytes,
+                        now,
+                    ],
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::SqliteFailure(ref inner, _)
+                        if inner.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        SessionStoreError::Invalid(
+                            "conflicting cognition invocation identity".into(),
+                        )
+                    }
+                    error => sqlite_err(error),
+                })?;
+            if changed != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "cognition requires its running Agent turn".into(),
+                ));
+            }
+            transaction.commit().map_err(sqlite_err)
+        })
+        .await
+    }
+
+    async fn persist_cognition_prompt(
+        &self,
+        write: CognitionPromptPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        if !valid_artifact_locator(&write.artifact_locator) {
+            return Err(SessionStoreError::Invalid(
+                "cognition prompt artifact locator is invalid".into(),
+            ));
+        }
+        cognition_update(
+            self,
+            write.invocation_id,
+            write.expected_revision,
+            CognitionExecutionPosition::Prepared,
+            CognitionExecutionPosition::PromptPersisted,
+            Some(write.artifact_locator),
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn advance_cognition(&self, advance: CognitionAdvance) -> Result<u64, SessionStoreError> {
+        cognition_update(
+            self,
+            advance.invocation_id,
+            advance.expected_revision,
+            advance.expected_position,
+            advance.next_position,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn persist_cognition_receipt(
+        &self,
+        write: CognitionReceiptPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        if !valid_artifact_locator(&write.artifact_locator) {
+            return Err(SessionStoreError::Invalid(
+                "cognition receipt locator is invalid".into(),
+            ));
+        }
+        cognition_update(
+            self,
+            write.invocation_id,
+            write.expected_revision,
+            CognitionExecutionPosition::InferenceStarted,
+            CognitionExecutionPosition::InferenceCompleted,
+            None,
+            Some(write.artifact_locator),
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn persist_cognition_output(
+        &self,
+        write: CognitionOutputPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        if !valid_artifact_locator(&write.artifact_locator) || !valid_digest(&write.output_digest) {
+            return Err(SessionStoreError::Invalid(
+                "cognition output artifact facts are invalid".into(),
+            ));
+        }
+        cognition_update(
+            self,
+            write.invocation_id,
+            write.expected_revision,
+            CognitionExecutionPosition::InferenceCompleted,
+            CognitionExecutionPosition::ArtifactPersisted,
+            None,
+            None,
+            Some(write.artifact_locator),
+            Some(write.output_digest),
+        )
+        .await
+    }
+
+    async fn complete_cognition(
+        &self,
+        invocation_id: &CognitionInvocationId,
+        expected_revision: u64,
+    ) -> Result<u64, SessionStoreError> {
+        cognition_update(
+            self,
+            invocation_id.clone(),
+            expected_revision,
+            CognitionExecutionPosition::ArtifactPersisted,
+            CognitionExecutionPosition::ResultPersisted,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn fail_cognition(
+        &self,
+        write: CognitionFailurePersistence,
+    ) -> Result<u64, SessionStoreError> {
+        cognition_fail(self, write).await
+    }
+
+    async fn cognition_invocations(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<CognitionInvocationSnapshot>, SessionStoreError> {
+        query_cognition_invocations(self, Some((session_id.clone(), turn_id.to_owned()))).await
+    }
+
+    async fn interrupted_cognition_invocations(
+        &self,
+    ) -> Result<Vec<CognitionInvocationSnapshot>, SessionStoreError> {
+        query_cognition_invocations(self, None).await
     }
 
     async fn begin_perception(
@@ -3789,6 +4034,41 @@ async fn perception_update(
         .await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn cognition_update(
+    _store: &SqliteSessionStore,
+    _invocation_id: CognitionInvocationId,
+    _expected_revision: u64,
+    _expected_position: CognitionExecutionPosition,
+    _next_position: CognitionExecutionPosition,
+    _prompt_locator: Option<String>,
+    _receipt_locator: Option<String>,
+    _output_locator: Option<String>,
+    _output_digest: Option<String>,
+) -> Result<u64, SessionStoreError> {
+    Err(SessionStoreError::Store(
+        "cognition state transition is unavailable".into(),
+    ))
+}
+
+async fn cognition_fail(
+    _store: &SqliteSessionStore,
+    _write: CognitionFailurePersistence,
+) -> Result<u64, SessionStoreError> {
+    Err(SessionStoreError::Store(
+        "cognition failure transition is unavailable".into(),
+    ))
+}
+
+async fn query_cognition_invocations(
+    _store: &SqliteSessionStore,
+    _scope: Option<(SessionId, String)>,
+) -> Result<Vec<CognitionInvocationSnapshot>, SessionStoreError> {
+    Err(SessionStoreError::Store(
+        "cognition query is unavailable".into(),
+    ))
+}
+
 async fn query_perception_invocations(
     store: &SqliteSessionStore,
     scope: Option<(SessionId, String)>,
@@ -4372,6 +4652,12 @@ const fn perception_policy_str(policy: PerceptionRecoveryPolicy) -> &'static str
         PerceptionRecoveryPolicy::NeverReplay => "never_replay",
         PerceptionRecoveryPolicy::RetryWithSameInvocation => "retry_with_same_invocation",
         PerceptionRecoveryPolicy::RecoverFromReceipt => "recover_from_receipt",
+    }
+}
+
+const fn cognition_policy_str(policy: CognitionRecoveryPolicy) -> &'static str {
+    match policy {
+        CognitionRecoveryPolicy::RecoverFromReceipt => "recover_from_receipt",
     }
 }
 
