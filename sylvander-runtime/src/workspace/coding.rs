@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::git_worktree::{GitWorktreeManager, WorkspaceDiff, WorktreeReconciliation};
-use crate::remote_git_worktree::RemoteGitWorktreeManager;
+use crate::workspace::local::{GitWorktreeManager, WorkspaceDiff, WorktreeReconciliation};
+use crate::workspace::remote::RemoteGitWorktreeManager;
 
 /// Metadata Runtime persists with a session after creating an isolated branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,5 +259,5 @@ impl CodingWorktreeService {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/coding_worktree.rs"]
+#[path = "../../tests/unit/coding_worktree.rs"]
 mod tests;

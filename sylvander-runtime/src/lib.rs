@@ -52,8 +52,10 @@ pub mod agent_supervisor;
 mod approval_store;
 use session::boundary;
 mod capability_runtime;
+/// Coding workspace selection, local and remote worktrees, and governed self-change.
+mod workspace;
 /// Target-aware local and remote coding-session isolation.
-pub mod coding_worktree;
+pub use workspace::coding as coding_worktree;
 /// Builds configured Agent revisions, prompt layers, providers, and tools.
 pub mod composition;
 /// Latest-version server configuration and secret-reference contracts.
@@ -72,7 +74,7 @@ pub mod evidence;
 /// Workspace target selection and execution policy composition.
 pub mod execution;
 /// Isolated local Git worktree lease lifecycle for coding sessions.
-pub mod git_worktree;
+pub use workspace::local as git_worktree;
 mod guardian;
 use guardian::curation as guardian_curation;
 use guardian::runtime as guardian_runtime;
@@ -119,7 +121,7 @@ mod registry_composition_v3_tests;
 #[path = "../tests/unit/registry_domain.rs"]
 mod registry_domain_tests;
 /// Durable executor-backed Git worktree leases for remote coding sessions.
-pub mod remote_git_worktree;
+pub use workspace::remote as remote_git_worktree;
 #[cfg(test)]
 #[path = "../tests/unit/runtime_external_provider.rs"]
 mod runtime_external_provider_tests;
@@ -128,7 +130,7 @@ pub use provider::request_scoped::{
     MAX_EXTERNAL_SECRET_LEASE_SECONDS, RenewableExternalSecretProvider, SecretLeaseMetadata,
 };
 /// Evidence-backed, human-gated self-change experiments.
-pub mod self_change;
+pub use workspace::self_change;
 /// Runtime Session state and metadata.
 pub mod session;
 /// Durable Runtime storage contracts and implementations.

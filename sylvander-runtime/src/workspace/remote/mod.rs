@@ -12,7 +12,7 @@ use std::sync::Arc;
 use sylvander_agent::workspace_executor::WorkspaceExecutor;
 use tokio::sync::Mutex;
 
-use crate::git_worktree::{WorkspaceDiff, WorktreeReconciliation};
+use crate::workspace::local::{WorkspaceDiff, WorktreeReconciliation};
 
 mod manifest;
 mod transport;
@@ -394,5 +394,5 @@ fn display_error(error: impl std::fmt::Display) -> String {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/remote_git_worktree.rs"]
+#[path = "../../../tests/unit/remote_git_worktree.rs"]
 mod tests;

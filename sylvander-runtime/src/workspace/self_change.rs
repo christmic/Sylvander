@@ -14,7 +14,7 @@ use crate::evidence::{
     SelfChangeExperimentStatus, SignedExperimentEvidence, StoredSelfChangeExperiment,
     UnsignedExperimentEvidence,
 };
-use crate::git_worktree::{GitWorktreeManager, PreparedChange, WorkspaceLease};
+use crate::workspace::local::{GitWorktreeManager, PreparedChange, WorkspaceLease};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -457,5 +457,5 @@ fn display_error(error: impl std::fmt::Display) -> String {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/self_change.rs"]
+#[path = "../../tests/unit/self_change.rs"]
 mod tests;
