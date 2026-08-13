@@ -240,6 +240,9 @@ impl RuntimeBenchResult {
                 != Some(self.model_calls)
             || (self.coordinate.cognition == CognitionProfile::PrimaryOnly
                 && self.auxiliary_model_calls != 0)
+            || self.perception_calls > self.model_calls
+            || (self.coordinate.cognition == CognitionProfile::PerceptionSpecialist
+                && self.perception_calls == 0)
         {
             return Err(RuntimeBenchError::InvalidCognitionMetrics);
         }

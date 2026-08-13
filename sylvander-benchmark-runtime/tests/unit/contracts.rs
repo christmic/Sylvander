@@ -121,6 +121,60 @@ fn cognition_accounting_and_doctor_authority_are_release_invariants() {
 }
 
 #[test]
+fn audio_specialist_coordinate_requires_observed_perception_work() {
+    let mut result = RuntimeBenchResult {
+        coordinate: RuntimeBenchCoordinate {
+            cognition: CognitionProfile::PerceptionSpecialist,
+            models: vec![
+                BenchmarkModelBinding {
+                    role: BenchmarkModelRole::Primary,
+                    model: "provider/primary".into(),
+                },
+                BenchmarkModelBinding {
+                    role: BenchmarkModelRole::Audio,
+                    model: "provider/audio".into(),
+                },
+            ],
+            ..coordinate()
+        },
+        verifier_reward: None,
+        useful_completion: true,
+        invariant_violations: 0,
+        duplicate_effects: 0,
+        user_visible_failures: 0,
+        recovered: true,
+        duration_millis: 10,
+        input_tokens: 20,
+        output_tokens: 5,
+        model_calls: 2,
+        primary_model_calls: 1,
+        auxiliary_model_calls: 1,
+        perception_calls: 0,
+        cognitive_fallbacks: 0,
+        tool_calls: 0,
+        messages: 1,
+        handoffs: 0,
+        moderator_interventions: 0,
+        workspace_conflicts: 0,
+        doctor_findings: 0,
+        doctor_false_positives: 0,
+        doctor_proposals: 0,
+        doctor_auto_applied: 0,
+    };
+    assert_eq!(
+        result.validate(),
+        Err(RuntimeBenchError::InvalidCognitionMetrics)
+    );
+    result.perception_calls = 1;
+    result.validate().unwrap();
+    result.perception_calls = 3;
+    assert_eq!(
+        result.validate(),
+        Err(RuntimeBenchError::InvalidCognitionMetrics)
+    );
+}
+
+#[test]
 fn executable_plan_rejects_duplicate_cells() {
     let plan = RuntimeBenchPlan {
         schema_version: 2,
