@@ -79,6 +79,16 @@ impl DelegationId {
     }
 }
 
+/// Stable identity for one governed task ownership transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct HandoffId(pub String);
+
+impl HandoffId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
 /// Stable identity for one durable unit of Agent work.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskId(pub String);

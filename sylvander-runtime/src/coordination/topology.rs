@@ -134,6 +134,36 @@ impl SessionTopology {
         }
         Ok(())
     }
+
+    /// Select the nearest common owner able to arbitrate between two Agents.
+    #[must_use]
+    pub fn arbitrator_for(
+        &self,
+        source: &AgentInstanceId,
+        target: &AgentInstanceId,
+        membership: &SessionMembership,
+    ) -> AgentInstanceId {
+        let parents: HashMap<_, _> = self
+            .relations
+            .iter()
+            .filter(|relation| relation.kind == AgentRelationKind::ParentOf)
+            .map(|relation| (relation.target.clone(), relation.source.clone()))
+            .collect();
+        let mut source_ancestors = HashSet::new();
+        let mut cursor = Some(source);
+        while let Some(instance) = cursor {
+            source_ancestors.insert(instance.clone());
+            cursor = parents.get(instance);
+        }
+        let mut cursor = Some(target);
+        while let Some(instance) = cursor {
+            if source_ancestors.contains(instance) {
+                return instance.clone();
+            }
+            cursor = parents.get(instance);
+        }
+        membership.governance.moderator_instance_id.clone()
+    }
 }
 
 fn relation_key(relation: &AgentRelation) -> (AgentRelationKind, String, String) {
