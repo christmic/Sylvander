@@ -1741,6 +1741,55 @@ async fn runtime_workflow_control_plane_uses_durable_fenced_tasks() {
 }
 
 #[tokio::test]
+async fn runtime_composes_swarm_members_in_sponsorship_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &["assistant"]))
+        .await
+        .unwrap();
+    let moderator = attach_memory_session(&runtime, "assistant", "swarm-user").await;
+    let session_id = moderator.id().clone();
+    let moderator_id = moderator.agent_instance_id().clone();
+    let worker_id = AgentInstanceId::new("swarm-worker");
+    let reviewer_id = AgentInstanceId::new("swarm-reviewer");
+    let outcome = runtime
+        .compose_agent_swarm(
+            &moderator,
+            SwarmCompositionPlan {
+                session_id: session_id.clone(),
+                requested_by: moderator_id.clone(),
+                members: vec![
+                    SwarmMemberPlan::Fork {
+                        instance_id: reviewer_id.clone(),
+                        parent_instance_id: moderator_id.clone(),
+                        branch_id: "review".into(),
+                    },
+                    SwarmMemberPlan::Fork {
+                        instance_id: worker_id.clone(),
+                        parent_instance_id: moderator_id.clone(),
+                        branch_id: "work".into(),
+                    },
+                ],
+                relations: vec![RelateAgentsRequest {
+                    session_id,
+                    requested_by: moderator_id,
+                    source: reviewer_id.clone(),
+                    target: worker_id.clone(),
+                    kind: crate::coordination::topology::AgentRelationKind::Reviews,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let SwarmCompositionOutcome::Applied(receipt) = outcome else {
+        panic!("bounded Swarm should compose without arbitration");
+    };
+    assert_eq!(receipt.admitted_members, vec![reviewer_id, worker_id]);
+    assert_eq!(receipt.applied_relations, 1);
+    assert_eq!(receipt.moderator_authorizations, 0);
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn configured_runtime_automatically_executes_a_fork_mailbox_turn() {
     let model_server = MockServer::start().await;
     Mock::given(method("POST"))

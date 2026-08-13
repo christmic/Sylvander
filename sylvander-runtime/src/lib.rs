@@ -131,7 +131,8 @@ pub(crate) use runtime::configure_test_memory_integrity;
 pub use runtime::{
     ChannelHealth, ChannelRegistration, ChannelRestartPolicy, ChannelStatus,
     DefinedAgentJoinRequest, ProviderCredentialSources, Runtime, RuntimeError, RuntimeHealthIssue,
-    RuntimeOperationalSnapshot, SessionBindingError,
+    RuntimeOperationalSnapshot, SessionBindingError, SwarmCompositionOutcome, SwarmCompositionPlan,
+    SwarmCompositionReceipt, SwarmMemberPlan,
 };
 #[cfg(test)]
 #[path = "../tests/unit/support.rs"]

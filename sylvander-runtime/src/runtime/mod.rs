@@ -1,5 +1,10 @@
 //! Runtime lifecycle orchestration and protocol-channel hosting.
 mod mailbox_scheduler;
+mod swarm;
+
+pub use swarm::{
+    SwarmCompositionOutcome, SwarmCompositionPlan, SwarmCompositionReceipt, SwarmMemberPlan,
+};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
