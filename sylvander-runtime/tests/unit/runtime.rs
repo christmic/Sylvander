@@ -412,6 +412,20 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
             .iter()
             .all(|component| { component.status == crate::storage::RuntimeStorageStatus::Ready })
     );
+    assert_eq!(
+        initial
+            .storage
+            .components
+            .iter()
+            .map(|component| component.component)
+            .collect::<Vec<_>>(),
+        [
+            crate::storage::RuntimeStorageComponent::Sessions,
+            crate::storage::RuntimeStorageComponent::RelationshipMemory,
+            crate::storage::RuntimeStorageComponent::AgentRegistry,
+            crate::storage::RuntimeStorageComponent::UserProfiles,
+        ]
+    );
     let guardian = runtime.guardian.as_ref().expect("Guardian runtime");
     guardian.set_last_error_for_test(true).await;
     let failed = runtime.operational_snapshot().await.unwrap();

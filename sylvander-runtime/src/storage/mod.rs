@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 use sylvander_agent::tools::MemoryStore;
 
+use crate::agent_registry::AgentRegistry;
+use crate::user_profile_store::UserProfileStore;
+
 use self::session::SessionStore;
 use self::session::SqliteSessionStore;
 
@@ -16,6 +19,8 @@ use self::session::SqliteSessionStore;
 pub enum RuntimeStorageComponent {
     Sessions,
     RelationshipMemory,
+    AgentRegistry,
+    UserProfiles,
 }
 
 /// Content-safe availability state of one durable component.
@@ -56,6 +61,8 @@ pub(crate) struct RuntimeStorage {
     memory: Arc<dyn MemoryStore>,
     session_probe: Option<SqliteSessionStore>,
     memory_probe: Option<memory::SqliteMemoryStore>,
+    agent_registry_probe: Option<AgentRegistry>,
+    user_profile_probe: Option<UserProfileStore>,
 }
 
 impl RuntimeStorage {
@@ -66,6 +73,8 @@ impl RuntimeStorage {
             memory,
             session_probe: None,
             memory_probe: None,
+            agent_registry_probe: None,
+            user_profile_probe: None,
         }
     }
 
@@ -76,9 +85,13 @@ impl RuntimeStorage {
         mut self,
         sessions: SqliteSessionStore,
         memory: memory::SqliteMemoryStore,
+        agent_registry: AgentRegistry,
+        user_profiles: UserProfileStore,
     ) -> Self {
         self.session_probe = Some(sessions);
         self.memory_probe = Some(memory);
+        self.agent_registry_probe = Some(agent_registry);
+        self.user_profile_probe = Some(user_profiles);
         self
     }
 
@@ -91,6 +104,8 @@ impl RuntimeStorage {
     pub(crate) async fn operational_snapshot(&self) -> RuntimeStorageSnapshot {
         let session_probe = self.session_probe.clone();
         let memory_probe = self.memory_probe.clone();
+        let agent_registry_probe = self.agent_registry_probe.clone();
+        let user_profile_probe = self.user_profile_probe.clone();
         let session_health = async move {
             match session_probe {
                 Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
@@ -103,7 +118,26 @@ impl RuntimeStorage {
             Some(_) => RuntimeStorageStatus::Degraded,
             None => RuntimeStorageStatus::Unverified,
         });
-        let (sessions, memory) = tokio::join!(session_health, memory_health);
+        let agent_registry_health = async move {
+            match agent_registry_probe {
+                Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
+                Some(_) => RuntimeStorageStatus::Degraded,
+                None => RuntimeStorageStatus::Unverified,
+            }
+        };
+        let user_profile_health = async move {
+            match user_profile_probe {
+                Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
+                Some(_) => RuntimeStorageStatus::Degraded,
+                None => RuntimeStorageStatus::Unverified,
+            }
+        };
+        let (sessions, memory, agent_registry, user_profiles) = tokio::join!(
+            session_health,
+            memory_health,
+            agent_registry_health,
+            user_profile_health
+        );
         let memory = memory.unwrap_or(RuntimeStorageStatus::Degraded);
         RuntimeStorageSnapshot {
             components: vec![
@@ -114,6 +148,14 @@ impl RuntimeStorage {
                 RuntimeStorageHealth {
                     component: RuntimeStorageComponent::RelationshipMemory,
                     status: memory,
+                },
+                RuntimeStorageHealth {
+                    component: RuntimeStorageComponent::AgentRegistry,
+                    status: agent_registry,
+                },
+                RuntimeStorageHealth {
+                    component: RuntimeStorageComponent::UserProfiles,
+                    status: user_profiles,
                 },
             ],
         }

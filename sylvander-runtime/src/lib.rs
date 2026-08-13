@@ -4007,6 +4007,7 @@ impl Runtime {
         let user_profiles = UserProfileStore::open(&user_profile_db)
             .await
             .map_err(|_| RuntimeError::Store("open user profile store failed".into()))?;
+        let storage_user_profile_probe = user_profiles.clone();
         let credential_audit = Arc::new(
             CredentialOperationAuditLedger::open(
                 config
@@ -4029,6 +4030,7 @@ impl Runtime {
         let agent_registry = AgentRegistry::open_shared(session_db, SESSION_SCHEMA_OBJECT_NAMES)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let storage_agent_registry_probe = agent_registry.clone();
         let (credential_resolver, external_secret_provider) = sources.map_or_else(
             || {
                 (
@@ -4474,8 +4476,12 @@ impl Runtime {
         let execution_health = Some(ExecutionHealthTask::start(execution_service.clone()));
         Ok(Self {
             engine,
-            storage: RuntimeStorage::new(session_store, memory_store)
-                .with_health_probes(storage_session_probe, storage_memory_probe),
+            storage: RuntimeStorage::new(session_store, memory_store).with_health_probes(
+                storage_session_probe,
+                storage_memory_probe,
+                storage_agent_registry_probe,
+                storage_user_profile_probe,
+            ),
             observability,
             execution_service,
             execution_health,

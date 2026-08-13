@@ -13,6 +13,22 @@ fn catalog() -> ServerConfig {
 }
 
 #[tokio::test]
+async fn health_revalidates_the_live_registry_namespace() {
+    let registry = AgentRegistry::open_in_memory().await.unwrap();
+    registry.verify_health().await.unwrap();
+    registry
+        .run(|connection| {
+            connection
+                .execute_batch("CREATE TABLE injected_registry_object(value TEXT);")
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+
+    assert!(registry.verify_health().await.is_err());
+}
+
+#[tokio::test]
 async fn new_registry_creates_only_the_current_ledger_and_reopens_exactly() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("registry.db");

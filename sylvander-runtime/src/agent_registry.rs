@@ -125,6 +125,24 @@ impl AgentRegistry {
         .map_err(|error| E::from(AgentRegistryError::Task(error.to_string())))?
     }
 
+    /// Revalidate the complete live registry without exposing stored content.
+    pub(crate) async fn verify_health(&self) -> Result<(), AgentRegistryError> {
+        self.run(|connection| {
+            ensure_current_registry_schema(connection)?;
+            let quick_check = connection
+                .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+                .map_err(AgentRegistryError::sqlite)?;
+            if quick_check == "ok" {
+                Ok(())
+            } else {
+                Err(AgentRegistryError::Integrity(
+                    "registry database integrity check failed".into(),
+                ))
+            }
+        })
+        .await
+    }
+
     /// Import validated configuration definitions without changing an
     /// existing active revision. Configuration is bootstrap input, not an
     /// implicit rollback mechanism.

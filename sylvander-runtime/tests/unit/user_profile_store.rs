@@ -22,6 +22,27 @@ impl TestClock {
     }
 }
 
+#[tokio::test]
+async fn health_revalidates_the_live_profile_schema() {
+    let store = UserProfileStore::open_in_memory(TestClock::new(1))
+        .await
+        .unwrap();
+    store.verify_health().await.unwrap();
+    store
+        .run(|connection| {
+            connection
+                .execute_batch("CREATE TABLE injected_profile_object(value TEXT);")
+                .map_err(storage)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.verify_health().await,
+        Err(UserProfileStoreError::IncompatibleSchema)
+    );
+}
+
 impl Clock for TestClock {
     fn now(&self) -> i64 {
         self.0.load(Ordering::SeqCst)

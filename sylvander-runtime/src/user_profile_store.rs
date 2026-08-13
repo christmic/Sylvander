@@ -149,6 +149,22 @@ impl UserProfileStore {
         .map_err(|_| UserProfileStoreError::Task)?
     }
 
+    /// Revalidate the exact live schema and `SQLite` pages for Runtime health.
+    pub(crate) async fn verify_health(&self) -> Result<(), UserProfileStoreError> {
+        self.run(|connection| {
+            validate_schema(connection)?;
+            let quick_check = connection
+                .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            if quick_check == "ok" {
+                Ok(())
+            } else {
+                Err(UserProfileStoreError::Corrupt)
+            }
+        })
+        .await
+    }
+
     pub(crate) async fn read(
         &self,
         owner: UserId,
