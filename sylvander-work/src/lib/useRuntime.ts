@@ -22,6 +22,11 @@ const initialState: RuntimeViewState = {
   tasks: [],
 };
 
+// Retry scheduling is presentation orchestration only. Each attempt still
+// crosses the native gateway, which alone owns credentials and negotiation.
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_MAX_MS = 10_000;
+
 export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const nativeGateway = useMemo(() => new RuntimeGateway(), []);
   const gateway = injectedGateway ?? nativeGateway;
@@ -169,25 +174,66 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     }
   }, [enqueueDelta, submit]);
 
-  const onEvent = useCallback((event: DesktopEvent) => {
-    if (event.type === "connected") {
-      setState((current) => ({ ...current, connection: "live", diagnostic: undefined }));
-      void submit({ type: "list_sessions" });
-      void submit({ type: "get_runtime_info" });
-    } else if (event.type === "message") {
-      applyMessage(event.message);
-    } else {
-      setState((current) => ({ ...current, connection: "offline", diagnostic: event.reason }));
-    }
-  }, [applyMessage, submit]);
-
   useEffect(() => {
+    let stopped = false;
+    let connectedOnce = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: number | undefined;
+
+    const scheduleReconnect = (reason: string) => {
+      if (stopped || reconnectTimer !== undefined) return;
+      const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempt, RECONNECT_MAX_MS);
+      reconnectAttempt += 1;
+      setState((current) => ({
+        ...current,
+        connection: connectedOnce ? "reconnecting" : "offline",
+        diagnostic: reason,
+      }));
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined;
+        void connect();
+      }, delay);
+    };
+
+    const onEvent = (event: DesktopEvent) => {
+      if (stopped) return;
+      if (event.type === "connected") {
+        if (reconnectTimer !== undefined) {
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = undefined;
+        }
+        connectedOnce = true;
+        reconnectAttempt = 0;
+        setState((current) => ({ ...current, connection: "live", diagnostic: undefined }));
+        void submit({ type: "list_sessions" });
+        void submit({ type: "get_runtime_info" });
+      } else if (event.type === "message") {
+        applyMessage(event.message);
+      } else {
+        scheduleReconnect(event.reason);
+      }
+    };
+
+    const connect = async () => {
+      if (stopped) return;
+      if (connectedOnce) {
+        setState((current) => ({ ...current, connection: "reconnecting" }));
+      }
+      try {
+        await gateway.connect(onEvent);
+      } catch (error: unknown) {
+        scheduleReconnect(safeDiagnostic(error));
+      }
+    };
+
     setState((current) => ({ ...current, connection: "connecting" }));
-    gateway.connect(onEvent).catch((error: unknown) => {
-      setState((current) => ({ ...current, connection: "offline", diagnostic: safeDiagnostic(error) }));
-    });
-    return () => { void gateway.disconnect().catch(() => undefined); };
-  }, [gateway, onEvent]);
+    void connect();
+    return () => {
+      stopped = true;
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      void gateway.disconnect().catch(() => undefined);
+    };
+  }, [applyMessage, gateway, submit]);
 
   useEffect(() => () => {
     if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);

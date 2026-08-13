@@ -1,5 +1,5 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import type { DesktopEvent, RuntimeCommand, RuntimeGatewayPort } from "./lib/gateway";
@@ -8,9 +8,11 @@ afterEach(cleanup);
 
 class TestGateway implements RuntimeGatewayPort {
   commands: RuntimeCommand[] = [];
+  connects = 0;
   listener?: (event: DesktopEvent) => void;
 
   async connect(listener: (event: DesktopEvent) => void) {
+    this.connects += 1;
     this.listener = listener;
   }
 
@@ -70,6 +72,30 @@ describe("Sylvander Work", () => {
     expect(await screen.findByText("Runtime is unavailable.")).toBeTruthy();
     expect(screen.getByText("Runtime endpoint is unavailable")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Sylvander Work" })).toBeTruthy();
+  });
+
+  it("reconnects with the native gateway after an established link drops", async () => {
+    vi.useFakeTimers();
+    try {
+      const gateway = new TestGateway();
+      render(<App gateway={gateway} />);
+      await act(async () => Promise.resolve());
+
+      act(() => gateway.emit({
+        type: "connected",
+        protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+      }));
+      act(() => gateway.emit({ type: "disconnected", reason: "runtime_closed" }));
+
+      expect(screen.getAllByText("Reconnecting")).toHaveLength(2);
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+        await Promise.resolve();
+      });
+      expect(gateway.connects).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("projects the complete Runtime task lifecycle by task identity", async () => {

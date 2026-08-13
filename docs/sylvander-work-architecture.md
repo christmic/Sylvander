@@ -123,6 +123,13 @@ Streaming deltas are coalesced to at most one presentation update per animation
 frame. Terminal `Done`, `Error`, or `TurnInterrupted` events settle a turn;
 disconnect never implies completion.
 
+After a transport or handshake failure, the React application coordinator
+reopens the native gateway with exponential backoff capped at ten seconds.
+Only the Rust gateway repeats authentication and protocol negotiation; the
+WebView never receives the bearer. An initial failure remains visibly offline,
+while loss of an established link is visibly reconnecting. Component teardown
+cancels pending retries and closes the native connection.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled
