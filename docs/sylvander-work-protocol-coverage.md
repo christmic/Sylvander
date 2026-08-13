@@ -78,8 +78,9 @@ execution, persistence, or policy ownership moved into Desktop.
 
 ## Ordered implementation gates
 
-1. Complete native dialogs, notifications, window persistence, and release
-   liveness surfaces with protocol and accessibility tests.
+1. Complete native dialogs and release liveness surfaces with protocol and
+   accessibility tests; window persistence and opt-in terminal notifications
+   are host-owned and complete.
 
 Every row moves to complete only with a typed command/event test and a product
 behavior test. A visible control without a public command, or a union member

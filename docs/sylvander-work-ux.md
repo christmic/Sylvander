@@ -106,6 +106,13 @@ empty draft is ignored. Drafts are local presentation state and are never
 reported as persisted Session content. Attachment errors name only the public
 file name and limit failure; they never expose file paths or content.
 
+Desktop settings offer an opt-in “Notify when background turns finish” switch.
+The switch changes only after the native host confirms persistence. When
+enabled, an unfocused window may produce a fixed completed, failed, or
+interrupted notification from the matching Runtime terminal; no conversation
+content or Session identity appears in the operating-system surface. Focused
+work never produces a duplicate notification.
+
 ## Decisions and questions
 
 Approval, AskUser, and plan review use an anchored Decision Dock immediately

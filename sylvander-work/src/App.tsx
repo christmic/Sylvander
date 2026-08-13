@@ -7,14 +7,17 @@ import { ProfileSettings } from "./ProfileSettings";
 import { RegistryAdministration } from "./RegistryAdministration";
 import { loadSelectedFiles } from "./lib/attachments";
 import type { ApprovalScope, ReasoningEffort, RuntimeGatewayPort, RuntimeMessageAttachment, RuntimePermissionProfile, RuntimeSessionConfigPatch } from "./lib/gateway";
+import { DesktopHost, type DesktopHostPort, type DesktopHostPreferences } from "./lib/host";
 import { useRuntime, type RuntimeViewState } from "./lib/useRuntime";
 
 export interface AppProps {
   gateway?: RuntimeGatewayPort;
+  host?: DesktopHostPort;
 }
 
-export default function App({ gateway }: AppProps) {
+export default function App({ gateway, host }: AppProps) {
   const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, resolveMemoryConfirmation, requestUserProfile, clearUserProfile, requestIdentityBinding, clearIdentityBinding, clearIdentityChallenge, requestAgentAdministration, clearAgentAdministration, requestRegistryAdministration, clearRegistryAdministration, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
+  const desktopHost = useMemo(() => host ?? new DesktopHost(), [host]);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [attachments, setAttachments] = useState<Record<string, RuntimeMessageAttachment[]>>({});
@@ -35,6 +38,9 @@ export default function App({ gateway }: AppProps) {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [sessionLabel, setSessionLabel] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [hostPreferences, setHostPreferences] = useState<DesktopHostPreferences>();
+  const [hostPreferencePending, setHostPreferencePending] = useState(false);
+  const [hostPreferenceError, setHostPreferenceError] = useState("");
   const [accountView, setAccountView] = useState<"profile" | "identity" | undefined>();
   const [agentAdministrationOpen, setAgentAdministrationOpen] = useState(false);
   const [registryAdministrationOpen, setRegistryAdministrationOpen] = useState(false);
@@ -66,6 +72,18 @@ export default function App({ gateway }: AppProps) {
     update();
     return () => query.removeEventListener("change", update);
   }, []);
+
+  useEffect(() => {
+    let current = true;
+    void desktopHost.getPreferences()
+      .then((preferences) => {
+        if (current) setHostPreferences(preferences);
+      })
+      .catch(() => {
+        if (current) setHostPreferenceError("Desktop preferences are unavailable");
+      });
+    return () => { current = false; };
+  }, [desktopHost]);
 
   useEffect(() => {
     if (state.activePlan) setPlanRevision(state.plan.map((step) => step.label));
@@ -105,6 +123,18 @@ export default function App({ gateway }: AppProps) {
       updateDraft("");
       setAttachments((current) => ({ ...current, [state.selectedId!]: [] }));
       setAttachmentError("");
+    }
+  }
+
+  async function updateTurnNotifications(enabled: boolean) {
+    setHostPreferencePending(true);
+    setHostPreferenceError("");
+    try {
+      setHostPreferences(await desktopHost.setTurnNotifications(enabled));
+    } catch {
+      setHostPreferenceError("Desktop preferences could not be saved");
+    } finally {
+      setHostPreferencePending(false);
     }
   }
 
@@ -443,12 +473,12 @@ export default function App({ gateway }: AppProps) {
       <div className="interaction-zone">
         {sessionActionsOpen && selected && <form className="decision-dock" aria-labelledby="session-actions-title" onSubmit={(event) => void renameSession(event)}><div className="decision-icon" aria-hidden="true">···</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="session-actions-title">Manage {selected.label}</h3><label>Name<input aria-label="Session label" value={sessionLabel} onChange={(event) => setSessionLabel(event.target.value)} /></label><p>A checkpoint branches conversation history without changing the source Session or workspace files. Archive hides active work; delete is permanent.</p></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void checkpointSession()}>Create checkpoint branch</button><button type="button" className="secondary-button" onClick={() => void archiveSession()}>Archive</button><button type="button" className="secondary-button" onClick={() => void deleteSession()}>Delete permanently</button><button className="primary-button" disabled={!sessionLabel.trim()}>Rename</button></div></form>}
         {createOpen && <form className="decision-dock" aria-labelledby="create-session-title" onSubmit={(event) => void createSession(event)}><div className="decision-icon" aria-hidden="true">＋</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="create-session-title">Create Session</h3><label>Name<input aria-label="Session name" value={newSessionLabel} onChange={(event) => setNewSessionLabel(event.target.value)} /></label><label>Agent<select aria-label="Session Agent" value={newSessionAgentId} onChange={(event) => setNewSessionAgentId(event.target.value)}>{state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.providerId}/{agent.modelId}</option>)}</select></label></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-button" disabled={!newSessionLabel.trim() || !newSessionAgentId}>Create</button></div></form>}
-        {settingsOpen && state.runtimeInfo && <section className="decision-dock" aria-labelledby="runtime-settings-title"><div className="decision-icon" aria-hidden="true">⚙</div><div className="decision-copy"><span className="eyebrow">Runtime validated</span><h3 id="runtime-settings-title">Model and permissions</h3><label>Model<select aria-label="Runtime model" value={modelIndex} onChange={(event) => {
+        {settingsOpen && state.runtimeInfo && <section className="decision-dock" aria-labelledby="runtime-settings-title"><div className="decision-icon" aria-hidden="true">⚙</div><div className="decision-copy"><span className="eyebrow">Runtime validated</span><h3 id="runtime-settings-title">Runtime and Desktop settings</h3><label>Model<select aria-label="Runtime model" value={modelIndex} onChange={(event) => {
           const nextIndex = event.target.value;
           const efforts = state.runtimeInfo!.models[Number(nextIndex)]?.reasoning_efforts ?? [];
           setModelIndex(nextIndex);
           if (!efforts.includes(reasoningEffort)) setReasoningEffort(efforts[0] ?? "off");
-        }}>{state.runtimeInfo.models.map((model, index) => <option key={`${model.provider}/${model.id}`} value={index}>{model.provider}/{model.id}</option>)}</select></label><label>Reasoning<select aria-label="Reasoning effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}>{(state.runtimeInfo.models[Number(modelIndex)]?.reasoning_efforts ?? []).map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select></label><label>Files<select aria-label="File access" value={permissionProfile.file_access} onChange={(event) => setPermissionProfile((current) => ({ ...current, file_access: event.target.value as RuntimePermissionProfile["file_access"] }))}><option value="none">none</option><option value="read_only">read only</option><option value="workspace_write">workspace write</option></select></label><label>Network<select aria-label="Network access" value={permissionProfile.network_access} onChange={(event) => setPermissionProfile((current) => ({ ...current, network_access: event.target.value as RuntimePermissionProfile["network_access"] }))}><option value="denied">denied</option><option value="allowed">allowed</option></select></label><label>Approval<select aria-label="Approval policy" value={permissionProfile.approval_policy} onChange={(event) => setPermissionProfile((current) => ({ ...current, approval_policy: event.target.value as RuntimePermissionProfile["approval_policy"] }))}>{state.runtimeInfo.approvalEnabled && <option value="ask">ask</option>}<option value="allow">allow</option><option value="deny">deny</option></select></label>{selected && (state.sessionConfig ? <p>Session revision {state.sessionConfig.revision} · model {state.sessionConfig.effective.provenance.model.kind} · permissions {state.sessionConfig.effective.provenance.permissions.kind}</p> : <p>Loading Session configuration…</p>)}<p role="status">Liveness · {state.liveness}</p></div><div className="decision-actions"><button className="secondary-button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" disabled={!state.runtimeInfo.models[Number(modelIndex)]} onClick={() => void selectRuntimeModel()}>Apply model</button><button className="primary-button" onClick={() => void selectRuntimePermissions()}>Apply permissions</button>{selected && <><button className="secondary-button" disabled={!state.sessionConfig} onClick={() => void patchSessionConfiguration("set")}>Pin effective to Session</button><button className="secondary-button" disabled={!state.sessionConfig} onClick={() => void patchSessionConfiguration("inherit")}>Restore inheritance</button></>}<button className="secondary-button" disabled={state.connection !== "live" || state.liveness === "checking"} onClick={() => void checkLiveness()}>Check liveness</button></div></section>}
+        }}>{state.runtimeInfo.models.map((model, index) => <option key={`${model.provider}/${model.id}`} value={index}>{model.provider}/{model.id}</option>)}</select></label><label>Reasoning<select aria-label="Reasoning effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}>{(state.runtimeInfo.models[Number(modelIndex)]?.reasoning_efforts ?? []).map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select></label><label>Files<select aria-label="File access" value={permissionProfile.file_access} onChange={(event) => setPermissionProfile((current) => ({ ...current, file_access: event.target.value as RuntimePermissionProfile["file_access"] }))}><option value="none">none</option><option value="read_only">read only</option><option value="workspace_write">workspace write</option></select></label><label>Network<select aria-label="Network access" value={permissionProfile.network_access} onChange={(event) => setPermissionProfile((current) => ({ ...current, network_access: event.target.value as RuntimePermissionProfile["network_access"] }))}><option value="denied">denied</option><option value="allowed">allowed</option></select></label><label>Approval<select aria-label="Approval policy" value={permissionProfile.approval_policy} onChange={(event) => setPermissionProfile((current) => ({ ...current, approval_policy: event.target.value as RuntimePermissionProfile["approval_policy"] }))}>{state.runtimeInfo.approvalEnabled && <option value="ask">ask</option>}<option value="allow">allow</option><option value="deny">deny</option></select></label><label><input type="checkbox" aria-label="Notify when background turns finish" checked={hostPreferences?.turn_notifications ?? false} disabled={!hostPreferences || hostPreferencePending} onChange={(event) => void updateTurnNotifications(event.target.checked)} /> Notify when background turns finish</label>{hostPreferenceError && <p role="alert">{hostPreferenceError}</p>}{selected && (state.sessionConfig ? <p>Session revision {state.sessionConfig.revision} · model {state.sessionConfig.effective.provenance.model.kind} · permissions {state.sessionConfig.effective.provenance.permissions.kind}</p> : <p>Loading Session configuration…</p>)}<p role="status">Liveness · {state.liveness}</p></div><div className="decision-actions"><button className="secondary-button" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="primary-button" disabled={!state.runtimeInfo.models[Number(modelIndex)]} onClick={() => void selectRuntimeModel()}>Apply model</button><button className="primary-button" onClick={() => void selectRuntimePermissions()}>Apply permissions</button>{selected && <><button className="secondary-button" disabled={!state.sessionConfig} onClick={() => void patchSessionConfiguration("set")}>Pin effective to Session</button><button className="secondary-button" disabled={!state.sessionConfig} onClick={() => void patchSessionConfiguration("inherit")}>Restore inheritance</button></>}<button className="secondary-button" disabled={state.connection !== "live" || state.liveness === "checking"} onClick={() => void checkLiveness()}>Check liveness</button></div></section>}
         {state.question && <form className="decision-dock" aria-labelledby="question-title" onSubmit={(event) => void submitQuestion(event)}>
           <div className="decision-icon" aria-hidden="true">?</div>
           <div className="decision-copy"><span className="eyebrow">Agent asks</span><h3 id="question-title">{state.question.prompt}</h3><div className="question-options">{state.question.options.map((option) => <label key={option}><input type={state.question!.multiSelect ? "checkbox" : "radio"} name="agent-question" checked={questionSelections.includes(option)} onChange={() => toggleQuestionOption(option)} /> {option}</label>)}</div><input aria-label="Other answer" value={questionText} onChange={(event) => setQuestionText(event.target.value)} placeholder={state.question.options.length > 0 ? "Other or additional context" : "Your answer"} /></div>

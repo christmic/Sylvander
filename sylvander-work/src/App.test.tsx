@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import type { DesktopEvent, RuntimeCommand, RuntimeGatewayPort } from "./lib/gateway";
+import type { DesktopHostPort, DesktopHostPreferences } from "./lib/host";
 
 afterEach(cleanup);
 
@@ -26,6 +27,23 @@ class TestGateway implements RuntimeGatewayPort {
 
   emit(event: DesktopEvent) {
     this.listener?.(event);
+  }
+}
+
+class TestHost implements DesktopHostPort {
+  preferences: DesktopHostPreferences = { turn_notifications: false };
+  rejectWrites = false;
+  writes: boolean[] = [];
+
+  async getPreferences() {
+    return this.preferences;
+  }
+
+  async setTurnNotifications(enabled: boolean) {
+    this.writes.push(enabled);
+    if (this.rejectWrites) throw new Error("save failed");
+    this.preferences = { turn_notifications: enabled };
+    return this.preferences;
   }
 }
 
@@ -1201,6 +1219,39 @@ describe("Sylvander Work", () => {
     expect(screen.getByText("Liveness · checking")).toBeTruthy();
     act(() => gateway.emit({ type: "message", message: { type: "pong" } }));
     expect(await screen.findByText("Liveness · healthy")).toBeTruthy();
+  });
+
+  it("persists the explicit background-turn notification preference through the native host", async () => {
+    const gateway = new TestGateway();
+    const host = new TestHost();
+    render(<App gateway={gateway} host={host} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 6, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agents_discovered",
+      agents: [{ id: "agent-1", revision: 1, name: "Agent", provider_id: "alpha", default_model_id: "shared" }],
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "runtime_info",
+      snapshot: runtimeSnapshot("alpha", false),
+    } }));
+
+    act(() => screen.getByRole("button", { name: "Runtime details" }).click());
+    const notifications = await screen.findByRole("checkbox", {
+      name: "Notify when background turns finish",
+    });
+    expect((notifications as HTMLInputElement).checked).toBe(false);
+    act(() => notifications.click());
+    await waitFor(() => expect(host.writes).toEqual([true]));
+    expect((notifications as HTMLInputElement).checked).toBe(true);
+
+    host.rejectWrites = true;
+    act(() => notifications.click());
+    expect((await screen.findByRole("alert")).textContent).toBe("Desktop preferences could not be saved");
+    expect((notifications as HTMLInputElement).checked).toBe(true);
   });
 
   it("reviews, accepts, and discards Runtime coding Sessions", async () => {

@@ -338,6 +338,23 @@ bounded JSON file under Tauri's application configuration directory. React
 does not receive the filename, the bytes, or any `window-state:*` capability;
 therefore this persistence cannot become a general WebView filesystem bridge.
 
+Background turn notifications follow the same host-only rule. The Rust gateway
+observes only authoritative `Done`, `Error`, and `TurnInterrupted` messages and
+asks the official notification plugin to show a fixed, content-free outcome
+label only when the main window is not focused. Prompt text, response text,
+failure reasons, Session labels, and identifiers never enter the operating-
+system notification. The feature defaults off and changes only after the user
+explicitly enables it in Desktop settings. The native host persists that one
+boolean through the pinned official Store plugin and returns the saved value
+before React changes the control. Save failure leaves the effective preference
+unchanged and failed notification delivery never changes Runtime or UI turn
+state.
+
+Neither `notification:*` nor `store:*` appears in the main-window capability.
+React can call only the two application-specific preference commands; it cannot
+choose a notification title/body, enumerate notifications, select a store
+filename, or read arbitrary host keys.
+
 Handshake rejection preserves the protocol's public error code, bounded safe
 message, and supported version range. Native transport, TLS, and credential
 errors remain generic. This gives the user an actionable compatibility fact
@@ -411,10 +428,11 @@ included in the application bootstrap. The compiled
 ## Version baseline
 
 The foundation pins exact, verified stable patches so a clean build is
-reproducible: Tauri `2.11.5`, React and React DOM `19.2.8`, Vite `8.2.1`,
-TypeScript `6.0.3`, and Vitest `4.1.10`. Dependency updates are deliberate
-maintenance changes with build, protocol, visual, and accessibility evidence;
-"latest" is not resolved dynamically during release builds.
+reproducible: Tauri `2.11.5`, Window State `2.4.1`, Notification `2.3.3`,
+Store `2.4.4`, React and React DOM `19.2.8`, Vite `8.2.1`, TypeScript `6.0.3`,
+and Vitest `4.1.10`. Dependency updates are deliberate maintenance changes
+with build, protocol, visual, and accessibility evidence; "latest" is not
+resolved dynamically during release builds.
 
 On macOS, the normal interactive `npm run build` lets Tauri's bundled
 `create-dmg` ask Finder to position the volume contents. Non-interactive
@@ -449,5 +467,6 @@ defines ownership and invariants.
 1. Build the responsive React shell and typed presentation store.
 2. Add the bounded native Rust WebSocket gateway and protocol conformance tests.
 3. Add approval, AskUser, plan, task, diff, artifact, and settings surfaces.
-4. Add native dialogs, notifications, window persistence, signing, and updates.
+4. Add native dialogs, signing, and updates; bounded window persistence and
+   opt-in terminal notifications are complete.
 5. Establish cross-platform performance and accessibility release evidence.
