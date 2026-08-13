@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -75,6 +76,33 @@ def redact_and_check(job_dir: Path, secret: str) -> int:
     return hits
 
 
+def runner_revision(runner: Path, runner_sha: str) -> str:
+    metadata_path = Path(f"{runner}.json")
+    if not metadata_path.is_file():
+        raise RuntimeError(f"runner metadata not found: {metadata_path}")
+    metadata = json.loads(metadata_path.read_text())
+    if metadata.get("sha256") != runner_sha or metadata.get("architecture") != "aarch64":
+        raise RuntimeError("runner metadata does not match the selected binary")
+    revision = metadata.get("git_commit")
+    if not isinstance(revision, str) or not revision:
+        raise RuntimeError("runner metadata has no git_commit")
+    return revision
+
+
+def trajectory_waterline(job_dir: Path) -> str | None:
+    paths = list(job_dir.glob("*/agent/trajectory.json"))
+    if not paths:
+        return None
+    trajectory = json.loads(paths[0].read_text())
+    observable = trajectory.get("extra", {}).get("sylvander_observability", {})
+    events = observable.get("events", [])
+    last = events[-1].get("kind", "none") if events else "none"
+    return (
+        f"status={observable.get('status', 'unknown')} "
+        f"steps={len(trajectory.get('steps', []))} events={len(events)} last={last}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("level", choices=DEFAULTS)
@@ -94,13 +122,13 @@ def main() -> int:
     task = (args.task or Path(DEFAULTS[args.level])).resolve()
     runner = args.runner.resolve()
     runner_sha = require_native_arm64(runner)
+    revision = runner_revision(runner, runner_sha)
     image = require_native_task(task)
     key = os.environ.get("SYLVANDER_BENCH_API_KEY", "")
     if args.level != "smoke" and not key:
         raise RuntimeError("set SYLVANDER_BENCH_API_KEY; it will not be placed in argv")
 
-    revision = run("git", "rev-parse", "--short=9", "HEAD")
-    job_name = args.job_name or f"sylvander-{args.level}-{revision}"
+    job_name = args.job_name or f"sylvander-{args.level}-{revision[:9]}"
     job_dir = args.jobs_dir / job_name
     if job_dir.exists():
         raise RuntimeError(f"refusing to reuse job directory: {job_dir}")
@@ -143,11 +171,19 @@ def main() -> int:
                     "/Users/christmix/.local/bin:/opt/homebrew/bin:/usr/bin:/bin",
             "PYTHONPATH": str(Path(__file__).parent),
         })
-        completed = subprocess.run(command, env=child_env)
+        process = subprocess.Popen(command, env=child_env)
+        previous = None
+        while process.poll() is None:
+            time.sleep(15)
+            waterline = trajectory_waterline(job_dir)
+            if waterline and waterline != previous:
+                print(f"waterline {waterline}", flush=True)
+                previous = waterline
+        completed_code = process.returncode
     leaked = redact_and_check(job_dir, key) if key and job_dir.exists() else 0
     if leaked:
         raise RuntimeError(f"redacted credential from {leaked} job artifact(s); run is invalid")
-    return completed.returncode
+    return completed_code
 
 
 if __name__ == "__main__":

@@ -104,6 +104,13 @@ SYLVANDER_BENCH_API_KEY='...' \
 Advance one level only after the preceding level finishes cleanly. `large`
 contains the million-row stress case and is intentionally last.
 
+Build and attest a replacement runner with `build_native_runner.py`. The build
+refuses a dirty worktree and non-native Podman machine, performs an arm64 static
+ELF and container self-check, and writes sidecar metadata binding the binary
+SHA-256 to its exact Git commit. The run script refuses binaries without
+matching metadata, so the scored Agent revision cannot drift from repository
+HEAD.
+
 The effective 2026-08-13 install-only gate used a static x86-64 musl runner and
 completed the Terminal-Bench 2.0 `gpt2-codegolf` task with zero exceptions in
 18 seconds. It started the Podman container, uploaded the runner via Harbor's
