@@ -332,6 +332,45 @@ where
         Ok(durable)
     }
 
+    /// Apply an idempotent handoff verdict under the selected arbitrator.
+    pub async fn decide_handoff(
+        &self,
+        session_id: &SessionId,
+        handoff_id: &HandoffId,
+        arbitrator: &AgentInstanceId,
+        accept: bool,
+        now: i64,
+    ) -> Result<TaskHandoff, CoordinationServiceError> {
+        let handoff = self
+            .store
+            .handoff(handoff_id)
+            .await?
+            .ok_or(CoordinationServiceError::UnknownHandoff)?;
+        if &handoff.session_id != session_id {
+            return Err(CoordinationServiceError::UnknownHandoff);
+        }
+        if &handoff.arbitrator_instance_id != arbitrator {
+            return Err(CoordinationServiceError::UnauthorizedArbitrator);
+        }
+        let intended = if accept {
+            HandoffState::Accepted
+        } else {
+            HandoffState::Rejected
+        };
+        if handoff.state == intended {
+            return Ok(handoff);
+        }
+        if handoff.state != HandoffState::AwaitingArbitration {
+            return Err(CoordinationServiceError::InvalidHandoff(
+                "handoff is not awaiting arbitration".into(),
+            ));
+        }
+        self.store
+            .transition_handoff(handoff_id, arbitrator, intended, handoff.revision, now)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Lease one durable envelope. Expired claims are recoverable by a later worker.
     pub async fn claim_next_message(
         &self,
@@ -606,6 +645,10 @@ pub enum CoordinationServiceError {
     UnavailableAgent,
     #[error("coordination references an unknown task")]
     UnknownTask,
+    #[error("coordination references an unknown handoff")]
+    UnknownHandoff,
+    #[error("handoff decision was not issued by its governed arbitrator")]
+    UnauthorizedArbitrator,
     #[error("recipient is not reachable in the governed topology")]
     Unroutable,
     #[error("coordination durable facts are invalid: {0}")]

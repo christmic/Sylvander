@@ -271,7 +271,7 @@ async fn coordination_service_recovers_handoff_at_arbitration_boundary() {
         })
         .await
         .unwrap();
-    let service = CoordinationService::new(store, GovernancePolicy::default(), 30);
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
     let request = ProposeHandoffRequest {
         handoff_id: HandoffId::new("governed-handoff"),
         session_id: SessionId::new("multi-session"),
@@ -287,6 +287,39 @@ async fn coordination_service_recovers_handoff_at_arbitration_boundary() {
     assert_eq!(handoff.state, HandoffState::AwaitingArbitration);
     assert_eq!(handoff.arbitrator_instance_id.0, "moderator-1");
     assert_eq!(service.propose_handoff(request, 21).await.unwrap(), handoff);
+    let accepted = service
+        .decide_handoff(
+            &SessionId::new("multi-session"),
+            &handoff.handoff_id,
+            &AgentInstanceId::new("moderator-1"),
+            true,
+            22,
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.state, HandoffState::Accepted);
+    assert_eq!(
+        service
+            .decide_handoff(
+                &SessionId::new("multi-session"),
+                &handoff.handoff_id,
+                &AgentInstanceId::new("moderator-1"),
+                true,
+                23,
+            )
+            .await
+            .unwrap(),
+        accepted
+    );
+    assert_eq!(
+        store
+            .task(&TaskId::new("handoff-task"))
+            .await
+            .unwrap()
+            .unwrap()
+            .assigned_to,
+        Some(AgentInstanceId::new("coordinator-1"))
+    );
 }
 
 #[tokio::test]

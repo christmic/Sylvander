@@ -20,7 +20,7 @@ use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_agent::tools::MemoryStore;
 use sylvander_api::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
-    AgentDescriptor, AgentInstanceId, IdentityBindingCapabilities, IdentityBindingError,
+    AgentDescriptor, AgentInstanceId, HandoffId, IdentityBindingCapabilities, IdentityBindingError,
     IdentityBindingErrorCode, IdentityBindingRequest, IdentityBindingResponse,
     MemoryConfirmationErrorCode, MemoryConfirmationRequest, MemoryConfirmationResponse,
     MemoryConfirmationValidationError, ModelSelection, RegistryAdminError, RegistryAdminErrorCode,
@@ -64,6 +64,8 @@ use crate::composition::{
 use crate::config::{
     MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
 };
+use crate::coordination::handoff::TaskHandoff;
+use crate::coordination::mailbox::{CoordinationMessage, MessageClaim};
 use crate::coordination::service::{
     DispatchMessageOutcome, DispatchMessageRequest, ReportProgressRequest, ReportWaitRequest,
 };
@@ -4911,6 +4913,91 @@ impl Runtime {
                 RuntimeError::Coordination("durable coordination is unavailable".into())
             })?
             .report_progress(request, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Lease the next message addressed to this exact Agent participant.
+    pub async fn claim_agent_message(
+        &self,
+        actor: &AuthenticatedSession,
+        lease_seconds: u64,
+    ) -> Result<Option<MessageClaim>, RuntimeError> {
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .claim_next_message(
+                actor.agent_instance_id(),
+                crate::session::now_secs(),
+                lease_seconds,
+            )
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Commit delivery only for a claim addressed to this Agent and Session.
+    pub async fn mark_agent_message_delivered(
+        &self,
+        actor: &AuthenticatedSession,
+        claim: &MessageClaim,
+    ) -> Result<CoordinationMessage, RuntimeError> {
+        validate_coordination_actor(
+            actor,
+            &claim.message.session_id,
+            &claim.message.recipient_instance_id,
+        )?;
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .mark_message_delivered(claim, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Acknowledge delivered work under the exact recipient capability.
+    pub async fn acknowledge_agent_message(
+        &self,
+        actor: &AuthenticatedSession,
+        message: &CoordinationMessage,
+    ) -> Result<CoordinationMessage, RuntimeError> {
+        validate_coordination_actor(actor, &message.session_id, &message.recipient_instance_id)?;
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .acknowledge_message(
+                message,
+                actor.agent_instance_id(),
+                crate::session::now_secs(),
+            )
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Accept or reject a handoff as its authenticated governed arbitrator.
+    pub async fn decide_agent_handoff(
+        &self,
+        actor: &AuthenticatedSession,
+        handoff_id: &HandoffId,
+        accept: bool,
+    ) -> Result<TaskHandoff, RuntimeError> {
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .decide_handoff(
+                actor.id(),
+                handoff_id,
+                actor.agent_instance_id(),
+                accept,
+                crate::session::now_secs(),
+            )
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))
     }
