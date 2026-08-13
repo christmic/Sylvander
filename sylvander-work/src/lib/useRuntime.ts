@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeAgentAdminRequest, type RuntimeAgentRevisionView, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeCredentialGenerationView, type RuntimeGatewayPort, type RuntimeIdentityBindingAction, type RuntimeIdentityBindingView, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimeModelRevisionView, type RuntimePendingMemoryConfirmation, type RuntimeProviderRevisionView, type RuntimeRegistryAdminRequest, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeAgentAdminRequest, type RuntimeAgentRevisionView, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeCredentialGenerationView, type RuntimeGatewayPort, type RuntimeIdentityBindingAction, type RuntimeIdentityBindingView, type RuntimeMessage, type RuntimeMessageAttachment, type RuntimeModelDescriptor, type RuntimeModelRevisionView, type RuntimePendingMemoryConfirmation, type RuntimeProviderRevisionView, type RuntimeRegistryAdminRequest, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -15,6 +15,7 @@ export interface RuntimeViewState {
     networkAccess: "denied" | "allowed";
     approvalPolicy: "ask" | "allow" | "deny";
     approvalEnabled: boolean;
+    maxRequestBytes: number;
   };
   agents: Array<{ id: string; name: string; providerId: string; modelId: string }>;
   sessions: SessionSummary[];
@@ -382,6 +383,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             networkAccess: snapshot.permissions.network_access,
             approvalPolicy: snapshot.permissions.approval_policy,
             approvalEnabled: snapshot.approval_enabled,
+            maxRequestBytes: snapshot.max_request_bytes,
           },
         }));
         break;
@@ -1560,8 +1562,26 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     }
   }, [state.memoryConfirmations, state.memoryDecisionPending, submit]);
 
-  const sendChat = useCallback(async (sessionId: string, text: string) => {
+  const sendChat = useCallback(async (
+    sessionId: string,
+    text: string,
+    attachments: RuntimeMessageAttachment[] = [],
+  ) => {
     if (localTurnStateRef.current.has(sessionId)) return false;
+    const command: RuntimeCommand = {
+      type: "chat",
+      text,
+      attachments,
+      session_id: sessionId,
+    };
+    const requestLimit = state.runtimeInfo?.maxRequestBytes;
+    if (requestLimit !== undefined && encodedCommandBytes(command) > requestLimit) {
+      setState((current) => ({
+        ...current,
+        diagnostic: `Message exceeds Runtime's ${requestLimit}-byte request limit`,
+      }));
+      return false;
+    }
     localTurnStateRef.current.set(sessionId, "waiting");
     setState((current) => ({
       ...current,
@@ -1570,7 +1590,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         : session),
     }));
     try {
-      await submit({ type: "chat", text, attachments: [], session_id: sessionId });
+      await submit(command);
       return true;
     } catch (error) {
       localTurnStateRef.current.delete(sessionId);
@@ -1590,7 +1610,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       }));
       return false;
     }
-  }, [submit]);
+  }, [state.runtimeInfo?.maxRequestBytes, submit]);
 
   const interruptTurn = useCallback(async (sessionId: string) => {
     const session = state.sessions.find((candidate) => candidate.id === sessionId);
@@ -2007,6 +2027,10 @@ function safeDiagnostic(error: unknown): string {
   return typeof error === "string" && error.trim()
     ? error
     : "The native Runtime gateway is unavailable. Check the Runtime endpoint and try again.";
+}
+
+function encodedCommandBytes(command: RuntimeCommand) {
+  return new TextEncoder().encode(JSON.stringify(command)).byteLength;
 }
 
 function retryCauseLabel(cause: "rate_limit" | "server" | "network" | "stream" | "other") {

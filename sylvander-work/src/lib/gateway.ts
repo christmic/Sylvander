@@ -15,7 +15,7 @@ export type RuntimeCommand =
   | { type: "restore_session"; session_id: string }
   | { type: "fork_session"; session_id: string; completed_turns?: number; checkpoint: boolean }
   | { type: "delete_session"; session_id: string }
-  | { type: "chat"; text: string; attachments: []; session_id?: string }
+  | { type: "chat"; text: string; attachments: RuntimeMessageAttachment[]; session_id?: string }
   | { type: "approve"; session_id: string; call_id: string; approved: boolean; scope: ApprovalScope; reason?: string }
   | { type: "interrupt"; session_id: string }
   | { type: "answer"; session_id: string; call_id: string; answer: string }
@@ -49,6 +49,15 @@ export type PlanDecision =
 
 export type ApprovalScope = "once" | "session" | "persistent";
 export type ReasoningEffort = "off" | "low" | "medium" | "high";
+
+export interface RuntimeMessageAttachment {
+  id: string;
+  kind: "paste" | "file" | "image" | "selection" | "diff" | "terminal_output";
+  name: string;
+  mime_type: string;
+  content: { encoding: "text"; text: string } | { encoding: "base64"; data: string };
+  byte_count: number;
+}
 
 export interface RuntimeFeedback {
   target: string;

@@ -30,6 +30,41 @@ const profile: RuntimeUserProfileData = {
 };
 
 describe("useRuntime user profile", () => {
+  it("rejects a chat whose serialized command exceeds the Runtime request limit", async () => {
+    const gateway = new ProfileGateway();
+    const view = renderHook(() => useRuntime(gateway));
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "message",
+      message: {
+        type: "runtime_info",
+        snapshot: {
+          agent_id: "agent-1",
+          model: { provider_id: "openai", model_id: "gpt-test" },
+          reasoning_effort: "off",
+          models: [],
+          permissions: {
+            file_access: "workspace_write",
+            network_access: "denied",
+            approval_policy: "ask",
+          },
+          capabilities: 0,
+          approval_enabled: true,
+          max_request_bytes: 64,
+          platform: {},
+        },
+      },
+    }));
+
+    const before = gateway.commands.length;
+    await act(async () => {
+      expect(await view.result.current.sendChat("session-1", "x".repeat(64))).toBe(false);
+    });
+    expect(gateway.commands).toHaveLength(before);
+    expect(view.result.current.state.diagnostic).toBe("Message exceeds Runtime's 64-byte request limit");
+    view.unmount();
+  });
+
   it("binds owner profile mutations to Runtime revision and reloads conflicts", async () => {
     const gateway = new ProfileGateway();
     const view = renderHook(() => useRuntime(gateway));
