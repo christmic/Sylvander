@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use sylvander_benchmark_runtime::{RuntimeBenchPlan, RuntimeBenchResult, summarize};
+use sylvander_benchmark_runtime::{
+    AppendOutcome, BenchmarkLedger, RuntimeBenchPlan, RuntimeBenchResult, summarize,
+};
 
 fn main() {
     if let Err(error) = run() {
@@ -10,36 +12,72 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let mut arguments = std::env::args().skip(1);
-    let command = arguments.next().ok_or_else(usage)?;
-    let path = arguments.next().ok_or_else(usage)?;
-    if arguments.next().is_some() {
-        return Err(usage());
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    match arguments.as_slice() {
+        [command, path] if command == "validate-plan" => validate_plan(path),
+        [command, path] if command == "summarize" => summarize_json(path),
+        [command, ledger] if command == "summarize-ledger" => summarize_ledger(ledger),
+        [command, ledger, results] if command == "record" => record(ledger, results),
+        [command, ledger, plan] if command == "coverage" => coverage(ledger, plan),
+        _ => Err(usage()),
     }
-    let bytes = std::fs::read(Path::new(&path))
-        .map_err(|error| format!("cannot read benchmark artifact: {error}"))?;
-    match command.as_str() {
-        "validate-plan" => {
-            let plan: RuntimeBenchPlan = serde_json::from_slice(&bytes)
-                .map_err(|error| format!("invalid benchmark plan JSON: {error}"))?;
-            plan.validate().map_err(|error| error.to_string())?;
-            println!("valid coordinates={}", plan.coordinates.len());
+}
+
+fn validate_plan(path: &str) -> Result<(), String> {
+    let plan: RuntimeBenchPlan = read_json(path, "benchmark plan")?;
+    plan.validate().map_err(|error| error.to_string())?;
+    println!("valid coordinates={}", plan.coordinates.len());
+    Ok(())
+}
+
+fn summarize_json(path: &str) -> Result<(), String> {
+    let results: Vec<RuntimeBenchResult> = read_json(path, "benchmark results")?;
+    print_json(&summarize(&results).map_err(|error| error.to_string())?)
+}
+
+fn summarize_ledger(path: &str) -> Result<(), String> {
+    let ledger = BenchmarkLedger::open(path).map_err(|error| error.to_string())?;
+    let results = ledger.results().map_err(|error| error.to_string())?;
+    print_json(&summarize(&results).map_err(|error| error.to_string())?)
+}
+
+fn record(ledger_path: &str, results_path: &str) -> Result<(), String> {
+    let results: Vec<RuntimeBenchResult> = read_json(results_path, "benchmark results")?;
+    let mut ledger = BenchmarkLedger::open(ledger_path).map_err(|error| error.to_string())?;
+    let mut inserted = 0_u64;
+    let mut already_present = 0_u64;
+    for result in &results {
+        match ledger.append(result).map_err(|error| error.to_string())? {
+            AppendOutcome::Inserted => inserted = inserted.saturating_add(1),
+            AppendOutcome::AlreadyPresent => already_present = already_present.saturating_add(1),
         }
-        "summarize" => {
-            let results: Vec<RuntimeBenchResult> = serde_json::from_slice(&bytes)
-                .map_err(|error| format!("invalid benchmark result JSON: {error}"))?;
-            let summary = summarize(&results).map_err(|error| error.to_string())?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&summary)
-                    .map_err(|error| format!("cannot encode summary: {error}"))?
-            );
-        }
-        _ => return Err(usage()),
     }
+    println!("recorded inserted={inserted} already_present={already_present}");
+    Ok(())
+}
+
+fn coverage(ledger_path: &str, plan_path: &str) -> Result<(), String> {
+    let plan: RuntimeBenchPlan = read_json(plan_path, "benchmark plan")?;
+    let ledger = BenchmarkLedger::open(ledger_path).map_err(|error| error.to_string())?;
+    print_json(&ledger.coverage(&plan).map_err(|error| error.to_string())?)
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &str, kind: &str) -> Result<T, String> {
+    let bytes = std::fs::read(Path::new(path)).map_err(|_| format!("cannot read {kind}"))?;
+    serde_json::from_slice(&bytes).map_err(|_| format!("invalid {kind} JSON"))
+}
+
+fn print_json(value: &impl serde::Serialize) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value)
+            .map_err(|_| "cannot encode benchmark output".to_owned())?
+    );
     Ok(())
 }
 
 fn usage() -> String {
-    "usage: sylvander-runtime-bench <validate-plan|summarize> <json-path>".into()
+    "usage: sylvander-runtime-bench \
+     <validate-plan PLAN|summarize RESULTS|summarize-ledger DB|record DB RESULTS|coverage DB PLAN>"
+        .into()
 }

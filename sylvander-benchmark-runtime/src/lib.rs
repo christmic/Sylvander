@@ -7,8 +7,12 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+mod fault;
 mod ledger;
 
+pub use fault::{
+    FaultController, FaultDecision, FaultInjectionError, FaultInjectionSpec, FaultReceipt,
+};
 pub use ledger::{AppendOutcome, BenchmarkLedger, BenchmarkLedgerError, PlanCoverage};
 
 /// Runtime capability family under evaluation.
@@ -344,3 +348,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/unit/ledger.rs"]
 mod ledger_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/fault.rs"]
+mod fault_tests;

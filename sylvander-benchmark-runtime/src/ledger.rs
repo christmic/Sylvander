@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{RuntimeBenchCoordinate, RuntimeBenchPlan, RuntimeBenchResult};
@@ -15,7 +16,7 @@ pub enum AppendOutcome {
     AlreadyPresent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanCoverage {
     pub expected: u64,
     pub recorded: u64,
