@@ -389,4 +389,179 @@ describe("useRuntime user profile", () => {
     expect(view.result.current.state.agentAdministration.notice).toBe("active revision changed");
     view.unmount();
   });
+
+  it("keeps Provider, Model, and Credential registry lifecycles revision-bound", async () => {
+    const gateway = new ProfileGateway();
+    const view = renderHook(() => useRuntime(gateway));
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "runtime", version: 6, capabilities: ["registry_administration"] },
+    }));
+
+    await act(async () => {
+      expect(await view.result.current.requestRegistryAdministration({
+        operation: "list_provider_revisions",
+        provider_id: "openai",
+        limit: 50,
+      })).toBe(true);
+    });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "registry_admin",
+      response: { status: "success", result: {
+        operation: "provider_revisions_listed",
+        provider_id: "openai",
+        active_revision: 1,
+        revisions: [providerRevision(1, true)],
+      } },
+    } }));
+    expect(view.result.current.state.registryAdministration.provider?.activeRevision).toBe(1);
+
+    await act(async () => {
+      expect(await view.result.current.requestRegistryAdministration({
+        operation: "stage_provider_revision",
+        provider_id: "openai",
+        revision: 2,
+        expected_active_revision: 1,
+        definition: {
+          kind: "openai",
+          features: ["responses"],
+          base_url: "https://api.openai.com",
+          credential_binding_id: "openai-primary",
+        },
+      })).toBe(true);
+    });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "registry_admin",
+      response: { status: "success", result: {
+        operation: "provider_revision_staged",
+        revision: providerRevision(2, false),
+      } },
+    } }));
+    expect(view.result.current.state.registryAdministration.provider?.activeRevision).toBe(1);
+    expect(view.result.current.state.registryAdministration.provider?.revisions).toHaveLength(2);
+
+    await act(async () => {
+      expect(await view.result.current.requestRegistryAdministration({
+        operation: "list_model_revisions",
+        provider_id: "openai",
+        model_id: "gpt-test",
+        limit: 50,
+      })).toBe(true);
+    });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "registry_admin",
+      response: { status: "success", result: {
+        operation: "model_revisions_listed",
+        provider_id: "openai",
+        model_id: "gpt-test",
+        active_revision: 3,
+        revisions: [modelRevision(3, true)],
+      } },
+    } }));
+    expect(view.result.current.state.registryAdministration.model?.activeRevision).toBe(3);
+
+    await act(async () => {
+      expect(await view.result.current.requestRegistryAdministration({
+        operation: "list_credential_generations",
+        binding_id: "openai-primary",
+        limit: 50,
+      })).toBe(true);
+    });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "registry_admin",
+      response: { status: "success", result: {
+        operation: "credential_generations_listed",
+        binding_id_sha256: "sha256:binding",
+        active_generation: 2,
+        generations: [credentialGeneration(2, true), credentialGeneration(1, false)],
+      } },
+    } }));
+    expect(view.result.current.state.registryAdministration.credential).toMatchObject({
+      bindingId: "openai-primary",
+      bindingIdSha256: "sha256:binding",
+      activeGeneration: 2,
+    });
+
+    await act(async () => {
+      expect(await view.result.current.requestRegistryAdministration({
+        operation: "rollback_credential_generation",
+        binding_id: "openai-primary",
+        target_generation: 1,
+        expected_active_generation: 2,
+      })).toBe(true);
+    });
+    expect(view.result.current.state.registryAdministration.credential?.activeGeneration).toBe(2);
+    act(() => gateway.emit({ type: "message", message: {
+      type: "registry_admin",
+      response: { status: "success", result: {
+        operation: "credential_generation_rolled_back",
+        binding_id_sha256: "sha256:binding",
+        active_generation: 1,
+      } },
+    } }));
+    expect(view.result.current.state.registryAdministration.credential?.activeGeneration).toBe(1);
+
+    await act(async () => {
+      expect(await view.result.current.requestRegistryAdministration({
+        operation: "activate_provider_revision",
+        provider_id: "openai",
+        revision: 2,
+        expected_active_revision: 1,
+      })).toBe(true);
+    });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "registry_admin",
+      response: { status: "error", error: {
+        code: "active_revision_conflict",
+        message: "provider active revision changed",
+        provider_id: "openai",
+        details: { kind: "active_revision_conflict", expected_active_revision: 1, actual_active_revision: 3 },
+      } },
+    } }));
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "registry_admin",
+      request: { operation: "list_provider_revisions", provider_id: "openai", limit: 50 },
+    }));
+    expect(view.result.current.state.registryAdministration.notice).toBe("provider active revision changed");
+    view.unmount();
+  });
 });
+
+function providerRevision(revision: number, active: boolean) {
+  return {
+    definition: {
+      provider_id: "openai", revision, kind: "openai", features: ["responses"],
+      base_url_sha256: `sha256:base-${revision}`,
+      credential_binding_id_sha256: "sha256:binding",
+    },
+    digest_sha256: `sha256:provider-${revision}`,
+    created_at_unix_secs: revision,
+    active,
+  };
+}
+
+function modelRevision(revision: number, active: boolean) {
+  return {
+    definition: {
+      provider_id: "openai", model_id: "gpt-test", revision,
+      context_window: 128_000, max_output_tokens: 8_192,
+      capabilities: ["tool_use"], lifecycle: { status: "active" as const },
+      pricing_sha256: "sha256:pricing",
+    },
+    digest_sha256: `sha256:model-${revision}`,
+    created_at_unix_secs: revision,
+    active,
+  };
+}
+
+function credentialGeneration(generation: number, active: boolean) {
+  return {
+    binding_id_sha256: "sha256:binding", generation,
+    reference_kind: "environment" as const,
+    reference_configured: true,
+    reference_digest_sha256: `sha256:reference-${generation}`,
+    created_at_unix_secs: generation,
+    active,
+  };
+}
