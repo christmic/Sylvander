@@ -2324,13 +2324,15 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
         .await;
     let context = ToolContext::new(
         AgentExecutionContext::restricted_for("user-1", "test-agent", session_id.0.clone())
-            .with_trace_id("turn-1"),
+            .with_trace_id("turn-1")
+            .with_turn_id("turn-1"),
     )
     .with_executor(
         Arc::new(LocalExecutor),
         WorkspaceTarget::local(workspace.path(), false),
     )
     .with_capability(Cap::Write)
+    .with_invocation_call_id("call-1")
     .with_workspace_journal(run.inner.workspace_journal.clone().unwrap());
     let tool = sylvander_agent::tools::WriteTool::new();
     let call = ToolRegistry::new()

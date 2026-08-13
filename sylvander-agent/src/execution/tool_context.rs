@@ -244,9 +244,11 @@ impl ToolContext {
         self.execution.turn_id.as_deref()
     }
 
-    /// Correlate a cloned context to one model-produced call in the turn.
+    /// Bind the Runtime-owned model call identifier for journal and receipt
+    /// correlation. The authorization gateway still validates it against the
+    /// frozen invocation ledger.
     #[must_use]
-    pub(crate) fn with_invocation_call_id(mut self, call_id: impl Into<String>) -> Self {
+    pub fn with_invocation_call_id(mut self, call_id: impl Into<String>) -> Self {
         self.invocation_call_id = Some(call_id.into());
         self
     }
