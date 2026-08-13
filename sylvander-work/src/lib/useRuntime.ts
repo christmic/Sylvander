@@ -5,6 +5,7 @@ import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, Transcript
 
 export interface RuntimeViewState {
   connection: ConnectionState;
+  agents: Array<{ id: string; name: string; providerId: string; modelId: string }>;
   sessions: SessionSummary[];
   selectedId?: string;
   transcript: TranscriptEntry[];
@@ -28,6 +29,7 @@ export interface RuntimeViewState {
 
 const initialState: RuntimeViewState = {
   connection: "starting",
+  agents: [],
   sessions: [],
   transcript: [],
   plan: [],
@@ -67,6 +69,17 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
 
   const applyMessage = useCallback((message: RuntimeMessage) => {
     switch (message.type) {
+      case "agents_discovered":
+        setState((current) => ({
+          ...current,
+          agents: message.agents.map((agent) => ({
+            id: agent.id,
+            name: agent.name,
+            providerId: agent.provider_id,
+            modelId: agent.default_model_id,
+          })),
+        }));
+        break;
       case "sessions_list": {
         const sessions = message.sessions.map((session) => ({
           id: session.id,
@@ -94,6 +107,18 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             body: item.text,
           })),
         }));
+        break;
+      case "session_created":
+        selectedRef.current = message.session_id;
+        setState((current) => ({
+          ...current,
+          selectedId: message.session_id,
+          transcript: [],
+          plan: [],
+          tasks: [],
+        }));
+        void submit({ type: "list_sessions" });
+        void submit({ type: "load_session", session_id: message.session_id });
         break;
       case "text_delta":
         enqueueDelta(message.session_id, message.delta);
@@ -258,6 +283,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         connectedOnce = true;
         reconnectAttempt = 0;
         setState((current) => ({ ...current, connection: "live", diagnostic: undefined }));
+        void submit({ type: "discover_agents" });
         void submit({ type: "list_sessions" });
         void submit({ type: "get_runtime_info" });
       } else if (event.type === "message") {

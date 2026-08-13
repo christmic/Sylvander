@@ -39,6 +39,7 @@ describe("Sylvander Work", () => {
     }));
 
     await waitFor(() => expect(gateway.commands.map((command) => command.type)).toEqual([
+      "discover_agents",
       "list_sessions",
       "get_runtime_info",
     ]));
@@ -72,6 +73,49 @@ describe("Sylvander Work", () => {
     expect(await screen.findByText("Runtime is unavailable.")).toBeTruthy();
     expect(screen.getByText("Runtime endpoint is unavailable")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Sylvander Work" })).toBeTruthy();
+  });
+
+  it("creates a Session through a Runtime-discovered Agent identity", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agents_discovered",
+      agents: [{
+        id: "agent-1",
+        revision: 1,
+        name: "Coding Agent",
+        provider_id: "openai",
+        default_model_id: "gpt-test",
+      }],
+    } }));
+
+    const createButton = await screen.findByRole("button", { name: "Create Session" });
+    expect(createButton.hasAttribute("disabled")).toBe(false);
+    act(() => createButton.click());
+    fireEvent.change(screen.getByRole("textbox", { name: "Session name" }), {
+      target: { value: "Release work" },
+    });
+    act(() => screen.getByRole("button", { name: "Create" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "create_session",
+      request: {
+        agent_id: "agent-1",
+        label: "Release work",
+        overrides: {},
+      },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_created", session_id: "session-new",
+    } }));
+    await waitFor(() => expect(gateway.commands.slice(-2)).toEqual([
+      { type: "list_sessions" },
+      { type: "load_session", session_id: "session-new" },
+    ]));
   });
 
   it("reconnects with the native gateway after an established link drops", async () => {

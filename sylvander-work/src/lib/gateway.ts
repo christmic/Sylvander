@@ -6,6 +6,7 @@ export type DesktopEvent =
   | { type: "disconnected"; reason: string };
 
 export type RuntimeCommand =
+  | { type: "discover_agents" }
   | { type: "list_sessions" }
   | { type: "load_session"; session_id: string }
   | { type: "chat"; text: string; attachments: []; session_id?: string }
@@ -14,6 +15,7 @@ export type RuntimeCommand =
   | { type: "answer"; session_id: string; call_id: string; answer: string }
   | { type: "resolve_plan"; session_id: string; plan_id: string; decision: PlanDecision }
   | { type: "cancel_task"; session_id: string; task_id: string }
+  | { type: "create_session"; request: { agent_id: string; label: string; channel_id?: string; overrides: Record<string, never> } }
   | { type: "get_runtime_info" };
 
 export type PlanDecision =
@@ -33,8 +35,17 @@ export interface RuntimeHistoryMessage {
   text: string;
 }
 
+export interface RuntimeAgent {
+  id: string;
+  revision: number;
+  name: string;
+  provider_id: string;
+  default_model_id: string;
+}
+
 export type RuntimeMessage =
   | { type: "sessions_list"; sessions: RuntimeSession[] }
+  | { type: "agents_discovered"; agents: RuntimeAgent[] }
   | { type: "session_history"; session: RuntimeSession; messages: RuntimeHistoryMessage[] }
   | { type: "text_delta"; session_id: string; delta: string }
   | { type: "thinking_delta"; session_id: string; delta: string }

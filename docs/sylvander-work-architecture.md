@@ -129,6 +129,12 @@ Running task rows may issue the public `CancelTask` command with Runtime's
 only the subsequent `TaskCancelled` event changes its state and records the
 authoritative reason. Terminal tasks expose no cancellation control.
 
+Session creation starts with Runtime `DiscoverAgents`; the form submits a
+public `SessionCreateRequest` using the selected Agent identity and no invented
+defaults. Desktop never allocates a Session identifier or inserts an optimistic
+Session row. It selects and loads the Session only after `SessionCreated`, then
+refreshes Runtime's authoritative Session list.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem

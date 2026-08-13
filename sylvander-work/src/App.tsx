@@ -18,6 +18,9 @@ export default function App({ gateway }: AppProps) {
   const [questionSelections, setQuestionSelections] = useState<string[]>([]);
   const [questionText, setQuestionText] = useState("");
   const [planRevision, setPlanRevision] = useState<string[]>([]);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newSessionLabel, setNewSessionLabel] = useState("New session");
+  const [newSessionAgentId, setNewSessionAgentId] = useState("");
   const [compactLayout, setCompactLayout] = useState(() =>
     typeof matchMedia === "function" && matchMedia("(max-width: 860px)").matches);
   const selected = state.sessions.find((session) => session.id === state.selectedId);
@@ -39,6 +42,10 @@ export default function App({ gateway }: AppProps) {
   useEffect(() => {
     if (state.activePlan) setPlanRevision(state.plan.map((step) => step.label));
   }, [state.activePlan?.planId, state.plan]);
+
+  useEffect(() => {
+    if (!newSessionAgentId && state.agents[0]) setNewSessionAgentId(state.agents[0].id);
+  }, [newSessionAgentId, state.agents]);
 
   function updateDraft(value: string) {
     if (state.selectedId) setDrafts((current) => ({ ...current, [state.selectedId!]: value }));
@@ -103,6 +110,21 @@ export default function App({ gateway }: AppProps) {
     await resolvePlan(state.activePlan.planId, { decision: "revised", steps });
   }
 
+  async function createSession(event: FormEvent) {
+    event.preventDefault();
+    const label = newSessionLabel.trim();
+    if (!label || !newSessionAgentId) return;
+    await submit({
+      type: "create_session",
+      request: {
+        agent_id: newSessionAgentId,
+        label,
+        overrides: {},
+      },
+    });
+    setCreateOpen(false);
+  }
+
   return <div className="app-shell">
     <nav className="product-rail" aria-label="Product">
       <div className="brand-mark"><img src={crabMark} alt="Sylvander Seed-Crab" /></div>
@@ -122,7 +144,7 @@ export default function App({ gateway }: AppProps) {
     >
       <header className="sidebar-header">
         <div><span className="eyebrow">Workspace</span><h1>Sylvander Work</h1></div>
-        <button className="icon-button" aria-label="Create Session">＋</button>
+        <button className="icon-button" aria-label="Create Session" onClick={() => setCreateOpen(true)} disabled={state.connection !== "live" || state.agents.length === 0}>＋</button>
       </header>
       <label className="session-search" htmlFor="session-search">
         <span aria-hidden="true">⌕</span>
@@ -185,6 +207,7 @@ export default function App({ gateway }: AppProps) {
       </section>
 
       <div className="interaction-zone">
+        {createOpen && <form className="decision-dock" aria-labelledby="create-session-title" onSubmit={(event) => void createSession(event)}><div className="decision-icon" aria-hidden="true">＋</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="create-session-title">Create Session</h3><label>Name<input aria-label="Session name" value={newSessionLabel} onChange={(event) => setNewSessionLabel(event.target.value)} /></label><label>Agent<select aria-label="Session Agent" value={newSessionAgentId} onChange={(event) => setNewSessionAgentId(event.target.value)}>{state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.providerId}/{agent.modelId}</option>)}</select></label></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-button" disabled={!newSessionLabel.trim() || !newSessionAgentId}>Create</button></div></form>}
         {state.question && <form className="decision-dock" aria-labelledby="question-title" onSubmit={(event) => void submitQuestion(event)}>
           <div className="decision-icon" aria-hidden="true">?</div>
           <div className="decision-copy"><span className="eyebrow">Agent asks</span><h3 id="question-title">{state.question.prompt}</h3><div className="question-options">{state.question.options.map((option) => <label key={option}><input type={state.question!.multiSelect ? "checkbox" : "radio"} name="agent-question" checked={questionSelections.includes(option)} onChange={() => toggleQuestionOption(option)} /> {option}</label>)}</div><input aria-label="Other answer" value={questionText} onChange={(event) => setQuestionText(event.target.value)} placeholder={state.question.options.length > 0 ? "Other or additional context" : "Your answer"} /></div>
