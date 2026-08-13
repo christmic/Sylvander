@@ -1,11 +1,12 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import crabMark from "../../docs/design/final-brand/sylvander-seed-crab-character-square.png";
 import { AgentAdministration } from "./AgentAdministration";
 import { IdentitySettings } from "./IdentitySettings";
 import { ProfileSettings } from "./ProfileSettings";
 import { RegistryAdministration } from "./RegistryAdministration";
-import type { ApprovalScope, ReasoningEffort, RuntimeGatewayPort, RuntimePermissionProfile, RuntimeSessionConfigPatch } from "./lib/gateway";
+import { loadSelectedFiles } from "./lib/attachments";
+import type { ApprovalScope, ReasoningEffort, RuntimeGatewayPort, RuntimeMessageAttachment, RuntimePermissionProfile, RuntimeSessionConfigPatch } from "./lib/gateway";
 import { useRuntime, type RuntimeViewState } from "./lib/useRuntime";
 
 export interface AppProps {
@@ -16,6 +17,10 @@ export default function App({ gateway }: AppProps) {
   const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, resolveMemoryConfirmation, requestUserProfile, clearUserProfile, requestIdentityBinding, clearIdentityBinding, clearIdentityChallenge, requestAgentAdministration, clearAgentAdministration, requestRegistryAdministration, clearRegistryAdministration, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [attachments, setAttachments] = useState<Record<string, RuntimeMessageAttachment[]>>({});
+  const [attachmentError, setAttachmentError] = useState("");
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const nextAttachmentIdRef = useRef(1);
   const [inspector, setInspector] = useState<"plan" | "tasks" | "changes" | "context">("plan");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -44,6 +49,10 @@ export default function App({ gateway }: AppProps) {
     typeof matchMedia === "function" && matchMedia("(max-width: 860px)").matches);
   const selected = state.sessions.find((session) => session.id === state.selectedId);
   const draft = state.selectedId ? drafts[state.selectedId] ?? "" : "";
+  const selectedAttachments = state.selectedId ? attachments[state.selectedId] ?? [] : [];
+  const selectedModel = state.runtimeInfo?.models.find((model) =>
+    model.provider === state.runtimeInfo!.providerId && model.id === state.runtimeInfo!.modelId);
+  const allowsImages = selectedModel?.capability_names.includes("vision") ?? false;
   const visibleSessions = useMemo(() => {
     const needle = query.toLowerCase();
     return state.sessions.filter((session) => `${session.label} ${session.workspace}`.toLowerCase().includes(needle));
@@ -90,8 +99,43 @@ export default function App({ gateway }: AppProps) {
 
   async function send(event?: FormEvent) {
     event?.preventDefault();
-    if (!state.selectedId || state.connection !== "live" || !draft.trim()) return;
-    if (await sendChat(state.selectedId, draft.trim())) updateDraft("");
+    if (!state.selectedId || state.connection !== "live"
+      || (!draft.trim() && selectedAttachments.length === 0)) return;
+    if (await sendChat(state.selectedId, draft.trim(), selectedAttachments)) {
+      updateDraft("");
+      setAttachments((current) => ({ ...current, [state.selectedId!]: [] }));
+      setAttachmentError("");
+    }
+  }
+
+  async function attachFiles(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const sessionId = state.selectedId;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    if (!sessionId || files.length === 0) return;
+    const current = attachments[sessionId] ?? [];
+    const result = await loadSelectedFiles(files, {
+      allowImages: allowsImages,
+      existingCount: current.length,
+      startIndex: nextAttachmentIdRef.current,
+    });
+    nextAttachmentIdRef.current += files.length;
+    if (result.attachments.length > 0) {
+      setAttachments((stored) => ({
+        ...stored,
+        [sessionId]: [...(stored[sessionId] ?? []), ...result.attachments],
+      }));
+    }
+    setAttachmentError(result.errors.join("; "));
+  }
+
+  function removeAttachment(id: string) {
+    if (!state.selectedId) return;
+    setAttachments((current) => ({
+      ...current,
+      [state.selectedId!]: (current[state.selectedId!] ?? []).filter((item) => item.id !== id),
+    }));
   }
 
   function handleComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -428,11 +472,13 @@ export default function App({ gateway }: AppProps) {
         <form className="composer" onSubmit={(event) => void send(event)}>
           <label htmlFor="composer-input" className="sr-only">Message Sylvander</label>
           <textarea id="composer-input" value={draft} onChange={(event) => updateDraft(event.target.value)} rows={2} placeholder="What should we work through?" onKeyDown={handleComposerKey} disabled={!selected || state.connection !== "live" || selected.state === "active" || selected.state === "waiting"} />
+          {selectedAttachments.length > 0 && <div className="attachment-list" aria-label="Message attachments">{selectedAttachments.map((attachment) => <span key={attachment.id}><strong>{attachment.name}</strong> · {attachment.kind} · {attachment.byte_count} bytes <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => removeAttachment(attachment.id)}>×</button></span>)}</div>}
+          {attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}
           <div className="composer-footer">
-            <div className="composer-tools"><button type="button" aria-label="Attach context">＋</button><button type="button" onClick={openRuntimeSettings}>{reasoningLabel(state.runtimeInfo?.reasoningEffort)} <span>⌄</span></button><button type="button" onClick={openRuntimeSettings}>{state.runtimeInfo ? `${state.runtimeInfo.providerId}/${state.runtimeInfo.modelId}` : "Runtime model"} <span>⌄</span></button></div>
+            <div className="composer-tools"><input ref={attachmentInputRef} className="sr-only" type="file" multiple aria-label="Select attachment files" accept="text/*,.json,.md,.diff,.patch,image/png,image/jpeg" onChange={(event) => void attachFiles(event)} /><button type="button" aria-label="Attach context" disabled={!selected || state.connection !== "live"} onClick={() => attachmentInputRef.current?.click()}>＋</button><button type="button" onClick={openRuntimeSettings}>{reasoningLabel(state.runtimeInfo?.reasoningEffort)} <span>⌄</span></button><button type="button" onClick={openRuntimeSettings}>{state.runtimeInfo ? `${state.runtimeInfo.providerId}/${state.runtimeInfo.modelId}` : "Runtime model"} <span>⌄</span></button></div>
             <div className="send-group"><span><kbd>↵</kbd> send · <kbd>⇧↵</kbd> line</span>{selected && ["active", "waiting"].includes(selected.state)
               ? <button type="button" className="send-button" disabled={state.connection !== "live" || state.interruptingSessionIds.includes(selected.id)} aria-label="Stop" onClick={() => void interruptTurn(selected.id)}>{state.interruptingSessionIds.includes(selected.id) ? "…" : "■"}</button>
-              : <button className="send-button" disabled={!draft.trim() || !selected || state.connection !== "live"} aria-label="Send">↑</button>}</div>
+              : <button className="send-button" disabled={(!draft.trim() && selectedAttachments.length === 0) || !selected || state.connection !== "live"} aria-label="Send">↑</button>}</div>
           </div>
         </form>
       </div>

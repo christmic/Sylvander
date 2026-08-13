@@ -868,6 +868,66 @@ describe("Sylvander Work", () => {
     expect(await screen.findByRole("heading", { name: "Revision 5 · active" })).toBeTruthy();
   });
 
+  it("attaches UTF-8 files and gates images by provider-qualified model capability", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 6, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "agents_discovered",
+      agents: [{ id: "agent-1", revision: 1, name: "Agent", provider_id: "alpha", default_model_id: "shared" }],
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "runtime_info",
+      snapshot: runtimeSnapshot("alpha", false),
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Attachments", workspace: "/workspace", last_seen_secs: 1, archived: false }],
+    } }));
+    await screen.findByRole("heading", { name: "Attachments" });
+    const input = screen.getByLabelText("Select attachment files") as HTMLInputElement;
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    fireEvent.change(input, { target: { files: [browserFile(pngBytes, "diagram.png", "image/png")] } });
+    expect(await screen.findByText("Active model does not support image attachments")).toBeTruthy();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "runtime_info",
+      snapshot: runtimeSnapshot("beta", true),
+    } }));
+    fireEvent.change(input, { target: { files: [browserFile(pngBytes, "diagram.png", "image/png")] } });
+    expect(await screen.findByRole("button", { name: "Remove diagram.png" })).toBeTruthy();
+    fireEvent.change(input, { target: { files: [browserFile(new TextEncoder().encode("evidence"), "notes.md", "text/markdown")] } });
+    expect(await screen.findByRole("button", { name: "Remove notes.md" })).toBeTruthy();
+
+    act(() => screen.getByRole("button", { name: "Send" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "chat",
+      text: "",
+      session_id: "session-1",
+      attachments: [{
+        id: "desktop-attachment-2",
+        kind: "image",
+        name: "diagram.png",
+        mime_type: "image/png",
+        content: { encoding: "base64", data: "iVBORw0KGgoB" },
+        byte_count: 9,
+      }, {
+        id: "desktop-attachment-3",
+        kind: "file",
+        name: "notes.md",
+        mime_type: "text/markdown",
+        content: { encoding: "text", text: "evidence" },
+        byte_count: 8,
+      }],
+    }));
+    expect(screen.queryByRole("button", { name: "Remove diagram.png" })).toBeNull();
+  });
+
   it("requests interruption once and waits for the Runtime terminal", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);
@@ -1620,3 +1680,45 @@ describe("Sylvander Work", () => {
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
   });
 });
+
+function runtimeSnapshot(providerId: "alpha" | "beta", vision: boolean) {
+  return {
+    agent_id: "agent-1",
+    model: { provider_id: providerId, model_id: "shared" },
+    reasoning_effort: "off" as const,
+    models: [{
+      id: "shared",
+      provider: "alpha",
+      capabilities: 0,
+      capability_names: [],
+      reasoning_efforts: ["off" as const],
+      lifecycle: { status: "active" as const },
+    }, {
+      id: "shared",
+      provider: "beta",
+      capabilities: 0,
+      capability_names: vision ? ["vision"] : [],
+      reasoning_efforts: ["off" as const],
+      lifecycle: { status: "active" as const },
+    }],
+    permissions: {
+      file_access: "workspace_write" as const,
+      network_access: "denied" as const,
+      approval_policy: "ask" as const,
+    },
+    capabilities: 0,
+    approval_enabled: true,
+    max_request_bytes: 1_000_000,
+    platform: {},
+  };
+}
+
+function browserFile(bytes: Uint8Array, name: string, type: string) {
+  const selected = new File([Uint8Array.from(bytes).buffer], name, { type });
+  if (typeof selected.arrayBuffer !== "function") {
+    Object.defineProperty(selected, "arrayBuffer", {
+      value: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    });
+  }
+  return selected;
+}
