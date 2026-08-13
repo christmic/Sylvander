@@ -520,6 +520,37 @@ pub trait SessionStore: Send + Sync {
         failure_kind: Option<TurnFailureKind>,
     ) -> Result<(), SessionStoreError>;
 
+    /// Persist immutable provider-request facts before network work starts.
+    async fn begin_model_iteration(
+        &self,
+        start: ModelIterationStart,
+    ) -> Result<(), SessionStoreError>;
+
+    /// Atomically append the response and cross its durable boundary.
+    async fn persist_model_response(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        response: ModelResponsePersistence,
+    ) -> Result<ModelResponseCommit, SessionStoreError>;
+
+    /// Advance from a persisted response after all referenced tools resolve.
+    async fn advance_model_iteration(
+        &self,
+        advance: ModelIterationAdvance,
+    ) -> Result<u64, SessionStoreError>;
+
+    /// Read model-iteration facts in execution order for one turn.
+    async fn model_iterations(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<ModelIterationSnapshot>, SessionStoreError>;
+
+    /// Scan the latest unfinished iteration of every non-terminal turn.
+    async fn interrupted_model_iterations(
+        &self,
+    ) -> Result<Vec<ModelIterationSnapshot>, SessionStoreError>;
+
     /// Persist tool identity before approval or execution can produce a
     /// terminal. The addressed turn must currently be running.
     async fn begin_tool_call(&self, start: ToolCallStart) -> Result<(), SessionStoreError>;

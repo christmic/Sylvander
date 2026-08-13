@@ -34,8 +34,10 @@ use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
 
 use super::{
-    MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch,
-    SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession, ToolCallAdvance,
+    MessageRole, ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance,
+    ModelIterationSnapshot, ModelIterationStart, ModelResponseCommit, ModelResponsePersistence,
+    ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch, SessionStore,
+    SessionStoreError, SessionUsage, StoredMessage, StoredSession, ToolCallAdvance,
     ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState,
     ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason,
     ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot,
@@ -1103,6 +1105,239 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
+    async fn begin_model_iteration(
+        &self,
+        start: ModelIterationStart,
+    ) -> Result<(), SessionStoreError> {
+        if start.turn_id.trim().is_empty()
+            || start.iteration == 0
+            || start.model_id.trim().is_empty()
+            || !start.capability_revision.starts_with("sha256:")
+            || !start.request_digest.starts_with("sha256:")
+        {
+            return Err(SessionStoreError::Invalid(
+                "model iteration identity or frozen request facts are invalid".into(),
+            ));
+        }
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let turn_state: Option<String> = transaction
+                .query_row(
+                    "SELECT state FROM session_turns WHERE session_id=?1 AND turn_id=?2",
+                    params![start.session_id.0, start.turn_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            if turn_state.as_deref() != Some("running") {
+                return Err(SessionStoreError::Invalid(
+                    "model iteration requires a running durable turn".into(),
+                ));
+            }
+            let previous: Option<(i64, String)> = transaction
+                .query_row(
+                    "SELECT iteration, position FROM session_turn_iterations \
+                     WHERE session_id=?1 AND turn_id=?2 ORDER BY iteration DESC LIMIT 1",
+                    params![start.session_id.0, start.turn_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            let expected_iteration = previous.as_ref().map_or(1, |(value, _)| value + 1);
+            if i64::from(start.iteration) != expected_iteration
+                || previous
+                    .as_ref()
+                    .is_some_and(|(_, position)| position != "tools_resolved")
+            {
+                return Err(SessionStoreError::Invalid(
+                    "model iterations must be sequential and the previous iteration resolved"
+                        .into(),
+                ));
+            }
+            let now = crate::session::now_secs();
+            transaction
+                .execute(
+                    "INSERT INTO session_turn_iterations \
+                     (session_id, turn_id, iteration, invocation_id, model_id, \
+                      capability_revision, request_digest, position, ledger_revision, \
+                      started_at, updated_at) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,'model_started',0,?8,?8)",
+                    params![
+                        start.session_id.0,
+                        start.turn_id,
+                        start.iteration,
+                        start.invocation_id.as_str(),
+                        start.model_id,
+                        start.capability_revision,
+                        start.request_digest,
+                        now,
+                    ],
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::SqliteFailure(ref inner, _)
+                        if inner.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        SessionStoreError::Invalid("conflicting model invocation identity".into())
+                    }
+                    error => sqlite_err(error),
+                })?;
+            transaction.commit().map_err(sqlite_err)
+        })
+        .await
+    }
+
+    async fn persist_model_response(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        response: ModelResponsePersistence,
+    ) -> Result<ModelResponseCommit, SessionStoreError> {
+        let content_json = serde_json::to_string(&response.assistant_content)
+            .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
+        let user_id = ctx.identity.user_id.0.clone();
+        let agent_id = ctx.identity.agent_id.0.clone();
+        let trace_id = ctx.request.trace_id.clone();
+        let priority = priority_str(ctx.request.priority);
+        let stored_priority = Some(ctx.request.priority);
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let facts: Option<(String, String, i64, String, i64)> = transaction
+                .query_row(
+                    "SELECT i.session_id, i.model_id, i.ledger_revision, i.position, \
+                            COALESCE(MAX(m.seq), -1) + 1 \
+                     FROM session_turn_iterations i \
+                     JOIN session_turns t ON t.session_id=i.session_id AND t.turn_id=i.turn_id \
+                     LEFT JOIN session_messages m ON m.session_id=i.session_id \
+                     WHERE i.invocation_id=?1 AND t.state='running' \
+                     GROUP BY i.session_id, i.model_id, i.ledger_revision, i.position",
+                    [response.invocation_id.as_str()],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            let Some((session_id, frozen_model_id, revision, position, next_seq)) = facts else {
+                return Err(SessionStoreError::Invalid(
+                    "model response has no running durable invocation".into(),
+                ));
+            };
+            if response.model_id != frozen_model_id
+                || revision
+                    != i64::try_from(response.expected_revision).map_err(|_| {
+                        SessionStoreError::Invalid(
+                            "model ledger revision exceeds SQLite range".into(),
+                        )
+                    })?
+                || position != "model_started"
+            {
+                return Err(SessionStoreError::Invalid(
+                    "stale model response persistence request".into(),
+                ));
+            }
+            let now = crate::session::now_secs();
+            transaction.execute(
+                "INSERT INTO session_messages \
+                 (session_id,seq,role,content_json,user_id,agent_id,trace_id,priority,model_id,is_summarized,created_at) \
+                 VALUES (?1,?2,'assistant',?3,?4,?5,?6,?7,?8,0,?9)",
+                params![session_id, next_seq, content_json, user_id, agent_id, trace_id,
+                    priority, response.model_id, now],
+            ).map_err(sqlite_err)?;
+            let message_id = transaction.last_insert_rowid();
+            let changed = transaction.execute(
+                "UPDATE session_turn_iterations SET position='response_persisted', \
+                 ledger_revision=ledger_revision+1, response_message_id=?2, \
+                 response_terminal=?3, updated_at=?4 \
+                 WHERE invocation_id=?1 AND position='model_started' AND ledger_revision=?5",
+                params![response.invocation_id.as_str(), message_id, response.terminal, now, revision],
+            ).map_err(sqlite_err)?;
+            if changed != 1 {
+                return Err(SessionStoreError::Invalid("model response CAS conflict".into()));
+            }
+            transaction.commit().map_err(sqlite_err)?;
+            Ok(ModelResponseCommit {
+                message: StoredMessage {
+                    id: message_id,
+                    session_id: SessionId::new(session_id),
+                    user_id: user_id.into(),
+                    agent_id: AgentId::new(agent_id),
+                    trace_id,
+                    priority: stored_priority,
+                    seq: next_seq.try_into().map_err(|_| SessionStoreError::Store(
+                        "message sequence exceeds u32 range".into(),
+                    ))?,
+                    role: MessageRole::Assistant,
+                    content: response.assistant_content,
+                    model_id: Some(response.model_id),
+                    tool_name: None,
+                    parent_msg_id: None,
+                    is_summarized: false,
+                    created_at: now,
+                },
+                ledger_revision: response.expected_revision + 1,
+            })
+        })
+        .await
+    }
+
+    async fn advance_model_iteration(
+        &self,
+        advance: ModelIterationAdvance,
+    ) -> Result<u64, SessionStoreError> {
+        if !advance
+            .expected_position
+            .can_advance_to(advance.next_position)
+        {
+            return Err(SessionStoreError::Invalid(
+                "model execution positions must advance one boundary".into(),
+            ));
+        }
+        let expected = i64::try_from(advance.expected_revision).map_err(|_| {
+            SessionStoreError::Invalid("model ledger revision exceeds SQLite range".into())
+        })?;
+        let next = advance
+            .expected_revision
+            .checked_add(1)
+            .ok_or_else(|| SessionStoreError::Invalid("model ledger revision overflow".into()))?;
+        self.run(move |connection| {
+            let changed = connection.execute(
+                "UPDATE session_turn_iterations SET position=?1, ledger_revision=ledger_revision+1, \
+                 updated_at=?2 WHERE invocation_id=?3 AND position=?4 AND ledger_revision=?5 \
+                 AND NOT EXISTS (SELECT 1 FROM session_tool_calls c \
+                   WHERE c.session_id=session_turn_iterations.session_id \
+                     AND c.turn_id=session_turn_iterations.turn_id AND c.state='running')",
+                params![model_position_str(advance.next_position), crate::session::now_secs(),
+                    advance.invocation_id.as_str(), model_position_str(advance.expected_position), expected],
+            ).map_err(sqlite_err)?;
+            if changed == 1 {
+                Ok(next)
+            } else {
+                Err(SessionStoreError::Invalid(
+                    "model iteration CAS conflict or unresolved tool call".into(),
+                ))
+            }
+        }).await
+    }
+
+    async fn model_iterations(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<ModelIterationSnapshot>, SessionStoreError> {
+        query_model_iterations(self, Some((session_id.clone(), turn_id.to_owned()))).await
+    }
+
+    async fn interrupted_model_iterations(
+        &self,
+    ) -> Result<Vec<ModelIterationSnapshot>, SessionStoreError> {
+        query_model_iterations(self, None).await
+    }
+
     async fn begin_tool_call(&self, start: ToolCallStart) -> Result<(), SessionStoreError> {
         if start.turn_id.trim().is_empty()
             || start.call_id.trim().is_empty()
@@ -2055,6 +2290,78 @@ fn read_nonnegative_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Resu
     })
 }
 
+async fn query_model_iterations(
+    store: &SqliteSessionStore,
+    turn: Option<(SessionId, String)>,
+) -> Result<Vec<ModelIterationSnapshot>, SessionStoreError> {
+    store
+        .run(move |connection| {
+            let selected = "SELECT i.session_id,i.turn_id,i.iteration,i.invocation_id,i.model_id,\
+                i.capability_revision,i.request_digest,i.position,i.ledger_revision,\
+                CASE WHEN m.session_id=i.session_id AND m.role='assistant' THEN m.id END,\
+                i.response_terminal,i.started_at,i.updated_at \
+                FROM session_turn_iterations i \
+                LEFT JOIN session_messages m ON m.id=i.response_message_id";
+            let mut snapshots = Vec::new();
+            if let Some((session_id, turn_id)) = turn {
+                let sql = format!(
+                    "{selected} WHERE i.session_id=?1 AND i.turn_id=?2 ORDER BY i.iteration"
+                );
+                let mut statement = connection.prepare(&sql).map_err(sqlite_err)?;
+                let rows = statement
+                    .query_map(params![session_id.0, turn_id], decode_model_iteration_row)
+                    .map_err(sqlite_err)?;
+                for row in rows {
+                    snapshots.push(row.map_err(sqlite_err)?);
+                }
+            } else {
+                let sql = format!(
+                    "{selected} JOIN session_turns t ON t.session_id=i.session_id \
+                     AND t.turn_id=i.turn_id WHERE t.state='running' AND NOT EXISTS (\
+                       SELECT 1 FROM session_turn_iterations later \
+                       WHERE later.session_id=i.session_id AND later.turn_id=i.turn_id \
+                         AND later.iteration>i.iteration) ORDER BY i.updated_at,i.invocation_id"
+                );
+                let mut statement = connection.prepare(&sql).map_err(sqlite_err)?;
+                let rows = statement
+                    .query_map([], decode_model_iteration_row)
+                    .map_err(sqlite_err)?;
+                for row in rows {
+                    snapshots.push(row.map_err(sqlite_err)?);
+                }
+            }
+            Ok(snapshots)
+        })
+        .await
+}
+
+fn decode_model_iteration_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelIterationSnapshot> {
+    let iteration: i64 = row.get(2)?;
+    let invocation_id = ModelInvocationId::parse(row.get(3)?).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(3, Type::Text, Box::new(error))
+    })?;
+    let ledger_revision: i64 = row.get(8)?;
+    Ok(ModelIterationSnapshot {
+        session_id: SessionId::new(row.get::<_, String>(0)?),
+        turn_id: row.get(1)?,
+        iteration: iteration.try_into().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(2, Type::Integer, Box::new(error))
+        })?,
+        invocation_id,
+        model_id: row.get(4)?,
+        capability_revision: row.get(5)?,
+        request_digest: row.get(6)?,
+        position: decode_model_position(&row.get::<_, String>(7)?)?,
+        ledger_revision: ledger_revision.try_into().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(8, Type::Integer, Box::new(error))
+        })?,
+        response_message_id: row.get(9)?,
+        response_terminal: row.get(10)?,
+        started_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Row → struct helpers
 // ---------------------------------------------------------------------------
@@ -2264,6 +2571,23 @@ fn decode_turn_failure_kind(value: &str) -> rusqlite::Result<TurnFailureKind> {
         "agent_loop" => Ok(TurnFailureKind::AgentLoop),
         "configuration" => Ok(TurnFailureKind::Configuration),
         "persistence" => Ok(TurnFailureKind::Persistence),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn model_position_str(position: ModelExecutionPosition) -> &'static str {
+    match position {
+        ModelExecutionPosition::ModelStarted => "model_started",
+        ModelExecutionPosition::ResponsePersisted => "response_persisted",
+        ModelExecutionPosition::ToolsResolved => "tools_resolved",
+    }
+}
+
+fn decode_model_position(value: &str) -> rusqlite::Result<ModelExecutionPosition> {
+    match value {
+        "model_started" => Ok(ModelExecutionPosition::ModelStarted),
+        "response_persisted" => Ok(ModelExecutionPosition::ResponsePersisted),
+        "tools_resolved" => Ok(ModelExecutionPosition::ToolsResolved),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
