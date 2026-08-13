@@ -12,12 +12,14 @@ use thiserror::Error;
 
 use sylvander_llm_core::{CacheHint, InputSchema, ToolDefinition as LlmToolDefinition};
 
+use crate::execution::risk::{CommandRiskAssessment, CommandRiskLevel};
 use crate::execution::tool_context::ToolContext;
 use crate::execution::workspace::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 use crate::tool::contract::{
-    AgentHookPhase, PreparedToolCall, RegisteredTool, ToolDefinition, ToolError, ToolExecutor,
-    ToolExposure, ToolOutput, ToolPreparation, ToolPrepareError, ToolProgressSink,
-    ToolSourceFeature, ToolSourceKind, ToolSourceStatus, ToolSpec,
+    AgentHookPhase, PreparedToolCall, RegisteredTool, ToolDefinition, ToolError,
+    ToolExecutionPolicy, ToolExecutor, ToolExposure, ToolOutput, ToolPreparation, ToolPrepareError,
+    ToolProgressSink, ToolSourceFeature, ToolSourceKind, ToolSourceStatus, ToolSpec,
+    validate_execution_environment,
 };
 #[cfg(test)]
 use crate::tool::contract::{SandboxRequirement, ToolEnvironmentError, ToolExecutionMode};
@@ -409,13 +411,14 @@ impl ToolRegistry {
             .ok_or_else(|| ToolPrepareError::Unavailable(name.to_owned()))?;
         let spec = Arc::new(implementation.spec());
         let preparation = implementation.prepare(input)?;
-        let (input, execution_mode, execution_policy) = preparation.into_parts();
+        let (input, execution_mode, execution_policy, command_risk) = preparation.into_parts();
         Ok(PreparedToolCall::new(
             implementation,
             spec,
             input,
             execution_mode,
             execution_policy,
+            command_risk,
         ))
     }
 
@@ -498,6 +501,26 @@ async fn run_configured_hooks(
 ) -> Result<(), HookBlocked> {
     for hook in hooks.iter().filter(|hook| hook.phase == phase) {
         let phase_name = hook_phase_name(phase);
+        let risk = CommandRiskAssessment::evaluate(&hook.command);
+        if risk.level != CommandRiskLevel::Routine {
+            tracing::warn!(hook = %hook.name, phase = phase_name, risk = ?risk.level,
+                "configured hook has non-routine command risk");
+        }
+        if let Err(error) = validate_execution_environment(
+            &format!("hook:{}", hook.name),
+            &ToolExecutionPolicy::process(),
+            ctx,
+        ) {
+            tracing::warn!(hook = %hook.name, phase = phase_name, %error,
+                "hook execution environment rejected");
+            if hook.blocking {
+                return Err(HookBlocked {
+                    hook_name: hook.name.clone(),
+                    phase: phase_name,
+                });
+            }
+            continue;
+        }
         progress.emit(format!("hook {} · {phase_name} · running\n", hook.name));
         let stdout_progress = progress.clone();
         let stderr_progress = progress.clone();

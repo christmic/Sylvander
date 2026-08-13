@@ -84,7 +84,15 @@ impl ToolDefinition for CommandTool {
                 "`command` must not be blank".into(),
             ));
         }
-        Ok(preparation)
+        let command = input
+            .get("command")
+            .and_then(JsonValue::as_str)
+            .expect("validated non-blank command");
+        Ok(
+            preparation.with_command_risk(crate::execution::risk::CommandRiskAssessment::evaluate(
+                command,
+            )),
+        )
     }
 }
 

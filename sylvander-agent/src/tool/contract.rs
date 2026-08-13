@@ -245,6 +245,7 @@ pub struct ToolPreparation {
     input: JsonValue,
     execution_mode: ToolExecutionMode,
     execution_policy: ToolExecutionPolicy,
+    command_risk: crate::execution::risk::CommandRiskAssessment,
 }
 
 impl ToolPreparation {
@@ -258,6 +259,7 @@ impl ToolPreparation {
             input,
             execution_mode,
             execution_policy,
+            command_risk: crate::execution::risk::CommandRiskAssessment::routine(),
         }
     }
 
@@ -272,8 +274,30 @@ impl ToolPreparation {
         self
     }
 
-    pub(crate) fn into_parts(self) -> (JsonValue, ToolExecutionMode, ToolExecutionPolicy) {
-        (self.input, self.execution_mode, self.execution_policy)
+    /// Attach backend-independent command-risk facts before approval.
+    #[must_use]
+    pub fn with_command_risk(
+        mut self,
+        command_risk: crate::execution::risk::CommandRiskAssessment,
+    ) -> Self {
+        self.command_risk = command_risk;
+        self
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        JsonValue,
+        ToolExecutionMode,
+        ToolExecutionPolicy,
+        crate::execution::risk::CommandRiskAssessment,
+    ) {
+        (
+            self.input,
+            self.execution_mode,
+            self.execution_policy,
+            self.command_risk,
+        )
     }
 }
 
@@ -673,6 +697,7 @@ pub struct PreparedToolCall {
     input: JsonValue,
     execution_mode: ToolExecutionMode,
     execution_policy: ToolExecutionPolicy,
+    command_risk: crate::execution::risk::CommandRiskAssessment,
 }
 
 impl PreparedToolCall {
@@ -682,6 +707,7 @@ impl PreparedToolCall {
         input: JsonValue,
         execution_mode: ToolExecutionMode,
         execution_policy: ToolExecutionPolicy,
+        command_risk: crate::execution::risk::CommandRiskAssessment,
     ) -> Self {
         Self {
             implementation,
@@ -689,6 +715,7 @@ impl PreparedToolCall {
             input,
             execution_mode,
             execution_policy,
+            command_risk,
         }
     }
 
@@ -712,25 +739,14 @@ impl PreparedToolCall {
         &self.execution_policy
     }
 
+    #[must_use]
+    pub const fn command_risk(&self) -> &crate::execution::risk::CommandRiskAssessment {
+        &self.command_risk
+    }
+
     /// Verify the selected physical executor can enforce this frozen policy.
     pub fn validate_environment(&self, ctx: &ToolContext) -> Result<(), ToolEnvironmentError> {
-        if !self.execution_policy.launches_processes {
-            return Ok(());
-        }
-        let isolation = ctx.executor.process_isolation();
-        if self.execution_policy.sandbox == SandboxRequirement::Required
-            && !isolation.enforces_sandbox()
-        {
-            return Err(ToolEnvironmentError::SandboxUnavailable(
-                self.spec.name.clone(),
-            ));
-        }
-        if self.execution_policy.network == ToolNetworkPolicy::FullAfterApproval {
-            return Err(ToolEnvironmentError::NetworkPolicyUnavailable(
-                self.spec.name.clone(),
-            ));
-        }
-        Ok(())
+        validate_execution_environment(&self.spec.name, &self.execution_policy, ctx)
     }
 
     pub(crate) async fn execute_streaming(
@@ -742,6 +758,28 @@ impl PreparedToolCall {
             .handle_streaming(ctx, self, progress)
             .await
     }
+}
+
+pub(crate) fn validate_execution_environment(
+    operation: &str,
+    policy: &ToolExecutionPolicy,
+    ctx: &ToolContext,
+) -> Result<(), ToolEnvironmentError> {
+    if !policy.launches_processes {
+        return Ok(());
+    }
+    let isolation = ctx.executor.process_isolation();
+    if policy.sandbox == SandboxRequirement::Required && !isolation.enforces_process_sandbox() {
+        return Err(ToolEnvironmentError::SandboxUnavailable(
+            operation.to_owned(),
+        ));
+    }
+    if policy.network == ToolNetworkPolicy::FullAfterApproval {
+        return Err(ToolEnvironmentError::NetworkPolicyUnavailable(
+            operation.to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for PreparedToolCall {

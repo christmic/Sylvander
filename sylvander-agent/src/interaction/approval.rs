@@ -55,6 +55,8 @@ pub struct ToolApprovalFacts {
     pub execution_mode: ToolExecutionMode,
     /// Input-specific physical environment policy.
     pub execution_policy: ToolExecutionPolicy,
+    /// Backend-independent risk classification of prepared process input.
+    pub command_risk: crate::execution::risk::CommandRiskAssessment,
 }
 
 impl ToolApprovalFacts {
@@ -64,11 +66,13 @@ impl ToolApprovalFacts {
         invocation_class: ToolInvocationClass,
         execution_mode: ToolExecutionMode,
         execution_policy: ToolExecutionPolicy,
+        command_risk: crate::execution::risk::CommandRiskAssessment,
     ) -> Self {
         Self {
             invocation_class,
             execution_mode,
             execution_policy,
+            command_risk,
         }
     }
 
@@ -77,6 +81,7 @@ impl ToolApprovalFacts {
             call.spec().invocation_class,
             call.execution_mode(),
             call.execution_policy().clone(),
+            call.command_risk().clone(),
         )
     }
 
@@ -104,6 +109,19 @@ impl ToolApprovalFacts {
                 ToolNetworkPolicy::FullAfterApproval => "full_after_approval",
             },
             "launches_processes": self.execution_policy.launches_processes,
+            "command_risk": {
+                "level": match self.command_risk.level {
+                    crate::execution::risk::CommandRiskLevel::Routine => "routine",
+                    crate::execution::risk::CommandRiskLevel::Elevated => "elevated",
+                    crate::execution::risk::CommandRiskLevel::Destructive => "destructive",
+                },
+                "reasons": self.command_risk.reasons.iter().map(|reason| match reason {
+                    crate::execution::risk::CommandRiskReason::RecursiveDeletion => "recursive_deletion",
+                    crate::execution::risk::CommandRiskReason::GitDestructiveCleanup => "git_destructive_cleanup",
+                    crate::execution::risk::CommandRiskReason::RemoteContentExecution => "remote_content_execution",
+                    crate::execution::risk::CommandRiskReason::PrivilegeEscalation => "privilege_escalation",
+                }).collect::<Vec<_>>(),
+            },
         })
     }
 }
