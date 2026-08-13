@@ -39,6 +39,8 @@ pub use workspace::coding as coding_worktree;
 pub mod composition;
 /// Latest-version server configuration and secret-reference contracts.
 pub mod config;
+/// Governed relationships, delegation, messaging, and arbitration among Agents.
+pub mod coordination;
 /// Runtime-owned credential resolution, revision state, and content-safe audit.
 mod credential;
 /// Durable, content-safe Provider and Channel credential operation audit.
