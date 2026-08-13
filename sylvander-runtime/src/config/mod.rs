@@ -60,6 +60,8 @@ pub struct ServerSettings {
     pub boundary: BoundarySettings,
     #[serde(default)]
     pub identity: IdentitySettings,
+    #[serde(default)]
+    pub observability: ObservabilitySettings,
 }
 
 impl Default for ServerSettings {
@@ -77,8 +79,20 @@ impl Default for ServerSettings {
             evidence: EvidenceSettings::default(),
             boundary: BoundarySettings::default(),
             identity: IdentitySettings::default(),
+            observability: ObservabilitySettings::default(),
         }
     }
+}
+
+/// Governance-side diagnostic projections. These settings never alter Agent
+/// execution or the model-visible conversation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservabilitySettings {
+    /// Write this Runtime instance's typed lifecycle facts to a bounded JSONL
+    /// file under `data_dir/debug`.
+    #[serde(default)]
+    pub debug_log: bool,
 }
 
 /// Runtime trust profile. Production requires an independent memory integrity

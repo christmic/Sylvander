@@ -14,7 +14,7 @@ use crate::agent::definition::AgentSpec;
 use crate::agent::definition::{AgentId, SessionId};
 use crate::mcp::stdio::McpResultArtifactSink;
 use crate::observability::RuntimeObservabilitySnapshot;
-use crate::observability::{RuntimeEvent, RuntimeObservability};
+use crate::observability::{RuntimeEvent, RuntimeObservability, RuntimeObservationDebugLog};
 #[cfg(test)]
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_agent::tools::MemoryStore;
@@ -252,6 +252,8 @@ pub struct Runtime {
     pub(crate) storage: RuntimeStorage,
     /// Mandatory built-in lifecycle facts and counters.
     observability: RuntimeObservability,
+    /// Optional bounded governance projection for local debugging.
+    observation_debug_log: Option<RuntimeObservationDebugLog>,
     /// Immutable concrete execution environments shared by Agent revisions.
     execution_service: RuntimeExecutionService,
     /// Owned background probes for configured SSH and OCI targets.
@@ -3814,6 +3816,7 @@ impl Runtime {
             engine,
             storage: RuntimeStorage::new(session_store, memory_store),
             observability,
+            observation_debug_log: None,
             execution_service,
             execution_health: None,
             bus,
@@ -4085,6 +4088,24 @@ impl Runtime {
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
         let observability = RuntimeObservability::new();
+        let observation_debug_log = if config.server.observability.debug_log {
+            let data_dir = config
+                .server
+                .data_dir
+                .as_deref()
+                .expect("resolved runtime data directory");
+            Some(
+                RuntimeObservationDebugLog::start(data_dir, observability.subscribe())
+                    .await
+                    .map_err(|error| RuntimeError::Io {
+                        operation: "create debug observation log",
+                        path: data_dir.join("debug").display().to_string(),
+                        message: error.to_string(),
+                    })?,
+            )
+        } else {
+            None
+        };
         let evidence_path = config
             .server
             .evidence
@@ -4390,6 +4411,7 @@ impl Runtime {
             engine,
             storage: storage.with_guardian_probe(storage_guardian_probe),
             observability,
+            observation_debug_log,
             execution_service,
             execution_health,
             bus,
@@ -4762,6 +4784,14 @@ impl Runtime {
         self.engine.wait_for_agent_exit().await
     }
 
+    /// Path of this instance's bounded debug observation log, when enabled.
+    #[must_use]
+    pub fn debug_observation_log_path(&self) -> Option<&std::path::Path> {
+        self.observation_debug_log
+            .as_ref()
+            .map(RuntimeObservationDebugLog::path)
+    }
+
     // -- shutdown --
 
     /// Graceful shutdown — despawn all agents.
@@ -4800,6 +4830,9 @@ impl Runtime {
         }
         if let Some(maintenance) = &self.memory_maintenance {
             maintenance.shutdown().await;
+        }
+        if let Some(debug_log) = &self.observation_debug_log {
+            debug_log.shutdown().await;
         }
         info!("runtime shut down");
         first_error.map_or(Ok(()), Err)

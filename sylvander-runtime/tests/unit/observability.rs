@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::agent_definition::{AgentId, SessionId};
 use crate::observability::{
     RuntimeClock, RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind,
-    RuntimeObservability, RuntimeObservabilitySnapshot, RuntimePersistenceOperation,
-    RuntimeToolFailureKind,
+    RuntimeObservability, RuntimeObservabilitySnapshot, RuntimeObservationDebugLog,
+    RuntimePersistenceOperation, RuntimeToolFailureKind,
 };
 use sylvander_api::MessageId;
 
@@ -68,6 +68,61 @@ fn cloned_recorders_share_typed_lifecycle_counters() {
             ..RuntimeObservabilitySnapshot::default()
         }
     );
+}
+
+#[tokio::test]
+async fn governance_bus_is_ordered_and_shared_across_clones() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let mut receiver = recorder.subscribe();
+    let publisher = recorder.clone();
+    let session_id = SessionId::new("session-1");
+    publisher.record(RuntimeEvent::TurnStarted {
+        request_id: "request-1".into(),
+        trace_id: "trace-1".into(),
+        turn_id: "turn-1".into(),
+        session_id: session_id.clone(),
+        agent_id: AgentId::new("agent-1"),
+    });
+    publisher.record(RuntimeEvent::TurnCompleted {
+        turn_id: "turn-1".into(),
+        session_id,
+    });
+
+    assert!(matches!(
+        receiver.recv().await.unwrap(),
+        RuntimeEvent::TurnStarted { .. }
+    ));
+    assert!(matches!(
+        receiver.recv().await.unwrap(),
+        RuntimeEvent::TurnCompleted { .. }
+    ));
+    assert_eq!(recorder.snapshot().turns_completed, 1);
+}
+
+#[tokio::test]
+async fn debug_projection_writes_bounded_typed_jsonl_without_agent_content() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let debug_log = RuntimeObservationDebugLog::start(directory.path(), recorder.subscribe())
+        .await
+        .unwrap();
+    let path = debug_log.path().to_path_buf();
+    recorder.record(RuntimeEvent::TurnStarted {
+        request_id: "request-1".into(),
+        trace_id: "trace-1".into(),
+        turn_id: "turn-1".into(),
+        session_id: SessionId::new("session-1"),
+        agent_id: AgentId::new("agent-1"),
+    });
+    debug_log.shutdown().await;
+
+    let content = tokio::fs::read_to_string(path).await.unwrap();
+    let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+    assert_eq!(record["event"], "turn_started");
+    assert_eq!(record["turn_id"], "turn-1");
+    assert!(record.get("recorded_at_unix_ms").is_some());
+    assert!(!content.contains("prompt"));
+    assert!(!content.contains("output"));
 }
 
 #[test]

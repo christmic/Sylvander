@@ -5,6 +5,10 @@
 //! trusted correlation identifiers and lifecycle state only; prompts, tool
 //! inputs, model output, credentials, and user content have no field here.
 
+mod debug_log;
+
+pub(crate) use debug_log::RuntimeObservationDebugLog;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -12,6 +16,7 @@ use std::time::Instant;
 
 use sylvander_agent::turn::machine::TurnTransition;
 use sylvander_api::MessageId;
+use tokio::sync::broadcast;
 
 use crate::agent_definition::{AgentId, SessionId};
 
@@ -20,6 +25,9 @@ use crate::agent_definition::{AgentId, SessionId};
 pub const RUNTIME_DURATION_BUCKET_UPPER_BOUNDS_MICROS: [u64; 7] = [
     10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000, 30_000_000,
 ];
+
+/// Per-consumer capacity of the non-blocking governance observation bus.
+pub(crate) const RUNTIME_OBSERVATION_BUFFER_CAPACITY: usize = 1_024;
 
 /// Bounded fixed-bucket duration distribution for one Runtime lifecycle stage.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -280,6 +288,7 @@ struct RuntimeTimingState {
 
 struct RuntimeObservabilityInner {
     clock: Arc<dyn RuntimeClock>,
+    observations: broadcast::Sender<RuntimeEvent>,
     timing: Mutex<RuntimeTimingState>,
     event_count: AtomicU64,
     chat_admitted: AtomicU64,
@@ -310,9 +319,11 @@ impl RuntimeObservability {
     }
 
     fn with_clock(clock: Arc<dyn RuntimeClock>) -> Self {
+        let (observations, _) = broadcast::channel(RUNTIME_OBSERVATION_BUFFER_CAPACITY);
         Self {
             inner: Arc::new(RuntimeObservabilityInner {
                 clock,
+                observations,
                 timing: Mutex::new(RuntimeTimingState::default()),
                 event_count: AtomicU64::new(0),
                 chat_admitted: AtomicU64::new(0),
@@ -341,6 +352,7 @@ impl RuntimeObservability {
     /// Consume one typed fact synchronously before the caller advances its
     /// externally visible lifecycle state.
     pub(crate) fn record(&self, event: RuntimeEvent) {
+        let observation = event.clone();
         self.record_timing(&event);
         self.inner.event_count.fetch_add(1, Ordering::Relaxed);
         match event {
@@ -540,6 +552,13 @@ impl RuntimeObservability {
                 );
             }
         }
+        // Governance consumers are deliberately lossy and never apply
+        // backpressure to the execution path. No subscribers is not an error.
+        let _ = self.inner.observations.send(observation);
+    }
+
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
+        self.inner.observations.subscribe()
     }
 
     fn record_timing(&self, event: &RuntimeEvent) {
