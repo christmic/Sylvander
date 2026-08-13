@@ -2,6 +2,8 @@
 
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::ipc::Channel;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -30,12 +32,14 @@ pub(crate) enum DesktopEvent {
 }
 
 struct ActiveConnection {
+    generation: u64,
     outbound: mpsc::Sender<UiClientMessage>,
     shutdown: oneshot::Sender<()>,
 }
 
 pub(crate) struct DesktopGateway {
-    active: Mutex<Option<ActiveConnection>>,
+    active: Arc<Mutex<Option<ActiveConnection>>>,
+    next_generation: AtomicU64,
     config: RuntimeConnectionConfig,
 }
 
@@ -47,7 +51,8 @@ struct RuntimeConnectionConfig {
 impl Default for DesktopGateway {
     fn default() -> Self {
         Self {
-            active: Mutex::new(None),
+            active: Arc::new(Mutex::new(None)),
+            next_generation: AtomicU64::new(1),
             config: RuntimeConnectionConfig {
                 endpoint: std::env::var("SYLVANDER_DESKTOP_ENDPOINT").ok(),
                 bearer: std::env::var("SYLVANDER_DESKTOP_BEARER").ok(),
@@ -103,7 +108,13 @@ pub(crate) async fn connect_runtime(
 
     let (outbound, mut outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
     let (shutdown, mut shutdown_rx) = oneshot::channel();
-    *gateway.active.lock().await = Some(ActiveConnection { outbound, shutdown });
+    let generation = gateway.next_generation.fetch_add(1, Ordering::Relaxed);
+    *gateway.active.lock().await = Some(ActiveConnection {
+        generation,
+        outbound,
+        shutdown,
+    });
+    let active = gateway.active.clone();
 
     tauri::async_runtime::spawn(async move {
         let reason = loop {
@@ -131,7 +142,9 @@ pub(crate) async fn connect_runtime(
                 }
             }
         };
-        let _ = events.send(DesktopEvent::Disconnected { reason });
+        if finish_current_connection(&active, generation).await {
+            let _ = events.send(DesktopEvent::Disconnected { reason });
+        }
     });
     Ok(())
 }
@@ -167,6 +180,22 @@ pub(crate) async fn disconnect_runtime(
 async fn disconnect_active(gateway: &DesktopGateway) {
     if let Some(active) = gateway.active.lock().await.take() {
         let _ = active.shutdown.send(());
+    }
+}
+
+async fn finish_current_connection(
+    active: &Mutex<Option<ActiveConnection>>,
+    generation: u64,
+) -> bool {
+    let mut current = active.lock().await;
+    if current
+        .as_ref()
+        .is_some_and(|connection| connection.generation == generation)
+    {
+        current.take();
+        true
+    } else {
+        false
     }
 }
 
@@ -261,7 +290,11 @@ fn desktop_capabilities() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::runtime_request;
+    use std::sync::Arc;
+
+    use tokio::sync::{Mutex, mpsc, oneshot};
+
+    use super::{ActiveConnection, finish_current_connection, runtime_request};
 
     #[test]
     fn endpoint_requires_websocket_scheme() {
@@ -275,5 +308,21 @@ mod tests {
         let request =
             runtime_request("wss://runtime.example/ws", Some("lease-secret")).expect("valid lease");
         assert_eq!(request.uri().to_string(), "wss://runtime.example/ws");
+    }
+
+    #[tokio::test]
+    async fn only_the_current_generation_can_publish_disconnect() {
+        let (outbound, _) = mpsc::channel(1);
+        let (shutdown, _) = oneshot::channel();
+        let active = Arc::new(Mutex::new(Some(ActiveConnection {
+            generation: 2,
+            outbound,
+            shutdown,
+        })));
+
+        assert!(!finish_current_connection(&active, 1).await);
+        assert!(active.lock().await.is_some());
+        assert!(finish_current_connection(&active, 2).await);
+        assert!(active.lock().await.is_none());
     }
 }

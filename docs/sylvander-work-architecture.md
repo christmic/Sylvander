@@ -192,6 +192,11 @@ WebView never receives the bearer. An initial failure remains visibly offline,
 while loss of an established link is visibly reconnecting. Component teardown
 cancels pending retries and closes the native connection.
 
+Each native connection owns a monotonic Rust-side generation. A socket task may
+clear gateway state and publish `Disconnected` only while its generation is
+still current. Replaced or explicitly closed tasks therefore cannot race a new
+handshake and schedule a redundant WebView reconnect.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled
