@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use super::*;
 use sylvander_channel::credential::{
@@ -44,6 +45,69 @@ struct SessionConfigHost {
 
 struct CredentialRegistryHost {
     received: Mutex<Option<sylvander_api::RegistryAdminRequest>>,
+}
+
+struct ControlHost {
+    received: Mutex<Vec<ClientMsg>>,
+}
+
+#[async_trait]
+impl ChannelHost for ControlHost {
+    async fn authorize_message(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &ClientMsg,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        Ok(())
+    }
+
+    async fn discover_agents(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::AgentDescriptor>, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn create_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionCreateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn session_config(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn update_session_config(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionConfigUpdateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn submit_feedback(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::RunFeedback,
+    ) -> Result<String, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn submit_control(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        message: ClientMsg,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        self.received.lock().await.push(message);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -476,6 +540,76 @@ async fn list_sessions_dispatches_to_runtime_channel_host_and_returns_typed_rows
         Some(ServerMsg::SessionsList { sessions })
             if sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>()
                 == ["session-a", "session-b"]
+    ));
+}
+
+#[tokio::test]
+async fn runtime_controls_dispatch_to_the_runtime_channel_host() {
+    let host = Arc::new(ControlHost {
+        received: Mutex::new(Vec::new()),
+    });
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(host.clone()),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let requests = [
+        ClientMsg::Interrupt {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::ResolvePlan {
+            session_id: "session-1".into(),
+            plan_id: "plan-1".into(),
+            decision: sylvander_api::PlanDecision::Approved,
+        },
+        ClientMsg::CancelTask {
+            session_id: "session-1".into(),
+            task_id: "task-1".into(),
+        },
+    ];
+
+    for request in requests {
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            handle_client_msg(
+                request,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test",
+            ),
+        )
+        .await
+        .expect("runtime control dispatch must not stall");
+    }
+
+    assert!(rx.try_recv().is_err(), "successful controls emit no error");
+    let received = host.received.lock().await;
+    assert!(matches!(
+        &received[0],
+        ClientMsg::Interrupt { session_id } if session_id == "session-1"
+    ));
+    assert!(matches!(
+        &received[1],
+        ClientMsg::ResolvePlan {
+            session_id,
+            plan_id,
+            decision: sylvander_api::PlanDecision::Approved,
+        } if session_id == "session-1" && plan_id == "plan-1"
+    ));
+    assert!(matches!(
+        &received[2],
+        ClientMsg::CancelTask {
+            session_id,
+            task_id,
+        } if session_id == "session-1" && task_id == "task-1"
     ));
 }
 
