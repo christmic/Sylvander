@@ -11,7 +11,9 @@ pub(super) fn result_text(
     for item in content {
         match item {
             ToolResultContent::Text { text } => result.push_str(text),
-            ToolResultContent::Image { .. } | ToolResultContent::Document { .. } => {
+            ToolResultContent::Image { .. }
+            | ToolResultContent::Audio { .. }
+            | ToolResultContent::Document { .. } => {
                 return Err(invalid("OpenAI function outputs must be textual"));
             }
         }

@@ -52,11 +52,19 @@ pub enum ChatUserContentPart {
     Text { text: String },
     #[serde(rename = "image_url")]
     ImageUrl { image_url: ChatImageUrl },
+    #[serde(rename = "input_audio")]
+    InputAudio { input_audio: ChatInputAudio },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChatImageUrl {
     pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChatInputAudio {
+    pub data: String,
+    pub format: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

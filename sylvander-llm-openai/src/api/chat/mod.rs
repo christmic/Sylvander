@@ -6,8 +6,8 @@ mod types;
 pub use stream::{ChatCompletionStream, ChatStreamEvent};
 pub use types::{
     ChatCompletion, ChatCompletionChunk, ChatCompletionUsage, ChatFunction, ChatFunctionDefinition,
-    ChatFunctionTool, ChatImageUrl, ChatJsonSchema, ChatMessageParam, ChatResponseFormat,
-    ChatStreamOptions, ChatToolCall, ChatToolCallParam, ChatUserContentPart,
+    ChatFunctionTool, ChatImageUrl, ChatInputAudio, ChatJsonSchema, ChatMessageParam,
+    ChatResponseFormat, ChatStreamOptions, ChatToolCall, ChatToolCallParam, ChatUserContentPart,
     CreateChatCompletionRequest,
 };
 

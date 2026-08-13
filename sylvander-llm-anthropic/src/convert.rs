@@ -225,6 +225,9 @@ fn tool_result(
                 "title": document.title,
             })))
         }
+        core::ToolResultContent::Audio { .. } => Err(unsupported(
+            "Anthropic Messages audio tool results are not supported",
+        )),
     }
 }
 

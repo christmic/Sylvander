@@ -156,6 +156,9 @@ fn append_user(
                 };
                 content.push(part);
             }
+            ContentBlock::Audio { .. } => {
+                return Err(invalid("Responses inline audio input is not supported"));
+            }
             ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => {
                 return Err(invalid("Responses user message contains assistant content"));
             }
@@ -210,6 +213,7 @@ fn append_assistant(
             }
             ContentBlock::ToolResult { .. }
             | ContentBlock::Image { .. }
+            | ContentBlock::Audio { .. }
             | ContentBlock::Document { .. } => {
                 return Err(invalid("Responses assistant message contains user content"));
             }

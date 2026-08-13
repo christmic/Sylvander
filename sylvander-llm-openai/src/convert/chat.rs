@@ -8,8 +8,8 @@ use sylvander_llm_core::{
 use crate::ProviderFeatures;
 use crate::api::chat::{
     ChatCompletion, ChatCompletionUsage, ChatFunction, ChatFunctionDefinition, ChatFunctionTool,
-    ChatImageUrl, ChatJsonSchema, ChatMessageParam, ChatResponseFormat, ChatStreamOptions,
-    ChatToolCallParam, ChatUserContentPart, CreateChatCompletionRequest,
+    ChatImageUrl, ChatInputAudio, ChatJsonSchema, ChatMessageParam, ChatResponseFormat,
+    ChatStreamOptions, ChatToolCallParam, ChatUserContentPart, CreateChatCompletionRequest,
 };
 use crate::convert::common::{effort, media_url, result_text};
 use crate::convert::invalid;
@@ -127,6 +127,14 @@ fn append_user(
                     },
                 });
             }
+            ContentBlock::Audio { audio } => {
+                content.push(ChatUserContentPart::InputAudio {
+                    input_audio: ChatInputAudio {
+                        data: audio.data.clone(),
+                        format: audio.format.as_str().into(),
+                    },
+                });
+            }
             ContentBlock::Document { .. } => {
                 return Err(invalid("Chat Completions document input is not supported"));
             }
@@ -175,6 +183,7 @@ fn append_assistant(
             }),
             ContentBlock::ToolResult { .. }
             | ContentBlock::Image { .. }
+            | ContentBlock::Audio { .. }
             | ContentBlock::Document { .. } => {
                 return Err(invalid("Chat assistant message contains user content"));
             }

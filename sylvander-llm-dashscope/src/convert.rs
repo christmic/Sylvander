@@ -104,6 +104,7 @@ pub(crate) fn multimodal_request(
                     content.push(MultimodalContent::Image { image });
                 }
                 ContentBlock::Document { .. }
+                | ContentBlock::Audio { .. }
                 | ContentBlock::Reasoning { .. }
                 | ContentBlock::ToolCall { .. }
                 | ContentBlock::ToolResult { .. } => {
@@ -220,6 +221,11 @@ fn append_user(
                     "documents are not native Generation message content",
                 ));
             }
+            ContentBlock::Audio { .. } => {
+                return Err(unsupported(
+                    "audio is not native Generation message content",
+                ));
+            }
             ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => {
                 return Err(invalid("DashScope user message contains assistant content"));
             }
@@ -265,6 +271,7 @@ fn append_assistant(
             }),
             ContentBlock::ToolResult { .. }
             | ContentBlock::Image { .. }
+            | ContentBlock::Audio { .. }
             | ContentBlock::Document { .. } => {
                 return Err(invalid("DashScope assistant message contains user content"));
             }
@@ -283,7 +290,9 @@ fn result_text(content: &[ToolResultContent]) -> Result<String, ProviderError> {
     for item in content {
         match item {
             ToolResultContent::Text { text } => output.push_str(text),
-            ToolResultContent::Image { .. } | ToolResultContent::Document { .. } => {
+            ToolResultContent::Image { .. }
+            | ToolResultContent::Audio { .. }
+            | ToolResultContent::Document { .. } => {
                 return Err(unsupported(
                     "DashScope Generation tool results must be textual",
                 ));

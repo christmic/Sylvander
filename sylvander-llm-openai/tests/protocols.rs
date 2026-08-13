@@ -2,8 +2,8 @@ use futures_util::StreamExt as _;
 use reqwest::Url;
 use serde_json::json;
 use sylvander_llm_core::{
-    ChatMessage, ContentBlock, ImageContent, MediaSource, ModelProvider, ModelRef, ModelRequest,
-    ModelStreamEvent, ReasoningConfig, ReasoningEffort, StopReason,
+    AudioContent, AudioFormat, ChatMessage, ContentBlock, ImageContent, MediaSource, ModelProvider,
+    ModelRef, ModelRequest, ModelStreamEvent, ReasoningConfig, ReasoningEffort, StopReason,
 };
 use sylvander_llm_openai::{
     OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
@@ -283,4 +283,65 @@ async fn gpt_chat_keeps_text_and_image_in_one_official_user_message() {
         stream.next().await.expect("done").expect("completion"),
         ModelStreamEvent::Completed(_)
     ));
+}
+
+#[tokio::test]
+async fn audio_chat_serializes_the_official_inline_input_shape() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "model": "gpt-audio-1.5",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "transcribe"},
+                    {"type": "input_audio", "input_audio": {
+                        "data": "UklGRg==", "format": "wav"
+                    }}
+                ]
+            }]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            concat!(
+                "data: {\"id\":\"chat_audio\",\"model\":\"gpt-audio-1.5\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"heard\"},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+                "data: {\"id\":\"chat_audio\",\"model\":\"gpt-audio-1.5\",\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":1,\"total_tokens\":13,\"prompt_tokens_details\":{\"audio_tokens\":8}}}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            "text/event-stream",
+        ))
+        .mount(&server)
+        .await;
+    let mut value = request("openai", "gpt-audio-1.5");
+    value.messages = vec![ChatMessage::user_blocks(vec![
+        ContentBlock::Text {
+            text: "transcribe".into(),
+        },
+        ContentBlock::Audio {
+            audio: AudioContent {
+                data: "UklGRg==".into(),
+                format: AudioFormat::Wav,
+                transcript: None,
+            },
+        },
+    ])];
+    let mut stream = provider(
+        &server,
+        "openai",
+        OpenAiProtocol::ChatCompletions,
+        ProviderFeatures::default(),
+    )
+    .complete_stream(value)
+    .await
+    .expect("open stream");
+    assert!(matches!(
+        stream.next().await.expect("delta").expect("event"),
+        ModelStreamEvent::TextDelta(_)
+    ));
+    let ModelStreamEvent::Completed(response) =
+        stream.next().await.expect("done").expect("completion")
+    else {
+        panic!("expected completion");
+    };
+    assert_eq!(response.usage.details.audio_input_tokens, Some(8));
 }

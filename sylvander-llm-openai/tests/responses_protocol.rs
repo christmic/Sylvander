@@ -6,9 +6,9 @@ use futures_util::StreamExt as _;
 use reqwest::Url;
 use serde_json::json;
 use sylvander_llm_core::{
-    ChatMessage, ContentBlock, DocumentContent, MediaSource, ModelProvider, ModelRef, ModelRequest,
-    ModelStreamEvent, OpaqueProviderState, ReasoningConfig, ReasoningEffort, StopReason,
-    ToolDefinition,
+    AudioContent, AudioFormat, ChatMessage, ContentBlock, DocumentContent, MediaSource,
+    ModelProvider, ModelRef, ModelRequest, ModelStreamEvent, OpaqueProviderState,
+    ProviderErrorKind, ReasoningConfig, ReasoningEffort, StopReason, ToolDefinition,
 };
 use sylvander_llm_openai::{
     OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
@@ -225,4 +225,23 @@ async fn documents_tools_and_strict_schema_match_official_request_types() {
         stream.next().await.expect("terminal").expect("response"),
         ModelStreamEvent::Completed(_)
     ));
+}
+
+#[tokio::test]
+async fn responses_rejects_audio_before_network_dispatch() {
+    let server = MockServer::start().await;
+    let mut value = request();
+    value.messages = vec![ChatMessage::user_blocks(vec![ContentBlock::Audio {
+        audio: AudioContent {
+            data: "UklGRg==".into(),
+            format: AudioFormat::Wav,
+            transcript: None,
+        },
+    }])];
+    let error = match provider(&server).complete_stream(value).await {
+        Ok(_) => panic!("Responses audio must fail before opening a stream"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ProviderErrorKind::InvalidRequest);
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
