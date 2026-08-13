@@ -1,17 +1,25 @@
 //! Credential-gated execution through provider-neutral production adapters.
 
 use std::env;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt as _;
+use sylvander_agent::prelude::{
+    AgentEvent, AgentExecutionPorts, AgentLoop, AgentLoopError, AgentTurnRequest,
+    ConversationSnapshot, ToolRegistry,
+};
+use sylvander_agent::tool_context::defaults::system_tool_context;
+use sylvander_agent::tool_invocation::{RegistryBoundToolGateway, ToolInvocationGateway};
 use sylvander_llm_anthropic::AnthropicProvider;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::error::AnthropicError;
 use sylvander_llm_anthropic::api::request::CreateMessageRequest;
 use sylvander_llm_anthropic::api::types::MessageParam;
 use sylvander_llm_core::{
-    CacheHint, ChatMessage, ModelProvider, ModelRef, ModelRequest, ModelResponse, ModelStreamEvent,
-    ProviderError, ProviderErrorKind, ProviderErrorPhase, SystemInstruction, TokenUsage,
+    CacheHint, ChatMessage, ModelCapabilities, ModelInfo, ModelProvider, ModelRef, ModelRequest,
+    ModelResponse, ModelStreamEvent, ProviderError, ProviderErrorKind, ProviderErrorPhase,
+    SystemInstruction, TokenUsage,
 };
 use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
 use sylvander_llm_openai::{
@@ -30,6 +38,7 @@ const CACHE_PREFIX_CHARS: usize = 24_000;
 pub struct LiveLimits {
     pub request_timeout: Duration,
     pub max_output_tokens: u32,
+    pub max_retries: u32,
 }
 
 pub async fn run_live_cell(
@@ -107,7 +116,8 @@ pub async fn run_live_cell(
         BenchScenario::TruncatedStream => {
             run_expected_truncated_stream(provider.as_ref(), cell, limits.max_output_tokens).await
         }
-        _ => Err(ProviderError::new(
+        BenchScenario::TransientRetry => run_expected_transient_retry(provider, cell, limits).await,
+        BenchScenario::ProcessInterruption => Err(ProviderError::new(
             ProviderErrorKind::Unsupported,
             ProviderErrorPhase::Open,
             "scenario requires a dedicated bench harness",
@@ -178,6 +188,63 @@ async fn run_expected_truncated_stream(
         Ok(_) => Err(protocol_error(
             "truncated-stream fault unexpectedly completed",
         )),
+    }
+}
+
+async fn run_expected_transient_retry(
+    provider: Arc<dyn ModelProvider>,
+    cell: &MatrixCell,
+    limits: LiveLimits,
+) -> Result<PassMetrics, ProviderError> {
+    let tools = ToolRegistry::new();
+    let tool_context = system_tool_context();
+    let gateway = RegistryBoundToolGateway::new(tools.invocation_descriptors());
+    let request = AgentTurnRequest {
+        conversation: ConversationSnapshot::new(vec![ChatMessage::user("Reply only: recovered")]),
+        model: ModelInfo {
+            reference: ModelRef::new(&cell.coordinate.provider_id, &cell.coordinate.model_id),
+            context_window: 128_000,
+            max_output_tokens: limits.max_output_tokens,
+            capabilities: ModelCapabilities::empty(),
+        },
+        system_instructions: Vec::new(),
+        reasoning: None,
+        tools: tools.clone(),
+        execution: tool_context.execution.as_ref().clone(),
+    };
+    let ports =
+        AgentExecutionPorts::new(provider, tool_context, gateway.clone(), gateway.snapshot());
+    let kernel = AgentLoop::builder()
+        .max_iterations(1)
+        .max_retries(limits.max_retries)
+        .build();
+    let mut retries = 0_u32;
+    let outcome = sylvander_agent::loop_::run_with_events(&kernel, request, ports, |event| {
+        if matches!(event, AgentEvent::ModelRetry { .. }) {
+            retries = retries.saturating_add(1);
+        }
+    })
+    .await
+    .map_err(agent_error)?;
+    if retries != limits.max_retries || outcome.final_response.text().is_empty() {
+        return Err(protocol_error(
+            "transient fault did not consume the exact retry budget",
+        ));
+    }
+    Ok(metrics(
+        outcome.final_response.usage,
+        retries.saturating_add(1),
+    ))
+}
+
+fn agent_error(error: AgentLoopError) -> ProviderError {
+    match error {
+        AgentLoopError::Provider { source, .. } => source,
+        _ => ProviderError::new(
+            ProviderErrorKind::Other,
+            ProviderErrorPhase::Open,
+            "Agent retry harness failed",
+        ),
     }
 }
 
@@ -266,7 +333,7 @@ fn build_provider(
     binding: &ProtocolBinding,
     credential: String,
     timeout: Duration,
-) -> Result<Box<dyn ModelProvider>, &'static str> {
+) -> Result<Arc<dyn ModelProvider>, &'static str> {
     match binding.protocol.as_str() {
         "anthropic_messages" | "anthropic_compatible" => {
             let client = AnthropicClient::builder()
@@ -275,7 +342,7 @@ fn build_provider(
                 .timeout(timeout)
                 .build()
                 .map_err(|_| "invalid_provider_configuration")?;
-            Ok(Box::new(AnthropicProvider::new(
+            Ok(Arc::new(AnthropicProvider::new(
                 &binding.provider_id,
                 client,
             )))
@@ -297,7 +364,7 @@ fn build_provider(
                 timeout,
             )
             .map_err(|_| "invalid_provider_configuration")?;
-            Ok(Box::new(provider))
+            Ok(Arc::new(provider))
         }
         "dashscope_generation" => {
             let provider = DashScopeProvider::new_with_timeout(
@@ -310,7 +377,7 @@ fn build_provider(
                 timeout,
             )
             .map_err(|_| "invalid_provider_configuration")?;
-            Ok(Box::new(provider))
+            Ok(Arc::new(provider))
         }
         _ => Err("unsupported_protocol"),
     }

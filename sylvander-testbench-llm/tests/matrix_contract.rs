@@ -15,6 +15,7 @@ fn expands_protocol_provider_model_scenario_and_run_dimensions() {
         repetitions: 2,
         request_timeout_ms: 60_000,
         max_output_tokens: 16,
+        max_retries: 2,
         scenarios: scenarios(&[BenchScenario::Connectivity, BenchScenario::RemoteTokenCount]),
         bindings: vec![
             ProtocolBinding {
@@ -96,6 +97,7 @@ fn rejects_duplicate_provider_protocol_model_coordinates() {
         repetitions: 1,
         request_timeout_ms: 60_000,
         max_output_tokens: 16,
+        max_retries: 2,
         scenarios: scenarios(&[BenchScenario::Connectivity]),
         bindings: vec![binding.clone(), binding],
     };

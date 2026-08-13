@@ -59,6 +59,7 @@ async fn execute(
     let limits = LiveLimits {
         request_timeout: Duration::from_millis(matrix.request_timeout_ms),
         max_output_tokens: matrix.max_output_tokens,
+        max_retries: matrix.max_retries,
     };
     let mut accepted = true;
     for cell in cells {

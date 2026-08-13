@@ -279,3 +279,73 @@ async fn truncated_stream_passes_only_after_a_typed_stream_failure() {
     assert_eq!(result["scenario"], "truncated_stream");
     assert_eq!(result["attempts"], 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transient_retry_consumes_the_agent_owned_budget_then_succeeds() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({
+            "error": {"type": "server_error", "message": "controlled transient fault"}
+        })))
+        .up_to_n_times(2)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            concat!(
+                "data: {\"type\":\"response.completed\",\"response\":{",
+                "\"id\":\"resp_retry\",\"model\":\"model-retry\",\"status\":\"completed\",",
+                "\"output\":[{\"type\":\"message\",\"id\":\"msg_retry\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"recovered\",\"annotations\":[]}]}],",
+                "\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6,",
+                "\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0},",
+                "\"output_tokens_details\":{\"reasoning_tokens\":0}}}}\n\n"
+            ),
+            "text/event-stream",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let matrix_path = std::env::temp_dir().join(format!(
+        "sylvander-llm-retry-matrix-{}.json",
+        std::process::id()
+    ));
+    let matrix = json!({
+        "schema_version": 1,
+        "repetitions": 1,
+        "max_retries": 2,
+        "scenarios": ["transient_retry"],
+        "bindings": [{
+            "provider_id": "provider-retry",
+            "protocol": "openai_responses",
+            "base_url": server.uri(),
+            "credential_env": "SYLVANDER_TESTBENCH_RETRY_CHILD_KEY",
+            "supported_scenarios": ["transient_retry"],
+            "models": [{
+                "model_id": "model-retry",
+                "advertised_scenarios": ["transient_retry"]
+            }]
+        }]
+    });
+    fs::write(&matrix_path, serde_json::to_vec(&matrix).unwrap()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sylvander-llm-bench"))
+        .args(["run", matrix_path.to_str().unwrap()])
+        .env("SYLVANDER_TESTBENCH_RETRY_CHILD_KEY", "retry-key")
+        .output()
+        .unwrap();
+    fs::remove_file(matrix_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "passed");
+    assert_eq!(result["scenario"], "transient_retry");
+    assert_eq!(result["attempts"], 3);
+}

@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+sylvander-agent = { path = "../sylvander-agent" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-llm-core = { path = "../sylvander-llm-core" }
 sylvander-llm-dashscope = { path = "../sylvander-llm-dashscope" }

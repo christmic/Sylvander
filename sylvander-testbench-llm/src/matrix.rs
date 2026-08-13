@@ -60,6 +60,8 @@ pub struct BenchMatrix {
     pub request_timeout_ms: u64,
     #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: u32,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
     pub scenarios: BTreeSet<BenchScenario>,
     pub bindings: Vec<ProtocolBinding>,
 }
@@ -100,6 +102,9 @@ impl BenchMatrix {
         }
         if !(1..=128).contains(&self.max_output_tokens) {
             return Err("matrix maximum output tokens must be between 1 and 128");
+        }
+        if self.max_retries > 5 {
+            return Err("matrix maximum retries must not exceed 5");
         }
         if self.scenarios.is_empty() {
             return Err("matrix must select at least one scenario");
@@ -183,4 +188,8 @@ const fn default_request_timeout_ms() -> u64 {
 
 const fn default_max_output_tokens() -> u32 {
     16
+}
+
+const fn default_max_retries() -> u32 {
+    2
 }

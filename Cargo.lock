@@ -3107,6 +3107,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "sylvander-agent",
  "sylvander-llm-anthropic",
  "sylvander-llm-core",
  "sylvander-llm-dashscope",
