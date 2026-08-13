@@ -15,10 +15,10 @@ use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
 };
 use crate::coordination::service::{
-    CoordinationService, CreateTaskRequest, DefineAgentOutcome, DefineAgentRequest,
-    DispatchMessageOutcome, DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest,
-    ProposeHandoffRequest, RelateAgentsOutcome, RelateAgentsRequest, ReportWaitRequest,
-    TransitionTaskRequest,
+    ClaimTaskRequest, CoordinationService, CreateTaskRequest, DefineAgentOutcome,
+    DefineAgentRequest, DispatchMessageOutcome, DispatchMessageRequest, FinishClaimedTaskRequest,
+    ForkAgentOutcome, ForkAgentRequest, ProposeHandoffRequest, RelateAgentsOutcome,
+    RelateAgentsRequest, ReportWaitRequest,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -368,26 +368,25 @@ async fn agents_drive_durable_tasks_with_runtime_owned_revision_fences() {
         .unwrap();
     assert_eq!(task.state, CoordinationTaskState::Ready);
 
-    let running = service
-        .transition_task(
-            TransitionTaskRequest {
+    let lease = service
+        .claim_task(
+            ClaimTaskRequest {
                 task_id: task.task_id.clone(),
                 session_id: membership.session_id.clone(),
                 actor: AgentInstanceId::new("worker-1"),
-                next_state: CoordinationTaskState::Running,
-                consumed_tokens: 0,
+                claim_owner_id: "turn-agent-owned".into(),
+                lease_seconds: 30,
             },
             21,
         )
         .await
         .unwrap();
+    let running = store.task(&task.task_id).await.unwrap().unwrap();
     assert_eq!(running.revision, 1);
     let completed = service
-        .transition_task(
-            TransitionTaskRequest {
-                task_id: task.task_id,
-                session_id: membership.session_id,
-                actor: AgentInstanceId::new("worker-1"),
+        .finish_claimed_task(
+            FinishClaimedTaskRequest {
+                lease,
                 next_state: CoordinationTaskState::Completed,
                 consumed_tokens: 240,
             },

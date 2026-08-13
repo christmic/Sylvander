@@ -9,17 +9,22 @@ use sylvander_api::{AgentInstanceId, SessionId, TaskId};
 
 use crate::coordination::governance::GovernancePolicy;
 use crate::coordination::service::{
-    CoordinationService, CreateTaskRequest, DEFAULT_ARBITRATION_TTL_SECONDS, TransitionTaskRequest,
+    ClaimTaskRequest, CoordinationService, CreateTaskRequest, DEFAULT_ARBITRATION_TTL_SECONDS,
+    FinishClaimedTaskRequest, TransitionTaskRequest,
 };
 use crate::coordination::task::CoordinationTaskState;
 use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability};
 use crate::session::now_secs;
+use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::SqliteSessionStore;
+
+const WORKFLOW_TASK_LEASE_SECONDS: u64 = 30;
 
 pub(super) struct RuntimeWorkflowGate {
     pub(super) store: Arc<SqliteSessionStore>,
     pub(super) session_id: SessionId,
     pub(super) agent_instance_id: AgentInstanceId,
+    pub(super) turn_id: String,
     pub(super) observability: RuntimeObservability,
 }
 
@@ -52,7 +57,8 @@ impl WorkflowGate for RuntimeWorkflowGate {
                         },
                         now_secs(),
                     )
-                    .await;
+                    .await
+                    .map_err(|error| error.to_string());
                 (task, RuntimeCoordinationOutcome::TaskCreated)
             }
             WorkflowCommand::Transition {
@@ -60,22 +66,86 @@ impl WorkflowGate for RuntimeWorkflowGate {
                 state,
                 consumed_tokens,
             } => {
-                let task = service
-                    .transition_task(
-                        TransitionTaskRequest {
-                            task_id: TaskId::new(task_id),
-                            session_id: self.session_id.clone(),
-                            actor: self.agent_instance_id.clone(),
-                            next_state: runtime_state(state),
-                            consumed_tokens,
-                        },
-                        now_secs(),
-                    )
-                    .await;
+                let task_id = TaskId::new(task_id);
+                let next_state = runtime_state(state);
+                let current = self
+                    .store
+                    .task(&task_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let current = current.ok_or_else(|| "unknown coordination task".to_owned())?;
+                let execution_boundary = matches!(
+                    next_state,
+                    CoordinationTaskState::Blocked
+                        | CoordinationTaskState::AwaitingReview
+                        | CoordinationTaskState::Completed
+                        | CoordinationTaskState::Failed
+                );
+                let task = if next_state == CoordinationTaskState::Running {
+                    service
+                        .claim_task(
+                            ClaimTaskRequest {
+                                task_id: task_id.clone(),
+                                session_id: self.session_id.clone(),
+                                actor: self.agent_instance_id.clone(),
+                                claim_owner_id: self.turn_id.clone(),
+                                lease_seconds: WORKFLOW_TASK_LEASE_SECONDS,
+                            },
+                            now_secs(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    self.store
+                        .task(&task_id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| "unknown coordination task".to_owned())
+                } else if current.state == CoordinationTaskState::Running
+                    || (current.state == CoordinationTaskState::Ready && execution_boundary)
+                {
+                    let lease = service
+                        .claim_task(
+                            ClaimTaskRequest {
+                                task_id,
+                                session_id: self.session_id.clone(),
+                                actor: self.agent_instance_id.clone(),
+                                claim_owner_id: self.turn_id.clone(),
+                                lease_seconds: WORKFLOW_TASK_LEASE_SECONDS,
+                            },
+                            now_secs(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    service
+                        .finish_claimed_task(
+                            FinishClaimedTaskRequest {
+                                lease,
+                                next_state,
+                                consumed_tokens,
+                            },
+                            now_secs(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())
+                } else {
+                    service
+                        .transition_task(
+                            TransitionTaskRequest {
+                                task_id,
+                                session_id: self.session_id.clone(),
+                                actor: self.agent_instance_id.clone(),
+                                next_state,
+                                consumed_tokens,
+                            },
+                            now_secs(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())
+                };
                 (task, RuntimeCoordinationOutcome::TaskTransitioned)
             }
         };
-        let task = task.map_err(|error| error.to_string())?;
+        let task = task?;
         self.observability
             .record(RuntimeEvent::CoordinationTransition {
                 session_id: self.session_id.clone(),

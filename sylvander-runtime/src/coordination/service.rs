@@ -31,7 +31,7 @@ use crate::coordination::mailbox::{
     MessageDeliveryState,
 };
 use crate::coordination::task::SessionTaskGraph;
-use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
+use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskExecutionLease};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::coordination::CoordinationStore;
@@ -202,6 +202,24 @@ pub struct TransitionTaskRequest {
     pub task_id: TaskId,
     pub session_id: SessionId,
     pub actor: AgentInstanceId,
+    pub next_state: CoordinationTaskState,
+    pub consumed_tokens: u64,
+}
+
+/// Trusted Runtime execution intent to claim a task for one durable operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimTaskRequest {
+    pub task_id: TaskId,
+    pub session_id: SessionId,
+    pub actor: AgentInstanceId,
+    pub claim_owner_id: String,
+    pub lease_seconds: u64,
+}
+
+/// Fenced terminal or suspension transition for a running task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishClaimedTaskRequest {
+    pub lease: TaskExecutionLease,
     pub next_state: CoordinationTaskState,
     pub consumed_tokens: u64,
 }

@@ -1,9 +1,9 @@
 //! Agent-driven, governed lifecycle for durable work graph nodes.
 
 use super::{
-    CoordinationService, CoordinationServiceError, CoordinationTask, CoordinationTaskState,
-    CreateTaskRequest, GovernanceSnapshot, SessionTaskGraph, TransitionTaskRequest, assess,
-    ensure_available,
+    ClaimTaskRequest, CoordinationService, CoordinationServiceError, CoordinationTask,
+    CoordinationTaskState, CreateTaskRequest, FinishClaimedTaskRequest, GovernanceSnapshot,
+    SessionTaskGraph, TransitionTaskRequest, assess, ensure_available,
 };
 use crate::coordination::governance::FindingSeverity;
 use crate::coordination::topology::AgentRelationKind;
@@ -154,6 +154,13 @@ where
         } else {
             assignee
         };
+        if task.state == CoordinationTaskState::Running
+            || request.next_state == CoordinationTaskState::Running
+        {
+            return Err(CoordinationServiceError::InvalidTask(
+                "running task transitions require an execution lease".into(),
+            ));
+        }
         if !authorized {
             return Err(CoordinationServiceError::UnauthorizedActor);
         }
@@ -174,5 +181,78 @@ where
         task.updated_at = now;
         self.store.update_task(&task, expected_revision).await?;
         Ok(task)
+    }
+
+    /// Atomically enter or recover task execution under a bounded lease.
+    pub async fn claim_task(
+        &self,
+        request: ClaimTaskRequest,
+        now: i64,
+    ) -> Result<crate::coordination::task::TaskExecutionLease, CoordinationServiceError> {
+        let membership = self
+            .store
+            .session_membership(&request.session_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::MissingMembership(request.session_id.clone())
+            })?;
+        ensure_available(&membership, &request.actor)?;
+        let task = self
+            .store
+            .task(&request.task_id)
+            .await?
+            .ok_or(CoordinationServiceError::UnknownTask)?;
+        if task.session_id != request.session_id
+            || task.assigned_to.as_ref() != Some(&request.actor)
+        {
+            return Err(CoordinationServiceError::UnauthorizedActor);
+        }
+        self.store
+            .claim_task(
+                &request.task_id,
+                &request.actor,
+                &request.claim_owner_id,
+                now,
+                request.lease_seconds,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Commit a running task boundary only while the exact execution lease is live.
+    pub async fn finish_claimed_task(
+        &self,
+        request: FinishClaimedTaskRequest,
+        now: i64,
+    ) -> Result<CoordinationTask, CoordinationServiceError> {
+        let membership = self
+            .store
+            .session_membership(&request.lease.session_id)
+            .await?
+            .ok_or_else(|| {
+                CoordinationServiceError::MissingMembership(request.lease.session_id.clone())
+            })?;
+        ensure_available(&membership, &request.lease.assignee)?;
+        if !matches!(
+            request.next_state,
+            CoordinationTaskState::Blocked
+                | CoordinationTaskState::AwaitingReview
+                | CoordinationTaskState::Completed
+                | CoordinationTaskState::Failed
+                | CoordinationTaskState::Cancelled
+        ) {
+            return Err(CoordinationServiceError::InvalidTask(
+                "claimed task target state is not an execution boundary".into(),
+            ));
+        }
+        self.store
+            .finish_task_lease(
+                &request.lease,
+                request.next_state,
+                request.consumed_tokens,
+                now,
+            )
+            .await
+            .map_err(Into::into)
     }
 }
