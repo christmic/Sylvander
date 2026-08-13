@@ -16,6 +16,7 @@ use crate::workspace::remote::RemoteGitWorktreeManager;
 pub struct CodingWorkspaceLease {
     pub effective_workspace: PathBuf,
     pub branch: String,
+    pub base_revision: String,
     pub target_id: Option<String>,
 }
 
@@ -93,9 +94,11 @@ impl CodingWorktreeService {
                 return Err("writable remote workspace requires a Git worktree transaction".into());
             }
             let lease = manager.create(session_id, requested).await?;
+            let base_revision = manager.source_commit(&lease).await?;
             return Ok(Some(CodingWorkspaceLease {
                 effective_workspace: lease.effective_workspace,
                 branch: lease.branch,
+                base_revision,
                 target_id: Some(target_id.to_owned()),
             }));
         }
@@ -110,16 +113,50 @@ impl CodingWorktreeService {
             if !manager.is_git_workspace(&requested) {
                 return Ok(None);
             }
-            manager.create(&session_id, &requested).map(|lease| {
-                Some(CodingWorkspaceLease {
+            manager.create(&session_id, &requested).and_then(|lease| {
+                let base_revision = manager.source_commit(&lease)?;
+                Ok(Some(CodingWorkspaceLease {
                     effective_workspace: lease.effective_workspace,
                     branch: lease.branch,
+                    base_revision,
                     target_id: None,
-                })
+                }))
             })
         })
         .await
         .map_err(|_| "worktree creation stopped".to_string())?
+    }
+
+    /// Open and validate one durable worktree receipt without mutating it.
+    pub async fn open(
+        &self,
+        lease_id: &str,
+        target_id: Option<&str>,
+    ) -> Result<CodingWorkspaceLease, String> {
+        if let Some(manager) = self.remote_manager(target_id)? {
+            let lease = manager.open(lease_id)?;
+            let base_revision = manager.source_commit(&lease).await?;
+            return Ok(CodingWorkspaceLease {
+                effective_workspace: lease.effective_workspace,
+                branch: lease.branch,
+                base_revision,
+                target_id: target_id.map(str::to_owned),
+            });
+        }
+        let manager = self.local.clone();
+        let lease_id = lease_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&lease_id)?;
+            let base_revision = manager.source_commit(&lease)?;
+            Ok(CodingWorkspaceLease {
+                effective_workspace: lease.effective_workspace,
+                branch: lease.branch,
+                base_revision,
+                target_id: None,
+            })
+        })
+        .await
+        .map_err(|_| "worktree receipt inspection stopped".to_string())?
     }
 
     /// Inspect tracked and untracked changes for one durable session lease.

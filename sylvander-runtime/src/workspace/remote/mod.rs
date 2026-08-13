@@ -172,6 +172,14 @@ impl RemoteGitWorktreeManager {
         self.manifests.open(session_id)
     }
 
+    /// Read the current source revision associated with a validated lease.
+    pub async fn source_commit(&self, lease: &RemoteWorkspaceLease) -> Result<String, String> {
+        self.validate_remote(lease).await?;
+        self.git
+            .text(&lease.source_root, &["rev-parse", "HEAD"])
+            .await
+    }
+
     /// Produce a bounded binary patch, including untracked files.
     pub async fn inspect(&self, lease: &RemoteWorkspaceLease) -> Result<WorkspaceDiff, String> {
         self.validate_remote(lease).await?;

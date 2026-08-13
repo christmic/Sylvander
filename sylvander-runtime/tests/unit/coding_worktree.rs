@@ -48,6 +48,7 @@ async fn local_target_lifecycle_uses_one_transport_neutral_contract() {
     let state = tempfile::tempdir().expect("state");
     let mut service = CodingWorktreeService::new(Arc::new(GitWorktreeManager::new(state.path())));
     service.register_local("local").expect("local target");
+    let base_revision = git(repository.path(), &["rev-parse", "HEAD"]);
 
     let lease = service
         .create("session-1", "local", repository.path())
@@ -55,6 +56,8 @@ async fn local_target_lifecycle_uses_one_transport_neutral_contract() {
         .expect("create")
         .expect("Git workspace");
     assert_eq!(lease.target_id, None);
+    assert_eq!(lease.base_revision, base_revision);
+    assert_eq!(service.open("session-1", None).await.unwrap(), lease);
     fs::write(lease.effective_workspace.join("tracked.txt"), "after\n").expect("edit");
 
     let review = service
