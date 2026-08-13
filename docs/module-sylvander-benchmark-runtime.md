@@ -21,9 +21,21 @@ Every repetition remains an individual record. Unsupported cells, harness
 errors, verifier failures, and missing credentials must be explicit in the
 future runner status contract; they are never removed from matrix coverage.
 
+The checked-in CLI validates exact plan artifacts and deterministically reduces
+result arrays without blending task reward into Runtime safety:
+
+```sh
+cargo run -p sylvander-benchmark-runtime --bin sylvander-runtime-bench -- \
+  validate-plan path/to/plan.json
+cargo run -p sylvander-benchmark-runtime --bin sylvander-runtime-bench -- \
+  summarize path/to/results.json
+```
+
 Detailed capability boundaries and the selected primary-source benchmark
 portfolio are documented in
 [`sylvander-runtime/docs/agent-cognition-workflow-doctor.md`](../sylvander-runtime/docs/agent-cognition-workflow-doctor.md).
+The version-pinning and adapter inventory is maintained in
+[`sylvander-runtime/docs/runtime-benchmark-corpus.md`](../sylvander-runtime/docs/runtime-benchmark-corpus.md).
 
 Verification:
 

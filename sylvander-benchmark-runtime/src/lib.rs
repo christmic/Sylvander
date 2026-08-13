@@ -178,6 +178,135 @@ pub fn expand_matrix(
     Ok(expanded)
 }
 
+/// Versioned executable plan. Keeping the exact coordinates in the artifact
+/// prevents a harness from silently dropping expensive or failing cells.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeBenchPlan {
+    pub schema_version: u32,
+    pub coordinates: Vec<RuntimeBenchCoordinate>,
+}
+
+impl RuntimeBenchPlan {
+    pub fn validate(&self) -> Result<(), RuntimeBenchError> {
+        if self.schema_version != 1 || self.coordinates.is_empty() {
+            return Err(RuntimeBenchError::InvalidPlan);
+        }
+        let mut identities = HashSet::with_capacity(self.coordinates.len());
+        for coordinate in &self.coordinates {
+            coordinate.validate()?;
+            if !identities.insert(coordinate) {
+                return Err(RuntimeBenchError::DuplicateCoordinate);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Deterministic aggregate for CI comparisons. Rates use basis points to avoid
+/// platform-dependent floating point formatting in evidence artifacts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeBenchSummary {
+    pub samples: u64,
+    pub runtime_safe_basis_points: u16,
+    pub useful_completion_basis_points: u16,
+    pub recovery_basis_points: u16,
+    pub invariant_violations: u64,
+    pub duplicate_effects: u64,
+    pub user_visible_failures: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model_calls: u64,
+    pub tool_calls: u64,
+    pub p50_duration_millis: u64,
+    pub p95_duration_millis: u64,
+}
+
+pub fn summarize(results: &[RuntimeBenchResult]) -> Result<RuntimeBenchSummary, RuntimeBenchError> {
+    if results.is_empty() {
+        return Err(RuntimeBenchError::EmptyResults);
+    }
+    for result in results {
+        result.validate()?;
+    }
+    let samples = u64::try_from(results.len()).map_err(|_| RuntimeBenchError::MetricOverflow)?;
+    let mut durations = results
+        .iter()
+        .map(|result| result.duration_millis)
+        .collect::<Vec<_>>();
+    durations.sort_unstable();
+    Ok(RuntimeBenchSummary {
+        samples,
+        runtime_safe_basis_points: basis_points(
+            results
+                .iter()
+                .filter(|result| result.is_runtime_safe())
+                .count(),
+            results.len(),
+        )?,
+        useful_completion_basis_points: basis_points(
+            results
+                .iter()
+                .filter(|result| result.useful_completion)
+                .count(),
+            results.len(),
+        )?,
+        recovery_basis_points: basis_points(
+            results.iter().filter(|result| result.recovered).count(),
+            results.len(),
+        )?,
+        invariant_violations: sum_u32(results, |result| result.invariant_violations)?,
+        duplicate_effects: sum_u32(results, |result| result.duplicate_effects)?,
+        user_visible_failures: sum_u32(results, |result| result.user_visible_failures)?,
+        input_tokens: sum_u64(results, |result| result.input_tokens)?,
+        output_tokens: sum_u64(results, |result| result.output_tokens)?,
+        model_calls: sum_u32(results, |result| result.model_calls)?,
+        tool_calls: sum_u32(results, |result| result.tool_calls)?,
+        p50_duration_millis: percentile(&durations, 50),
+        p95_duration_millis: percentile(&durations, 95),
+    })
+}
+
+fn basis_points(numerator: usize, denominator: usize) -> Result<u16, RuntimeBenchError> {
+    let scaled = numerator
+        .checked_mul(10_000)
+        .ok_or(RuntimeBenchError::MetricOverflow)?
+        / denominator;
+    u16::try_from(scaled).map_err(|_| RuntimeBenchError::MetricOverflow)
+}
+
+fn percentile(sorted: &[u64], percentile: usize) -> u64 {
+    let index = sorted
+        .len()
+        .saturating_mul(percentile)
+        .div_ceil(100)
+        .saturating_sub(1);
+    sorted[index.min(sorted.len().saturating_sub(1))]
+}
+
+fn sum_u32(
+    results: &[RuntimeBenchResult],
+    project: impl Fn(&RuntimeBenchResult) -> u32,
+) -> Result<u64, RuntimeBenchError> {
+    results.iter().try_fold(0_u64, |total, result| {
+        total
+            .checked_add(u64::from(project(result)))
+            .ok_or(RuntimeBenchError::MetricOverflow)
+    })
+}
+
+fn sum_u64(
+    results: &[RuntimeBenchResult],
+    project: impl Fn(&RuntimeBenchResult) -> u64,
+) -> Result<u64, RuntimeBenchError> {
+    results.iter().try_fold(0_u64, |total, result| {
+        total
+            .checked_add(project(result))
+            .ok_or(RuntimeBenchError::MetricOverflow)
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RuntimeBenchError {
     #[error("Runtime benchmark coordinate is incomplete")]
@@ -196,6 +325,12 @@ pub enum RuntimeBenchError {
     ZeroRepetitions,
     #[error("benchmark matrix contains a duplicate coordinate")]
     DuplicateCoordinate,
+    #[error("Runtime benchmark plan is empty or uses an unknown schema")]
+    InvalidPlan,
+    #[error("Runtime benchmark results are empty")]
+    EmptyResults,
+    #[error("Runtime benchmark metric overflow")]
+    MetricOverflow,
 }
 
 #[cfg(test)]
