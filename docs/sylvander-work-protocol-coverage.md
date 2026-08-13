@@ -18,7 +18,7 @@ execution, persistence, or policy ownership moved into Desktop.
 |---|---|---|
 | `Hello` | complete, native-owned | none |
 | `Chat` | text complete | attachments and authoritative `TurnStarted` integration |
-| `Approve` | partial | render and submit Runtime `allowed_scopes`; currently `Once` only |
+| `Approve` | complete | renders only Runtime `allowed_scopes`, defaulting to protocol `Once` |
 | `Answer` | complete | none |
 | `Interrupt` | typed only | expose active-turn stop control |
 | `ResolvePlan` | complete | none |
@@ -51,7 +51,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `TextDelta`, `ThinkingDelta`, `ToolOutputDelta` | complete | visual progressive disclosure |
 | `ToolCall`, `ToolResult`, `ToolRejected` | complete | bounded expandable tool input/details |
 | `Done`, `Error`, `TurnInterrupted` | complete | feedback target |
-| `ApprovalRequest` | partial | batch identity is retained; allowed scopes are not yet rendered |
+| `ApprovalRequest` | complete | batch identity and allowed authorization scopes retained |
 | `AskUser` | complete | none |
 | `PlanProposed`, `PlanUpdated` | complete | none |
 | task lifecycle | complete | none |

@@ -110,6 +110,11 @@ item only after Runtime publishes its tool start/result or rejection. A turn
 terminal clears any remaining presentation prompt; the client does not infer
 execution from a button click.
 
+Approval actions render exactly the Runtime-provided `allowed_scopes`. Missing
+scope metadata falls back to the protocol default `Once`; Desktop never adds a
+Session or Persistent authorization on its own. The selected scope is forwarded
+unchanged and still waits for Runtime's subsequent tool fact.
+
 `AskUser` uses the same answer encoding already proven by the TUI: one choice
 is sent verbatim, multiple choices use `, `, and optional free text follows
 selected choices after `; `. The desktop sends only the public `Answer`

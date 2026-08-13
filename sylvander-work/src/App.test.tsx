@@ -420,15 +420,19 @@ describe("Sylvander Work", () => {
         { call_id: "call-1", tool_name: "Read", input: {} },
         { call_id: "call-2", tool_name: "Write", input: {} },
       ],
+      allowed_scopes: ["once", "session"],
     } }));
     expect(await screen.findByRole("heading", { name: "Allow Read?" })).toBeTruthy();
-    act(() => screen.getByRole("button", { name: "Allow once" }).click());
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Allow for Session" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
+    act(() => screen.getByRole("button", { name: "Allow for Session" }).click());
     await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
       type: "approve",
       session_id: "session-1",
       call_id: "call-1",
       approved: true,
-      scope: "once",
+      scope: "session",
     }));
     expect(screen.getByRole("heading", { name: "Allow Read?" })).toBeTruthy();
 

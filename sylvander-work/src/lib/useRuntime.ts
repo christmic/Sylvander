@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type DesktopEvent, type PlanDecision, type RuntimeCommand, type RuntimeGatewayPort, type RuntimeMessage } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type RuntimeCommand, type RuntimeGatewayPort, type RuntimeMessage } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -25,6 +25,7 @@ export interface RuntimeViewState {
     sessionId: string;
     batchId: string;
     tools: Array<{ callId: string; toolName: string }>;
+    allowedScopes: ApprovalScope[];
   };
   question?: {
     sessionId: string;
@@ -330,6 +331,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             sessionId: message.session_id,
             batchId: message.batch_id,
             tools: message.tools.map((tool) => ({ callId: tool.call_id, toolName: tool.tool_name })),
+            allowedScopes: message.allowed_scopes?.length ? message.allowed_scopes : ["once"],
           } }));
         }
         break;

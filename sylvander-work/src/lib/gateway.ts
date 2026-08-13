@@ -14,7 +14,7 @@ export type RuntimeCommand =
   | { type: "archive_session"; session_id: string }
   | { type: "delete_session"; session_id: string }
   | { type: "chat"; text: string; attachments: []; session_id?: string }
-  | { type: "approve"; session_id: string; call_id: string; approved: boolean; scope: "once"; reason?: string }
+  | { type: "approve"; session_id: string; call_id: string; approved: boolean; scope: ApprovalScope; reason?: string }
   | { type: "interrupt"; session_id: string }
   | { type: "answer"; session_id: string; call_id: string; answer: string }
   | { type: "resolve_plan"; session_id: string; plan_id: string; decision: PlanDecision }
@@ -26,6 +26,8 @@ export type PlanDecision =
   | { decision: "approved" }
   | { decision: "revised"; steps: string[] }
   | { decision: "rejected"; reason: string };
+
+export type ApprovalScope = "once" | "session" | "persistent";
 
 export interface RuntimeSession {
   id: string;
@@ -112,7 +114,7 @@ export type RuntimeMessage =
   | { type: "tool_call"; session_id: string; call_id: string; tool_name: string; input: unknown }
   | { type: "tool_output_delta"; session_id: string; call_id: string; tool_name: string; delta: string }
   | { type: "tool_result"; session_id: string; call_id: string; tool_name: string; output: string; is_error: boolean }
-  | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: string[] }
+  | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: ApprovalScope[] }
   | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }
   | { type: "ask_user"; session_id: string; call_id: string; question: string; options: string[]; multi_select: boolean }
   | { type: "plan_proposed" | "plan_updated"; session_id: string; plan_id: string; steps: string[]; current: number }
