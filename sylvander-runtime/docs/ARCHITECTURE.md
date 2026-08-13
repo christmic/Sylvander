@@ -248,10 +248,15 @@ crate without retaining a second production path.
    them.
 3. Production sessions are durable. Runtime has no process-local session
    creation API or ephemeral health count; session creation must commit its
-   record before Agent attachment. A persistent-session read, turn start,
-   usage, turn completion, restore, or history replacement failure is a typed
-   terminal error and cannot publish a successful turn. Assistant output and
-   the completed terminal commit atomically before public `Done`.
+   record before Agent attachment. The authenticated Channel boundary is the
+   sole admission path: one creation attaches the Session to its exact
+   `AgentRun` and Session-owned MCP runtime exactly once, while a duplicate MCP
+   binding fails closed. Tests that enter through `ChannelHost` must reuse the
+   already-admitted test proof instead of calling the attachment path again.
+   A persistent-session read, turn start, usage, turn completion, restore, or
+   history replacement failure is a typed terminal error and cannot publish a
+   successful turn. Assistant output and the completed terminal commit
+   atomically before public `Done`.
 4. Current-schema effective session configuration is persisted at creation
    with its optimistic revision, immutable Agent/Provider/Model pins,
    workspace/executor selection, and prompt manifest. Model overrides are

@@ -1813,18 +1813,12 @@ async fn attach_memory_session(
     )
     .await
     .unwrap();
-    let stored = runtime
-        .storage
-        .sessions()
-        .get(&created.session_id)
-        .await
-        .unwrap()
-        .unwrap();
     let configured = runtime.configured_agent(&AgentId::new(agent)).unwrap();
     configured
-        .attach_authenticated_session(created.session_id, stored.metadata)
+        .run
+        .admitted_session_proof_for_integration_test(&created.session_id)
         .await
-        .unwrap()
+        .expect("Channel session creation must admit the Session exactly once")
 }
 
 #[tokio::test]
