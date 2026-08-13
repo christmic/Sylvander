@@ -72,11 +72,20 @@ impl DoctorGate for RuntimeDoctorGate {
             .into_iter()
             .filter(|call| call.session_id == self.session_id)
             .collect::<Vec<_>>();
+        let perceptions = self
+            .store
+            .interrupted_perception_invocations()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|invocation| invocation.session_id == self.session_id)
+            .collect::<Vec<_>>();
         let agents = summarize_agents(&membership.participants);
         let tasks = summarize_tasks(tasks.as_ref());
         let workspaces = summarize_workspaces(&workspaces);
         let recovery = SessionRecoverySummary {
             interrupted_models: models.len() as u64,
+            interrupted_perceptions: perceptions.len() as u64,
             interrupted_tools: tools.len() as u64,
             operator_models: models
                 .iter()
@@ -85,6 +94,10 @@ impl DoctorGate for RuntimeDoctorGate {
             operator_tools: tools
                 .iter()
                 .filter(|call| call.operator_action_required)
+                .count() as u64,
+            operator_perceptions: perceptions
+                .iter()
+                .filter(|invocation| invocation.operator_action_required)
                 .count() as u64,
         };
         let governance = SessionGovernanceSummary {
@@ -106,8 +119,11 @@ impl DoctorGate for RuntimeDoctorGate {
             conflicted_workspaces: workspaces.conflicted,
             manual_workspaces: workspaces.manual_reconciliation,
             interrupted_models: recovery.interrupted_models,
+            interrupted_perceptions: recovery.interrupted_perceptions,
             interrupted_tools: recovery.interrupted_tools,
-            operator_recoveries: recovery.operator_models + recovery.operator_tools,
+            operator_recoveries: recovery.operator_models
+                + recovery.operator_perceptions
+                + recovery.operator_tools,
             open_arbitrations: governance.open_arbitrations,
         })
     }
@@ -167,8 +183,10 @@ pub struct SessionWorkspaceSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecoverySummary {
     pub interrupted_models: u64,
+    pub interrupted_perceptions: u64,
     pub interrupted_tools: u64,
     pub operator_models: u64,
+    pub operator_perceptions: u64,
     pub operator_tools: u64,
 }
 
@@ -254,12 +272,22 @@ impl Runtime {
             .into_iter()
             .filter(|call| &call.session_id == session_id)
             .collect::<Vec<_>>();
+        let perceptions = self
+            .storage
+            .sessions()
+            .interrupted_perception_invocations()
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .into_iter()
+            .filter(|invocation| &invocation.session_id == session_id)
+            .collect::<Vec<_>>();
 
         let agents = summarize_agents(&membership.participants);
         let tasks = summarize_tasks(graph.as_ref());
         let workspaces = summarize_workspaces(&views);
         let recovery = SessionRecoverySummary {
             interrupted_models: models.len() as u64,
+            interrupted_perceptions: perceptions.len() as u64,
             interrupted_tools: tools.len() as u64,
             operator_models: models
                 .iter()
@@ -268,6 +296,10 @@ impl Runtime {
             operator_tools: tools
                 .iter()
                 .filter(|call| call.operator_action_required)
+                .count() as u64,
+            operator_perceptions: perceptions
+                .iter()
+                .filter(|invocation| invocation.operator_action_required)
                 .count() as u64,
         };
         let governance = SessionGovernanceSummary {
@@ -364,13 +396,18 @@ fn attention(
     if agents.manual_reconciliation
         + workspaces.manual_reconciliation
         + recovery.operator_models
+        + recovery.operator_perceptions
         + recovery.operator_tools
         > 0
     {
         SessionAttentionState::ManualActionRequired
     } else if governance.open_arbitrations + tasks.awaiting_review + workspaces.conflicted > 0 {
         SessionAttentionState::NeedsReview
-    } else if recovery.interrupted_models + recovery.interrupted_tools > 0 {
+    } else if recovery.interrupted_models
+        + recovery.interrupted_perceptions
+        + recovery.interrupted_tools
+        > 0
+    {
         SessionAttentionState::Recovering
     } else if tasks.blocked + agents.waiting > 0 {
         SessionAttentionState::Waiting
@@ -380,3 +417,7 @@ fn attention(
         SessionAttentionState::Healthy
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/runtime_doctor.rs"]
+mod tests;

@@ -10,10 +10,9 @@ use uuid::Uuid;
 use crate::observability::{RuntimeEvent, RuntimeObservability};
 use crate::storage::session::{
     ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryWrite,
-    PerceptionRecoveryClassification, PerceptionRecoveryWrite,
-    PersistedTurnCompletion, RecoveryClassification, SessionStore, SessionStoreError,
-    ToolCallAdvance, ToolExecutionPosition, ToolRecoveryDecision, ToolRecoveryReason,
-    ToolRecoveryWrite,
+    PerceptionRecoveryClassification, PerceptionRecoveryWrite, PersistedTurnCompletion,
+    RecoveryClassification, SessionStore, SessionStoreError, ToolCallAdvance,
+    ToolExecutionPosition, ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
 };
 use crate::storage::workspace_journal::{WorkspaceJournal, WorkspaceMutationRecovery};
 
