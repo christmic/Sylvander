@@ -31,6 +31,7 @@ use sylvander_api::{AgentId, SessionContext, UserId};
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::capability_runtime::{
     ActorCapabilityRuntime, ActorCapabilitySnapshot, AuthorizedCapabilityInvocation,
@@ -44,7 +45,7 @@ use crate::guardian::curation::{
     GuardianCurationStore, GuardianEvent, GuardianEventKind, MutationAction, MutationDeliveryState,
     PolicyOutcome, Reconciliation, Sensitivity,
 };
-use crate::storage::session::StoredSession;
+use crate::storage::session::{SessionStore, StoredSession};
 use crate::user_profile_store::UserProfileStore;
 
 const CANONICAL_APPLICATION_ID: i64 = 1_398_361_987;
@@ -272,6 +273,7 @@ pub(crate) struct WorkerToolGatewayFactory {
     guardian_identity: GuardianServiceIdentity,
     policy_revision: u64,
     learning_preferences: Arc<dyn LearningPreferenceSource>,
+    sessions: Option<Arc<dyn SessionStore>>,
 }
 
 impl WorkerToolGatewayFactory {
@@ -302,7 +304,15 @@ impl WorkerToolGatewayFactory {
             guardian_identity,
             policy_revision: settings.policy_revision,
             learning_preferences: Arc::new(user_profiles),
+            sessions: None,
         })
+    }
+
+    /// Bind production authorization to the Runtime execution ledger.
+    #[must_use]
+    pub(crate) fn with_session_store(mut self, sessions: Arc<dyn SessionStore>) -> Self {
+        self.sessions = Some(sessions);
+        self
     }
 
     pub(crate) fn build(
@@ -317,6 +327,7 @@ impl WorkerToolGatewayFactory {
             self.guardian_identity.clone(),
             self.policy_revision,
             Arc::new(self.audit.clone()),
+            self.sessions.clone(),
         )
     }
 
@@ -706,6 +717,7 @@ fn build_worker_tool_gateway(
     guardian_identity: GuardianServiceIdentity,
     policy_revision: u64,
     audit: Arc<dyn CapabilityAuditSink>,
+    sessions: Option<Arc<dyn SessionStore>>,
 ) -> Result<Arc<dyn ToolInvocationGateway>, GuardianRuntimeError> {
     let mut worker = CapabilityRegistry::new().register(ActorMetadataCapability {
         actor: CapabilityActor::Worker,
@@ -746,6 +758,7 @@ fn build_worker_tool_gateway(
             .collect(),
         snapshot: ToolInvocationSnapshot::from_descriptors(&descriptors),
         learning_preferences,
+        sessions,
     }))
 }
 
@@ -860,6 +873,7 @@ struct RuntimeWorkerToolGateway {
     routes: BTreeMap<String, (ToolInvocationClass, ToolRecoveryPolicy)>,
     snapshot: ToolInvocationSnapshot,
     learning_preferences: Arc<dyn LearningPreferenceSource>,
+    sessions: Option<Arc<dyn SessionStore>>,
 }
 
 struct RuntimeWorkerToolGrant {
@@ -1080,12 +1094,42 @@ impl ToolInvocationGateway for RuntimeWorkerToolGateway {
             }
         }
 
+        let invocation_id = if let Some(sessions) = &self.sessions {
+            let turn_id = request
+                .context()
+                .turn_id()
+                .ok_or(ToolInvocationError::AccessDenied)?;
+            let durable = sessions
+                .tool_calls(
+                    &crate::agent_definition::SessionId::new(request.context().session_id()),
+                    turn_id,
+                )
+                .await
+                .map_err(|_| ToolInvocationError::AuditUnavailable)?
+                .into_iter()
+                .find(|call| call.call_id == request.call_id())
+                .ok_or(ToolInvocationError::AccessDenied)?;
+            if durable.tool_name != request.route()
+                || durable.invocation_class != Some(class)
+                || durable.declared_recovery_policy != recovery_policy
+                || durable.capability_revision != request.snapshot().revision()
+                || durable.input_digest != request.input_digest()
+                || durable.position != crate::storage::session::ToolExecutionPosition::EffectStarted
+            {
+                return Err(ToolInvocationError::AccessDenied);
+            }
+            durable.invocation_id.to_string()
+        } else {
+            Uuid::new_v4().to_string()
+        };
+
         let workspace_ids = BTreeSet::from([request.context().execution_target.id.clone()]);
         let snapshot = self.capabilities.begin_worker_run(&session, workspace_ids);
         let lease = snapshot
             .authorize_external(
                 &tool_capability_name(request.route()),
                 request.input(),
+                &invocation_id,
                 request.snapshot().revision(),
                 crate::session::now_secs(),
             )

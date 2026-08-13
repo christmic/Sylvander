@@ -178,6 +178,11 @@ async fn worker_handler_receives_only_runtime_derived_owner_and_terminal_audit()
 
     let records = audit.records.lock().unwrap();
     assert_eq!(records.len(), 2);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.invocation_id == "invocation-2")
+    );
     assert_eq!(records[0].phase, CapabilityAuditPhase::Authorized);
     assert_eq!(records[1].phase, CapabilityAuditPhase::Completed);
     assert_eq!(records[1].outcome, CapabilityAuditOutcome::Succeeded);
@@ -230,11 +235,11 @@ fn external_adapter_authorization_is_exact_and_terminal_audited() {
     );
 
     assert!(matches!(
-        snapshot.authorize_external("unknown", &json!({}), "sha256:turn", 1_000),
+        snapshot.authorize_external("unknown", &json!({}), "invocation-1", "sha256:turn", 1_000),
         Err(CapabilityRuntimeError::CapabilityUnavailable)
     ));
     let lease = snapshot
-        .authorize_external("command", &json!({}), "sha256:turn", 1_000)
+        .authorize_external("command", &json!({}), "invocation-2", "sha256:turn", 1_000)
         .unwrap();
     assert!(calls.lock().unwrap().is_empty());
     lease.finish(true).unwrap();
@@ -256,7 +261,7 @@ fn external_adapter_pre_and_terminal_audit_failures_are_fail_closed() {
         BTreeSet::new(),
     );
     assert!(matches!(
-        snapshot.authorize_external("command", &json!({}), "sha256:turn", 1_000),
+        snapshot.authorize_external("command", &json!({}), "invocation-3", "sha256:turn", 1_000),
         Err(CapabilityRuntimeError::AuditUnavailable)
     ));
 
@@ -272,7 +277,7 @@ fn external_adapter_pre_and_terminal_audit_failures_are_fail_closed() {
         BTreeSet::new(),
     );
     let lease = snapshot
-        .authorize_external("command", &json!({}), "sha256:turn", 1_000)
+        .authorize_external("command", &json!({}), "invocation-4", "sha256:turn", 1_000)
         .unwrap();
     assert_eq!(
         lease.finish(true),
@@ -290,7 +295,7 @@ fn dropping_external_adapter_lease_records_failed_terminal_without_execution() {
         BTreeSet::new(),
     );
     let lease = snapshot
-        .authorize_external("command", &json!({}), "sha256:turn", 1_000)
+        .authorize_external("command", &json!({}), "invocation-5", "sha256:turn", 1_000)
         .unwrap();
     drop(lease);
 

@@ -1805,9 +1805,9 @@ impl GuardianCurationStore {
 impl CapabilityAuditSink for GuardianCurationStore {
     fn record(&self, record: &CapabilityAuditRecord) -> Result<(), ()> {
         let connection = self.connection.lock().map_err(|_| ())?;
-        connection
+        let changed = connection
             .execute(
-                "INSERT INTO capability_invocation_audit(invocation_id,phase,actor,capability,capability_revision,policy_revision,owner_digest,outcome) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                "INSERT INTO capability_invocation_audit(invocation_id,phase,actor,capability,capability_revision,policy_revision,owner_digest,outcome) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(invocation_id,phase) DO NOTHING",
                 params![
                     record.invocation_id,
                     capability_audit_phase(record.phase),
@@ -1819,8 +1819,41 @@ impl CapabilityAuditSink for GuardianCurationStore {
                     capability_audit_outcome(record.outcome),
                 ],
             )
-            .map(|_| ())
-            .map_err(|_| ())
+            .map_err(|_| ())?;
+        if changed == 1 {
+            return Ok(());
+        }
+        let existing = connection
+            .query_row(
+                "SELECT actor,capability,capability_revision,policy_revision,owner_digest,outcome FROM capability_invocation_audit WHERE invocation_id=?1 AND phase=?2",
+                params![record.invocation_id, capability_audit_phase(record.phase)],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .map_err(|_| ())?;
+        let policy_revision = i64::try_from(record.policy_revision).map_err(|_| ())?;
+        if existing
+            == (
+                capability_actor_value(record.actor).to_owned(),
+                record.capability.clone(),
+                record.capability_revision.clone(),
+                policy_revision,
+                record.owner_digest.clone(),
+                capability_audit_outcome(record.outcome).to_owned(),
+            )
+        {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 

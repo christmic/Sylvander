@@ -4193,7 +4193,8 @@ impl Runtime {
         let tool_gateway_factory =
             WorkerToolGatewayFactory::open(&guardian_settings, guardian_now, user_profiles.clone())
                 .await
-                .map_err(|error| RuntimeError::Store(error.to_string()))?;
+                .map_err(|error| RuntimeError::Store(error.to_string()))?
+                .with_session_store(session_store.clone());
         let execution_service = build_execution_service(&config, |reference| {
             credential_resolver.resolve_credential(reference)
         })

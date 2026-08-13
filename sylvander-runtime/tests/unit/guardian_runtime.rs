@@ -1453,6 +1453,7 @@ fn test_gateway(
         GuardianServiceIdentity::issue("guardian.runtime", 1, now() + 3_600).unwrap(),
         1,
         audit,
+        None,
     )
     .unwrap()
 }
