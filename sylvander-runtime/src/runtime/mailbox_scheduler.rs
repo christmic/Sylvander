@@ -130,7 +130,13 @@ async fn drain_recipient(
                     .await
                     .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
             }
-            None => execute_message_turn(store, revisions, &service, &message, &receipt).await?,
+            None => {
+                if let Some(moderator) =
+                    execute_or_escalate(store, revisions, &service, &message, &receipt).await?
+                {
+                    return Ok(Some(moderator));
+                }
+            }
             Some(_) => {
                 let case = service
                     .escalate_mailbox_turn(&message, &receipt, crate::session::now_secs())
@@ -153,9 +159,58 @@ async fn drain_recipient(
             .prepare_message_turn(&claim, &turn_id, crate::session::now_secs())
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
-        execute_message_turn(store, revisions, &service, &message, &receipt).await?;
+        if let Some(moderator) =
+            execute_or_escalate(store, revisions, &service, &message, &receipt).await?
+        {
+            return Ok(Some(moderator));
+        }
     }
     Ok(None)
+}
+
+async fn execute_or_escalate(
+    store: &Arc<SqliteSessionStore>,
+    revisions: &Arc<RuntimeRevisionProvider>,
+    service: &CoordinationService<SqliteSessionStore>,
+    message: &CoordinationMessage,
+    receipt: &AgentMessageTurn,
+) -> Result<Option<AgentInstanceId>, RuntimeError> {
+    let Err(execution_error) =
+        execute_message_turn(store, revisions, service, message, receipt).await
+    else {
+        return Ok(None);
+    };
+    let turn = store
+        .turn(&receipt.session_id, &receipt.turn_id)
+        .await
+        .map_err(|error| RuntimeError::Store(error.to_string()))?;
+    match turn {
+        Some(turn) if turn.state == TurnState::Completed => {
+            service
+                .acknowledge_message(
+                    message,
+                    &message.recipient_instance_id,
+                    crate::session::now_secs(),
+                )
+                .await
+                .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+            Ok(None)
+        }
+        Some(_) => {
+            warn!(
+                message_id = %message.message_id.0,
+                turn_id = %receipt.turn_id,
+                error = %execution_error,
+                "Agent mailbox turn failed after becoming durable; escalating"
+            );
+            let case = service
+                .escalate_mailbox_turn(message, receipt, crate::session::now_secs())
+                .await
+                .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+            Ok(Some(case.moderator_instance_id))
+        }
+        None => Err(execution_error),
+    }
 }
 
 async fn execute_message_turn(
