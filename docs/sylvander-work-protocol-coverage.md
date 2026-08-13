@@ -2,7 +2,7 @@
 
 > Status: active implementation ledger
 >
-> Verified against `sylvander-api/src/ui.rs` and Desktop commit `05d3803ed`
+> Verified against `sylvander-api/src/ui.rs` and Desktop commit `c44b41459`
 > on 2026-08-13.
 
 ## Purpose
@@ -35,9 +35,9 @@ execution, persistence, or policy ownership moved into Desktop.
 | `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
 | `ForkSession` | complete end-to-end for checkpoints | completed-turn rewind editor |
 | `RestoreSession` | WebSocket complete, discovery missing | public Session list cannot expose archived rows yet |
-| `GetContext`, `Compact` | UI complete, WebSocket missing | transport dispatch to Runtime-owned lifecycle |
-| `PreviewWorkspaceRollback`, `RollbackWorkspace` | UI complete, WebSocket missing | transport dispatch for two-phase rollback |
-| `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | UI complete, WebSocket missing | transport dispatch for review and decision |
+| `GetContext`, `Compact` | complete end-to-end | none |
+| `PreviewWorkspaceRollback`, `RollbackWorkspace` | complete end-to-end | none |
+| `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | complete end-to-end | none |
 | `SelectModel`, `SelectPermissions` | complete | provider-qualified catalog and typed permission profile |
 | `Ping` | complete | explicit user-requested liveness round trip |
 
@@ -69,8 +69,8 @@ execution, persistence, or policy ownership moved into Desktop.
 
 ## Ordered implementation gates
 
-1. Complete WebSocket parity for Runtime info, context, compaction, coding
-   review, and rollback before marking their existing UI projections complete.
+1. Define a Runtime-owned public snapshot source for WebSocket
+   `GetRuntimeInfo`; do not copy Unix adapter-local configuration.
 2. Integrate the authoritative Runtime lifecycle chain, including
    `TurnStarted`; do not infer it from local submission.
 3. Complete feedback, memory, identity, administration, attachments, and

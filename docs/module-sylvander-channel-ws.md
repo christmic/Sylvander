@@ -72,10 +72,13 @@ re-authenticating individual frames.
    then replays up to 4 MiB of public events emitted by the still-active turn.
    Oversized or evicted events set `replay_truncated`; terminal events end and
    clear the temporary replay because durable history is authoritative.
-9. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
+9. **Runtime Session operations** — context reports, compaction, two-phase
+   workspace rollback, and coding-session inspect/accept/discard all dispatch
+   through `ChannelHost` and return public progress/result facts.
+10. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
    list/decide envelopes pass unchanged to Runtime under the authenticated
    WebSocket boundary. The adapter never derives or accepts owner identity.
-10. **Shutdown** — runtime closes idle connections gracefully and
+11. **Shutdown** — runtime closes idle connections gracefully and
    aborts stuck ones on supervisor shutdown.
 
 ## 6. Tests
