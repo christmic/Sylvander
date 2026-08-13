@@ -29,6 +29,7 @@ use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::SessionStoreError;
 
 pub const DEFAULT_ARBITRATION_TTL_SECONDS: u64 = 300;
+const MAX_ARBITRATION_RENEWALS: usize = 64;
 
 /// Stable caller intent. Runtime derives every governance fact and route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -212,13 +213,18 @@ where
         );
         let mut moderator_authorization = None;
         if !assessment.permits_automatic_progress() {
-            let case_id = governance_case_id(
-                "message",
-                &request,
-                membership.governance.membership_revision,
-                topology.topology_revision,
-            )?;
-            if let Some(case) = self.store.arbitration_case(&case_id).await? {
+            let (case_id, existing_case) = self
+                .current_arbitration(
+                    governance_case_id(
+                        "message",
+                        &request,
+                        membership.governance.membership_revision,
+                        topology.topology_revision,
+                    )?,
+                    now,
+                )
+                .await?;
+            if let Some(case) = existing_case {
                 if case.state == ArbitrationState::Applied {
                     let decision = self.applied_decision(&case).await?;
                     if matches!(
@@ -478,13 +484,18 @@ where
         );
         let mut moderator_authorization = None;
         if !assessment.permits_automatic_progress() {
-            let case_id = governance_case_id(
-                "fork",
-                &request,
-                membership.governance.membership_revision,
-                topology.topology_revision,
-            )?;
-            if let Some(case) = self.store.arbitration_case(&case_id).await? {
+            let (case_id, existing_case) = self
+                .current_arbitration(
+                    governance_case_id(
+                        "fork",
+                        &request,
+                        membership.governance.membership_revision,
+                        topology.topology_revision,
+                    )?,
+                    now,
+                )
+                .await?;
+            if let Some(case) = existing_case {
                 if case.state == ArbitrationState::Applied {
                     let decision = self.applied_decision(&case).await?;
                     if matches!(
@@ -789,6 +800,37 @@ where
             })
     }
 
+    async fn current_arbitration(
+        &self,
+        initial_case_id: GovernanceCaseId,
+        now: i64,
+    ) -> Result<(GovernanceCaseId, Option<ArbitrationCase>), CoordinationServiceError> {
+        let mut case_id = initial_case_id;
+        for _ in 0..MAX_ARBITRATION_RENEWALS {
+            let Some(case) = self.store.arbitration_case(&case_id).await? else {
+                return Ok((case_id, None));
+            };
+            let expired = match case.state {
+                ArbitrationState::Open if case.expires_at <= now => {
+                    self.store
+                        .expire_arbitration(&case.case_id, case.revision, now)
+                        .await?
+                }
+                ArbitrationState::Expired => case,
+                _ => return Ok((case_id, Some(case))),
+            };
+            case_id = governance_case_id(
+                "renewal",
+                &(expired.case_id, expired.revision, expired.expires_at),
+                expired.membership_revision,
+                expired.topology_revision,
+            )?;
+        }
+        Err(CoordinationServiceError::InvalidDurableFacts(
+            "arbitration renewal chain exceeds the bounded recovery limit".into(),
+        ))
+    }
+
     /// Lease one durable envelope. Expired claims are recoverable by a later worker.
     pub async fn claim_next_message(
         &self,
@@ -880,13 +922,18 @@ where
             .topology(&message.session_id)
             .await?
             .ok_or_else(|| CoordinationServiceError::MissingTopology(message.session_id.clone()))?;
-        let case_id = governance_case_id(
-            "mailbox-turn",
-            &(message.message_id.clone(), receipt.turn_id.clone()),
-            membership.governance.membership_revision,
-            topology.topology_revision,
-        )?;
-        let case = if let Some(existing) = self.store.arbitration_case(&case_id).await? {
+        let (case_id, existing_case) = self
+            .current_arbitration(
+                governance_case_id(
+                    "mailbox-turn",
+                    &(message.message_id.clone(), receipt.turn_id.clone()),
+                    membership.governance.membership_revision,
+                    topology.topology_revision,
+                )?,
+                now,
+            )
+            .await?;
+        let case = if let Some(existing) = existing_case {
             existing
         } else {
             let ttl = i64::try_from(self.arbitration_ttl_seconds)

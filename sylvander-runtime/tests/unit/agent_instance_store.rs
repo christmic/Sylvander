@@ -376,6 +376,25 @@ async fn coordination_service_persists_moderator_case_before_blocking_dispatch()
             .unwrap(),
         DispatchMessageOutcome::RequiresArbitration { .. }
     ));
+    let DispatchMessageOutcome::RequiresArbitration {
+        case: renewed_case, ..
+    } = service
+        .dispatch_message(dispatch_request("blocked-message"), 51)
+        .await
+        .unwrap()
+    else {
+        panic!("an expired case must renew moderation for the stable intent");
+    };
+    assert_ne!(renewed_case.case_id, case.case_id);
+    assert_eq!(
+        store
+            .arbitration_case(&case.case_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ArbitrationState::Expired
+    );
 }
 
 #[tokio::test]

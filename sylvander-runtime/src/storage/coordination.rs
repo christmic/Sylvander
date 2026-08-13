@@ -105,6 +105,13 @@ pub trait CoordinationStore: Send + Sync {
         case_id: &GovernanceCaseId,
     ) -> Result<Option<ArbitrationCase>, SessionStoreError>;
 
+    async fn expire_arbitration(
+        &self,
+        case_id: &GovernanceCaseId,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<ArbitrationCase, SessionStoreError>;
+
     async fn decide_arbitration(
         &self,
         decision: &ModeratorDecision,
@@ -942,6 +949,59 @@ impl CoordinationStore for SqliteSessionStore {
         let case_id = case_id.clone();
         self.run(move |connection| load_arbitration_case(connection, &case_id))
             .await
+    }
+
+    async fn expire_arbitration(
+        &self,
+        case_id: &GovernanceCaseId,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<ArbitrationCase, SessionStoreError> {
+        let case_id = case_id.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let Some(mut case) = load_arbitration_case(&transaction, &case_id)? else {
+                return Err(SessionStoreError::Invalid(
+                    "arbitration case does not exist".into(),
+                ));
+            };
+            if case.state == ArbitrationState::Expired {
+                transaction.commit()?;
+                return Ok(case);
+            }
+            if case.state != ArbitrationState::Open
+                || case.revision != expected_revision
+                || case.expires_at > now
+            {
+                return Err(SessionStoreError::Invalid(
+                    "arbitration case cannot be expired from current facts".into(),
+                ));
+            }
+            let next_revision = case.revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("arbitration revision overflow".into())
+            })?;
+            let changed = transaction.execute(
+                "UPDATE governance_cases SET state='expired',revision=?1,updated_at=?2 \
+                 WHERE case_id=?3 AND state='open' AND revision=?4 AND expires_at<=?2",
+                params![
+                    checked_i64(next_revision, "arbitration revision")?,
+                    now,
+                    case.case_id.0,
+                    checked_i64(case.revision, "arbitration revision")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "arbitration case changed before expiration".into(),
+                ));
+            }
+            case.state = ArbitrationState::Expired;
+            case.revision = next_revision;
+            case.updated_at = now;
+            transaction.commit()?;
+            Ok(case)
+        })
+        .await
     }
 
     async fn decide_arbitration(
