@@ -36,6 +36,7 @@ export type RuntimeCommand =
   | { type: "update_session_config"; request: RuntimeSessionConfigUpdateRequest }
   | { type: "submit_feedback"; feedback: RuntimeFeedback }
   | { type: "memory_confirmation"; request: RuntimeMemoryConfirmationRequest }
+  | { type: "user_profile"; request: RuntimeUserProfileRequest }
   | { type: "ping" };
 
 export type PlanDecision =
@@ -94,6 +95,73 @@ type RuntimeMemoryConfirmationResponse =
       operation: string;
       code: "unsupported_version" | "invalid_request" | "unauthenticated" | "forbidden" | "conflict" | "service_unavailable";
       message: string;
+    };
+
+export type RuntimePrivacyClass = "personal" | "sensitive" | "restricted";
+
+export interface RuntimeClassifiedPreference<T> {
+  value: T;
+  privacy_class: RuntimePrivacyClass;
+}
+
+export interface RuntimeUserProfileData {
+  preferred_language?: RuntimeClassifiedPreference<string>;
+  locale?: RuntimeClassifiedPreference<string>;
+  response_detail?: RuntimeClassifiedPreference<"concise" | "balanced" | "detailed">;
+  communication_tone?: RuntimeClassifiedPreference<"direct" | "warm" | "formal">;
+  accessibility?: RuntimeClassifiedPreference<{
+    screen_reader_optimized: boolean;
+    reduce_motion: boolean;
+    high_contrast: boolean;
+  }>;
+  constraints: Array<RuntimeClassifiedPreference<string>>;
+}
+
+export interface RuntimeUserProfileView {
+  revision: number;
+  profile: RuntimeUserProfileData;
+  do_not_learn: boolean;
+  created_at_unix_secs: number;
+  updated_at_unix_secs: number;
+}
+
+export type RuntimeUserProfileAction =
+  | { operation: "create"; profile: RuntimeUserProfileData }
+  | { operation: "read" }
+  | { operation: "update"; expected_revision: number; profile: RuntimeUserProfileData }
+  | { operation: "export"; format: "json" }
+  | { operation: "correct"; expected_revision: number; profile: RuntimeUserProfileData }
+  | { operation: "delete"; expected_revision: number }
+  | { operation: "set_do_not_learn"; expected_revision: number; enabled: boolean };
+
+export interface RuntimeUserProfileRequest {
+  version: 1;
+  action: RuntimeUserProfileAction;
+}
+
+export interface RuntimeUserProfileExport {
+  schema_version: number;
+  format: "json";
+  profile: RuntimeUserProfileView;
+  exported_at_unix_secs: number;
+}
+
+export type RuntimeUserProfileOperation = RuntimeUserProfileAction["operation"];
+
+export type RuntimeUserProfileResponse =
+  | { result: "created" | "read" | "updated" | "corrected" | "do_not_learn_updated"; version: 1; profile: RuntimeUserProfileView }
+  | { result: "exported"; version: 1; export: RuntimeUserProfileExport }
+  | { result: "deleted"; version: 1; deleted_revision: number; do_not_learn_preserved: boolean }
+  | { result: "not_found"; version: 1 }
+  | {
+      result: "error";
+      version: 1;
+      error: {
+        code: "unsupported_version" | "invalid_request" | "unauthenticated" | "forbidden" | "not_found" | "already_exists" | "conflict" | "rate_limited" | "service_unavailable" | "internal";
+        operation: RuntimeUserProfileOperation;
+        current_revision?: number;
+        retry_after_ms?: number;
+      };
     };
 
 export interface RuntimePermissionProfile {
@@ -284,6 +352,7 @@ export type RuntimeMessage =
   | { type: "turn_interrupted"; session_id: string; reason: string; feedback_target?: string }
   | { type: "feedback_recorded"; feedback_id: string }
   | { type: "memory_confirmation"; response: RuntimeMemoryConfirmationResponse }
+  | { type: "user_profile"; response: RuntimeUserProfileResponse }
   | { type: "session_created"; session_id: string; config?: RuntimeSessionConfigState }
   | { type: "session_updated"; session_id: string; label?: string; archived: boolean }
   | { type: "session_deleted"; session_id: string }

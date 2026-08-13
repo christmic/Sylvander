@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimePendingMemoryConfirmation, type RuntimeSessionConfigState } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimePendingMemoryConfirmation, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -73,6 +73,13 @@ export interface RuntimeViewState {
   };
   memoryConfirmations: RuntimePendingMemoryConfirmation[];
   memoryDecisionPending?: string;
+  userProfile: {
+    status: "idle" | "loading" | "ready" | "not_found" | "submitting" | "error";
+    profile?: RuntimeUserProfileView;
+    export?: RuntimeUserProfileExport;
+    pendingOperation?: RuntimeUserProfileOperation;
+    notice?: string;
+  };
   liveness: "idle" | "checking" | "healthy";
   diagnostic?: string;
 }
@@ -88,6 +95,7 @@ const initialState: RuntimeViewState = {
   interruptingSessionIds: [],
   contextRequestPending: false,
   memoryConfirmations: [],
+  userProfile: { status: "idle" },
   liveness: "idle",
 };
 
@@ -114,6 +122,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const contextRequestSessionRef = useRef<string | undefined>(undefined);
   const protocolCapabilitiesRef = useRef(new Set<string>());
   const memoryRequestSessionRef = useRef<string | undefined>(undefined);
+  const userProfileRequestRef = useRef<RuntimeUserProfileOperation | undefined>(undefined);
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
 
@@ -130,6 +139,42 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       memoryRequestSessionRef.current = undefined;
       setState((current) => ({ ...current, diagnostic: safeDiagnostic(error) }));
     });
+  }, [submit]);
+
+  // Profile contents are sensitive owner data. They remain in this ephemeral
+  // projection and are never copied into Session history or diagnostics.
+  const requestUserProfile = useCallback(async (action: RuntimeUserProfileAction) => {
+    if (!protocolCapabilitiesRef.current.has("user_profile_v1")) return false;
+    userProfileRequestRef.current = action.operation;
+    setState((current) => ({
+      ...current,
+      userProfile: {
+        ...current.userProfile,
+        status: action.operation === "read" ? "loading" : "submitting",
+        profile: action.operation === "read" ? undefined : current.userProfile.profile,
+        pendingOperation: action.operation,
+        export: undefined,
+        notice: undefined,
+      },
+    }));
+    try {
+      await submit({ type: "user_profile", request: { version: 1, action } });
+      return true;
+    } catch {
+      if (userProfileRequestRef.current === action.operation) {
+        userProfileRequestRef.current = undefined;
+      }
+      setState((current) => ({
+        ...current,
+        userProfile: {
+          ...current.userProfile,
+          status: "error",
+          pendingOperation: undefined,
+          notice: "Runtime command queue is unavailable",
+        },
+      }));
+      return false;
+    }
   }, [submit]);
 
   const flushPendingDeltas = useCallback((sessionId: string) => {
@@ -423,6 +468,74 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           }],
         }));
         if (response.code === "conflict") requestMemoryConfirmations(requestSessionId);
+        break;
+      }
+      case "user_profile": {
+        if (!userProfileRequestRef.current) break;
+        const response = message.response;
+        userProfileRequestRef.current = undefined;
+        if (response.result === "not_found") {
+          setState((current) => ({
+            ...current,
+            userProfile: { status: "not_found", notice: "No user profile is stored" },
+          }));
+          break;
+        }
+        if (response.result === "error") {
+          if (response.error.code === "conflict") {
+            void requestUserProfile({ operation: "read" });
+            setState((current) => ({
+              ...current,
+              userProfile: {
+                ...current.userProfile,
+                notice: "Profile changed elsewhere; the stale edit was not applied",
+              },
+            }));
+            break;
+          }
+          setState((current) => ({
+            ...current,
+            userProfile: {
+              ...current.userProfile,
+              status: "error",
+              pendingOperation: undefined,
+              notice: profileErrorNotice(response.error.code, response.error.retry_after_ms),
+            },
+          }));
+          break;
+        }
+        if (response.result === "deleted") {
+          setState((current) => ({
+            ...current,
+            userProfile: {
+              status: "not_found",
+              notice: response.do_not_learn_preserved
+                ? "Profile deleted; do-not-learn remains enabled"
+                : "Profile deleted",
+            },
+          }));
+          break;
+        }
+        if (response.result === "exported") {
+          setState((current) => ({
+            ...current,
+            userProfile: {
+              status: "ready",
+              profile: response.export.profile,
+              export: response.export,
+              notice: "Profile export is ready",
+            },
+          }));
+          break;
+        }
+        setState((current) => ({
+          ...current,
+          userProfile: {
+            status: "ready",
+            profile: response.profile,
+            notice: profileSuccessNotice(response.result),
+          },
+        }));
         break;
       }
       case "sessions_list": {
@@ -847,7 +960,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       default:
         break;
     }
-  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestMemoryConfirmations, submit]);
+  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestMemoryConfirmations, requestUserProfile, submit]);
 
   useEffect(() => {
     let stopped = false;
@@ -902,6 +1015,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       } else {
         protocolCapabilitiesRef.current.clear();
         memoryRequestSessionRef.current = undefined;
+        userProfileRequestRef.current = undefined;
+        setState((current) => ({ ...current, userProfile: { status: "idle" } }));
         scheduleReconnect(event.reason);
       }
     };
@@ -957,6 +1072,11 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     }));
     return submit({ type: "load_session", session_id: sessionId });
   }, [submit]);
+
+  const clearUserProfile = useCallback(() => {
+    userProfileRequestRef.current = undefined;
+    setState((current) => ({ ...current, userProfile: { status: "idle" } }));
+  }, []);
 
   const answerQuestion = useCallback(async (callId: string, answer: string) => {
     const question = state.question;
@@ -1168,12 +1288,29 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     cancelTask,
     submitFeedback,
     resolveMemoryConfirmation,
+    requestUserProfile,
+    clearUserProfile,
     sendChat,
     interruptTurn,
     requestContext,
     compactContext,
     checkLiveness,
   };
+}
+
+function profileSuccessNotice(result: "created" | "read" | "updated" | "corrected" | "do_not_learn_updated") {
+  switch (result) {
+    case "created": return "User profile created";
+    case "read": return "User profile loaded";
+    case "updated": return "User profile updated";
+    case "corrected": return "User profile corrected";
+    case "do_not_learn_updated": return "Learning preference updated";
+  }
+}
+
+function profileErrorNotice(code: string, retryAfterMs?: number) {
+  const retry = retryAfterMs === undefined ? "" : `; retry in ${retryAfterMs} ms`;
+  return `User profile operation failed (${code})${retry}`;
 }
 
 function sameDeltaTarget(left: PendingDelta, right: PendingDelta): boolean {
