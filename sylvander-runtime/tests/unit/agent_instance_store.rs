@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstanceOrigin, ApprovalRoute, HistoryView, SessionAgentRole,
 };
+use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::SessionMetadata;
 use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{SessionLifetime, SessionStore, StoredSession};
-use sylvander_api::{AgentId, AgentInstanceId, SwarmId};
+use sylvander_api::{AgentId, AgentInstanceId, SwarmId, TaskId};
 
 use super::*;
 
@@ -228,6 +229,44 @@ async fn topology_is_durable_and_fenced_by_its_own_revision() {
         SessionStoreError::TopologyConflict {
             expected: None,
             actual: Some(0)
+        }
+    ));
+}
+
+#[tokio::test]
+async fn task_creation_is_durable_and_duplicate_safe() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    store
+        .save_session_membership(&membership(), None)
+        .await
+        .unwrap();
+    let task = CoordinationTask {
+        task_id: TaskId::new("task-1"),
+        session_id: SessionId::new("multi-session"),
+        membership_revision: 0,
+        parent_task_id: None,
+        created_by: AgentInstanceId::new("moderator-1"),
+        assigned_to: Some(AgentInstanceId::new("worker-1")),
+        objective: "inspect recovery invariants".into(),
+        state: CoordinationTaskState::Proposed,
+        token_budget: 2_000,
+        consumed_tokens: 0,
+        max_handoffs: 2,
+        handoff_count: 0,
+        revision: 0,
+        created_at: 12,
+        updated_at: 12,
+    };
+
+    store.create_task(&task).await.unwrap();
+    assert_eq!(store.task(&task.task_id).await.unwrap(), Some(task.clone()));
+    assert!(matches!(
+        store.create_task(&task).await.unwrap_err(),
+        SessionStoreError::TaskConflict {
+            expected: None,
+            actual: Some(0),
+            ..
         }
     ));
 }

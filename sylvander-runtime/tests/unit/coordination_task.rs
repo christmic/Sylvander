@@ -47,6 +47,7 @@ fn task(id: &str, parent: Option<&str>) -> CoordinationTask {
     CoordinationTask {
         task_id: TaskId::new(id),
         session_id: SessionId::new("session"),
+        membership_revision: 0,
         parent_task_id: parent.map(TaskId::new),
         created_by: AgentInstanceId::new("moderator"),
         assigned_to: Some(AgentInstanceId::new("worker")),

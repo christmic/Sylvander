@@ -31,8 +31,8 @@ use sylvander_agent::tool::invocation::{ToolInvocationClass, ToolRecoveryPolicy}
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
-use sylvander_api::UserId;
 use sylvander_api::session::{SessionConfigOverrides, SessionEffectiveConfig};
+use sylvander_api::{TaskId, UserId};
 
 // ---------------------------------------------------------------------------
 // SessionLifetime
@@ -780,6 +780,12 @@ pub enum SessionStoreError {
     },
     #[error("session topology revision conflict: expected {expected:?}, actual {actual:?}")]
     TopologyConflict {
+        expected: Option<u64>,
+        actual: Option<u64>,
+    },
+    #[error("task {task_id} revision conflict: expected {expected:?}, actual {actual:?}")]
+    TaskConflict {
+        task_id: TaskId,
         expected: Option<u64>,
         actual: Option<u64>,
     },

@@ -57,6 +57,7 @@ impl CoordinationTaskState {
 pub struct CoordinationTask {
     pub task_id: TaskId,
     pub session_id: SessionId,
+    pub membership_revision: u64,
     pub parent_task_id: Option<TaskId>,
     pub created_by: AgentInstanceId,
     pub assigned_to: Option<AgentInstanceId>,
@@ -101,7 +102,9 @@ impl SessionTaskGraph {
             .collect();
         let mut tasks = HashMap::with_capacity(self.tasks.len());
         for task in &self.tasks {
-            if task.session_id != self.session_id {
+            if task.session_id != self.session_id
+                || task.membership_revision != self.membership_revision
+            {
                 return Err(TaskGraphError::TaskSessionMismatch(task.task_id.clone()));
             }
             if task.objective.trim().is_empty() || task.token_budget == 0 {

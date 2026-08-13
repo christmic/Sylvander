@@ -86,6 +86,7 @@ fn task() -> CoordinationTask {
     CoordinationTask {
         task_id: TaskId::new("task"),
         session_id: SessionId::new("session"),
+        membership_revision: 0,
         parent_task_id: None,
         created_by: AgentInstanceId::new("moderator"),
         assigned_to: Some(AgentInstanceId::new("worker-a")),

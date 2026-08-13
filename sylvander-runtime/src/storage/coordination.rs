@@ -2,8 +2,9 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, params};
-use sylvander_api::{AgentInstanceId, SessionId};
+use sylvander_api::{AgentInstanceId, SessionId, TaskId};
 
+use crate::coordination::task::{CoordinationTask, CoordinationTaskState};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::membership::SessionMembership;
 use crate::storage::session::{SessionStoreError, SqliteSessionStore};
@@ -21,6 +22,10 @@ pub trait CoordinationStore: Send + Sync {
         &self,
         session_id: &SessionId,
     ) -> Result<Option<SessionTopology>, SessionStoreError>;
+
+    async fn create_task(&self, task: &CoordinationTask) -> Result<(), SessionStoreError>;
+
+    async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError>;
 }
 
 #[async_trait]
@@ -173,6 +178,205 @@ impl CoordinationStore for SqliteSessionStore {
         })
         .await
     }
+
+    async fn create_task(&self, task: &CoordinationTask) -> Result<(), SessionStoreError> {
+        if task.revision != 0
+            || task.objective.trim().is_empty()
+            || task.token_budget == 0
+            || task.consumed_tokens > task.token_budget
+            || task.handoff_count > task.max_handoffs
+        {
+            return Err(SessionStoreError::Invalid(
+                "invalid new coordination task".into(),
+            ));
+        }
+        let task = task.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let actual_revision = transaction
+                .query_row(
+                    "SELECT revision FROM coordination_tasks WHERE task_id=?1",
+                    [&task.task_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|value| checked_u64(value, "task revision"))
+                .transpose()?;
+            if actual_revision.is_some() {
+                return Err(SessionStoreError::TaskConflict {
+                    task_id: task.task_id,
+                    expected: None,
+                    actual: actual_revision,
+                });
+            }
+            let membership_revision = transaction
+                .query_row(
+                    "SELECT membership_revision FROM session_governance WHERE session_id=?1",
+                    [&task.session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            if membership_revision
+                .map(|value| checked_u64(value, "membership revision"))
+                .transpose()?
+                != Some(task.membership_revision)
+            {
+                return Err(SessionStoreError::Invalid(
+                    "task membership revision is not current".into(),
+                ));
+            }
+            for actor in [
+                &task.created_by,
+                task.assigned_to.as_ref().unwrap_or(&task.created_by),
+            ] {
+                let exists = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_agent_instances \
+                     WHERE session_id=?1 AND instance_id=?2)",
+                    params![task.session_id.0, actor.0],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !exists {
+                    return Err(SessionStoreError::Invalid(
+                        "task references an unknown Agent instance".into(),
+                    ));
+                }
+            }
+            transaction.execute(
+                "INSERT INTO coordination_tasks \
+                 (task_id,session_id,membership_revision,parent_task_id,created_by_instance_id,
+                  assigned_to_instance_id,objective,state,token_budget,consumed_tokens,
+                  max_handoffs,handoff_count,revision,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,?13,?14)",
+                params![
+                    task.task_id.0,
+                    task.session_id.0,
+                    checked_i64(task.membership_revision, "membership revision")?,
+                    task.parent_task_id.as_ref().map(|id| &id.0),
+                    task.created_by.0,
+                    task.assigned_to.as_ref().map(|id| &id.0),
+                    task.objective,
+                    encode_task_state(task.state),
+                    checked_i64(task.token_budget, "task token budget")?,
+                    checked_i64(task.consumed_tokens, "task consumed tokens")?,
+                    i64::from(task.max_handoffs),
+                    i64::from(task.handoff_count),
+                    task.created_at,
+                    task.updated_at,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError> {
+        let task_id = task_id.clone();
+        self.run(move |connection| {
+            connection
+                .query_row(
+                    "SELECT session_id,membership_revision,parent_task_id,created_by_instance_id,
+                            assigned_to_instance_id,objective,state,token_budget,consumed_tokens,
+                            max_handoffs,handoff_count,revision,created_at,updated_at
+                     FROM coordination_tasks WHERE task_id=?1",
+                    [&task_id.0],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, i64>(7)?,
+                            row.get::<_, i64>(8)?,
+                            row.get::<_, i64>(9)?,
+                            row.get::<_, i64>(10)?,
+                            row.get::<_, i64>(11)?,
+                            row.get::<_, i64>(12)?,
+                            row.get::<_, i64>(13)?,
+                        ))
+                    },
+                )
+                .optional()?
+                .map(|row| decode_task(task_id, row))
+                .transpose()
+        })
+        .await
+    }
+}
+
+type EncodedTask = (
+    String,
+    i64,
+    Option<String>,
+    String,
+    Option<String>,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
+
+fn decode_task(task_id: TaskId, row: EncodedTask) -> Result<CoordinationTask, SessionStoreError> {
+    Ok(CoordinationTask {
+        task_id,
+        session_id: SessionId::new(row.0),
+        membership_revision: checked_u64(row.1, "membership revision")?,
+        parent_task_id: row.2.map(TaskId::new),
+        created_by: AgentInstanceId::new(row.3),
+        assigned_to: row.4.map(AgentInstanceId::new),
+        objective: row.5,
+        state: decode_task_state(&row.6)?,
+        token_budget: checked_u64(row.7, "task token budget")?,
+        consumed_tokens: checked_u64(row.8, "task consumed tokens")?,
+        max_handoffs: checked_u32(row.9, "task maximum handoffs")?,
+        handoff_count: checked_u32(row.10, "task handoff count")?,
+        revision: checked_u64(row.11, "task revision")?,
+        created_at: row.12,
+        updated_at: row.13,
+    })
+}
+
+const fn encode_task_state(state: CoordinationTaskState) -> &'static str {
+    match state {
+        CoordinationTaskState::Proposed => "proposed",
+        CoordinationTaskState::Ready => "ready",
+        CoordinationTaskState::Running => "running",
+        CoordinationTaskState::Blocked => "blocked",
+        CoordinationTaskState::AwaitingReview => "awaiting_review",
+        CoordinationTaskState::Completed => "completed",
+        CoordinationTaskState::Failed => "failed",
+        CoordinationTaskState::Cancelled => "cancelled",
+    }
+}
+
+fn decode_task_state(state: &str) -> Result<CoordinationTaskState, SessionStoreError> {
+    match state {
+        "proposed" => Ok(CoordinationTaskState::Proposed),
+        "ready" => Ok(CoordinationTaskState::Ready),
+        "running" => Ok(CoordinationTaskState::Running),
+        "blocked" => Ok(CoordinationTaskState::Blocked),
+        "awaiting_review" => Ok(CoordinationTaskState::AwaitingReview),
+        "completed" => Ok(CoordinationTaskState::Completed),
+        "failed" => Ok(CoordinationTaskState::Failed),
+        "cancelled" => Ok(CoordinationTaskState::Cancelled),
+        _ => Err(SessionStoreError::Store(
+            "stored task state is invalid".into(),
+        )),
+    }
+}
+
+fn checked_u32(value: i64, label: &str) -> Result<u32, SessionStoreError> {
+    value
+        .try_into()
+        .map_err(|_| SessionStoreError::Store(format!("stored {label} is outside u32 range")))
 }
 
 const fn encode_relation_kind(kind: AgentRelationKind) -> &'static str {
