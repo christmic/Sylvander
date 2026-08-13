@@ -25,6 +25,8 @@ fn coordination_facts_reduce_to_low_cardinality_counters() {
     let session_id = SessionId::new("session-1");
     for outcome in [
         RuntimeCoordinationOutcome::Enqueued,
+        RuntimeCoordinationOutcome::TaskCreated,
+        RuntimeCoordinationOutcome::TaskTransitioned,
         RuntimeCoordinationOutcome::ArbitrationRequired,
         RuntimeCoordinationOutcome::ModeratorAuthorized,
         RuntimeCoordinationOutcome::ModeratorRejected,
@@ -39,8 +41,10 @@ fn coordination_facts_reduce_to_low_cardinality_counters() {
     assert_eq!(
         recorder.snapshot(),
         RuntimeObservabilitySnapshot {
-            event_count: 6,
+            event_count: 8,
             coordination_enqueued: 1,
+            coordination_tasks_created: 1,
+            coordination_tasks_transitioned: 1,
             coordination_arbitration_required: 1,
             coordination_moderator_authorized: 1,
             coordination_moderator_rejected: 1,
