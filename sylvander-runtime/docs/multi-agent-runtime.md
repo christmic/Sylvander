@@ -12,6 +12,7 @@ many `AgentInstance` participants. Each participant has:
 - a globally stable instance ID and one immutable Agent definition revision;
 - an origin (`Defined` or a fork receipt), role, and capability revision;
 - an independent lifecycle revision and execution state;
+- an independently revisioned, frozen effective execution configuration;
 - an approval route and history view;
 - an optional Agent-specific workspace view.
 
@@ -34,9 +35,9 @@ Runtime represents both collaboration primitives explicitly:
 - `SharedLane` identifies an Agent cursor over shared append-only Session
   history.
 
-Production automatic delegation currently exposes governed fork creation.
-Shared-lane history is durable and used by defined participants, but a public
-dynamic lane-creation API is not yet delivered.
+Production supports governed fork creation and separately defined Agent
+revisions. Defined participants use a shared-lane view; dynamic lane cursor
+operations remain internal.
 
 ## Governed topology and work
 
@@ -47,9 +48,10 @@ dynamic lane-creation API is not yet delivered.
 - stale membership/topology revisions;
 - unreachable message routes.
 
-The production fork API currently creates a `ParentOf` edge. Peer and reviewer
-relationships can be represented and validated, but dynamic peer/reviewer
-attachment is not yet a public Runtime operation.
+Fork and defined-Agent admission create the required `ParentOf` ownership edge.
+Runtime also exposes governed, revision-CASed `Peer` and `Reviews` attachment;
+dynamic callers cannot rewrite `ParentOf` and therefore cannot bypass the
+moderator-rooted ownership tree.
 
 Work is a durable DAG of bounded `CoordinationTask` records. Every task carries
 an assignee, token budget, handoff ceiling, state, and optimistic revision.
@@ -120,6 +122,13 @@ started, committed, and result-persisted boundaries are durable; replay safety
 is not inferred from capability class. Workspace journal receipts and stable
 invocation IDs decide resume/reconcile/manual outcomes.
 
+Each `(Session, AgentInstance)` has one durable effective-configuration cell.
+The moderator cell advances with Session configuration while a fork copies its
+parent cell in the same membership/topology transaction. A defined Agent gets
+an exact Runtime-resolved definition/model/permission cell. Every turn copies
+that cell before effects, and boot fails closed if a live participant lacks or
+mismatches it.
+
 ## Workspace concurrency
 
 A writable fork is provisioned an Agent-specific isolated worktree by default.
@@ -152,20 +161,21 @@ commit atomically.
 ## Observable facts
 
 The typed Runtime observation bus, bounded debug JSONL, and health snapshot
-expose low-cardinality counters for enqueue, arbitration required, moderator
-authorization/rejection, applied decisions, and mailbox escalation. Durable
+expose low-cardinality counters for participant activation, topology updates,
+enqueue, arbitration required, moderator authorization/rejection, applied
+decisions, and mailbox escalation. Durable
 cases, decisions, message states, turn receipts, task revisions, lifecycle
 revisions, and workspace views provide the audit trail. Prompt and message
 payload content is excluded from Runtime lifecycle metrics.
 
 ## Remaining product work
 
-The durable substrate is complete for governed fork workers and mailbox
-execution. The following are still explicit follow-on work, not implied by the
-current types:
+The durable substrate is complete for heterogeneous defined Agents, governed
+fork workers, dynamic collaboration edges, and mailbox execution. The
+following remain explicit follow-on work, not implied by the current types:
 
-- dynamic creation of a fully defined non-fork Agent participant;
-- public peer/reviewer topology mutation and a packaged swarm coordinator API;
+- a packaged swarm coordinator API over the existing coordinator role,
+  membership, task, relation, and mailbox primitives;
 - task execution leases that stop an already-running assignee at a replan or
   reassignment boundary;
 - semantic merge planning across multiple isolated worktrees;
