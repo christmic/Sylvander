@@ -32,6 +32,8 @@ use sylvander_llm_core::InputSchema;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_TOOL_PAGES: usize = 32;
+const MAX_TOOLS: usize = 4096;
 const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 const TOOL_RESULT_HEAD_BYTES: usize = 16 * 1024;
 const MCP_HEALTH_ACTIVE: u8 = 1;
@@ -219,6 +221,10 @@ impl McpStdioClient {
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
+            // MCP servers are external capability processes. They receive
+            // only deployment-reviewed values, never Runtime's ambient
+            // credentials, proxy configuration, or user environment.
+            .env_clear()
             .envs(&config.envs)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -303,17 +309,56 @@ impl McpStdioClient {
 
     /// Discover all tools currently advertised by the connected server.
     pub(crate) async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
-        let result = self.request("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(JsonValue::as_array)
-            .ok_or_else(|| McpError::InvalidResult {
+        let mut definitions = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_TOOL_PAGES {
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let result = self.request("tools/list", params).await?;
+            let page = result
+                .get("tools")
+                .and_then(JsonValue::as_array)
+                .ok_or_else(|| McpError::InvalidResult {
+                    server: self.inner.server_name.clone(),
+                    method: "tools/list".into(),
+                    message: "missing tools array".into(),
+                })?;
+            if definitions.len().saturating_add(page.len()) > MAX_TOOLS {
+                return Err(McpError::InvalidResult {
+                    server: self.inner.server_name.clone(),
+                    method: "tools/list".into(),
+                    message: format!("tool catalog exceeds {MAX_TOOLS} entries"),
+                });
+            }
+            definitions.extend(page.iter().cloned());
+            let next = result
+                .get("nextCursor")
+                .and_then(JsonValue::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            if next.is_none() {
+                cursor = None;
+                break;
+            }
+            if next == cursor {
+                return Err(McpError::InvalidResult {
+                    server: self.inner.server_name.clone(),
+                    method: "tools/list".into(),
+                    message: "tool pagination cursor did not advance".into(),
+                });
+            }
+            cursor = next;
+        }
+        if cursor.is_some() {
+            return Err(McpError::InvalidResult {
                 server: self.inner.server_name.clone(),
                 method: "tools/list".into(),
-                message: "missing tools array".into(),
-            })?;
+                message: format!("tool catalog exceeds {MAX_TOOL_PAGES} pages"),
+            });
+        }
 
-        let discovered = tools
+        let discovered = definitions
             .iter()
             .map(|definition| McpTool::from_definition(self.clone(), definition))
             .collect::<Result<Vec<_>, _>>()?;
@@ -321,7 +366,7 @@ impl McpStdioClient {
             .tool_definitions
             .write()
             .unwrap()
-            .clone_from(tools);
+            .clone_from(&definitions);
         self.inner
             .health
             .store(MCP_HEALTH_ACTIVE, Ordering::Release);
@@ -782,10 +827,15 @@ impl McpTool {
             .and_then(JsonValue::as_str)
             .unwrap_or("")
             .to_owned();
-        let input_schema = definition
-            .get("inputSchema")
-            .cloned()
-            .unwrap_or_else(|| json!({ "type": "object" }));
+        let input_schema =
+            definition
+                .get("inputSchema")
+                .cloned()
+                .ok_or_else(|| McpError::InvalidResult {
+                    server: server.clone(),
+                    method: "tools/list".into(),
+                    message: format!("tool {name} is missing inputSchema"),
+                })?;
         if !input_schema.is_object() {
             return Err(McpError::InvalidResult {
                 server,

@@ -81,11 +81,15 @@ while True:
             with open(log_path, "r", encoding="utf-8") as log:
                 if sum(1 for entry in log if entry.strip() == "tools/list") > 1:
                     tool_name = "echo_v2"
+        cursor = message.get("params", {}).get("cursor")
+        if os.environ.get("MCP_TEST_PAGINATED_TOOLS") == "1":
+            tool_name = "echo_first" if cursor is None else "echo_second"
+        next_cursor = "tool-page-2" if os.environ.get("MCP_TEST_PAGINATED_TOOLS") == "1" and cursor is None else None
         send({"jsonrpc":"2.0", "id":message["id"], "result":{"tools":[{
             "name":tool_name,
             "description":"Echo an input value",
             "inputSchema":{"type":"object", "properties":{"value":{"type":"string"}}}
-        }]}})
+        }], **({"nextCursor":next_cursor} if next_cursor else {})}})
     elif method == "resources/list":
         send({"jsonrpc":"2.0", "id":message["id"], "result":{"resources":[{
             "uri":"memory://fake/guide",
@@ -105,9 +109,10 @@ while True:
             os._exit(3)
         if arguments.get("sleep"):
             time.sleep(slow_seconds)
+        text = "env:HOME=" + str("HOME" in os.environ).lower() if arguments.get("inspectEnv") else "echo:" + arguments.get("value", "")
         send({"jsonrpc":"2.0", "id":message["id"], "result":{
             "content":[
-                {"type":"text", "text":"echo:" + arguments.get("value", "")},
+                {"type":"text", "text":text},
                 {"type":"image", "mimeType":"image/png", "data":"AA=="}
             ],
             "isError":bool(arguments.get("error"))
@@ -224,6 +229,72 @@ async fn real_process_handshake_discovery_call_and_shutdown() {
             "resources/read"
         ]
     );
+}
+
+#[tokio::test]
+async fn tool_discovery_collects_every_official_cursor_page() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut config = fake_config(&temp);
+    config
+        .envs
+        .insert("MCP_TEST_PAGINATED_TOOLS".into(), "1".into());
+    let client = McpStdioClient::connect(&config, Duration::from_secs(2))
+        .await
+        .expect("connect");
+
+    let tools = client.list_tools().await.expect("list every tool page");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.spec().name)
+            .collect::<Vec<_>>(),
+        ["mcp__fake__echo_first", "mcp__fake__echo_second"]
+    );
+    assert!(
+        DynamicToolSource::platform_feature(&client)
+            .expect("MCP health")
+            .summary
+            .contains("2 tools")
+    );
+
+    client.shutdown().await.expect("shutdown process");
+}
+
+#[tokio::test]
+async fn tool_definition_requires_the_official_input_schema_field() {
+    let temp = TempDir::new().expect("temp dir");
+    let config = fake_config(&temp);
+    let client = McpStdioClient::connect(&config, Duration::from_secs(2))
+        .await
+        .expect("connect");
+
+    let error = McpTool::from_definition(
+        client.clone(),
+        &json!({ "name": "invalid", "description": "missing schema" }),
+    )
+    .expect_err("inputSchema is required by MCP 2025-11-25");
+    assert!(error.to_string().contains("missing inputSchema"));
+
+    client.shutdown().await.expect("shutdown process");
+}
+
+#[tokio::test]
+async fn stdio_server_does_not_inherit_the_runtime_environment() {
+    let temp = TempDir::new().expect("temp dir");
+    let config = fake_config(&temp);
+    let client = McpStdioClient::connect(&config, Duration::from_secs(2))
+        .await
+        .expect("connect");
+    let tool = client.list_tools().await.expect("list tools").remove(0);
+    let context = sylvander_agent::tool_context::defaults::system_tool_context();
+
+    let output = tool
+        .execute(&context, json!({ "inspectEnv": true }))
+        .await
+        .expect("inspect child environment");
+    assert!(output.content.starts_with("env:HOME=false"));
+
+    client.shutdown().await.expect("shutdown process");
 }
 
 #[tokio::test]

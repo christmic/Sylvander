@@ -4,6 +4,24 @@ Sylvander treats each configured MCP server as a supervised external tool
 source. The production local transport is MCP 2025-11-25 over stdio; remote
 workspace execution does not change this protocol boundary.
 
+## Official protocol evidence
+
+The official [`modelcontextprotocol/rust-sdk`](https://github.com/modelcontextprotocol/rust-sdk)
+was downloaded locally and pinned at
+`a50a73fda2cd55f87633a280b430f539b1094234`. The implementation was compared
+with `crates/rmcp/src/model/tool.rs` for the required JSON Schema object and
+untrusted annotation semantics, `crates/rmcp/src/service/client.rs` for complete
+cursor traversal, `crates/rmcp/src/transport/child_process.rs` for child
+lifecycle, and the corresponding SDK tests. Wire requirements come from the
+official MCP 2025-11-25 lifecycle, transport, and tools specifications rather
+than compatible third-party servers.
+
+Tool discovery follows every `nextCursor` page before atomically publishing a
+new catalog. It rejects a missing or non-object `inputSchema`, repeated cursors,
+more than 32 pages, and more than 4096 tools. Server annotations remain
+untrusted hints and do not grant authorization, concurrency, filesystem, or
+network authority.
+
 ## Lifecycle
 
 Runtime composition:
@@ -19,6 +37,13 @@ Runtime composition:
    failure;
 7. retains process ownership inside the configured Runtime revision; dropping
    that revision terminates the child through Tokio's kill-on-drop boundary.
+
+The stdio child starts with an empty environment and receives only values
+explicitly resolved by Runtime composition. This blocks ambient HOME, proxy,
+provider, and cloud credentials from crossing the process boundary. Environment
+scrubbing is not an OS sandbox: a future persistent-process environment port
+must additionally enforce filesystem, network, resource, cancellation, and
+cleanup policy for the complete MCP server lifetime.
 
 Explicit awaited MCP shutdown during Runtime drain is not yet composed. This
 is a lifecycle gap: kill-on-drop prevents an orphaned process, but does not
