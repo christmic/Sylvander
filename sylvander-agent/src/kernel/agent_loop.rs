@@ -1208,6 +1208,48 @@ struct ToolExecutionOutcome {
     failure_kind: Option<crate::tool::ToolFailureKind>,
 }
 
+/// Exact same-identity tool execution used by a Runtime recovery coordinator.
+pub struct RecoveryToolRequest {
+    pub tools: crate::tool::ToolRegistry,
+    pub invocation_gateway: Arc<dyn crate::tool::invocation::ToolInvocationGateway>,
+    pub invocation_snapshot: crate::tool::invocation::ToolInvocationSnapshot,
+    pub tool_context: ToolContext,
+    pub call_id: String,
+    pub invocation_id: String,
+    pub route: String,
+    pub input: serde_json::Value,
+}
+
+/// Model-visible recovered output plus trusted failure classification.
+pub struct RecoveryToolOutput {
+    pub output: String,
+    pub is_error: bool,
+    pub failure_kind: Option<crate::tool::ToolFailureKind>,
+}
+
+/// Re-enter the unique prepared-tool execution boundary with a stable ID.
+pub async fn execute_recovery_tool(request: RecoveryToolRequest) -> RecoveryToolOutput {
+    let prepared_call = request.tools.prepare(&request.route, request.input);
+    let timeout = request.tool_context.budget.timeout;
+    let outcome = execute_registered_tool(RegisteredToolExecutionRequest {
+        prepared_call,
+        invocation_gateway: request.invocation_gateway,
+        invocation_snapshot: request.invocation_snapshot,
+        tool_context: request.tool_context,
+        call_id: request.call_id,
+        invocation_id: request.invocation_id,
+        route: request.route,
+        timeout,
+        progress: crate::tool::ToolProgressSink::new(|_| {}),
+    })
+    .await;
+    RecoveryToolOutput {
+        output: outcome.output,
+        is_error: outcome.is_error,
+        failure_kind: outcome.failure_kind,
+    }
+}
+
 struct RegisteredToolExecutionRequest {
     prepared_call: Result<crate::tool::PreparedToolCall, crate::tool::ToolPrepareError>,
     invocation_gateway: Arc<dyn crate::tool::invocation::ToolInvocationGateway>,

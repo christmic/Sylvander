@@ -105,6 +105,32 @@ async fn tool_deadline_is_a_typed_outcome() {
 }
 
 #[tokio::test]
+async fn recovery_reenters_the_authorized_tool_boundary_with_a_stable_identity() {
+    let tools = crate::tool::ToolRegistry::new().register(MockTool::new(
+        "recoverable",
+        "recovery test",
+        crate::tool::ToolOutput::ok("recovered"),
+    ));
+    let gateway =
+        crate::tool_invocation::RegistryBoundToolGateway::new(tools.invocation_descriptors());
+    let snapshot = crate::tool_invocation::ToolInvocationGateway::snapshot(gateway.as_ref());
+    let output = execute_recovery_tool(RecoveryToolRequest {
+        tools,
+        invocation_gateway: gateway,
+        invocation_snapshot: snapshot,
+        tool_context: crate::tool_context::defaults::system_tool_context(),
+        call_id: "call-recovery".into(),
+        invocation_id: "00000000-0000-4000-8000-000000000006".into(),
+        route: "recoverable".into(),
+        input: serde_json::json!({}),
+    })
+    .await;
+
+    assert_eq!(output.output, "recovered");
+    assert!(!output.is_error);
+}
+
+#[tokio::test]
 async fn timed_out_tool_emits_one_authoritative_terminal() {
     let provider = Arc::new(ScriptedProvider::new([
         Ok(completed_events(
@@ -627,6 +653,7 @@ async fn tool_identity_is_prepared_before_approval_and_execution() {
         )
         .unwrap();
     let AgentEvent::ToolCallPrepared {
+        invocation_id,
         invocation_class,
         recovery_policy,
         input_digest,
@@ -636,6 +663,7 @@ async fn tool_identity_is_prepared_before_approval_and_execution() {
     else {
         unreachable!();
     };
+    assert!(uuid::Uuid::parse_str(invocation_id).is_ok());
     assert_eq!(
         *invocation_class,
         Some(crate::tool_invocation::ToolInvocationClass::Extension),
