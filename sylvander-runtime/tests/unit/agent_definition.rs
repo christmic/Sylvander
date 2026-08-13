@@ -178,6 +178,7 @@ name = "write"
 type = "mcp_server"
 name = "code-analyzer"
 execution_environment = "sandbox"
+workspace_access = "read"
 command = "code-analyzer-mcp"
 args = ["--verbose"]
 

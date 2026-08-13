@@ -51,6 +51,7 @@ fn update_round_trip_carries_concurrency_and_secret_references_only() {
             tools: vec![AgentToolDraft::McpServer {
                 name: "search".into(),
                 execution_environment: "sandbox".into(),
+                workspace_access: McpWorkspaceAccess::Read,
                 command: "mcp-search".into(),
                 args: vec!["serve".into()],
                 environment,

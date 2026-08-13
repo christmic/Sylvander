@@ -132,12 +132,21 @@ pub enum AgentToolDraft {
         /// Runtime execution-environment identifier. Host execution is never
         /// inferred when this target is unavailable.
         execution_environment: String,
+        /// Explicit workspace authority granted to the MCP process tree.
+        workspace_access: McpWorkspaceAccess,
         command: String,
         #[serde(default)]
         args: Vec<String>,
         #[serde(default)]
         environment: BTreeMap<String, AgentSecretReference>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpWorkspaceAccess {
+    Read,
+    Write,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

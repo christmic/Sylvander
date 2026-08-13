@@ -27,6 +27,7 @@ use crate::config::{
     AgentAccessConfig, AgentDefinitionConfig, PromptProfileConfig, ServerConfig,
     WorkspaceBindingConfig,
 };
+use crate::mcp::SECRET_REFERENCE_PREFIX;
 use crate::prompt_contract::validate_public_prompt_selectors;
 use sylvander_agent::prompt::{
     MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_prompt,
@@ -34,7 +35,6 @@ use sylvander_agent::prompt::{
 };
 
 pub(crate) const MAX_REVISION_PAGE_SIZE: u16 = 100;
-const SECRET_REF_PREFIX: &str = "sylvander-secret-ref:v1:";
 
 /// A request that must be atomically composed and activated by the runtime.
 #[derive(Debug, Clone)]
@@ -203,12 +203,14 @@ pub(crate) fn definition_from_draft(
             AgentToolDraft::McpServer {
                 name,
                 execution_environment,
+                workspace_access,
                 command,
                 args,
                 environment,
             } => ToolRef::McpServer(McpServerConfig {
                 name,
                 execution_environment,
+                workspace_access,
                 command,
                 args,
                 envs: environment
@@ -717,7 +719,7 @@ fn encode_secret_reference(
     reference: AgentSecretReference,
 ) -> Result<(String, String), AgentAdminError> {
     serde_json::to_string(&reference)
-        .map(|encoded| (name, format!("{SECRET_REF_PREFIX}{encoded}")))
+        .map(|encoded| (name, format!("{SECRET_REFERENCE_PREFIX}{encoded}")))
         .map_err(|_| invalid_definition("MCP secret reference cannot be encoded"))
 }
 

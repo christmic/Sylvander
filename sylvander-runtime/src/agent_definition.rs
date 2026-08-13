@@ -21,7 +21,7 @@ use sylvander_llm_core::{ModelCapabilities, ModelInfo, ModelRef};
 // ID types
 // ---------------------------------------------------------------------------
 
-pub use sylvander_api::{AgentId, ModelSelection, SessionId};
+pub use sylvander_api::{AgentId, McpWorkspaceAccess, ModelSelection, SessionId};
 
 // ---------------------------------------------------------------------------
 // Config sub-types
@@ -96,6 +96,8 @@ pub struct McpServerConfig {
     pub name: String,
     /// Exact Runtime execution-environment identifier.
     pub execution_environment: String,
+    /// Explicit workspace authority granted to this server process tree.
+    pub workspace_access: McpWorkspaceAccess,
     /// Shell command to start the server.
     pub command: String,
     /// CLI arguments.

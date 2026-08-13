@@ -118,7 +118,7 @@ pub(crate) fn draft_from_definition(
 
 fn decode_secret_reference(value: &str) -> Result<AgentSecretReference, AgentAdminError> {
     let encoded = value
-        .strip_prefix(SECRET_REF_PREFIX)
+        .strip_prefix(crate::mcp::SECRET_REFERENCE_PREFIX)
         .ok_or_else(|| invalid_definition("legacy MCP environment values cannot be exported"))?;
     serde_json::from_str(encoded)
         .map_err(|_| invalid_definition("stored MCP secret reference is invalid"))
@@ -140,6 +140,7 @@ fn mcp_to_draft(server: &McpServerConfig) -> Result<AgentToolDraft, AgentAdminEr
     Ok(AgentToolDraft::McpServer {
         name: server.name.clone(),
         execution_environment: server.execution_environment.clone(),
+        workspace_access: server.workspace_access,
         command: server.command.clone(),
         args: server.args.clone(),
         environment,
@@ -213,6 +214,7 @@ fn draft() -> AgentDefinitionDraft {
         tools: vec![AgentToolDraft::McpServer {
             name: "search".into(),
             execution_environment: "sandbox".into(),
+            workspace_access: sylvander_api::McpWorkspaceAccess::Read,
             command: "mcp-search".into(),
             args: vec!["serve".into()],
             environment: [(
@@ -269,7 +271,7 @@ fn definition_conversion_preserves_only_secret_references() {
         ToolRef::Builtin { .. } => panic!("expected MCP server"),
     };
     assert_eq!(execution_environment, "sandbox");
-    assert!(encoded.starts_with(SECRET_REF_PREFIX));
+    assert!(encoded.starts_with(crate::mcp::SECRET_REFERENCE_PREFIX));
     assert!(!encoded.contains("secret-value"));
     assert_eq!(draft_from_definition(&config).unwrap(), draft());
 }

@@ -126,6 +126,7 @@ fn fake_config(temp: &TempDir) -> McpServerConfig {
     McpServerConfig {
         name: "fake".into(),
         execution_environment: "test-host".into(),
+        workspace_access: sylvander_api::McpWorkspaceAccess::Read,
         command: "python3".into(),
         args: vec![script.display().to_string()],
         envs: HashMap::from([
