@@ -114,7 +114,9 @@ pub use interaction::{
 };
 pub use kernel::agent_loop as loop_;
 pub use memory::curated as curated_memory;
-pub use turn::{conversation, error, event, execution_context, identity, outcome, request, time};
+pub use turn::{
+    conversation, error, event, execution_context, identity, machine, outcome, request, time,
+};
 /// Tool contracts, authorization, registration, and built-in implementations.
 pub mod tool;
 pub use tool::{builtins as tools, invocation as tool_invocation};
@@ -182,6 +184,10 @@ pub mod prelude {
     pub use crate::turn::event::{AgentEvent, ModelRetryCause};
     pub use crate::turn::execution_context::{
         AgentExecutionContext, ExecutionActor, ExecutionCapability, ExecutionWorkspace,
+    };
+    pub use crate::turn::machine::{
+        TurnContinuationReason, TurnPhase, TurnSnapshot, TurnStateError, TurnTransition,
+        TurnTransitionReason,
     };
     pub use crate::turn::outcome::AgentOutcome;
     pub use crate::turn::request::AgentTurnRequest;
