@@ -311,7 +311,7 @@ impl ChannelHost for SessionConfigHost {
         })?;
         assert_eq!(request.expected_revision, state.revision);
         state.revision += 1;
-        state.overrides = request.overrides;
+        request.patch.apply_to(&mut state.overrides);
         if let Some(model) = &state.overrides.model {
             state.effective.provider_id = model.provider_id.clone();
             state.effective.model_id = model.model_id.clone();
