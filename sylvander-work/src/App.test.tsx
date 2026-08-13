@@ -279,6 +279,67 @@ describe("Sylvander Work", () => {
     expect((composer as HTMLTextAreaElement).value).toBe("Keep this draft");
   });
 
+  it("projects typed retry, timeout, operation, and boundary failures", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    await screen.findByRole("heading", { name: "Recovery" });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "model_retry",
+      session_id: "session-1",
+      attempt: 2,
+      max_attempts: 4,
+      delay_ms: 500,
+      reason: "provider asked for backoff",
+      cause: "rate_limit",
+    } }));
+    expect(await screen.findByText(/Rate limited · retry 2\/4 in 500ms/)).toBeTruthy();
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "approval_request",
+      session_id: "session-1",
+      batch_id: "batch-1",
+      tools: [{ call_id: "call-1", tool_name: "Write", input: {} }],
+    } }));
+    await screen.findByRole("heading", { name: "Allow Write?" });
+    act(() => gateway.emit({ type: "message", message: {
+      type: "interaction_timeout",
+      session_id: "session-1",
+      kind: "approval",
+      subject_id: "call-123456789",
+      timeout_secs: 30,
+      recovery: "narrow_scope",
+    } }));
+    expect(screen.queryByRole("heading", { name: "Allow Write?" })).toBeNull();
+    expect(await screen.findByText(/timeout · approval · call-123 · 30s · retry with narrower scope/)).toBeTruthy();
+
+    act(() => {
+      gateway.emit({ type: "message", message: {
+        type: "operation_error", operation: "load_session", message: "Session is unavailable",
+      } });
+      gateway.emit({ type: "message", message: {
+        type: "boundary_denied",
+        error: {
+          code: "rate_limited",
+          operation: "chat",
+          request_id: "request-1",
+          message: "Too many requests",
+          retry_after_ms: 1_000,
+        },
+      } });
+    });
+    expect(await screen.findByText("load_session failed · Session is unavailable")).toBeTruthy();
+    expect(await screen.findByText("chat denied · Too many requests · retry after 1000ms")).toBeTruthy();
+  });
+
   it("reconnects with the native gateway after an established link drops", async () => {
     vi.useFakeTimers();
     try {

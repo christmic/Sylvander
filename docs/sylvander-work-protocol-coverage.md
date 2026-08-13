@@ -56,22 +56,22 @@ execution, persistence, or policy ownership moved into Desktop.
 | `PlanProposed`, `PlanUpdated` | complete | none |
 | task lifecycle | complete | none |
 | `RuntimeInfo` | partial | catalog/platform details and selectors |
-| `ModelRetry`, `InteractionTimeout` | **P0 missing** | visible recovery state without parsing reason text |
+| `ModelRetry`, `InteractionTimeout` | complete | typed cause/kind/recovery projection and matching decision dismissal |
 | `IterationStart`, `IterationEnd` | missing | usage/cost projection |
 | `SessionConfig` | missing | settings revision/provenance |
 | feedback, memory, admin, profile, identity responses | missing | matching command surfaces |
 | `ContextReport`, compaction lifecycle | missing | context inspector |
 | workspace rollback lifecycle | missing | reviewed rollback result |
 | coding Session lifecycle | missing | changes inspector |
-| `OperationError`, `BoundaryDenied` | **P0 missing** | safe, operation-specific user feedback |
+| `OperationError`, `BoundaryDenied` | complete | safe operation-specific notice and bounded retry timing |
 | `Pong` | missing | liveness state |
 
 ## Ordered implementation gates
 
 1. Integrate the main Runtime lifecycle chain, including `TurnStarted`, in
    dependency order; do not cherry-pick only its enum.
-2. Close P0 recovery and error projection: `ReattachSession`, retry, timeout,
-   operation error, and boundary denial.
+2. Close remaining P0 recovery: `ReattachSession` and bounded protocol-error
+   details.
 3. Complete Session history/replay metadata and approval scopes.
 4. Complete context, settings, model/permission selection, coding review, and
    rollback workflows.

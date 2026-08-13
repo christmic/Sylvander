@@ -206,6 +206,36 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           tasks: current.selectedId === message.session_id ? [] : current.tasks,
         }));
         break;
+      case "operation_error":
+        terminalSequenceRef.current += 1;
+        setState((current) => ({
+          ...current,
+          diagnostic: `${message.operation}: ${message.message}`,
+          transcript: [...current.transcript, {
+            id: `notice-operation-${terminalSequenceRef.current}`,
+            kind: "notice",
+            body: `${message.operation} failed · ${message.message}`,
+            status: "failed",
+          }],
+        }));
+        break;
+      case "boundary_denied": {
+        terminalSequenceRef.current += 1;
+        const retry = message.error.retry_after_ms === undefined
+          ? ""
+          : ` · retry after ${message.error.retry_after_ms}ms`;
+        setState((current) => ({
+          ...current,
+          diagnostic: `${message.error.operation}: ${message.error.message}`,
+          transcript: [...current.transcript, {
+            id: `notice-boundary-${terminalSequenceRef.current}`,
+            kind: "notice",
+            body: `${message.error.operation} denied · ${message.error.message}${retry}`,
+            status: "failed",
+          }],
+        }));
+        break;
+      }
       case "text_delta":
         markSessionActive(message.session_id);
         enqueueDelta(message.session_id, { kind: "assistant", delta: message.delta });
@@ -213,6 +243,40 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "thinking_delta":
         markSessionActive(message.session_id);
         enqueueDelta(message.session_id, { kind: "thinking", delta: message.delta });
+        break;
+      case "model_retry":
+        if (message.session_id === selectedRef.current) {
+          markSessionActive(message.session_id);
+          terminalSequenceRef.current += 1;
+          const sequence = terminalSequenceRef.current;
+          setState((current) => ({
+            ...current,
+            transcript: [...current.transcript, {
+              id: `notice-retry-${sequence}`,
+              kind: "notice",
+              body: `${retryCauseLabel(message.cause)} · retry ${message.attempt}/${message.max_attempts} in ${message.delay_ms}ms · ${message.reason}`,
+              status: "waiting",
+            }],
+          }));
+        }
+        break;
+      case "interaction_timeout":
+        if (message.session_id === selectedRef.current) {
+          terminalSequenceRef.current += 1;
+          const sequence = terminalSequenceRef.current;
+          setState((current) => ({
+            ...current,
+            approval: message.kind === "approval" ? undefined : current.approval,
+            question: message.kind === "question" ? undefined : current.question,
+            activePlan: message.kind === "plan" ? undefined : current.activePlan,
+            transcript: [...current.transcript, {
+              id: `notice-timeout-${sequence}`,
+              kind: "notice",
+              body: `timeout · ${timeoutKindLabel(message.kind)} · ${message.subject_id.slice(0, 8)} · ${message.timeout_secs}s · ${timeoutRecoveryLabel(message.recovery)}`,
+              status: "failed",
+            }],
+          }));
+        }
         break;
       case "tool_output_delta":
         markSessionActive(message.session_id);
@@ -658,4 +722,22 @@ function safeDiagnostic(error: unknown): string {
   return typeof error === "string" && error.trim()
     ? error
     : "The native Runtime gateway is unavailable. Check the Runtime endpoint and try again.";
+}
+
+function retryCauseLabel(cause: "rate_limit" | "server" | "network" | "stream" | "other") {
+  return cause === "rate_limit"
+    ? "Rate limited"
+    : `${cause.charAt(0).toUpperCase()}${cause.slice(1)}`;
+}
+
+function timeoutKindLabel(kind: "approval" | "question" | "plan" | "tool" | "task") {
+  return kind === "plan" ? "plan review" : kind === "task" ? "background task" : kind;
+}
+
+function timeoutRecoveryLabel(recovery: "retry_request" | "narrow_scope" | "continue_without") {
+  switch (recovery) {
+    case "retry_request": return "retry the request";
+    case "narrow_scope": return "retry with narrower scope";
+    case "continue_without": return "continue without this result";
+  }
 }

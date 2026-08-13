@@ -61,6 +61,31 @@ export interface RuntimeInfo {
   platform: unknown;
 }
 
+interface RuntimeModelRetry {
+  session_id: string;
+  attempt: number;
+  max_attempts: number;
+  delay_ms: number;
+  reason: string;
+  cause: "rate_limit" | "server" | "network" | "stream" | "other";
+}
+
+interface RuntimeInteractionTimeout {
+  session_id: string;
+  kind: "approval" | "question" | "plan" | "tool" | "task";
+  subject_id: string;
+  timeout_secs: number;
+  recovery: "retry_request" | "narrow_scope" | "continue_without";
+}
+
+interface RuntimeBoundaryError {
+  code: "unauthenticated" | "forbidden" | "invalid_scope" | "payload_too_large" | "rate_limited";
+  operation: string;
+  request_id: string;
+  message: string;
+  retry_after_ms?: number;
+}
+
 export type RuntimeMessage =
   | { type: "sessions_list"; sessions: RuntimeSession[] }
   | { type: "agents_discovered"; agents: RuntimeAgent[] }
@@ -68,6 +93,8 @@ export type RuntimeMessage =
   | { type: "session_history"; session: RuntimeSession; messages: RuntimeHistoryMessage[] }
   | { type: "text_delta"; session_id: string; delta: string }
   | { type: "thinking_delta"; session_id: string; delta: string }
+  | ({ type: "model_retry" } & RuntimeModelRetry)
+  | ({ type: "interaction_timeout" } & RuntimeInteractionTimeout)
   | { type: "tool_call"; session_id: string; call_id: string; tool_name: string; input: unknown }
   | { type: "tool_output_delta"; session_id: string; call_id: string; tool_name: string; delta: string }
   | { type: "tool_result"; session_id: string; call_id: string; tool_name: string; output: string; is_error: boolean }
@@ -85,7 +112,9 @@ export type RuntimeMessage =
   | { type: "turn_interrupted"; session_id: string; reason: string }
   | { type: "session_created"; session_id: string }
   | { type: "session_updated"; session_id: string; label?: string; archived: boolean }
-  | { type: "session_deleted"; session_id: string };
+  | { type: "session_deleted"; session_id: string }
+  | { type: "operation_error"; operation: string; message: string }
+  | { type: "boundary_denied"; error: RuntimeBoundaryError };
 
 export interface RuntimeGatewayPort {
   connect(listener: (event: DesktopEvent) => void): Promise<void>;

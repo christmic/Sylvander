@@ -154,6 +154,13 @@ The first Runtime activity promotes it to `active`; only `Done`, `Error`, or
 This is a concurrency guard, not an authoritative turn-start claim. The newer
 Runtime `TurnStarted` fact remains the required integration authority.
 
+Retry and timeout events are rendered from their typed cause, kind, duration,
+and recovery fields; Desktop does not classify reason text. A timeout dismisses
+only the matching approval, question, or plan control. Public operation and
+boundary errors become failed notices using the server-safe message, with
+bounded retry timing when supplied; credentials and resource internals have no
+protocol field to render.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem
