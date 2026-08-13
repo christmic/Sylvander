@@ -227,6 +227,11 @@ These are acceptance targets, not current claims:
 
 ## Delivery slices
 
+The message-by-message implementation ledger is
+[`sylvander-work-protocol-coverage.md`](sylvander-work-protocol-coverage.md).
+It is the acceptance SSOT for the service edge; this architecture document
+defines ownership and invariants.
+
 1. Build the responsive React shell and typed presentation store.
 2. Add the bounded native Rust WebSocket gateway and protocol conformance tests.
 3. Add approval, AskUser, plan, task, diff, artifact, and settings surfaces.

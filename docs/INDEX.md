@@ -118,6 +118,10 @@ and this index in the same change.
   DashScope protocol adapters.
 - [sylvander-tui/docs/ARCHITECTURE.md](../sylvander-tui/docs/ARCHITECTURE.md) —
   terminal client layers, service seam, and presentation state.
+- [sylvander-work-architecture.md](sylvander-work-architecture.md) — Desktop
+  native gateway, WebView boundary, ownership, recovery, and quality rules.
+- [sylvander-work-protocol-coverage.md](sylvander-work-protocol-coverage.md) —
+  message-by-message Desktop service-edge implementation ledger.
 - [sylvander-tui/docs/CONFIGURATION.md](../sylvander-tui/docs/CONFIGURATION.md) —
   strict configuration loading, theme tokens, and environment precedence.
 - [sylvander-tui/docs/INPUT-RENDERING.md](../sylvander-tui/docs/INPUT-RENDERING.md) —
