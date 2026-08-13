@@ -2,8 +2,11 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, params};
-use sylvander_api::{AgentInstanceId, CoordinationMessageId, HandoffId, SessionId, TaskId};
+use sylvander_api::{
+    AgentInstanceId, CoordinationMessageId, GovernanceCaseId, HandoffId, SessionId, TaskId,
+};
 
+use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MAX_MESSAGE_LEASE_SECONDS, MessageClaim,
@@ -51,6 +54,19 @@ pub trait CoordinationStore: Send + Sync {
         &self,
         session_id: &SessionId,
     ) -> Result<Option<SessionTaskGraph>, SessionStoreError>;
+
+    async fn create_arbitration_case(
+        &self,
+        case: &ArbitrationCase,
+        membership: &SessionMembership,
+        topology: &SessionTopology,
+        now: i64,
+    ) -> Result<(), SessionStoreError>;
+
+    async fn arbitration_case(
+        &self,
+        case_id: &GovernanceCaseId,
+    ) -> Result<Option<ArbitrationCase>, SessionStoreError>;
 
     async fn create_handoff(
         &self,
@@ -507,6 +523,104 @@ impl CoordinationStore for SqliteSessionStore {
     ) -> Result<Option<SessionTaskGraph>, SessionStoreError> {
         let session_id = session_id.clone();
         self.run(move |connection| load_task_graph(connection, &session_id))
+            .await
+    }
+
+    async fn create_arbitration_case(
+        &self,
+        case: &ArbitrationCase,
+        membership: &SessionMembership,
+        topology: &SessionTopology,
+        now: i64,
+    ) -> Result<(), SessionStoreError> {
+        case.validate_new(membership, topology.topology_revision, now)
+            .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+        topology
+            .validate(membership)
+            .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+        let case = case.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            if load_arbitration_case(&transaction, &case.case_id)?.is_some() {
+                return Err(SessionStoreError::Invalid(
+                    "arbitration case already exists".into(),
+                ));
+            }
+            let durable_governance = transaction
+                .query_row(
+                    "SELECT moderator_instance_id,membership_revision,lease_epoch,fencing_token \
+                     FROM session_governance WHERE session_id=?1",
+                    [&case.session_id.0],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let durable_topology = transaction
+                .query_row(
+                    "SELECT topology_revision FROM session_topology WHERE session_id=?1",
+                    [&case.session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            let exact_facts = durable_governance.is_some_and(|facts| {
+                facts.0 == case.moderator_instance_id.0
+                    && checked_u64(facts.1, "membership revision").ok()
+                        == Some(case.membership_revision)
+                    && checked_u64(facts.2, "moderator lease epoch").ok()
+                        == Some(case.moderator_lease_epoch)
+                    && checked_u64(facts.3, "moderator fencing token").ok()
+                        == Some(case.moderator_fencing_token)
+            }) && durable_topology
+                .map(|revision| checked_u64(revision, "topology revision"))
+                .transpose()?
+                == Some(case.topology_revision);
+            if !exact_facts {
+                return Err(SessionStoreError::Invalid(
+                    "arbitration durable governance facts changed before commit".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO governance_cases \
+                 (case_id,session_id,moderator_instance_id,membership_revision,topology_revision,
+                  moderator_lease_epoch,moderator_fencing_token,findings_json,state,revision,
+                  expires_at,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'open',0,?9,?10,?11)",
+                params![
+                    case.case_id.0,
+                    case.session_id.0,
+                    case.moderator_instance_id.0,
+                    checked_i64(case.membership_revision, "membership revision")?,
+                    checked_i64(case.topology_revision, "topology revision")?,
+                    checked_i64(case.moderator_lease_epoch, "moderator lease epoch")?,
+                    checked_i64(case.moderator_fencing_token, "moderator fencing token")?,
+                    serde_json::to_string(&case.findings).map_err(|error| {
+                        SessionStoreError::Store(format!(
+                            "failed to encode governance findings: {error}"
+                        ))
+                    })?,
+                    case.expires_at,
+                    case.created_at,
+                    case.updated_at,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn arbitration_case(
+        &self,
+        case_id: &GovernanceCaseId,
+    ) -> Result<Option<ArbitrationCase>, SessionStoreError> {
+        let case_id = case_id.clone();
+        self.run(move |connection| load_arbitration_case(connection, &case_id))
             .await
     }
 
@@ -1157,6 +1271,70 @@ fn decode_handoff_state(state: &str) -> Result<HandoffState, SessionStoreError> 
         "cancelled" => Ok(HandoffState::Cancelled),
         _ => Err(SessionStoreError::Store(
             "stored handoff state is invalid".into(),
+        )),
+    }
+}
+
+fn load_arbitration_case(
+    connection: &rusqlite::Connection,
+    case_id: &GovernanceCaseId,
+) -> Result<Option<ArbitrationCase>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT session_id,moderator_instance_id,membership_revision,topology_revision,
+                    moderator_lease_epoch,moderator_fencing_token,findings_json,state,revision,
+                    expires_at,created_at,updated_at
+             FROM governance_cases WHERE case_id=?1",
+            [&case_id.0],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            Ok(ArbitrationCase {
+                case_id: case_id.clone(),
+                session_id: SessionId::new(row.0),
+                moderator_instance_id: AgentInstanceId::new(row.1),
+                membership_revision: checked_u64(row.2, "membership revision")?,
+                topology_revision: checked_u64(row.3, "topology revision")?,
+                moderator_lease_epoch: checked_u64(row.4, "moderator lease epoch")?,
+                moderator_fencing_token: checked_u64(row.5, "moderator fencing token")?,
+                findings: serde_json::from_str(&row.6).map_err(|error| {
+                    SessionStoreError::Store(format!(
+                        "stored governance findings are invalid: {error}"
+                    ))
+                })?,
+                state: decode_arbitration_state(&row.7)?,
+                revision: checked_u64(row.8, "arbitration revision")?,
+                expires_at: row.9,
+                created_at: row.10,
+                updated_at: row.11,
+            })
+        })
+        .transpose()
+}
+
+fn decode_arbitration_state(state: &str) -> Result<ArbitrationState, SessionStoreError> {
+    match state {
+        "open" => Ok(ArbitrationState::Open),
+        "decided" => Ok(ArbitrationState::Decided),
+        "expired" => Ok(ArbitrationState::Expired),
+        _ => Err(SessionStoreError::Store(
+            "stored arbitration state is invalid".into(),
         )),
     }
 }

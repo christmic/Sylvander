@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstanceOrigin, ApprovalRoute, HistoryView, SessionAgentRole,
 };
+use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState};
+use crate::coordination::governance::GovernanceFinding;
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
@@ -12,7 +14,9 @@ use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTop
 use crate::session::SessionMetadata;
 use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{SessionLifetime, SessionStore, StoredSession};
-use sylvander_api::{AgentId, AgentInstanceId, CoordinationMessageId, HandoffId, SwarmId, TaskId};
+use sylvander_api::{
+    AgentId, AgentInstanceId, CoordinationMessageId, GovernanceCaseId, HandoffId, SwarmId, TaskId,
+};
 
 use super::*;
 
@@ -375,6 +379,88 @@ async fn task_dependencies_are_durable_and_cycles_roll_back_atomically() {
             .dependencies,
         [forward]
     );
+}
+
+#[tokio::test]
+async fn arbitration_case_is_durable_and_fenced_to_exact_governance_facts() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    let topology = SessionTopology::new(
+        membership.session_id.clone(),
+        0,
+        0,
+        vec![
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("worker-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("coordinator-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+        ],
+        11,
+        &membership,
+    )
+    .unwrap();
+    store
+        .save_topology(&topology, &membership, None)
+        .await
+        .unwrap();
+    let case = ArbitrationCase {
+        case_id: GovernanceCaseId::new("case-1"),
+        session_id: membership.session_id.clone(),
+        moderator_instance_id: AgentInstanceId::new("moderator-1"),
+        membership_revision: 0,
+        topology_revision: 0,
+        moderator_lease_epoch: 3,
+        moderator_fencing_token: 9,
+        findings: vec![GovernanceFinding::StagnantProgress {
+            task_id: TaskId::new("task-1"),
+            observations: 3,
+        }],
+        state: ArbitrationState::Open,
+        revision: 0,
+        expires_at: 100,
+        created_at: 12,
+        updated_at: 12,
+    };
+
+    store
+        .create_arbitration_case(&case, &membership, &topology, 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.arbitration_case(&case.case_id).await.unwrap(),
+        Some(case.clone())
+    );
+    assert!(matches!(
+        store
+            .create_arbitration_case(&case, &membership, &topology, 50)
+            .await
+            .unwrap_err(),
+        SessionStoreError::Invalid(reason) if reason.contains("already exists")
+    ));
+
+    let mut stale = case;
+    stale.case_id = GovernanceCaseId::new("case-stale");
+    stale.moderator_fencing_token = 8;
+    assert!(matches!(
+        store
+            .create_arbitration_case(&stale, &membership, &topology, 50)
+            .await
+            .unwrap_err(),
+        SessionStoreError::Invalid(reason) if reason.contains("governance")
+    ));
 }
 
 #[tokio::test]
