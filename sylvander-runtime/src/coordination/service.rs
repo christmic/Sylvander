@@ -19,6 +19,8 @@ use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::SessionStoreError;
 
+pub const DEFAULT_ARBITRATION_TTL_SECONDS: u64 = 300;
+
 /// Stable caller intent. Runtime derives every governance fact and route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchMessageRequest {

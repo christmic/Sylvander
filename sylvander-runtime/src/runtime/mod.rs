@@ -53,6 +53,7 @@ use crate::agent::instance::{
 };
 #[cfg(test)]
 use crate::agent::run::AgentRun;
+use crate::agent::run::AuthenticatedSession;
 use crate::agent::supervisor::{AgentRunEngine, RevisionedAgentRunProvider};
 #[cfg(test)]
 use crate::composition::default_tools;
@@ -63,6 +64,7 @@ use crate::composition::{
 use crate::config::{
     MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
 };
+use crate::coordination::service::{DispatchMessageOutcome, DispatchMessageRequest};
 use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::credential::registry::CredentialSecretResolver;
 use crate::evidence::{
@@ -4006,7 +4008,7 @@ impl Runtime {
                 .map_err(|e| RuntimeError::Store(format!("open session store: {e}")))?,
         );
         let session_store: Arc<dyn SessionStore> = sqlite_session_store.clone();
-        let agent_instance_store: Arc<dyn AgentInstanceStore> = sqlite_session_store;
+        let agent_instance_store: Arc<dyn AgentInstanceStore> = sqlite_session_store.clone();
         let memory_store: Arc<dyn MemoryStore> = Arc::new(InMemoryMemoryStore::new());
         let execution_service = RuntimeExecutionService::standalone_local();
 
@@ -4105,7 +4107,8 @@ impl Runtime {
         });
         Ok(Self {
             engine,
-            storage: RuntimeStorage::new(session_store, memory_store),
+            storage: RuntimeStorage::new(session_store, memory_store)
+                .with_coordination_store((*sqlite_session_store).clone()),
             observability,
             observation_debug_log: None,
             execution_service,
@@ -4842,6 +4845,29 @@ impl Runtime {
         self.credential_audit.clone()
     }
 
+    /// Dispatch one inter-Agent message under the sender's unforgeable run authority.
+    pub async fn dispatch_agent_message(
+        &self,
+        actor: &AuthenticatedSession,
+        request: DispatchMessageRequest,
+    ) -> Result<DispatchMessageOutcome, RuntimeError> {
+        if actor.id() != &request.session_id
+            || actor.agent_instance_id() != &request.sender_instance_id
+        {
+            return Err(RuntimeError::Coordination(
+                "coordination actor does not match authenticated Agent participant".into(),
+            ));
+        }
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .dispatch_message(request, crate::session::now_secs())
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
     /// Inspect all tracked and untracked changes in an isolated coding session.
     pub async fn inspect_coding_session(
         &self,
@@ -5421,6 +5447,8 @@ pub enum RuntimeError {
     Config(String),
     #[error("composition error: {0}")]
     Composition(String),
+    #[error("coordination error: {0}")]
+    Coordination(String),
     #[error("evidence error: {0}")]
     Evidence(String),
     #[error("channel error: {0}")]

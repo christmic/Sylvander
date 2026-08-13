@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use sylvander_agent::tools::MemoryStore;
 
+use crate::coordination::governance::GovernancePolicy;
+use crate::coordination::service::{CoordinationService, DEFAULT_ARBITRATION_TTL_SECONDS};
 use crate::credential::audit::CredentialOperationAuditLedger;
 use crate::evidence::EvidenceStore;
 use crate::guardian::runtime::GuardianStorageProbe;
@@ -68,6 +70,7 @@ pub struct RuntimeStorageSnapshot {
 /// decision made during Runtime boot, not a public plugin contract.
 pub(crate) struct RuntimeStorage {
     sessions: Arc<dyn SessionStore>,
+    coordination: Option<CoordinationService<SqliteSessionStore>>,
     // Runtime retains ownership even though configured Agent revisions consume
     // cloned handles for normal reads and writes.
     #[allow(dead_code)]
@@ -88,6 +91,7 @@ impl RuntimeStorage {
     pub(crate) fn new(sessions: Arc<dyn SessionStore>, memory: Arc<dyn MemoryStore>) -> Self {
         Self {
             sessions,
+            coordination: None,
             memory,
             session_probe: None,
             memory_probe: None,
@@ -113,6 +117,11 @@ impl RuntimeStorage {
         evidence: EvidenceStore,
         credential_audit: Arc<CredentialOperationAuditLedger>,
     ) -> Self {
+        self.coordination = Some(CoordinationService::new(
+            Arc::new(sessions.clone()),
+            GovernancePolicy::default(),
+            DEFAULT_ARBITRATION_TTL_SECONDS,
+        ));
         self.session_probe = Some(sessions);
         self.memory_probe = Some(memory);
         self.agent_registry_probe = Some(agent_registry);
@@ -141,6 +150,22 @@ impl RuntimeStorage {
     /// Clone the bounded factory without exposing its evidence backend.
     pub(crate) fn artifact_service(&self) -> Option<RuntimeArtifactService> {
         self.artifact_service.clone()
+    }
+
+    /// Attach the production-equivalent coordination authority in isolated boot.
+    #[cfg(test)]
+    pub(crate) fn with_coordination_store(mut self, sessions: SqliteSessionStore) -> Self {
+        self.coordination = Some(CoordinationService::new(
+            Arc::new(sessions),
+            GovernancePolicy::default(),
+            DEFAULT_ARBITRATION_TTL_SECONDS,
+        ));
+        self
+    }
+
+    /// Access the policy-enforcing coordination service, never its raw store.
+    pub(crate) fn coordination(&self) -> Option<&CoordinationService<SqliteSessionStore>> {
+        self.coordination.as_ref()
     }
 
     /// Access Session persistence inside Runtime-owned application services.
