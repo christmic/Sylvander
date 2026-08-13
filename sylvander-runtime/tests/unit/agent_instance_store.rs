@@ -272,6 +272,53 @@ async fn coordination_service_recovers_handoff_at_arbitration_boundary() {
 }
 
 #[tokio::test]
+async fn coordination_service_dead_letters_poison_message_after_bounded_retries() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let policy = GovernancePolicy {
+        max_message_delivery_attempts: 1,
+        ..GovernancePolicy::default()
+    };
+    let service = CoordinationService::new(store.clone(), policy, 30);
+    service
+        .dispatch_message(dispatch_request("poison-message"), 20)
+        .await
+        .unwrap();
+
+    let first = service
+        .claim_next_message(&AgentInstanceId::new("coordinator-1"), 21, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.message.delivery_attempts, 1);
+    assert!(
+        service
+            .claim_next_message(&AgentInstanceId::new("coordinator-1"), 22, 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .message(&CoordinationMessageId::new("poison-message"))
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        MessageDeliveryState::DeadLetter
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_membership_survives_file_restart() {
     let directory = tempfile::TempDir::new().unwrap();
     let path = directory.path().join("sessions.db");

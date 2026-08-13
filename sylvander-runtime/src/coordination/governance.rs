@@ -15,6 +15,7 @@ pub struct GovernancePolicy {
     pub max_ownership_depth: usize,
     pub max_children_per_agent: usize,
     pub max_active_tasks_per_agent: usize,
+    pub max_message_delivery_attempts: u32,
     pub stagnation_window: usize,
     pub handoff_ping_pong_window: usize,
 }
@@ -26,6 +27,7 @@ impl Default for GovernancePolicy {
             max_ownership_depth: 4,
             max_children_per_agent: 6,
             max_active_tasks_per_agent: 4,
+            max_message_delivery_attempts: 5,
             stagnation_window: 3,
             handoff_ping_pong_window: 4,
         }

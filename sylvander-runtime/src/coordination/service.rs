@@ -303,10 +303,29 @@ where
         now: i64,
         lease_seconds: u64,
     ) -> Result<Option<MessageClaim>, CoordinationServiceError> {
-        self.store
+        if self.policy.max_message_delivery_attempts == 0 {
+            return Err(CoordinationServiceError::InvalidConfiguration);
+        }
+        let claim = self
+            .store
             .claim_message(recipient, now, lease_seconds)
-            .await
-            .map_err(Into::into)
+            .await?;
+        let Some(claim) = claim else {
+            return Ok(None);
+        };
+        if claim.message.delivery_attempts > self.policy.max_message_delivery_attempts {
+            self.store
+                .finish_message_claim(
+                    &claim.message.message_id,
+                    recipient,
+                    claim.lease_epoch,
+                    MessageDeliveryState::DeadLetter,
+                    now,
+                )
+                .await?;
+            return Ok(None);
+        }
+        Ok(Some(claim))
     }
 
     /// Commit delivery under the exact claim epoch before exposing its payload.
