@@ -34,6 +34,8 @@ Wire contracts the server implements, audited as the latest interface.
 - [llm-provider-protocols.md](llm-provider-protocols.md) — official SDK
   baselines, protocol kinds, Provider feature switches, token accounting, and
   model-family test matrix.
+- [llm-live-conformance.md](llm-live-conformance.md) — credential-gated live
+  Provider reliability cases, normalized results, safety bounds, and gates.
 
 ## Operations
 

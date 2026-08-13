@@ -115,6 +115,11 @@ Each adapter has two test layers:
 2. Sylvander-owned regression tests cover neutral conversion, feature gating,
    malformed streams, preserved token dimensions, and provider/model routing.
 
+Credential-gated connectivity, usage, cache, timeout, and recovery acceptance
+is specified separately in
+[`llm-live-conformance.md`](llm-live-conformance.md). A live run supplements but
+never replaces either deterministic layer above.
+
 The routing and serialization matrix must cover distinct model families rather
 than testing one model string repeatedly:
 
