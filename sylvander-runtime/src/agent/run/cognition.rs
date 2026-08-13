@@ -15,6 +15,28 @@ const AUTOMATIC_PERCEPTION_NAMESPACE: Uuid =
     Uuid::from_u128(0xa70e_13a7_bca1_49f4_9f9b_a462_a3b1_c887);
 const PERCEPTION_UNAVAILABLE: &str =
     "[Attachment perception unavailable. Continue without claiming its contents.]";
+const DURABLE_MEDIA_REFERENCE: &str =
+    "[Binary attachment content is held by the governed artifact boundary.]";
+
+/// Session history is an orchestration log, not a binary object store. Raw
+/// media must never enter its plaintext JSON rows.
+pub(super) fn persistence_safe_message(message: &ChatMessage) -> ChatMessage {
+    ChatMessage {
+        role: message.role.clone(),
+        content: message
+            .content
+            .iter()
+            .map(|block| match block {
+                ContentBlock::Image { .. }
+                | ContentBlock::Audio { .. }
+                | ContentBlock::Document { .. } => ContentBlock::Text {
+                    text: DURABLE_MEDIA_REFERENCE.into(),
+                },
+                block => block.clone(),
+            })
+            .collect(),
+    }
+}
 
 impl AgentRunInner {
     /// Replace media that the primary cannot consume with a bounded specialist

@@ -47,6 +47,7 @@ use sylvander_llm_core::{
 #[cfg(test)]
 use super::AgentRun;
 use super::background::BusTaskGate;
+use super::cognition::persistence_safe_message;
 use super::error::prompt_integrity_error;
 use super::interaction::{
     BusApprovalGate, BusAskUserGate, BusPlanGate, DenyAllApprovalGate, publish_interaction_timeout,
@@ -927,12 +928,13 @@ impl AgentRunInner {
             let caller =
                 sylvander_api::SessionContext::new(user_id, self.id.clone(), session_id.clone())
                     .with_agent_instance(agent_instance_id.clone());
-            let user_content = serde_json::to_value(&user_message).map_err(|_| {
-                AgentRunError::session_persistence(
-                    SessionPersistenceOperation::BeginTurn,
-                    SessionStoreError::Invalid("user message serialization failed".into()),
-                )
-            })?;
+            let user_content = serde_json::to_value(persistence_safe_message(&user_message))
+                .map_err(|_| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::BeginTurn,
+                        SessionStoreError::Invalid("user message serialization failed".into()),
+                    )
+                })?;
             store
                 .begin_turn(
                     &caller,

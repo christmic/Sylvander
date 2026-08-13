@@ -1,10 +1,12 @@
 use super::*;
+use crate::agent::cognition::{CognitiveRole, CognitiveRoleBinding};
+use crate::evidence::{EvidenceEncryption, EvidenceGovernance, EvidenceStore};
 use crate::execution::LocalExecutor;
 use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::session::{
     ModelInvocationId, ModelIterationStart, ModelResponsePersistence, RecoveryClassification,
-    ToolCallAdvance, ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId,
-    ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
+    SqliteSessionStore, ToolCallAdvance, ToolCallStart, ToolCallState, ToolExecutionPosition,
+    ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
 };
 use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
@@ -22,7 +24,7 @@ use sylvander_agent::tools::{ReadTool, WriteTool};
 use sylvander_api::{AgentInstanceId, Recipient, StreamEvent};
 use sylvander_channel::{BusDiagnostics, BusError, InProcessMessageBus, MessageBus};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
-use sylvander_llm_core::ModelInfo as ProviderModelInfo;
+use sylvander_llm_core::{ContentBlock, ModelInfo as ProviderModelInfo};
 
 #[derive(Clone)]
 struct SessionTestTool(&'static str);
@@ -563,6 +565,45 @@ async fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
 #[derive(Default)]
 struct RecordingProvider {
     requests: std::sync::Mutex<Vec<sylvander_llm_core::ModelRequest>>,
+}
+
+struct CognitionRoutingProvider {
+    requests: std::sync::Mutex<Vec<sylvander_llm_core::ModelRequest>>,
+    fail_specialist: bool,
+}
+
+impl sylvander_llm_core::ModelProvider for CognitionRoutingProvider {
+    fn complete_stream(
+        &self,
+        request: sylvander_llm_core::ModelRequest,
+    ) -> sylvander_llm_core::ProviderFuture<'_> {
+        self.requests.lock().unwrap().push(request.clone());
+        let fail = self.fail_specialist && request.model.model == "audio-specialist";
+        Box::pin(async move {
+            if fail {
+                return Err(sylvander_llm_core::ProviderError::new(
+                    sylvander_llm_core::ProviderErrorKind::InvalidRequest,
+                    sylvander_llm_core::ProviderErrorPhase::Open,
+                    "specialist unavailable",
+                ));
+            }
+            let text = if request.model.model == "audio-specialist" {
+                "spoken words"
+            } else {
+                "primary answer"
+            };
+            let response = sylvander_llm_core::ModelResponse {
+                id: request.request_id,
+                model: request.model,
+                content: vec![sylvander_llm_core::ContentBlock::Text { text: text.into() }],
+                stop_reason: sylvander_llm_core::StopReason::EndTurn,
+                usage: sylvander_llm_core::TokenUsage::default(),
+            };
+            Ok(Box::pin(futures_util::stream::iter([Ok(
+                sylvander_llm_core::ModelStreamEvent::Completed(Box::new(response)),
+            )])) as sylvander_llm_core::ModelEventStream)
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -4124,6 +4165,199 @@ fn typed_audio_attachment_becomes_a_validated_provider_block() {
     assert_eq!(content[2]["type"], "audio");
     assert_eq!(content[2]["audio"]["format"], "wav");
     assert_eq!(content[2]["audio"]["data"], "UklGRg==");
+}
+
+struct AutomaticCognitionOutcome {
+    requested_models: Vec<String>,
+    primary_text: String,
+    primary_has_audio: bool,
+    durable_perceptions: usize,
+    completed_perceptions: usize,
+    automatic_succeeded: u64,
+    automatic_soft_failed: u64,
+    durable_has_media: bool,
+    durable_has_reference: bool,
+}
+
+async fn run_automatic_audio_turn(
+    approved: bool,
+    fail_specialist: bool,
+) -> AutomaticCognitionOutcome {
+    let mut spec = AgentSpec::builder()
+        .id("cognition-agent")
+        .name("Cognition")
+        .model_name("primary")
+        .build()
+        .unwrap();
+    spec.model.provider = "local".into();
+    spec.cognition.roles.push(CognitiveRoleBinding {
+        role: CognitiveRole::Audio,
+        model: sylvander_api::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "audio-specialist".into(),
+        },
+    });
+    let primary = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("local", "primary"),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+    };
+    let specialist = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("local", "audio-specialist"),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::AUDIO_INPUT,
+    };
+    let provider = Arc::new(CognitionRoutingProvider {
+        requests: std::sync::Mutex::new(Vec::new()),
+        fail_specialist,
+    });
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    let encryption = EvidenceEncryption::from_secret("cognition-test", &[19; 32]).unwrap();
+    let governance = EvidenceGovernance::new("test-tenant", 30, encryption).unwrap();
+    let evidence = EvidenceStore::open_governed_in_memory(governance)
+        .await
+        .unwrap();
+    let artifacts = RuntimeArtifactService::new(evidence).unwrap();
+    let resolver = Arc::new(
+        sylvander_agent::prompt::PromptResolver::new(
+            "agent:cognition-agent@1".into(),
+            spec.persona.system_prompt.clone(),
+            Vec::new(),
+            None,
+            false,
+        )
+        .unwrap(),
+    );
+    let approved_roles = if approved {
+        HashSet::from([CognitiveRole::Audio])
+    } else {
+        HashSet::new()
+    };
+    let (run, issuer) = AgentRun::qualified_router_builder(spec, provider.clone(), primary)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .session_store(store.clone())
+        .artifact_service(artifacts)
+        .prompt_resolver(resolver)
+        .available_provider_models(vec![specialist])
+        .approved_cognition_roles(approved_roles)
+        .build_with_session_issuer()
+        .unwrap();
+    let session_id = SessionId::new(format!("automatic-audio-{approved}-{fail_specialist}"));
+    let metadata = test_metadata();
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![run.id().clone()],
+    );
+    stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+    store.save(&stored).await.unwrap();
+    run.attach_authenticated_session(issuer.issue(session_id.clone(), metadata.clone()).unwrap())
+        .await
+        .unwrap();
+    let turn_id = "turn-automatic-audio";
+    let message = BusMessage::user_chat_with_attachments(
+        session_id.clone(),
+        metadata.user_id.clone(),
+        "listen",
+        vec![sylvander_api::MessageAttachment {
+            id: "audio-1".into(),
+            kind: sylvander_api::AttachmentKind::Audio,
+            name: "sample.wav".into(),
+            mime_type: "audio/wav".into(),
+            content: sylvander_api::AttachmentContent::Base64 {
+                data: "UklGRg==".into(),
+            },
+            byte_count: 4,
+        }],
+    );
+    run.inner
+        .handle_message_with_turn_id(message, turn_id.into())
+        .await
+        .unwrap();
+    let (requested_models, primary_text, primary_has_audio) = {
+        let requests = provider.requests.lock().unwrap();
+        let primary_request = requests.last().unwrap();
+        let primary_text = primary_request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let primary_has_audio = primary_request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| matches!(block, ContentBlock::Audio { .. }));
+        let requested_models = requests
+            .iter()
+            .map(|request| request.model.model.clone())
+            .collect();
+        (requested_models, primary_text, primary_has_audio)
+    };
+    let perceptions = store
+        .perception_invocations(&session_id, turn_id)
+        .await
+        .unwrap();
+    let caller =
+        sylvander_api::SessionContext::new(metadata.user_id, run.id().clone(), session_id.clone())
+            .with_agent_instance(AgentInstanceId::new(format!("moderator:{session_id}")));
+    let durable_history = store
+        .read_history(&caller, &session_id, false, None)
+        .await
+        .unwrap();
+    let durable_json = serde_json::to_string(&durable_history).unwrap();
+    let snapshot = run.inner.observability.snapshot();
+    AutomaticCognitionOutcome {
+        requested_models,
+        primary_text,
+        primary_has_audio,
+        durable_perceptions: perceptions.len(),
+        completed_perceptions: perceptions
+            .iter()
+            .filter(|entry| {
+                entry.position
+                    == crate::storage::session::PerceptionExecutionPosition::ResultPersisted
+            })
+            .count(),
+        automatic_succeeded: snapshot.perception_automatic_routes_succeeded,
+        automatic_soft_failed: snapshot.perception_automatic_routes_soft_failed,
+        durable_has_media: durable_json.contains("UklGRg=="),
+        durable_has_reference: durable_json.contains("governed artifact boundary"),
+    }
+}
+
+#[tokio::test]
+async fn automatic_perception_requires_approval_and_softly_survives_specialist_failure() {
+    let unapproved = run_automatic_audio_turn(false, false).await;
+    assert_eq!(unapproved.requested_models, ["primary"]);
+    assert!(unapproved.primary_text.contains("perception unavailable"));
+    assert!(!unapproved.primary_has_audio);
+    assert_eq!(unapproved.durable_perceptions, 0);
+    assert!(!unapproved.durable_has_media);
+    assert!(unapproved.durable_has_reference);
+
+    let approved = run_automatic_audio_turn(true, false).await;
+    assert_eq!(approved.requested_models, ["audio-specialist", "primary"]);
+    assert!(approved.primary_text.contains("spoken words"));
+    assert!(!approved.primary_has_audio);
+    assert_eq!(approved.completed_perceptions, 1);
+    assert_eq!(approved.automatic_succeeded, 1);
+    assert!(!approved.durable_has_media);
+    assert!(approved.durable_has_reference);
+
+    let degraded = run_automatic_audio_turn(true, true).await;
+    assert_eq!(degraded.requested_models, ["audio-specialist", "primary"]);
+    assert!(degraded.primary_text.contains("perception unavailable"));
+    assert!(!degraded.primary_has_audio);
+    assert_eq!(degraded.automatic_soft_failed, 1);
 }
 
 #[test]
