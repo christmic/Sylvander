@@ -29,7 +29,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `RenameSession`, `ArchiveSession`, `DeleteSession` | complete end-to-end | none |
 | `GetRuntimeInfo` | complete end-to-end | Agent-scoped Runtime snapshot; no transport-local assembly |
 | `GetSessionConfig`, `UpdateSessionConfig` | complete | revision-bound field patch preserves omitted write-only state |
-| `SubmitFeedback` | missing | terminal feedback surface |
+| `SubmitFeedback` | complete | private rating and optional note preserve Runtime's opaque target |
 | `MemoryConfirmation` | missing | governed memory decision surface |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
 | `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
@@ -61,7 +61,8 @@ execution, persistence, or policy ownership moved into Desktop.
 | `ModelRetry`, `InteractionTimeout` | complete | typed cause/kind/recovery projection and matching decision dismissal |
 | `IterationStart`, `IterationEnd` | complete | cumulative usage/cost projection; never implies turn admission |
 | `SessionConfig` | complete | sparse overrides, effective values, revision, and provenance |
-| feedback, memory, admin, profile, identity responses | missing | matching command surfaces |
+| feedback responses | complete | acknowledgement settles only an in-flight feedback submission |
+| memory, admin, profile, identity responses | missing | matching command surfaces |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
 | workspace rollback lifecycle | complete | preview, restored files, and failure |
 | coding Session lifecycle | complete | diff, accepted, discarded, and operation failure |

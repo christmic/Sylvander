@@ -9,7 +9,7 @@ export interface AppProps {
 }
 
 export default function App({ gateway }: AppProps) {
-  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
+  const { state, selectSession, submit, answerQuestion, resolvePlan, cancelTask, submitFeedback, sendChat, interruptTurn, requestContext, compactContext, checkLiveness } = useRuntime(gateway);
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [inspector, setInspector] = useState<"plan" | "tasks" | "changes" | "context">("plan");
@@ -17,6 +17,7 @@ export default function App({ gateway }: AppProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [questionSelections, setQuestionSelections] = useState<string[]>([]);
   const [questionText, setQuestionText] = useState("");
+  const [feedbackNote, setFeedbackNote] = useState("");
   const [planRevision, setPlanRevision] = useState<string[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [newSessionLabel, setNewSessionLabel] = useState("New session");
@@ -124,6 +125,10 @@ export default function App({ gateway }: AppProps) {
     await answerQuestion(state.question.callId, answer);
     setQuestionSelections([]);
     setQuestionText("");
+  }
+
+  async function recordFeedback(rating: "positive" | "negative") {
+    if (await submitFeedback(rating, feedbackNote)) setFeedbackNote("");
   }
 
   function updatePlanStep(index: number, value: string) {
@@ -348,6 +353,11 @@ export default function App({ gateway }: AppProps) {
           <div className="decision-icon" aria-hidden="true">◇</div>
           <div className="decision-copy"><span className="eyebrow">Approval · {state.approval.tools.length} pending</span><h3 id="approval-title">Allow {state.approval.tools[0].toolName}?</h3><p>Runtime is waiting for the least-authorizing decision.</p></div>
           <div className="decision-actions"><button className="secondary-button" onClick={() => void decide(state.approval!.tools[0].callId, false)}>Reject</button>{state.approval.allowedScopes.map((scope) => <button key={scope} className="primary-button" onClick={() => void decide(state.approval!.tools[0].callId, true, scope)}>{approvalScopeLabel(scope)}</button>)}</div>
+        </section>}
+        {state.feedback && state.protocol?.capabilities.includes("feedback_v1") && <section className="decision-dock" aria-labelledby="feedback-title">
+          <div className="decision-icon" aria-hidden="true">◇</div>
+          <div className="decision-copy"><span className="eyebrow">Private turn feedback</span><h3 id="feedback-title">Was this response useful?</h3>{state.feedback.status === "recorded" ? <p role="status">Feedback recorded.</p> : <label>Optional note<input aria-label="Feedback note" maxLength={4096} value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} disabled={state.feedback.status === "submitting"} /></label>}</div>
+          {state.feedback.status !== "recorded" && <div className="decision-actions"><button type="button" className="secondary-button" disabled={state.feedback.status === "submitting"} onClick={() => void recordFeedback("negative")}>Needs improvement</button><button type="button" className="primary-button" disabled={state.feedback.status === "submitting"} onClick={() => void recordFeedback("positive")}>Useful</button></div>}
         </section>}
         <form className="composer" onSubmit={(event) => void send(event)}>
           <label htmlFor="composer-input" className="sr-only">Message Sylvander</label>

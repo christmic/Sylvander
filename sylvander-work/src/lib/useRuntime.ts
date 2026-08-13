@@ -66,6 +66,11 @@ export interface RuntimeViewState {
     detail?: string;
   };
   sessionConfig?: RuntimeSessionConfigState;
+  feedback?: {
+    target: string;
+    status: "ready" | "submitting" | "recorded";
+    feedbackId?: string;
+  };
   liveness: "idle" | "checking" | "healthy";
   diagnostic?: string;
 }
@@ -126,6 +131,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       sessions: current.sessions.map((session) => session.id === sessionId
         ? { ...session, state: "active" }
         : session),
+      feedback: current.selectedId === sessionId ? undefined : current.feedback,
     }));
   }, []);
 
@@ -345,6 +351,12 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "pong":
         setState((current) => ({ ...current, liveness: "healthy" }));
         break;
+      case "feedback_recorded":
+        setState((current) => current.feedback?.status === "submitting" ? {
+          ...current,
+          feedback: { ...current.feedback, status: "recorded", feedbackId: message.feedback_id },
+        } : current);
+        break;
       case "sessions_list": {
         const sessions: SessionSummary[] = [];
         const archivedSessions: SessionSummary[] = [];
@@ -403,6 +415,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             costNanoUsd: message.cost_nano_usd,
             sourceSessionId: message.source_session_id,
           },
+          feedback: undefined,
           transcript: [
             ...(message.notice ? [{
               id: "history-notice",
@@ -436,6 +449,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           compaction: undefined,
           codingReview: undefined,
           rollback: undefined,
+          feedback: undefined,
         }));
         void submit({ type: "list_sessions", include_archived: false });
         void submit({ type: "load_session", session_id: message.session_id });
@@ -731,6 +745,9 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             approval: undefined,
             question: undefined,
             activePlan: undefined,
+            feedback: message.feedback_target
+              ? { target: message.feedback_target, status: "ready" }
+              : undefined,
             transcript: settleTurnTranscript(
               current.transcript,
               sequence,
@@ -856,6 +873,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       rollback: undefined,
       approval: undefined,
       question: undefined,
+      feedback: undefined,
     }));
     return submit({ type: "load_session", session_id: sessionId });
   }, [submit]);
@@ -897,6 +915,41 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     if (!sessionId || !running) return Promise.resolve();
     return submit({ type: "cancel_task", session_id: sessionId, task_id: taskId });
   }, [state.tasks, submit]);
+
+  const submitFeedback = useCallback(async (
+    rating: "positive" | "negative",
+    note?: string,
+  ) => {
+    const feedback = state.feedback;
+    if (!feedback || feedback.status !== "ready") return false;
+    setState((current) => current.feedback?.target === feedback.target
+      ? { ...current, feedback: { ...current.feedback, status: "submitting" } }
+      : current);
+    try {
+      await submit({
+        type: "submit_feedback",
+        feedback: {
+          target: feedback.target,
+          rating,
+          ...(note?.trim() ? { note: note.trim() } : {}),
+          tags: [],
+          artifacts: [],
+          validations: [],
+          privacy_class: "private",
+        },
+      });
+      return true;
+    } catch (error) {
+      setState((current) => current.feedback?.target === feedback.target
+        ? {
+            ...current,
+            feedback: { ...current.feedback, status: "ready" },
+            diagnostic: safeDiagnostic(error),
+          }
+        : current);
+      return false;
+    }
+  }, [state.feedback, submit]);
 
   const sendChat = useCallback(async (sessionId: string, text: string) => {
     if (localTurnStateRef.current.has(sessionId)) return false;
@@ -995,6 +1048,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     answerQuestion,
     resolvePlan,
     cancelTask,
+    submitFeedback,
     sendChat,
     interruptTurn,
     requestContext,

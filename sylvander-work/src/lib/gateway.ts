@@ -34,6 +34,7 @@ export type RuntimeCommand =
   | { type: "rollback_workspace"; session_id: string; expected_turn_id: string }
   | { type: "get_session_config"; session_id: string }
   | { type: "update_session_config"; request: RuntimeSessionConfigUpdateRequest }
+  | { type: "submit_feedback"; feedback: RuntimeFeedback }
   | { type: "ping" };
 
 export type PlanDecision =
@@ -43,6 +44,16 @@ export type PlanDecision =
 
 export type ApprovalScope = "once" | "session" | "persistent";
 export type ReasoningEffort = "off" | "low" | "medium" | "high";
+
+export interface RuntimeFeedback {
+  target: string;
+  rating: "positive" | "negative";
+  note?: string;
+  tags: string[];
+  artifacts: never[];
+  validations: never[];
+  privacy_class: "private";
+}
 
 export interface RuntimePermissionProfile {
   file_access: "none" | "read_only" | "workspace_write";
@@ -227,9 +238,10 @@ export type RuntimeMessage =
   | { type: "task_completed"; session_id: string; task_id: string; summary: string }
   | { type: "task_failed"; session_id: string; task_id: string; error: string }
   | { type: "task_cancelled"; session_id: string; task_id: string; reason: string }
-  | { type: "done"; session_id: string; text: string }
-  | { type: "error"; session_id: string; message: string }
-  | { type: "turn_interrupted"; session_id: string; reason: string }
+  | { type: "done"; session_id: string; text: string; feedback_target?: string }
+  | { type: "error"; session_id: string; message: string; feedback_target?: string }
+  | { type: "turn_interrupted"; session_id: string; reason: string; feedback_target?: string }
+  | { type: "feedback_recorded"; feedback_id: string }
   | { type: "session_created"; session_id: string; config?: RuntimeSessionConfigState }
   | { type: "session_updated"; session_id: string; label?: string; archived: boolean }
   | { type: "session_deleted"; session_id: string }

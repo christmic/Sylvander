@@ -369,6 +369,50 @@ describe("Sylvander Work", () => {
     await waitFor(() => expect(composer.hasAttribute("disabled")).toBe(false));
   });
 
+  it("submits private feedback only through the Runtime-issued target", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 6, capabilities: ["feedback_v1"] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      include_archived: false,
+      sessions: [{ id: "session-1", label: "Feedback", workspace: "/workspace", last_seen_secs: 1, archived: false }],
+    } }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "done",
+      session_id: "session-1",
+      text: "Complete",
+      feedback_target: "sha256:server-issued-target",
+    } }));
+
+    const note = await screen.findByRole("textbox", { name: "Feedback note" });
+    fireEvent.change(note, { target: { value: "Clear and correct" } });
+    act(() => screen.getByRole("button", { name: "Useful" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "submit_feedback",
+      feedback: {
+        target: "sha256:server-issued-target",
+        rating: "positive",
+        note: "Clear and correct",
+        tags: [],
+        artifacts: [],
+        validations: [],
+        privacy_class: "private",
+      },
+    }));
+    expect(screen.getByRole("button", { name: "Useful" }).hasAttribute("disabled")).toBe(true);
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "feedback_recorded", feedback_id: "feedback-1",
+    } }));
+    expect(await screen.findByText("Feedback recorded.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Useful" })).toBeNull();
+  });
+
   it("requests interruption once and waits for the Runtime terminal", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);

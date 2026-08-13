@@ -167,6 +167,13 @@ boundary errors become failed notices using the server-safe message, with
 bounded retry timing when supplied; credentials and resource internals have no
 protocol field to render.
 
+Terminal feedback is evidence-bound rather than Session- or message-index
+based. Desktop preserves the opaque `feedback_target` issued on a terminal
+event, submits a private rating and optional bounded note through
+`SubmitFeedback`, and waits for `FeedbackRecorded` before declaring success.
+Starting or selecting another turn clears the handle; Desktop never derives or
+displays Runtime run and turn identifiers.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem
