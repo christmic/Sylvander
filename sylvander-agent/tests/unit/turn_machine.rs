@@ -34,11 +34,17 @@ fn legal_path_is_monotonic_and_snapshot_is_current_state() {
             TurnTransitionReason::RequestValidated,
         )
         .unwrap();
+    machine
+        .transition(
+            TurnPhase::ReadyForIteration,
+            TurnTransitionReason::BeforeHooksCompleted,
+        )
+        .unwrap();
     machine.start_iteration(1).unwrap();
     assert_eq!(
         machine.snapshot(),
         TurnSnapshot {
-            sequence: 3,
+            sequence: 4,
             iteration: 1,
             phase: TurnPhase::PreparingIteration,
             continuation: None,
@@ -82,4 +88,17 @@ fn continuation_and_usage_are_authoritative_machine_state() {
         Some(TurnContinuationReason::MaxOutputTokens)
     );
     assert_eq!(machine.outcome().unwrap().total_usage.input_tokens, 3);
+}
+
+#[test]
+fn stable_projection_names_come_only_from_the_typed_vocabulary() {
+    assert_eq!(
+        TurnPhase::WaitingForApproval.as_str(),
+        TurnPhase::WAITING_FOR_APPROVAL
+    );
+    assert_eq!(TurnPhase::Completed.as_str(), TurnPhase::COMPLETED);
+    assert_eq!(
+        TurnContinuationReason::MaxOutputTokens.as_str(),
+        TurnContinuationReason::MAX_OUTPUT_TOKENS
+    );
 }
