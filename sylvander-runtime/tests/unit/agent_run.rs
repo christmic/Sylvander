@@ -19,6 +19,35 @@ use sylvander_llm_core::ModelInfo as ProviderModelInfo;
 #[derive(Clone)]
 struct SessionTestTool(&'static str);
 
+#[derive(Clone)]
+struct ReplaySessionTool(Arc<std::sync::atomic::AtomicUsize>);
+
+impl sylvander_agent::tool::ToolDefinition for ReplaySessionTool {
+    fn spec(&self) -> sylvander_agent::tool::ToolSpec {
+        sylvander_agent::tool::ToolSpec::immediate(
+            "replay_read",
+            "Replay-safe test tool",
+            serde_json::json!({"type":"object","properties":{}}),
+            ToolInvocationClass::Read,
+        )
+        .with_recovery_policy(
+            sylvander_agent::tool::invocation::ToolRecoveryPolicy::RetryWithSameInvocation,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl sylvander_agent::tool::ToolExecutor for ReplaySessionTool {
+    async fn handle(
+        &self,
+        _context: &sylvander_agent::tool_context::ToolContext,
+        _call: &sylvander_agent::tool::PreparedToolCall,
+    ) -> Result<sylvander_agent::tool::ToolOutput, sylvander_agent::tool::ToolError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(sylvander_agent::tool::ToolOutput::ok("replayed"))
+    }
+}
+
 impl sylvander_agent::tool::ToolDefinition for SessionTestTool {
     fn spec(&self) -> sylvander_agent::tool::ToolSpec {
         sylvander_agent::tool::ToolSpec::immediate(
@@ -1318,6 +1347,177 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
         assert_eq!(snapshot.persistence_failed, 0);
         assert_eq!(snapshot.active_tools, 0);
     }
+}
+
+#[tokio::test]
+async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
+    use crate::storage::session::{
+        ModelInvocationId, ModelIterationStart, ModelResponsePersistence, RecoveryClassification,
+        ToolCallAdvance, ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId,
+        ToolRecoveryWrite,
+    };
+    use sylvander_agent::tool::invocation::{ToolRecoveryPolicy, prepared_input_digest};
+
+    let store = Arc::new(
+        crate::storage::session::SqliteSessionStore::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let (spec, _) = test_spec_and_client();
+    let model = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new(
+            spec.model.provider.clone(),
+            spec.model.model_name.clone(),
+        ),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE,
+    };
+    let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (run, issuer) =
+        AgentRun::qualified_router_builder(spec, Arc::new(ToolCallingProvider), model)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .session_store(store.clone())
+            .override_tools(ToolRegistry::new().register(ReplaySessionTool(executions.clone())))
+            .build_with_session_issuer()
+            .unwrap();
+    let session_id = SessionId::new("replay-session");
+    let metadata = test_metadata();
+    let mut session = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![run.id().clone()],
+    );
+    session.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+    store.save(&session).await.unwrap();
+    run.attach_authenticated_session(issuer.issue(session_id.clone(), metadata).unwrap())
+        .await
+        .unwrap();
+    let context =
+        sylvander_api::SessionContext::new("user-1", run.id().clone(), session_id.clone());
+    store
+        .begin_turn(
+            &context,
+            TurnStart {
+                session_id: session_id.clone(),
+                turn_id: "turn-replay".into(),
+                config_revision: 0,
+                effective_config: session.effective_config.unwrap(),
+                user_content: serde_json::json!({"role":"user","content":"read"}),
+                model_id: "test-model".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let input = serde_json::json!({});
+    let response = serde_json::to_value(sylvander_llm_core::ChatMessage::assistant(vec![
+        sylvander_llm_core::ContentBlock::ToolCall {
+            id: "call-replay".into(),
+            name: "replay_read".into(),
+            arguments: input.clone(),
+        },
+    ]))
+    .unwrap();
+    let model_invocation = ModelInvocationId::new();
+    let (_, surface_revision) = run.inner.tools.freeze_for_turn();
+    let capability_revision = run
+        .inner
+        .invocation_gateway
+        .snapshot()
+        .for_turn(&surface_revision, Vec::new())
+        .revision()
+        .to_owned();
+    store
+        .begin_model_iteration(ModelIterationStart {
+            session_id: session_id.clone(),
+            turn_id: "turn-replay".into(),
+            iteration: 1,
+            invocation_id: model_invocation.clone(),
+            model_id: "test-model".into(),
+            capability_revision: capability_revision.clone(),
+            request_digest: format!("sha256:{}", "d".repeat(64)),
+        })
+        .await
+        .unwrap();
+    store
+        .persist_model_response(
+            &context,
+            ModelResponsePersistence {
+                invocation_id: model_invocation,
+                expected_revision: 0,
+                assistant_content: response,
+                model_id: "test-model".into(),
+                terminal: false,
+            },
+        )
+        .await
+        .unwrap();
+    let tool_invocation = ToolInvocationId::new();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session_id.clone(),
+            turn_id: "turn-replay".into(),
+            call_id: "call-replay".into(),
+            invocation_id: tool_invocation.clone(),
+            tool_name: "replay_read".into(),
+            invocation_class: Some(ToolInvocationClass::Read),
+            declared_recovery_policy: ToolRecoveryPolicy::RetryWithSameInvocation,
+            effective_recovery_policy: ToolRecoveryPolicy::RetryWithSameInvocation,
+            capability_revision,
+            input_digest: prepared_input_digest(&input),
+        })
+        .await
+        .unwrap();
+    let mut revision = 0;
+    for (from, to) in [
+        (
+            ToolExecutionPosition::Prepared,
+            ToolExecutionPosition::Authorized,
+        ),
+        (
+            ToolExecutionPosition::Authorized,
+            ToolExecutionPosition::EffectStarted,
+        ),
+    ] {
+        revision = store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session_id.clone(),
+                turn_id: "turn-replay".into(),
+                call_id: "call-replay".into(),
+                expected_revision: revision,
+                expected_position: from,
+                next_position: to,
+            })
+            .await
+            .unwrap();
+    }
+    store
+        .classify_tool_recovery(ToolRecoveryWrite {
+            invocation_id: tool_invocation,
+            expected_revision: revision,
+            recovery_owner: "test-owner".into(),
+            observed_at: 100,
+            lease_expires_at: 130,
+            classification: RecoveryClassification::for_interrupted(
+                ToolExecutionPosition::EffectStarted,
+                ToolRecoveryPolicy::RetryWithSameInvocation,
+            ),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        run.replay_classified_tool_calls(&session_id, "test-owner", 100)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let calls = store.tool_calls(&session_id, "turn-replay").await.unwrap();
+    assert_eq!(calls[0].state, ToolCallState::Succeeded);
+    assert_eq!(calls[0].position, ToolExecutionPosition::ResultPersisted);
 }
 
 #[tokio::test]

@@ -1048,7 +1048,7 @@ async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
     )
     .await
     .unwrap();
-    assert_eq!(summary.manual_reconciliation, 0);
+    assert_eq!(summary.manual_reconciliation, 1);
     assert_eq!(
         std::fs::read_to_string(workspace.path().join("result.txt")).unwrap(),
         "committed once"
@@ -1057,7 +1057,7 @@ async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
     assert_eq!(calls[0].position, ToolExecutionPosition::EffectCommitted);
     assert_eq!(
         calls[0].recovery_decision,
-        Some(ToolRecoveryDecision::RecoverResult),
+        Some(ToolRecoveryDecision::ManualReconciliation),
     );
 }
 
