@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeAgentAdminRequest, type RuntimeAgentRevisionView, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeGatewayPort, type RuntimeIdentityBindingAction, type RuntimeIdentityBindingView, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimePendingMemoryConfirmation, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
+import { RuntimeGateway, type ApprovalScope, type DesktopEvent, type PlanDecision, type ReasoningEffort, type RuntimeAgentAdminRequest, type RuntimeAgentRevisionView, type RuntimeCommand, type RuntimeCompactionReport, type RuntimeContextReport, type RuntimeCredentialGenerationView, type RuntimeGatewayPort, type RuntimeIdentityBindingAction, type RuntimeIdentityBindingView, type RuntimeMessage, type RuntimeModelDescriptor, type RuntimeModelRevisionView, type RuntimePendingMemoryConfirmation, type RuntimeProviderRevisionView, type RuntimeRegistryAdminRequest, type RuntimeSessionConfigState, type RuntimeUserProfileAction, type RuntimeUserProfileExport, type RuntimeUserProfileOperation, type RuntimeUserProfileView } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -96,6 +96,14 @@ export interface RuntimeViewState {
     pendingOperation?: RuntimeAgentAdminRequest["operation"];
     notice?: string;
   };
+  registryAdministration: {
+    status: "idle" | "loading" | "ready" | "submitting" | "error";
+    pendingOperation?: RuntimeRegistryAdminRequest["operation"];
+    provider?: { id: string; activeRevision: number; revisions: RuntimeProviderRevisionView[]; nextBeforeRevision?: number };
+    model?: { providerId: string; modelId: string; activeRevision: number; revisions: RuntimeModelRevisionView[]; nextBeforeRevision?: number };
+    credential?: { bindingId: string; bindingIdSha256?: string; activeGeneration: number; generations: RuntimeCredentialGenerationView[]; nextBeforeGeneration?: number };
+    notice?: string;
+  };
   liveness: "idle" | "checking" | "healthy";
   diagnostic?: string;
 }
@@ -114,6 +122,7 @@ const initialState: RuntimeViewState = {
   userProfile: { status: "idle" },
   identityBinding: { status: "idle" },
   agentAdministration: { status: "idle", revisions: [] },
+  registryAdministration: { status: "idle" },
   liveness: "idle",
 };
 
@@ -143,6 +152,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
   const userProfileRequestRef = useRef<RuntimeUserProfileOperation | undefined>(undefined);
   const identityBindingRequestRef = useRef<RuntimeIdentityBindingAction["operation"] | undefined>(undefined);
   const agentAdminRequestRef = useRef<RuntimeAgentAdminRequest["operation"] | undefined>(undefined);
+  const registryAdminRequestRef = useRef<RuntimeRegistryAdminRequest | undefined>(undefined);
 
   const submit = useCallback((message: RuntimeCommand) => gateway.submit(message), [gateway]);
 
@@ -259,6 +269,36 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           status: "error",
           pendingOperation: undefined,
           notice: "Runtime administration command queue is unavailable",
+        },
+      }));
+      return false;
+    }
+  }, [submit]);
+
+  const requestRegistryAdministration = useCallback(async (request: RuntimeRegistryAdminRequest) => {
+    if (!protocolCapabilitiesRef.current.has("registry_administration")) return false;
+    registryAdminRequestRef.current = request;
+    setState((current) => ({
+      ...current,
+      registryAdministration: {
+        ...current.registryAdministration,
+        status: registryReadOperation(request.operation) ? "loading" : "submitting",
+        pendingOperation: request.operation,
+        notice: undefined,
+      },
+    }));
+    try {
+      await submit({ type: "registry_admin", request });
+      return true;
+    } catch {
+      if (registryAdminRequestRef.current === request) registryAdminRequestRef.current = undefined;
+      setState((current) => ({
+        ...current,
+        registryAdministration: {
+          ...current.registryAdministration,
+          status: "error",
+          pendingOperation: undefined,
+          notice: "Runtime registry command queue is unavailable",
         },
       }));
       return false;
@@ -779,6 +819,62 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         }));
         break;
       }
+      case "registry_admin": {
+        const request = registryAdminRequestRef.current;
+        const response = message.response;
+        if (!request) break;
+        if (response.status === "error") {
+          registryAdminRequestRef.current = undefined;
+          const reload = registryConflict(response.error.code)
+            ? registryReloadRequest(request)
+            : undefined;
+          if (reload) void requestRegistryAdministration(reload);
+          setState((current) => ({
+            ...current,
+            registryAdministration: {
+              ...current.registryAdministration,
+              status: reload ? "loading" : "error",
+              pendingOperation: reload?.operation,
+              notice: response.error.message,
+            },
+          }));
+          break;
+        }
+        if (!registryResponseMatches(request.operation, response.result.operation)) break;
+        registryAdminRequestRef.current = undefined;
+        const result = response.result;
+        if (result.operation === "provider_revisions_listed") {
+          setState((current) => ({ ...current, registryAdministration: {
+            ...current.registryAdministration,
+            status: "ready",
+            pendingOperation: undefined,
+            provider: { id: result.provider_id, activeRevision: result.active_revision, revisions: result.revisions, nextBeforeRevision: result.next_before_revision },
+          } }));
+          break;
+        }
+        if (result.operation === "model_revisions_listed") {
+          setState((current) => ({ ...current, registryAdministration: {
+            ...current.registryAdministration,
+            status: "ready",
+            pendingOperation: undefined,
+            model: { providerId: result.provider_id, modelId: result.model_id, activeRevision: result.active_revision, revisions: result.revisions, nextBeforeRevision: result.next_before_revision },
+          } }));
+          break;
+        }
+        if (result.operation === "credential_generations_listed") {
+          const bindingId = registryBindingId(request);
+          if (!bindingId) break;
+          setState((current) => ({ ...current, registryAdministration: {
+            ...current.registryAdministration,
+            status: "ready",
+            pendingOperation: undefined,
+            credential: { bindingId, bindingIdSha256: result.binding_id_sha256, activeGeneration: result.active_generation, generations: result.generations, nextBeforeGeneration: result.next_before_generation },
+          } }));
+          break;
+        }
+        setState((current) => applyRegistryMutation(current, request, result));
+        break;
+      }
       case "sessions_list": {
         const sessions: SessionSummary[] = [];
         const archivedSessions: SessionSummary[] = [];
@@ -1201,7 +1297,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       default:
         break;
     }
-  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestAgentAdministration, requestIdentityBinding, requestMemoryConfirmations, requestUserProfile, submit]);
+  }, [applyTurnStarted, enqueueDelta, flushPendingDeltas, requestAgentAdministration, requestIdentityBinding, requestMemoryConfirmations, requestRegistryAdministration, requestUserProfile, submit]);
 
   useEffect(() => {
     let stopped = false;
@@ -1259,11 +1355,13 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         userProfileRequestRef.current = undefined;
         identityBindingRequestRef.current = undefined;
         agentAdminRequestRef.current = undefined;
+        registryAdminRequestRef.current = undefined;
         setState((current) => ({
           ...current,
           userProfile: { status: "idle" },
           identityBinding: { status: "idle" },
           agentAdministration: { status: "idle", revisions: [] },
+          registryAdministration: { status: "idle" },
         }));
         scheduleReconnect(event.reason);
       }
@@ -1344,6 +1442,11 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       ...current,
       agentAdministration: { status: "idle", revisions: [] },
     }));
+  }, []);
+
+  const clearRegistryAdministration = useCallback(() => {
+    registryAdminRequestRef.current = undefined;
+    setState((current) => ({ ...current, registryAdministration: { status: "idle" } }));
   }, []);
 
   const answerQuestion = useCallback(async (callId: string, answer: string) => {
@@ -1563,6 +1666,8 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
     clearIdentityChallenge,
     requestAgentAdministration,
     clearAgentAdministration,
+    requestRegistryAdministration,
+    clearRegistryAdministration,
     sendChat,
     interruptTurn,
     requestContext,
@@ -1638,6 +1743,158 @@ function replaceAgentRevision(
       ? replacement
       : revision)
     : [...revisions, replacement];
+}
+
+type RegistrySuccessResult = Extract<
+  Extract<RuntimeMessage, { type: "registry_admin" }>["response"],
+  { status: "success" }
+>["result"];
+
+function registryReadOperation(operation: RuntimeRegistryAdminRequest["operation"]) {
+  return operation.startsWith("inspect_") || operation.startsWith("list_");
+}
+
+function registryConflict(code: string) {
+  return code === "active_revision_conflict" || code === "active_generation_conflict";
+}
+
+function registryReloadRequest(request: RuntimeRegistryAdminRequest): RuntimeRegistryAdminRequest | undefined {
+  switch (request.operation) {
+    case "create_provider":
+    case "inspect_provider_revision":
+    case "list_provider_revisions": return undefined;
+    case "stage_provider_revision":
+    case "activate_provider_revision":
+    case "rollback_provider_revision": return { operation: "list_provider_revisions", provider_id: request.provider_id, limit: 50 };
+    case "create_model":
+    case "inspect_model_revision":
+    case "list_model_revisions": return undefined;
+    case "stage_model_revision":
+    case "activate_model_revision":
+    case "rollback_model_revision": return { operation: "list_model_revisions", provider_id: request.provider_id, model_id: request.model_id, limit: 50 };
+    case "create_credential_binding":
+    case "inspect_credential_generation":
+    case "list_credential_generations": return undefined;
+    case "stage_credential_generation":
+    case "activate_credential_generation":
+    case "rollback_credential_generation": return { operation: "list_credential_generations", binding_id: request.binding_id, limit: 50 };
+  }
+}
+
+function registryResponseMatches(
+  request: RuntimeRegistryAdminRequest["operation"],
+  response: RegistrySuccessResult["operation"],
+) {
+  const expected: Record<RuntimeRegistryAdminRequest["operation"], RegistrySuccessResult["operation"]> = {
+    inspect_provider_revision: "provider_revision_inspected",
+    list_provider_revisions: "provider_revisions_listed",
+    create_provider: "provider_created",
+    stage_provider_revision: "provider_revision_staged",
+    activate_provider_revision: "provider_revision_activated",
+    rollback_provider_revision: "provider_revision_rolled_back",
+    inspect_model_revision: "model_revision_inspected",
+    list_model_revisions: "model_revisions_listed",
+    create_model: "model_created",
+    stage_model_revision: "model_revision_staged",
+    activate_model_revision: "model_revision_activated",
+    rollback_model_revision: "model_revision_rolled_back",
+    inspect_credential_generation: "credential_generation_inspected",
+    list_credential_generations: "credential_generations_listed",
+    create_credential_binding: "credential_binding_created",
+    stage_credential_generation: "credential_generation_staged",
+    activate_credential_generation: "credential_generation_activated",
+    rollback_credential_generation: "credential_generation_rolled_back",
+  };
+  return expected[request] === response;
+}
+
+function registryBindingId(request: RuntimeRegistryAdminRequest) {
+  return "binding_id" in request ? request.binding_id : undefined;
+}
+
+function applyRegistryMutation(
+  current: RuntimeViewState,
+  request: RuntimeRegistryAdminRequest,
+  result: RegistrySuccessResult,
+): RuntimeViewState {
+  const registry = current.registryAdministration;
+  if (result.operation === "provider_revision_inspected"
+    || result.operation === "provider_created"
+    || result.operation === "provider_revision_staged"
+    || result.operation === "provider_revision_activated"
+    || result.operation === "provider_revision_rolled_back") {
+    const activated = result.operation === "provider_revision_activated"
+      || result.operation === "provider_revision_rolled_back"
+      || result.operation === "provider_created";
+    const activeRevision = activated ? result.revision.definition.revision : registry.provider?.activeRevision ?? 0;
+    return { ...current, registryAdministration: { ...registry, status: "ready", pendingOperation: undefined, notice: registrySuccessNotice(result.operation), provider: {
+      id: result.revision.definition.provider_id,
+      activeRevision,
+      revisions: replaceRegistryRevision(registry.provider?.revisions ?? [], result.revision, activeRevision),
+    } } };
+  }
+  if (result.operation === "model_revision_inspected"
+    || result.operation === "model_created"
+    || result.operation === "model_revision_staged"
+    || result.operation === "model_revision_activated"
+    || result.operation === "model_revision_rolled_back") {
+    const activated = result.operation === "model_revision_activated"
+      || result.operation === "model_revision_rolled_back"
+      || result.operation === "model_created";
+    const activeRevision = activated ? result.revision.definition.revision : registry.model?.activeRevision ?? 0;
+    return { ...current, registryAdministration: { ...registry, status: "ready", pendingOperation: undefined, notice: registrySuccessNotice(result.operation), model: {
+      providerId: result.revision.definition.provider_id,
+      modelId: result.revision.definition.model_id,
+      activeRevision,
+      revisions: replaceRegistryRevision(registry.model?.revisions ?? [], result.revision, activeRevision),
+    } } };
+  }
+  if (result.operation === "credential_generation_inspected"
+    || result.operation === "credential_binding_created"
+    || result.operation === "credential_generation_staged") {
+    const bindingId = registryBindingId(request);
+    if (!bindingId) return current;
+    const activated = result.operation === "credential_binding_created";
+    const activeGeneration = activated ? result.generation.generation : registry.credential?.activeGeneration ?? 0;
+    return { ...current, registryAdministration: { ...registry, status: "ready", pendingOperation: undefined, notice: registrySuccessNotice(result.operation), credential: {
+      bindingId,
+      bindingIdSha256: result.generation.binding_id_sha256,
+      activeGeneration,
+      generations: replaceRegistryRevision(registry.credential?.generations ?? [], result.generation, activeGeneration, "generation"),
+    } } };
+  }
+  const bindingId = registryBindingId(request);
+  if (!bindingId || !registry.credential
+    || (result.operation !== "credential_generation_activated"
+      && result.operation !== "credential_generation_rolled_back")) return current;
+  return { ...current, registryAdministration: { ...registry, status: "ready", pendingOperation: undefined, notice: registrySuccessNotice(result.operation), credential: {
+    ...registry.credential,
+    bindingId,
+    bindingIdSha256: result.binding_id_sha256,
+    activeGeneration: result.active_generation,
+    generations: registry.credential.generations.map((generation) => ({ ...generation, active: generation.generation === result.active_generation })),
+  } } };
+}
+
+function replaceRegistryRevision<T extends { active: boolean }>(
+  values: T[],
+  replacement: T,
+  active: number,
+  field: "revision" | "generation" = "revision",
+) {
+  const identity = field === "revision"
+    ? (value: T) => (value as T & { definition: { revision: number } }).definition.revision
+    : (value: T) => (value as T & { generation: number }).generation;
+  const next = values.some((value) => identity(value) === identity(replacement))
+    ? values.map((value) => identity(value) === identity(replacement) ? replacement : value)
+    : [...values, replacement];
+  return next.map((value) => ({ ...value, active: identity(value) === active }));
+}
+
+function registrySuccessNotice(operation: RegistrySuccessResult["operation"]) {
+  return operation.includes("staged")
+    ? "Registry revision staged; activation is still required"
+    : `Registry ${operation.replaceAll("_", " ")}`;
 }
 
 function sameDeltaTarget(left: PendingDelta, right: PendingDelta): boolean {

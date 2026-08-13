@@ -39,6 +39,7 @@ export type RuntimeCommand =
   | { type: "user_profile"; request: RuntimeUserProfileRequest }
   | { type: "identity_binding"; request: RuntimeIdentityBindingRequest }
   | { type: "agent_admin"; request: RuntimeAgentAdminRequest }
+  | { type: "registry_admin"; request: RuntimeRegistryAdminRequest }
   | { type: "ping" };
 
 export type PlanDecision =
@@ -329,6 +330,118 @@ export type RuntimeAgentAdminResponse =
   | { status: "success"; result: { operation: "revision_activated" | "revision_rolled_back"; agent_id: string; active_revision: number } }
   | { status: "error"; error: { code: string; message: string; agent_id?: string; revision?: number; expected_active_revision?: number; actual_active_revision?: number } };
 
+export interface RuntimeProviderDefinitionDraft {
+  kind: string;
+  features: string[];
+  base_url: string;
+  credential_binding_id: string;
+}
+
+export interface RuntimeModelDefinitionDraft {
+  context_window: number;
+  max_output_tokens: number;
+  capabilities: string[];
+  lifecycle: { status: "active" } | { status: "deprecated"; replacement?: string };
+  pricing?: {
+    input_usd_micros_per_million: number;
+    output_usd_micros_per_million: number;
+    cache_write_usd_micros_per_million?: number;
+    cache_read_usd_micros_per_million?: number;
+  };
+}
+
+export type RuntimeCredentialSecretReference =
+  | { source: "environment"; name: string }
+  | { source: "file"; path: string };
+
+export type RuntimeRegistryAdminRequest =
+  | { operation: "inspect_provider_revision"; provider_id: string; revision: number }
+  | { operation: "list_provider_revisions"; provider_id: string; before_revision?: number; limit: number }
+  | { operation: "create_provider"; provider_id: string; definition: RuntimeProviderDefinitionDraft }
+  | { operation: "stage_provider_revision"; provider_id: string; revision: number; expected_active_revision: number; definition: RuntimeProviderDefinitionDraft }
+  | { operation: "activate_provider_revision"; provider_id: string; revision: number; expected_active_revision: number }
+  | { operation: "rollback_provider_revision"; provider_id: string; target_revision: number; expected_active_revision: number }
+  | { operation: "inspect_model_revision"; provider_id: string; model_id: string; revision: number }
+  | { operation: "list_model_revisions"; provider_id: string; model_id: string; before_revision?: number; limit: number }
+  | { operation: "create_model"; provider_id: string; model_id: string; definition: RuntimeModelDefinitionDraft }
+  | { operation: "stage_model_revision"; provider_id: string; model_id: string; revision: number; expected_active_revision: number; definition: RuntimeModelDefinitionDraft }
+  | { operation: "activate_model_revision"; provider_id: string; model_id: string; revision: number; expected_active_revision: number }
+  | { operation: "rollback_model_revision"; provider_id: string; model_id: string; target_revision: number; expected_active_revision: number }
+  | { operation: "inspect_credential_generation"; binding_id: string; generation: number }
+  | { operation: "list_credential_generations"; binding_id: string; before_generation?: number; limit: number }
+  | { operation: "create_credential_binding"; binding_id: string; reference: RuntimeCredentialSecretReference }
+  | { operation: "stage_credential_generation"; binding_id: string; generation: number; expected_active_generation: number; reference: RuntimeCredentialSecretReference }
+  | { operation: "activate_credential_generation"; binding_id: string; generation: number; expected_active_generation: number }
+  | { operation: "rollback_credential_generation"; binding_id: string; target_generation: number; expected_active_generation: number };
+
+export interface RuntimeProviderRevisionView {
+  definition: {
+    provider_id: string;
+    revision: number;
+    kind: string;
+    features: string[];
+    base_url_sha256: string;
+    credential_binding_id_sha256: string;
+  };
+  digest_sha256: string;
+  created_at_unix_secs: number;
+  active: boolean;
+}
+
+export interface RuntimeModelRevisionView {
+  definition: {
+    provider_id: string;
+    model_id: string;
+    revision: number;
+    context_window: number;
+    max_output_tokens: number;
+    capabilities: string[];
+    lifecycle: { status: "active" } | { status: "deprecated"; replacement?: string };
+    pricing_sha256?: string;
+  };
+  digest_sha256: string;
+  created_at_unix_secs: number;
+  active: boolean;
+}
+
+export interface RuntimeCredentialGenerationView {
+  binding_id_sha256: string;
+  generation: number;
+  reference_kind: "environment" | "file";
+  reference_configured: boolean;
+  reference_digest_sha256: string;
+  created_at_unix_secs: number;
+  active: boolean;
+}
+
+type RuntimeRegistrySuccessResult =
+  | { operation: "provider_revision_inspected"; revision: RuntimeProviderRevisionView }
+  | { operation: "provider_revisions_listed"; provider_id: string; active_revision: number; revisions: RuntimeProviderRevisionView[]; next_before_revision?: number }
+  | { operation: "provider_created" | "provider_revision_staged" | "provider_revision_activated" | "provider_revision_rolled_back"; revision: RuntimeProviderRevisionView }
+  | { operation: "model_revision_inspected"; revision: RuntimeModelRevisionView }
+  | { operation: "model_revisions_listed"; provider_id: string; model_id: string; active_revision: number; revisions: RuntimeModelRevisionView[]; next_before_revision?: number }
+  | { operation: "model_created" | "model_revision_staged" | "model_revision_activated" | "model_revision_rolled_back"; revision: RuntimeModelRevisionView }
+  | { operation: "credential_generation_inspected"; generation: RuntimeCredentialGenerationView }
+  | { operation: "credential_generations_listed"; binding_id_sha256: string; active_generation: number; generations: RuntimeCredentialGenerationView[]; next_before_generation?: number }
+  | { operation: "credential_binding_created" | "credential_generation_staged"; generation: RuntimeCredentialGenerationView }
+  | { operation: "credential_generation_activated" | "credential_generation_rolled_back"; binding_id_sha256: string; active_generation: number };
+
+export type RuntimeRegistryAdminResponse =
+  | { status: "success"; result: RuntimeRegistrySuccessResult }
+  | {
+      status: "error";
+      error: {
+        code: string;
+        message: string;
+        provider_id?: string;
+        model_id?: string;
+        binding_id_sha256?: string;
+        revision?: number;
+        generation?: number;
+        details?: { kind: string; [key: string]: string | number };
+      };
+    };
+
 export interface RuntimePermissionProfile {
   file_access: "none" | "read_only" | "workspace_write";
   network_access: "denied" | "allowed";
@@ -520,6 +633,7 @@ export type RuntimeMessage =
   | { type: "user_profile"; response: RuntimeUserProfileResponse }
   | { type: "identity_binding"; response: RuntimeIdentityBindingResponse }
   | { type: "agent_admin"; response: RuntimeAgentAdminResponse }
+  | { type: "registry_admin"; response: RuntimeRegistryAdminResponse }
   | { type: "session_created"; session_id: string; config?: RuntimeSessionConfigState }
   | { type: "session_updated"; session_id: string; label?: string; archived: boolean }
   | { type: "session_deleted"; session_id: string }
