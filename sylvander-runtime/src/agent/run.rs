@@ -37,7 +37,8 @@ use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{info, warn};
 
 use sylvander_api::{
-    PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus, PlatformTrust,
+    AgentInstanceId, PlatformAuthStatus, PlatformFeature, PlatformFeatureKind,
+    PlatformFeatureStatus, PlatformTrust,
 };
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ChatRole, ModelCapabilities, ModelInfo, ModelProvider,
@@ -1586,9 +1587,12 @@ impl AgentRunInner {
         session_id: &SessionId,
         metadata: &SessionMetadata,
     ) -> Result<SessionContext, AgentRunError> {
-        let mut context = SessionContext::new(session_id.clone(), metadata.clone());
         let Some(store) = &self.session_store else {
-            return Ok(context);
+            return Ok(SessionContext::new(
+                session_id.clone(),
+                AgentInstanceId::new(format!("moderator:{}", session_id.0)),
+                metadata.clone(),
+            ));
         };
 
         let mut stored = match store.get(session_id).await {
@@ -1609,10 +1613,7 @@ impl AgentRunInner {
                 })?;
                 stored
             }
-            Ok(Some(stored)) => {
-                context.metadata = stored.metadata.clone();
-                stored
-            }
+            Ok(Some(stored)) => stored,
             Err(source) => {
                 return Err(AgentRunError::session_persistence(
                     SessionPersistenceOperation::InspectSession,
@@ -1661,9 +1662,14 @@ impl AgentRunInner {
             membership
         };
         let moderator_instance_id = membership.governance.moderator_instance_id;
+        let mut context = SessionContext::new(
+            session_id.clone(),
+            moderator_instance_id.clone(),
+            stored.metadata.clone(),
+        );
 
         let caller = sylvander_api::SessionContext::new(
-            metadata.user_id.clone(),
+            stored.metadata.user_id.clone(),
             self.id.clone(),
             session_id.clone(),
         )
@@ -1679,7 +1685,7 @@ impl AgentRunInner {
             })?;
         if messages.is_empty() {
             let legacy_caller = sylvander_api::SessionContext::new(
-                metadata.user_id.clone(),
+                stored.metadata.user_id.clone(),
                 self.id.clone(),
                 session_id.clone(),
             );

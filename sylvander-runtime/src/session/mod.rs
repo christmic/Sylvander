@@ -18,6 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sylvander_llm_core::{ChatMessage, ModelResponse};
 
+use sylvander_api::AgentInstanceId;
+
 use crate::agent_definition::SessionId;
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,8 @@ pub use sylvander_api::SessionMetadata;
 pub struct SessionContext {
     /// Which session this context belongs to.
     pub session_id: SessionId,
+    /// Concrete first-class Agent participant that owns this history.
+    pub agent_instance_id: AgentInstanceId,
     /// The full message history for this agent in this session.
     pub history: Vec<ChatMessage>,
     /// Shared session metadata.
@@ -66,10 +70,15 @@ pub struct SessionContext {
 impl SessionContext {
     /// Create a new empty session context.
     #[must_use]
-    pub fn new(session_id: SessionId, metadata: SessionMetadata) -> Self {
+    pub fn new(
+        session_id: SessionId,
+        agent_instance_id: AgentInstanceId,
+        metadata: SessionMetadata,
+    ) -> Self {
         let now = now_secs();
         Self {
             session_id,
+            agent_instance_id,
             history: Vec::new(),
             metadata,
             created_at: now,

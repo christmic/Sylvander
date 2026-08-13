@@ -14,9 +14,17 @@ fn test_metadata() -> SessionMetadata {
 
 #[test]
 fn new_session_context_is_empty() {
-    let ctx = SessionContext::new(SessionId::new("s1"), test_metadata());
+    let ctx = SessionContext::new(
+        SessionId::new("s1"),
+        sylvander_api::AgentInstanceId::new("agent-instance-1"),
+        test_metadata(),
+    );
     assert_eq!(ctx.session_id, SessionId::new("s1"));
     assert!(ctx.is_empty());
+    assert_eq!(
+        ctx.agent_instance_id,
+        sylvander_api::AgentInstanceId::new("agent-instance-1")
+    );
     assert_eq!(ctx.len(), 0);
     assert_eq!(ctx.metadata.name, "test-session");
     assert!(ctx.created_at > 0);
@@ -25,7 +33,11 @@ fn new_session_context_is_empty() {
 
 #[test]
 fn append_user_message_grows_history() {
-    let mut ctx = SessionContext::new(SessionId::new("s1"), test_metadata());
+    let mut ctx = SessionContext::new(
+        SessionId::new("s1"),
+        sylvander_api::AgentInstanceId::new("agent-instance-1"),
+        test_metadata(),
+    );
     ctx.append_user_message(ChatMessage::user("Hello"));
     assert_eq!(ctx.len(), 1);
     assert!(ctx.updated_at >= ctx.created_at);
@@ -33,7 +45,11 @@ fn append_user_message_grows_history() {
 
 #[test]
 fn append_assistant_message_converts_to_param() {
-    let mut ctx = SessionContext::new(SessionId::new("s1"), test_metadata());
+    let mut ctx = SessionContext::new(
+        SessionId::new("s1"),
+        sylvander_api::AgentInstanceId::new("agent-instance-1"),
+        test_metadata(),
+    );
 
     let msg = ModelResponse {
         id: "msg_1".into(),
@@ -57,7 +73,11 @@ fn append_assistant_message_converts_to_param() {
 
 #[test]
 fn history_snapshot_is_independent() {
-    let mut ctx = SessionContext::new(SessionId::new("s1"), test_metadata());
+    let mut ctx = SessionContext::new(
+        SessionId::new("s1"),
+        sylvander_api::AgentInstanceId::new("agent-instance-1"),
+        test_metadata(),
+    );
     ctx.append_user_message(ChatMessage::user("first"));
 
     let snap = ctx.history_snapshot();
@@ -71,8 +91,16 @@ fn history_snapshot_is_independent() {
 
 #[test]
 fn multiple_sessions_have_independent_histories() {
-    let mut ctx_a = SessionContext::new(SessionId::new("sa"), test_metadata());
-    let mut ctx_b = SessionContext::new(SessionId::new("sb"), test_metadata());
+    let mut ctx_a = SessionContext::new(
+        SessionId::new("sa"),
+        sylvander_api::AgentInstanceId::new("agent-instance-a"),
+        test_metadata(),
+    );
+    let mut ctx_b = SessionContext::new(
+        SessionId::new("sb"),
+        sylvander_api::AgentInstanceId::new("agent-instance-b"),
+        test_metadata(),
+    );
 
     ctx_a.append_user_message(ChatMessage::user("to A"));
     ctx_b.append_user_message(ChatMessage::user("to B"));

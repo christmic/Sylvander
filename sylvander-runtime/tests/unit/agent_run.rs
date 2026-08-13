@@ -170,7 +170,11 @@ async fn with_workspace_context(
 impl AgentRun {
     async fn join_session(&self, meta: SessionMetadata) -> SessionId {
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-        let ctx = SessionContext::new(session_id.clone(), meta);
+        let ctx = SessionContext::new(
+            session_id.clone(),
+            AgentInstanceId::new(format!("moderator:{session_id}")),
+            meta,
+        );
         self.inner
             .sessions
             .write()
@@ -3702,7 +3706,11 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
         .expect("build");
     run.inner.sessions.write().await.insert(
         session_id.clone(),
-        SessionContext::new(session_id.clone(), metadata),
+        SessionContext::new(
+            session_id.clone(),
+            AgentInstanceId::new(format!("moderator:{session_id}")),
+            metadata,
+        ),
     );
     let history = vec![
         ChatMessage::user("[Earlier conversation summary]\nimportant decisions"),
@@ -3811,7 +3819,11 @@ async fn raw_session_presence_has_no_trusted_memory_identity() {
     let session_id = SessionId::new("raw-bus-session");
     run.inner.sessions.write().await.insert(
         session_id.clone(),
-        SessionContext::new(session_id.clone(), test_metadata()),
+        SessionContext::new(
+            session_id.clone(),
+            AgentInstanceId::new(format!("moderator:{session_id}")),
+            test_metadata(),
+        ),
     );
 
     assert!(matches!(
