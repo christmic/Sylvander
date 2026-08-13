@@ -767,5 +767,5 @@ fn map_memory_error(_error: MemoryStoreError) -> TurnContextError {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/turn_context.rs"]
+#[path = "../../tests/unit/turn_context.rs"]
 mod tests;

@@ -36,8 +36,8 @@ use std::fmt;
 
 use sylvander_llm_core::ModelInfo;
 
-use crate::compress::CompressContext;
-use crate::compress::layer::{CompressionLayer, LayerReport};
+use crate::context::compression::CompressContext;
+use crate::context::compression::layer::{CompressionLayer, LayerReport};
 
 /// Ordered list of compression layers. Cheap-first, expensive-last.
 pub struct CompressionPipeline {
@@ -83,11 +83,16 @@ impl CompressionPipeline {
     #[must_use]
     pub fn default_for_model(_model: &ModelInfo) -> Self {
         Self::builder()
-            .layer(crate::compress::layers::tool_result_budget::ToolResultBudgetLayer::new())
-            .layer(crate::compress::layers::orphan_snip::OrphanSnipLayer::new())
-            .layer(crate::compress::layers::micro_compact::MicroCompactLayer::new())
-            .layer(crate::compress::layers::context_collapse::ContextCollapseLayer::new())
-            .layer(crate::compress::layers::auto_compact::AutoCompactLayer::new())
+            .layer(
+                crate::context::compression::layers::tool_result_budget::ToolResultBudgetLayer::new(
+                ),
+            )
+            .layer(crate::context::compression::layers::orphan_snip::OrphanSnipLayer::new())
+            .layer(crate::context::compression::layers::micro_compact::MicroCompactLayer::new())
+            .layer(
+                crate::context::compression::layers::context_collapse::ContextCollapseLayer::new(),
+            )
+            .layer(crate::context::compression::layers::auto_compact::AutoCompactLayer::new())
             .build()
     }
 
@@ -177,5 +182,5 @@ impl CompressionPipelineBuilder {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/compress_pipeline.rs"]
+#[path = "../../../tests/unit/compress_pipeline.rs"]
 mod tests;

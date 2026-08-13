@@ -64,5 +64,5 @@ impl CompactionError {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/compress_error.rs"]
+#[path = "../../../tests/unit/compress_error.rs"]
 mod tests;

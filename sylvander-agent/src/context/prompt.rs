@@ -5,11 +5,11 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-use crate::turn_context::{
+use crate::context::turn_context::{
     TurnContextCandidate, TurnContextInputs, TurnContextLayerKind, TurnContextProvenance,
     TurnContextSource,
 };
-use crate::user_profile_prompt::UserProfilePromptLayer;
+use crate::context::user_profile_prompt::UserProfilePromptLayer;
 
 pub const MAX_PROMPT_PROFILES: usize = 32;
 pub const MAX_PROMPT_BYTES: usize = 64 * 1024;
@@ -511,5 +511,5 @@ fn validate_content(
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/prompt.rs"]
+#[path = "../../tests/unit/prompt.rs"]
 mod tests;

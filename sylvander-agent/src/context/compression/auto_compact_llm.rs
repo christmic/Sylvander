@@ -141,5 +141,5 @@ fn protocol(message: &'static str) -> AgentLoopError {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/compress_auto_compact_llm.rs"]
+#[path = "../../../tests/unit/compress_auto_compact_llm.rs"]
 pub mod tests;

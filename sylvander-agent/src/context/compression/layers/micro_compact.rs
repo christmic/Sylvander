@@ -35,8 +35,8 @@ use std::pin::Pin;
 
 use sylvander_llm_core::{ChatRole, ContentBlock, ToolResultContent};
 
-use crate::compress::CompressContext;
-use crate::compress::layer::{CompressionLayer, LayerReport};
+use crate::context::compression::CompressContext;
+use crate::context::compression::layer::{CompressionLayer, LayerReport};
 
 /// Default number of recent user messages to keep intact.
 pub const DEFAULT_KEEP_LAST_N: usize = 3;
@@ -158,5 +158,5 @@ impl CompressionLayer for MicroCompactLayer {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/compress_layers_micro_compact.rs"]
+#[path = "../../../../tests/unit/compress_layers_micro_compact.rs"]
 mod tests;

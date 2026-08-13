@@ -1,6 +1,7 @@
 //! Compression layer implementations.
 //!
-//! Each layer is one step in a [`CompressionPipeline`](crate::compress::pipeline::CompressionPipeline).
+//! Each layer is one step in a
+//! [`CompressionPipeline`](crate::context::compression::pipeline::CompressionPipeline).
 //! They run sequentially in cheap-first, expensive-last order:
 //!
 //! | Layer | Module | Status |

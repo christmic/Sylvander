@@ -28,8 +28,8 @@ use std::pin::Pin;
 
 use serde_json::Value as JsonValue;
 
-use crate::compress::CompressContext;
-use crate::compress::error::{CompactionError, CompactionFailureCode};
+use crate::context::compression::CompressContext;
+use crate::context::compression::error::{CompactionError, CompactionFailureCode};
 
 /// What one compression layer did in a single pass.
 ///
@@ -148,5 +148,5 @@ pub trait CompressionLayer: Send + Sync {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/compress_layer.rs"]
+#[path = "../../../tests/unit/compress_layer.rs"]
 mod tests;

@@ -51,7 +51,8 @@ use crate::turn::request::AgentTurnRequest;
 /// kernels from leaking one Session's state or authority into another.
 #[derive(Clone)]
 pub struct AgentLoop {
-    pub(crate) compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
+    pub(crate) compression_pipeline:
+        Option<Arc<crate::context::compression::pipeline::CompressionPipeline>>,
     pub(crate) max_iterations: u32,
     pub(crate) max_retries: u32,
 }
@@ -77,7 +78,7 @@ impl std::fmt::Debug for AgentLoop {
 
 /// Builder for [`AgentLoop`].
 pub struct AgentLoopBuilder {
-    compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
+    compression_pipeline: Option<Arc<crate::context::compression::pipeline::CompressionPipeline>>,
     max_iterations: u32,
     max_retries: u32,
 }
@@ -110,12 +111,12 @@ impl AgentLoopBuilder {
     }
 
     /// Set the compression pipeline. If not called, defaults to
-    /// [`CompressionPipeline::default_for_model`](crate::compress::pipeline::CompressionPipeline::default_for_model) (L1 + L2 + L3).
+    /// [`CompressionPipeline::default_for_model`](crate::context::compression::pipeline::CompressionPipeline::default_for_model) (L1 + L2 + L3).
     /// Opt in to L0 or L4 by building a custom pipeline.
     #[must_use]
     pub fn compression_pipeline(
         mut self,
-        pipeline: super::compress::pipeline::CompressionPipeline,
+        pipeline: crate::context::compression::pipeline::CompressionPipeline,
     ) -> Self {
         self.compression_pipeline = Some(Arc::new(pipeline));
         self
@@ -198,7 +199,11 @@ pub fn run_stream(
     ports: AgentExecutionPorts,
 ) -> impl Stream<Item = AgentEvent> + Send + '_ {
     let compression_pipeline = config.compression_pipeline.clone().unwrap_or_else(|| {
-        Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&request.model))
+        Arc::new(
+            crate::context::compression::pipeline::CompressionPipeline::default_for_model(
+                &request.model,
+            ),
+        )
     });
     async_stream::stream! {
         if let Err(error) = ports.validate_for(&request) {
@@ -226,13 +231,13 @@ pub fn run_stream(
             // 1. Compression (pipeline: layers run in order, async)
             {
                 let auto_threshold = (request.model.context_window as f32
-                    * super::compress::layers::auto_compact::DEFAULT_TRIGGER_RATIO)
+                    * crate::context::compression::layers::auto_compact::DEFAULT_TRIGGER_RATIO)
                     as u64;
                 if last_provider_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
                     yield AgentEvent::CompressionStarted;
                 }
                 let auto_llm = auto_compact_llm(&request, &ports);
-                let mut compress_ctx = super::compress::CompressContext {
+                let mut compress_ctx = crate::context::compression::CompressContext {
                     messages: &mut messages,
                     last_usage: &last_provider_usage,
                     model_info: &request.model,
@@ -1205,8 +1210,8 @@ async fn consume_provider_stream(
 fn auto_compact_llm(
     request: &AgentTurnRequest,
     ports: &AgentExecutionPorts,
-) -> super::compress::auto_compact_llm::ProviderAutoCompactLlm {
-    super::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
+) -> crate::context::compression::auto_compact_llm::ProviderAutoCompactLlm {
+    crate::context::compression::auto_compact_llm::ProviderAutoCompactLlm::new(
         ports.model.clone(),
         request.model.clone(),
     )

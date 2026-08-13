@@ -1,7 +1,7 @@
 //! Deterministic, least-privilege User Profile prompt projection.
 use std::fmt;
 
-use crate::user_profile::{
+use crate::context::user_profile::{
     ClassifiedPreference, CommunicationTone, PrivacyClass, ResponseDetail, UserProfileSnapshot,
 };
 
@@ -274,5 +274,5 @@ const fn communication_tone(value: CommunicationTone) -> &'static str {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/user_profile_prompt.rs"]
+#[path = "../../tests/unit/user_profile_prompt.rs"]
 mod tests;

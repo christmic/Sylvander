@@ -15,7 +15,7 @@ use serde_json::Value as JsonValue;
 
 use sylvander_llm_core::{ChatMessage, TokenUsage};
 
-use crate::compress::layer::LayerReport;
+use crate::context::compression::layer::LayerReport;
 use crate::interaction::plan::PlanDecision;
 use crate::turn::error::AgentLoopError;
 use crate::turn::outcome::AgentOutcome;

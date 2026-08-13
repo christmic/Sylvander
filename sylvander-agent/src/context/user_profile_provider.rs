@@ -1,7 +1,7 @@
 //! Runtime-injected access to the authenticated user's current profile.
 
+use crate::context::user_profile::UserProfileSnapshot;
 use crate::turn::identity::{AgentId, SessionId, UserId};
-use crate::user_profile::UserProfileSnapshot;
 use async_trait::async_trait;
 
 /// Runtime-derived query subject. External callers may inspect it to perform
@@ -64,5 +64,5 @@ pub trait UserProfileProvider: Send + Sync {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/user_profile_provider.rs"]
+#[path = "../../tests/unit/user_profile_provider.rs"]
 mod tests;

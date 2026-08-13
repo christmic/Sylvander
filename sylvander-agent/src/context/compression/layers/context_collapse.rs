@@ -32,8 +32,8 @@ use std::pin::Pin;
 use serde_json::json;
 use sylvander_llm_core::{ChatRole, ContentBlock};
 
-use crate::compress::CompressContext;
-use crate::compress::layer::{CompressionLayer, LayerReport};
+use crate::context::compression::CompressContext;
+use crate::context::compression::layer::{CompressionLayer, LayerReport};
 
 /// Default number of recent assistant messages to keep thinking
 /// intact.
@@ -164,5 +164,5 @@ impl CompressionLayer for ContextCollapseLayer {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/compress_layers_context_collapse.rs"]
+#[path = "../../../../tests/unit/compress_layers_context_collapse.rs"]
 mod tests;

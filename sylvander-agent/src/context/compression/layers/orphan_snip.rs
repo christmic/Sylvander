@@ -27,8 +27,8 @@ use std::pin::Pin;
 
 use sylvander_llm_core::{ChatRole, ContentBlock};
 
-use crate::compress::CompressContext;
-use crate::compress::layer::{CompressionLayer, LayerReport};
+use crate::context::compression::CompressContext;
+use crate::context::compression::layer::{CompressionLayer, LayerReport};
 
 /// L1 layer: drop orphan `tool_result` blocks.
 #[derive(Debug, Default, Clone, Copy)]
@@ -92,5 +92,5 @@ impl CompressionLayer for OrphanSnipLayer {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/compress_layers_orphan_snip.rs"]
+#[path = "../../../../tests/unit/compress_layers_orphan_snip.rs"]
 mod tests;

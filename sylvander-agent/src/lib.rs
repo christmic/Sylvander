@@ -86,8 +86,8 @@
 
 #![doc(html_root_url = "https://docs.rs/sylvander-agent/0.1.0")]
 
-/// Context-window compaction contracts and pipeline implementations.
-pub mod compress;
+/// Prompt composition, retrieved context, profiles, and compression.
+pub mod context;
 /// Runtime-injected execution capabilities for one bounded Agent turn.
 pub mod execution;
 /// User decisions and bounded background-work boundaries for one turn.
@@ -96,13 +96,15 @@ pub mod interaction;
 pub mod loop_;
 /// Relationship-memory domain, retention rules, and Runtime-owned ports.
 pub mod memory;
-/// Deterministic system-prompt composition.
-pub mod prompt;
 /// Immutable input, authority, progress, and result vocabulary for one turn.
 pub mod turn;
 
 // Public facade for the established crate API. Internal code uses `turn::*`
 // paths so the physical ownership remains visible during development.
+pub use context::{
+    compression as compress, prompt, turn_context, user_profile, user_profile_prompt,
+    user_profile_provider,
+};
 pub use execution::{
     artifact, mutation_journal as workspace_journal, ports as execution_ports, tool_context,
     workspace as workspace_executor,
@@ -118,14 +120,6 @@ pub mod tool;
 pub mod tool_invocation;
 /// Built-in filesystem, memory, plan, and task tools.
 pub mod tools;
-/// Typed, budgeted, provenance-preserving context for one authenticated turn.
-pub mod turn_context;
-/// Bounded prompt layer generated from a user profile.
-pub mod user_profile;
-/// Bounded prompt layer generated from a user profile.
-pub mod user_profile_prompt;
-/// Runtime abstraction for retrieving authorized user profiles.
-pub mod user_profile_provider;
 
 #[cfg(test)]
 #[path = "../tests/unit/support.rs"]

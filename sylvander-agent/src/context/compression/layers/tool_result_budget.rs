@@ -10,9 +10,9 @@ use std::pin::Pin;
 
 use sylvander_llm_core::{ContentBlock, ToolResultContent};
 
-use crate::compress::CompressContext;
-use crate::compress::error::{CompactionError, CompactionFailureCode};
-use crate::compress::layer::{CompressionLayer, LayerReport};
+use crate::context::compression::CompressContext;
+use crate::context::compression::error::{CompactionError, CompactionFailureCode};
+use crate::context::compression::layer::{CompressionLayer, LayerReport};
 use crate::execution::artifact::{ArtifactStoreError, ArtifactWrite};
 
 /// Default maximum inline characters before plain text is retained externally.
@@ -170,5 +170,5 @@ fn floor_char_boundary(value: &str, mut index: usize) -> usize {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/compress_layers_tool_result_budget.rs"]
+#[path = "../../../../tests/unit/compress_layers_tool_result_budget.rs"]
 mod tests;

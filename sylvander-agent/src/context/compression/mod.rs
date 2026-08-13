@@ -1,19 +1,19 @@
 //! Compression pipeline for the agent loop's message history.
 //!
-//! A multi-layer [`CompressionPipeline`](crate::compress::pipeline::CompressionPipeline)
+//! A multi-layer [`CompressionPipeline`](crate::context::compression::pipeline::CompressionPipeline)
 //! runs cheap-to-expensive layers in sequence. It is the only compression
 //! path; there is no legacy single-strategy fallback.
 //!
 //! Layers available:
-//! - L0: [`ToolResultBudgetLayer`](crate::compress::layers::tool_result_budget::ToolResultBudgetLayer)
+//! - L0: [`ToolResultBudgetLayer`](crate::context::compression::layers::tool_result_budget::ToolResultBudgetLayer)
 //!   — cap inline `tool_result` size via Runtime-owned artifact retention
-//! - L1: [`OrphanSnipLayer`](crate::compress::layers::orphan_snip::OrphanSnipLayer)
+//! - L1: [`OrphanSnipLayer`](crate::context::compression::layers::orphan_snip::OrphanSnipLayer)
 //!   — drop `tool_result` blocks with no matching `tool_use`
-//! - L2: [`MicroCompactLayer`](crate::compress::layers::micro_compact::MicroCompactLayer)
+//! - L2: [`MicroCompactLayer`](crate::context::compression::layers::micro_compact::MicroCompactLayer)
 //!   — replace old `tool_result`s with placeholders
-//! - L3: [`ContextCollapseLayer`](crate::compress::layers::context_collapse::ContextCollapseLayer)
+//! - L3: [`ContextCollapseLayer`](crate::context::compression::layers::context_collapse::ContextCollapseLayer)
 //!   — trim old thinking blocks
-//! - L4: [`AutoCompactLayer`](crate::compress::layers::auto_compact::AutoCompactLayer)
+//! - L4: [`AutoCompactLayer`](crate::context::compression::layers::auto_compact::AutoCompactLayer)
 //!   — LLM-driven summarization when context budget is exhausted
 
 pub mod auto_compact_llm;
@@ -26,13 +26,13 @@ pub use auto_compact_llm::{AutoCompactLlm, DEFAULT_SUMMARY_PROMPT};
 
 use sylvander_llm_core::{ChatMessage, ModelInfo, TokenUsage};
 
-use crate::compress::pipeline::CompressionPipeline;
+use crate::context::compression::pipeline::CompressionPipeline;
 use crate::execution::artifact::TurnArtifactStore;
 
 /// Context passed to each layer in a pipeline.
 ///
 /// Layers mutate `messages` (the model-visible history) and report
-/// what they did via a [`LayerReport`](crate::compress::layer::LayerReport).
+/// what they did via a [`LayerReport`](crate::context::compression::layer::LayerReport).
 pub struct CompressContext<'a> {
     /// Mutable message history. Layers may drop from the front or
     /// rewrite inner blocks in place.

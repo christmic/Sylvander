@@ -9,9 +9,9 @@ use std::pin::Pin;
 use serde_json::json;
 use sylvander_llm_core::ChatMessage;
 
-use crate::compress::CompressContext;
-use crate::compress::error::{CompactionError, CompactionFailureCode};
-use crate::compress::layer::{CompressionLayer, LayerReport};
+use crate::context::compression::CompressContext;
+use crate::context::compression::error::{CompactionError, CompactionFailureCode};
+use crate::context::compression::layer::{CompressionLayer, LayerReport};
 
 /// Default trigger ratio (matches Claude Code).
 pub const DEFAULT_TRIGGER_RATIO: f32 = 0.93;
@@ -130,5 +130,5 @@ impl CompressionLayer for AutoCompactLayer {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/compress_layers_auto_compact.rs"]
+#[path = "../../../../tests/unit/compress_layers_auto_compact.rs"]
 mod tests;
