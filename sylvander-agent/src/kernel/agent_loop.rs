@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use futures_util::{Stream, StreamExt};
+use sha2::{Digest as _, Sha256};
 use tracing::{Instrument as _, warn};
 
 use sylvander_llm_core::{
@@ -307,6 +308,21 @@ pub fn run_stream(
 
             // 2. Build and validate one exact provider-qualified request.
             let provider_request = AgentLoop::build_provider_request(&request, machine.messages());
+            let request_digest = match serde_json::to_vec(&provider_request) {
+                Ok(encoded) => format!("sha256:{:x}", Sha256::digest(encoded)),
+                Err(error) => {
+                    yield AgentEvent::TurnTransition(failed_turn_transition(&mut machine));
+                    yield AgentEvent::Error(AgentLoopError::Validation(format!(
+                        "provider-neutral request serialization failed: {error}"
+                    )));
+                    return;
+                }
+            };
+            yield AgentEvent::ModelInvocationPrepared {
+                iteration,
+                invocation_id: provider_request.request_id.clone(),
+                request_digest,
+            };
 
             // 4. Open the provider stream. This is the only retry owner;
             //    provider adapters never retry and a failed streaming
@@ -397,6 +413,16 @@ pub fn run_stream(
 
             let response_stop_reason = response.stop_reason.clone();
 
+            let terminal_response = matches!(
+                response_stop_reason,
+                StopReason::EndTurn | StopReason::StopSequence(_) | StopReason::Refusal
+            );
+            yield AgentEvent::ModelResponsePrepared {
+                iteration,
+                message: assistant_message_from_response(&response),
+                terminal: terminal_response,
+            };
+
             // 6. Re-feed assistant message
             machine
                 .messages_mut()
@@ -429,10 +455,6 @@ pub fn run_stream(
                 .collect();
 
             if !tool_blocks.is_empty() {
-                yield AgentEvent::ModelToolResponsePrepared {
-                    iteration,
-                    message: assistant_message_from_response(&response),
-                };
                 yield AgentEvent::TurnTransition(required_turn_transition(
                     &mut machine,
                     TurnPhase::PreparingTools,
