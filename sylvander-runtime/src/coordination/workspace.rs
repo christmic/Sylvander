@@ -109,6 +109,8 @@ impl AgentWorkspaceView {
         }
         if self.source_workspace.as_os_str().is_empty()
             || self.effective_workspace.as_os_str().is_empty()
+            || self.source_workspace.to_str().is_none()
+            || self.effective_workspace.to_str().is_none()
             || self
                 .target_id
                 .as_ref()
