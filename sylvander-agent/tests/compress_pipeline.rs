@@ -18,7 +18,7 @@ use sylvander_agent::compress::layers::{
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{body_partial_json, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
@@ -142,7 +142,6 @@ async fn default_pipeline_drop_orphans_in_tool_calling_scenario() {
         })
         .await
         .expect("run");
-
     // We didn't inject an orphan manually here — that requires
     // direct mutation of the messages vec, which the public API
     // doesn't expose. The orphan-snip behavior is covered by L1's
@@ -164,7 +163,7 @@ async fn default_pipeline_drop_orphans_in_tool_calling_scenario() {
 async fn l0_offloads_oversized_tool_result() {
     // Wiremock returns a tool_use. The Read tool returns a HUGE
     // body (well over L0's max_inline_chars). The pipeline must
-    // rewrite the tool_result block with a preview + path.
+    // rewrite the tool_result block with a preview + opaque locator.
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -195,6 +194,7 @@ async fn l0_offloads_oversized_tool_result() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
+        .and(body_string_contains("\"type\":\"tool_result\""))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_r2",
             "type": "message",
@@ -224,11 +224,10 @@ async fn l0_offloads_oversized_tool_result() {
 
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
-        .tool_context(
-            ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
-                .with_fs_root(tmp.path())
-                .with_capability(sylvander_agent::tool_context::Cap::Read),
-        )
+        .tool_context(workspace_tool_context(
+            tmp.path(),
+            [sylvander_agent::tool_context::Cap::Read],
+        ))
         .artifact_store(artifact_store.clone())
         .compression_pipeline(pipeline)
         .max_iterations(3)

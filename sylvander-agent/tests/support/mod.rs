@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -28,6 +30,10 @@ use sylvander_agent::tool::{
 use sylvander_agent::tool_context::ToolContext;
 use sylvander_agent::tool_invocation::{
     RegistryBoundToolGateway, ToolInvocationGateway, ToolInvocationSnapshot,
+};
+use sylvander_agent::workspace_executor::{
+    WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListRequest,
+    WorkspaceListResult, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
 };
 use sylvander_llm_anthropic::{
     AnthropicProvider,
@@ -309,14 +315,112 @@ pub(crate) fn workspace_tool_context(
     root: &std::path::Path,
     capabilities: impl IntoIterator<Item = sylvander_agent::tool_context::Cap>,
 ) -> ToolContext {
+    let target = WorkspaceTarget::local(root.to_path_buf(), false);
     capabilities.into_iter().fold(
         ToolContext::new(AgentExecutionContext::restricted_for(
             "test-user",
             "test-agent",
             "test-session",
         ))
-        .with_fs_root(root),
+        .with_executor(Arc::new(TestWorkspaceExecutor), target),
         ToolContext::with_capability,
+    )
+}
+
+/// Minimal integration-test adapter proving that Agent uses an injected port.
+struct TestWorkspaceExecutor;
+
+impl fmt::Debug for TestWorkspaceExecutor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TestWorkspaceExecutor")
+    }
+}
+
+#[async_trait]
+impl WorkspaceExecutor for TestWorkspaceExecutor {
+    async fn read_file(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+    ) -> Result<Vec<u8>, WorkspaceExecutorError> {
+        let root = tokio::fs::canonicalize(&target.workspace_path).await?;
+        let path = tokio::fs::canonicalize(root.join(relative_path)).await?;
+        if !path.starts_with(&root) {
+            return Err(WorkspaceExecutorError::InvalidPath(
+                "path escapes integration-test workspace".to_string(),
+            ));
+        }
+        Ok(tokio::fs::read(path).await?)
+    }
+
+    async fn write_file(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        content: &[u8],
+    ) -> Result<(), WorkspaceExecutorError> {
+        let root = tokio::fs::canonicalize(&target.workspace_path).await?;
+        let path = root.join(relative_path);
+        let parent = path.parent().ok_or_else(|| {
+            WorkspaceExecutorError::InvalidPath("file parent is required".to_string())
+        })?;
+        tokio::fs::create_dir_all(parent).await?;
+        let parent = tokio::fs::canonicalize(parent).await?;
+        if !parent.starts_with(&root) {
+            return Err(WorkspaceExecutorError::InvalidPath(
+                "path escapes integration-test workspace".to_string(),
+            ));
+        }
+        tokio::fs::write(path, content).await?;
+        Ok(())
+    }
+
+    async fn run_command(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let mut process = tokio::process::Command::new("sh");
+        process
+            .arg("-c")
+            .arg(command)
+            .current_dir(&target.workspace_path);
+        let output = tokio::time::timeout(timeout, process.output())
+            .await
+            .map_err(|_| WorkspaceExecutorError::Timeout(timeout))??;
+        Ok(WorkspaceCommandOutput {
+            success: output.status.success(),
+            status_code: output.status.code(),
+            stdout_total_bytes: output.stdout.len() as u64,
+            stderr_total_bytes: output.stderr.len() as u64,
+            stdout: output.stdout,
+            stderr: output.stderr,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        })
+    }
+
+    async fn list(
+        &self,
+        _target: &WorkspaceTarget,
+        _request: WorkspaceListRequest,
+    ) -> Result<WorkspaceListResult, WorkspaceExecutorError> {
+        Err(read_only_test_error())
+    }
+
+    async fn search(
+        &self,
+        _target: &WorkspaceTarget,
+        _request: WorkspaceSearchRequest,
+    ) -> Result<WorkspaceSearchResult, WorkspaceExecutorError> {
+        Err(read_only_test_error())
+    }
+}
+
+fn read_only_test_error() -> WorkspaceExecutorError {
+    WorkspaceExecutorError::InvalidRequest(
+        "operation is outside the read-only integration fixture".to_string(),
     )
 }
 

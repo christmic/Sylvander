@@ -14,7 +14,7 @@ use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use support::qualified_anthropic_loop_builder;
+use support::{qualified_anthropic_loop_builder, workspace_tool_context};
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()
@@ -35,10 +35,13 @@ fn test_model() -> ModelInfo {
 }
 
 fn edit_context(root: &std::path::Path) -> ToolContext {
-    ToolContext::new(AgentExecutionContext::restricted_for("u", "a", "s"))
-        .with_fs_root(root)
-        .with_capability(sylvander_agent::tool_context::Cap::Read)
-        .with_capability(sylvander_agent::tool_context::Cap::Write)
+    workspace_tool_context(
+        root,
+        [
+            sylvander_agent::tool_context::Cap::Read,
+            sylvander_agent::tool_context::Cap::Write,
+        ],
+    )
 }
 
 #[tokio::test]
