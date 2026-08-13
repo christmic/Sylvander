@@ -4732,6 +4732,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sylvander-benchmark-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sylvander-channel"
 version = "0.1.0"
 dependencies = [

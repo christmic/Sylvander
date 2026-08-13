@@ -20,6 +20,7 @@ members = [
     "sylvander-runtime",
     "sylvander-benchmark-agent",
     "sylvander-benchmark-llm",
+    "sylvander-benchmark-runtime",
 ]
 
 [workspace.package]
