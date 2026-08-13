@@ -424,6 +424,8 @@ async fn operational_readiness_tracks_evidence_and_guardian_background_failures(
             crate::storage::RuntimeStorageComponent::RelationshipMemory,
             crate::storage::RuntimeStorageComponent::AgentRegistry,
             crate::storage::RuntimeStorageComponent::UserProfiles,
+            crate::storage::RuntimeStorageComponent::Evidence,
+            crate::storage::RuntimeStorageComponent::CredentialAudit,
         ]
     );
     let guardian = runtime.guardian.as_ref().expect("Guardian runtime");

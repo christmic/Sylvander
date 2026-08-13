@@ -733,7 +733,9 @@ pub(super) fn initialize_governance(
     Ok(())
 }
 
-fn validate_governance_schema(connection: &rusqlite::Connection) -> Result<(), EvidenceError> {
+pub(super) fn validate_governance_schema(
+    connection: &rusqlite::Connection,
+) -> Result<(), EvidenceError> {
     for (table, expected) in [
         (
             "evidence_governance_meta",

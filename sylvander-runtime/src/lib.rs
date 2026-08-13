@@ -4020,6 +4020,7 @@ impl Runtime {
             .await
             .map_err(|_| RuntimeError::Store("open credential audit ledger failed".into()))?,
         );
+        let storage_credential_audit_probe = credential_audit.clone();
 
         let sqlite_session_store =
             SqliteSessionStore::open_shared(session_db, REGISTRY_SCHEMA_OBJECT_NAMES)
@@ -4227,6 +4228,7 @@ impl Runtime {
             EvidenceStore::open(evidence_path).await
         }
         .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
+        let storage_evidence_probe = security_audit.clone();
         let result_artifacts: Option<Arc<dyn McpResultArtifactSink>> =
             if security_audit.governance_enabled() {
                 Some(Arc::new(
@@ -4481,6 +4483,8 @@ impl Runtime {
                 storage_memory_probe,
                 storage_agent_registry_probe,
                 storage_user_profile_probe,
+                storage_evidence_probe,
+                storage_credential_audit_probe,
             ),
             observability,
             execution_service,

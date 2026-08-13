@@ -1,5 +1,24 @@
 use super::*;
 
+#[tokio::test]
+async fn health_revalidates_the_live_evidence_schema() {
+    let store = EvidenceStore::open_in_memory().await.unwrap();
+    store.verify_health().await.unwrap();
+    store
+        .run(|connection| {
+            connection
+                .execute_batch("CREATE TABLE injected_evidence_object(value TEXT);")
+                .map_err(EvidenceError::sqlite)
+        })
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        store.verify_health().await,
+        Err(EvidenceError::InvalidSchema)
+    ));
+}
+
 fn feedback_attribution() -> FeedbackAttribution {
     FeedbackAttribution {
         principal_digest: "principal-sha256".into(),

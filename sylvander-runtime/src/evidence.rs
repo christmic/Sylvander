@@ -299,6 +299,20 @@ impl EvidenceStore {
         .map_err(|error| EvidenceError::Task(error.to_string()))?
     }
 
+    /// Revalidate the live evidence database for Runtime storage health.
+    pub(crate) async fn verify_health(&self) -> Result<(), EvidenceError> {
+        let governed = self.governance.is_some();
+        self.run(move |connection| {
+            validate_evidence_schema(connection)?;
+            validate_evidence_integrity(connection)?;
+            if governed {
+                governance::validate_governance_schema(connection)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn start_run(
         &self,
         id: String,

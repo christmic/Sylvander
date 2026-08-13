@@ -9,6 +9,8 @@ use std::sync::Arc;
 use sylvander_agent::tools::MemoryStore;
 
 use crate::agent_registry::AgentRegistry;
+use crate::credential_audit::CredentialOperationAuditLedger;
+use crate::evidence::EvidenceStore;
 use crate::user_profile_store::UserProfileStore;
 
 use self::session::SessionStore;
@@ -21,6 +23,8 @@ pub enum RuntimeStorageComponent {
     RelationshipMemory,
     AgentRegistry,
     UserProfiles,
+    Evidence,
+    CredentialAudit,
 }
 
 /// Content-safe availability state of one durable component.
@@ -63,6 +67,8 @@ pub(crate) struct RuntimeStorage {
     memory_probe: Option<memory::SqliteMemoryStore>,
     agent_registry_probe: Option<AgentRegistry>,
     user_profile_probe: Option<UserProfileStore>,
+    evidence_probe: Option<EvidenceStore>,
+    credential_audit_probe: Option<Arc<CredentialOperationAuditLedger>>,
 }
 
 impl RuntimeStorage {
@@ -75,6 +81,8 @@ impl RuntimeStorage {
             memory_probe: None,
             agent_registry_probe: None,
             user_profile_probe: None,
+            evidence_probe: None,
+            credential_audit_probe: None,
         }
     }
 
@@ -87,11 +95,15 @@ impl RuntimeStorage {
         memory: memory::SqliteMemoryStore,
         agent_registry: AgentRegistry,
         user_profiles: UserProfileStore,
+        evidence: EvidenceStore,
+        credential_audit: Arc<CredentialOperationAuditLedger>,
     ) -> Self {
         self.session_probe = Some(sessions);
         self.memory_probe = Some(memory);
         self.agent_registry_probe = Some(agent_registry);
         self.user_profile_probe = Some(user_profiles);
+        self.evidence_probe = Some(evidence);
+        self.credential_audit_probe = Some(credential_audit);
         self
     }
 
@@ -106,6 +118,8 @@ impl RuntimeStorage {
         let memory_probe = self.memory_probe.clone();
         let agent_registry_probe = self.agent_registry_probe.clone();
         let user_profile_probe = self.user_profile_probe.clone();
+        let evidence_probe = self.evidence_probe.clone();
+        let credential_audit_probe = self.credential_audit_probe.clone();
         let session_health = async move {
             match session_probe {
                 Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
@@ -132,11 +146,27 @@ impl RuntimeStorage {
                 None => RuntimeStorageStatus::Unverified,
             }
         };
-        let (sessions, memory, agent_registry, user_profiles) = tokio::join!(
+        let evidence_health = async move {
+            match evidence_probe {
+                Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
+                Some(_) => RuntimeStorageStatus::Degraded,
+                None => RuntimeStorageStatus::Unverified,
+            }
+        };
+        let credential_audit_health = async move {
+            match credential_audit_probe {
+                Some(store) if store.verify_health().await.is_ok() => RuntimeStorageStatus::Ready,
+                Some(_) => RuntimeStorageStatus::Degraded,
+                None => RuntimeStorageStatus::Unverified,
+            }
+        };
+        let (sessions, memory, agent_registry, user_profiles, evidence, credential_audit) = tokio::join!(
             session_health,
             memory_health,
             agent_registry_health,
-            user_profile_health
+            user_profile_health,
+            evidence_health,
+            credential_audit_health
         );
         let memory = memory.unwrap_or(RuntimeStorageStatus::Degraded);
         RuntimeStorageSnapshot {
@@ -156,6 +186,14 @@ impl RuntimeStorage {
                 RuntimeStorageHealth {
                     component: RuntimeStorageComponent::UserProfiles,
                     status: user_profiles,
+                },
+                RuntimeStorageHealth {
+                    component: RuntimeStorageComponent::Evidence,
+                    status: evidence,
+                },
+                RuntimeStorageHealth {
+                    component: RuntimeStorageComponent::CredentialAudit,
+                    status: credential_audit,
                 },
             ],
         }

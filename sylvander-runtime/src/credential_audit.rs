@@ -390,6 +390,12 @@ impl CredentialOperationAuditLedger {
         .await
         .map_err(|_| CredentialAuditError::Unavailable)?
     }
+
+    /// Revalidate exact schema and database pages for Runtime storage health.
+    pub(crate) async fn verify_health(&self) -> Result<(), CredentialAuditError> {
+        self.run(|connection| validate_database_integrity(connection))
+            .await
+    }
 }
 
 impl std::fmt::Debug for CredentialOperationAuditLedger {

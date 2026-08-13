@@ -6,6 +6,27 @@ use tempfile::tempdir;
 use super::*;
 
 #[tokio::test]
+async fn health_revalidates_the_live_credential_audit_schema() {
+    let ledger = CredentialOperationAuditLedger::open_in_memory_with_policy(60, 10)
+        .await
+        .unwrap();
+    ledger.verify_health().await.unwrap();
+    ledger
+        .run(|connection| {
+            connection
+                .execute_batch("CREATE TABLE injected_audit_object(value TEXT);")
+                .map_err(storage)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        ledger.verify_health().await,
+        Err(CredentialAuditError::Schema)
+    );
+}
+
+#[tokio::test]
 async fn events_survive_restart_and_queries_are_subject_isolated() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("credential-operations.db");
