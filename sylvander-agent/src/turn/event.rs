@@ -72,6 +72,12 @@ pub enum AgentEvent {
         cause: ModelRetryCause,
     },
 
+    /// Complete provider-neutral assistant message persisted before tools.
+    ModelToolResponsePrepared {
+        iteration: u32,
+        message: ChatMessage,
+    },
+
     /// A provider tool call was parsed and is about to enter approval.
     ///
     /// Runtime uses this content-free identity boundary for durable lifecycle

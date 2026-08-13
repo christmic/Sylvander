@@ -705,6 +705,7 @@ impl AgentRunInner {
             });
         let system_instructions =
             turn_system_instructions(&system_prompt, &selected_exact_model, &turn_tools);
+        let selected_model_id = selected_exact_model.reference.model.clone();
         let request = AgentTurnRequest {
             conversation: ConversationSnapshot::new(history),
             model: selected_exact_model,
@@ -867,6 +868,51 @@ impl AgentRunInner {
                         },
                     )
                     .await;
+                }
+                sylvander_agent::turn::event::AgentEvent::ModelToolResponsePrepared {
+                    iteration: _,
+                    message,
+                } => {
+                    if let Some(store) = &self.session_store {
+                        let caller = sylvander_api::SessionContext::new(
+                            session_metadata.user_id.clone(),
+                            self.id.clone(),
+                            session_id.clone(),
+                        )
+                        .with_trace_id(turn_id);
+                        let content = serde_json::to_value(message).map_err(|_| {
+                            AgentRunError::session_persistence(
+                                SessionPersistenceOperation::PersistModelToolResponse,
+                                SessionStoreError::Invalid(
+                                    "model tool response serialization failed".into(),
+                                ),
+                            )
+                        })?;
+                        store
+                            .append_message(
+                                &caller,
+                                &session_id,
+                                crate::storage::session::MessageRole::Assistant,
+                                content,
+                                Some(&selected_model_id),
+                                None,
+                                None,
+                            )
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::PersistModelToolResponse,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::PersistModelToolResponse,
+                                succeeded: true,
+                            });
+                    }
                 }
                 sylvander_agent::turn::event::AgentEvent::ToolCallPrepared {
                     id,

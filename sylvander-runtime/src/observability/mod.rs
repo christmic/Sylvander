@@ -149,6 +149,8 @@ pub(crate) enum RuntimePersistenceOperation {
     BeginTurn,
     /// Persist tool identity before approval or execution.
     BeginToolCall,
+    /// Persist a complete assistant message before its tool effects.
+    PersistModelToolResponse,
     /// Advance a write-ahead tool effect boundary.
     AdvanceToolCall,
     /// Persist a model-visible tool observation and its ledger boundary.
@@ -171,6 +173,7 @@ impl RuntimePersistenceOperation {
     const RESTORE_HISTORY: &'static str = "restore_history";
     const BEGIN_TURN: &'static str = "begin_turn";
     const BEGIN_TOOL_CALL: &'static str = "begin_tool_call";
+    const PERSIST_MODEL_TOOL_RESPONSE: &'static str = "persist_model_tool_response";
     const ADVANCE_TOOL_CALL: &'static str = "advance_tool_call";
     const PERSIST_TOOL_RESULT: &'static str = "persist_tool_result";
     const FINISH_TOOL_CALL: &'static str = "finish_tool_call";
@@ -186,6 +189,7 @@ impl RuntimePersistenceOperation {
             Self::RestoreHistory => Self::RESTORE_HISTORY,
             Self::BeginTurn => Self::BEGIN_TURN,
             Self::BeginToolCall => Self::BEGIN_TOOL_CALL,
+            Self::PersistModelToolResponse => Self::PERSIST_MODEL_TOOL_RESPONSE,
             Self::AdvanceToolCall => Self::ADVANCE_TOOL_CALL,
             Self::PersistToolResult => Self::PERSIST_TOOL_RESULT,
             Self::FinishToolCall => Self::FINISH_TOOL_CALL,

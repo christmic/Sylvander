@@ -429,6 +429,10 @@ pub fn run_stream(
                 .collect();
 
             if !tool_blocks.is_empty() {
+                yield AgentEvent::ModelToolResponsePrepared {
+                    iteration,
+                    message: assistant_message_from_response(&response),
+                };
                 yield AgentEvent::TurnTransition(required_turn_transition(
                     &mut machine,
                     TurnPhase::PreparingTools,
