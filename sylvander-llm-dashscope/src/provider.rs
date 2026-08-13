@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use reqwest::Url;
@@ -10,7 +11,7 @@ use sylvander_llm_core::{
     ProviderErrorPhase, ProviderFuture,
 };
 
-use crate::api::{DashScopeClient, GenerationStreamEvent};
+use crate::api::{DEFAULT_TIMEOUT, DashScopeClient, GenerationStreamEvent};
 use crate::convert;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -61,6 +62,13 @@ pub struct DashScopeProvider {
 
 impl DashScopeProvider {
     pub fn new(config: DashScopeProviderConfig) -> Result<Self, ProviderError> {
+        Self::new_with_timeout(config, DEFAULT_TIMEOUT)
+    }
+
+    pub fn new_with_timeout(
+        config: DashScopeProviderConfig,
+        timeout: Duration,
+    ) -> Result<Self, ProviderError> {
         if !config.features.is_valid() {
             return Err(ProviderError::new(
                 ProviderErrorKind::InvalidRequest,
@@ -68,7 +76,7 @@ impl DashScopeProvider {
                 "provider feature is unsupported by native Generation",
             ));
         }
-        let client = DashScopeClient::new(config.base_url, &config.api_key)
+        let client = DashScopeClient::new_with_timeout(config.base_url, &config.api_key, timeout)
             .map_err(|error| convert::error(error, ProviderErrorPhase::Open))?;
         Ok(Self {
             provider_id: config.provider_id.into(),

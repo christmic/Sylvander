@@ -3,9 +3,13 @@
 //! Evidence: dashscope-sdk-python `397e02b`, `common/utils.py` and
 //! `api_entities/http_request.py`.
 
+use std::time::Duration;
+
 use futures_util::StreamExt as _;
 use reqwest::Url;
-use sylvander_llm_core::{ModelProvider, ModelRef, ModelRequest, ProviderErrorKind};
+use sylvander_llm_core::{
+    ModelProvider, ModelRef, ModelRequest, ProviderErrorKind, ProviderErrorPhase,
+};
 use sylvander_llm_dashscope::{DashScopeFeatures, DashScopeProvider, DashScopeProviderConfig};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -105,4 +109,31 @@ async fn output_schema_is_rejected_instead_of_downgraded_to_json_object() {
         .err()
         .expect("unsupported schema");
     assert_eq!(error.kind, ProviderErrorKind::Unsupported);
+}
+
+#[tokio::test]
+async fn configured_deadline_is_a_retryable_open_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)))
+        .mount(&server)
+        .await;
+    let provider = DashScopeProvider::new_with_timeout(
+        DashScopeProviderConfig {
+            provider_id: "dashscope".into(),
+            base_url: Url::parse(&server.uri()).expect("mock URL"),
+            api_key: "key".into(),
+            features: DashScopeFeatures::default(),
+        },
+        Duration::from_millis(20),
+    )
+    .expect("provider");
+    let error = provider
+        .complete_stream(request())
+        .await
+        .err()
+        .expect("deadline");
+    assert_eq!(error.kind, ProviderErrorKind::Timeout);
+    assert_eq!(error.phase, ProviderErrorPhase::Open);
+    assert!(error.is_retryable());
 }

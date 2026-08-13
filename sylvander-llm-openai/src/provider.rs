@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use reqwest::Url;
@@ -10,9 +11,9 @@ use sylvander_llm_core::{
     ProviderErrorPhase, ProviderFuture,
 };
 
-use crate::api::OpenAiClient;
 use crate::api::chat::ChatStreamEvent;
 use crate::api::responses::ResponseStreamEvent;
+use crate::api::{DEFAULT_TIMEOUT, OpenAiClient};
 use crate::convert;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +74,13 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(config: OpenAiProviderConfig) -> Result<Self, ProviderError> {
+        Self::new_with_timeout(config, DEFAULT_TIMEOUT)
+    }
+
+    pub fn new_with_timeout(
+        config: OpenAiProviderConfig,
+        timeout: Duration,
+    ) -> Result<Self, ProviderError> {
         if !config.features.valid_for(config.protocol) {
             return Err(ProviderError::new(
                 ProviderErrorKind::InvalidRequest,
@@ -80,7 +88,7 @@ impl OpenAiProvider {
                 "provider feature is unsupported by selected OpenAI protocol",
             ));
         }
-        let client = OpenAiClient::new(config.base_url, &config.api_key)
+        let client = OpenAiClient::new_with_timeout(config.base_url, &config.api_key, timeout)
             .map_err(|error| convert::error(error, ProviderErrorPhase::Open))?;
         Ok(Self {
             provider_id: config.provider_id.into(),

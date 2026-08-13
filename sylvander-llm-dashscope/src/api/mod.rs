@@ -6,7 +6,7 @@ mod sse;
 mod stream;
 mod types;
 
-pub use client::DashScopeClient;
+pub use client::{DEFAULT_TIMEOUT, DashScopeClient};
 pub use error::DashScopeError;
 pub use stream::{GenerationStream, GenerationStreamEvent};
 pub use types::{

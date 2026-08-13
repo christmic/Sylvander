@@ -88,6 +88,11 @@ reasoning token details. An absent optional field means the provider omitted it
 and is distinct from a reported zero. Adapter tests must assert both totals and
 details.
 
+All HTTP adapters enforce a bounded two-minute default request deadline and
+offer an explicit constructor deadline for Runtime and conformance tests.
+Deadline failures normalize to a retryable `Timeout` during the exact open or
+stream phase; provider adapters do not retry internally.
+
 OpenAI Chat Completions always requests the official streaming usage tail with
 `stream_options.include_usage=true`; a completed stream without that requested
 usage fails closed. OpenAI Responses treats both `response.completed` and

@@ -1,9 +1,14 @@
 //! Explicitly configured native `DashScope` HTTP client.
 
+use std::time::Duration;
+
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Response, Url};
 
 use crate::api::{DashScopeError, GenerationRequest};
+
+/// Default wall-clock deadline for one HTTP request and its response stream.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 
 #[derive(Clone)]
 pub struct DashScopeClient {
@@ -14,6 +19,14 @@ pub struct DashScopeClient {
 
 impl DashScopeClient {
     pub fn new(base_url: Url, api_key: &str) -> Result<Self, DashScopeError> {
+        Self::new_with_timeout(base_url, api_key, DEFAULT_TIMEOUT)
+    }
+
+    pub fn new_with_timeout(
+        base_url: Url,
+        api_key: &str,
+        timeout: Duration,
+    ) -> Result<Self, DashScopeError> {
         if api_key.is_empty() {
             return Err(DashScopeError::Protocol(
                 "provider credential is empty".into(),
@@ -32,7 +45,7 @@ impl DashScopeClient {
         Ok(Self {
             endpoint,
             headers,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder().timeout(timeout).build()?,
         })
     }
 

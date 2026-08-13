@@ -6,5 +6,5 @@ mod error;
 pub mod responses;
 mod sse;
 
-pub use client::OpenAiClient;
+pub use client::{DEFAULT_TIMEOUT, OpenAiClient};
 pub use error::OpenAiError;
