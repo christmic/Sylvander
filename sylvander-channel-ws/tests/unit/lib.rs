@@ -53,6 +53,138 @@ struct ControlHost {
     history: sylvander_api::UiSessionHistory,
 }
 
+struct RuntimeOperationsHost;
+
+#[async_trait]
+impl ChannelHost for RuntimeOperationsHost {
+    async fn authorize_message(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &ClientMsg,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        Ok(())
+    }
+
+    async fn discover_agents(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::AgentDescriptor>, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn create_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionCreateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn session_config(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn update_session_config(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionConfigUpdateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn submit_feedback(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::RunFeedback,
+    ) -> Result<String, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn context_report(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::ContextReport, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::ContextReport {
+            model: "model".into(),
+            context_window: 100,
+            used_tokens: 40,
+            remaining_tokens: 60,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            sources: Vec::new(),
+        })
+    }
+
+    async fn compact_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::CompactionReport, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::CompactionReport {
+            automatic: false,
+            removed_messages: 2,
+            condensed_blocks: 1,
+            freed_tokens: 20,
+            summary: Some("summary".into()),
+        })
+    }
+
+    async fn preview_workspace_rollback(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::WorkspaceRollbackPreview, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::WorkspaceRollbackPreview {
+            turn_id: "turn-1".into(),
+            files: vec!["file.txt".into()],
+        })
+    }
+
+    async fn rollback_workspace(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+        expected_turn_id: &str,
+    ) -> Result<sylvander_api::WorkspaceRollbackReport, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::WorkspaceRollbackReport {
+            turn_id: expected_turn_id.into(),
+            restored: vec!["file.txt".into()],
+        })
+    }
+
+    async fn inspect_coding_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::CodingSessionDiff, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::CodingSessionDiff {
+            status: "ready".into(),
+            patch: "diff".into(),
+        })
+    }
+
+    async fn accept_coding_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        Ok(())
+    }
+
+    async fn discard_coding_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl ChannelHost for ControlHost {
     async fn authorize_message(
@@ -957,6 +1089,92 @@ async fn reattach_reports_when_one_live_event_exceeds_the_replay_bound() {
         rx.try_recv().is_err(),
         "oversized event must not be replayed"
     );
+}
+
+#[tokio::test]
+async fn runtime_session_operations_dispatch_through_the_channel_host() {
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(Arc::new(RuntimeOperationsHost)),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let requests = [
+        ClientMsg::GetContext {
+            session_id: Some("session-1".into()),
+        },
+        ClientMsg::Compact {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::PreviewWorkspaceRollback {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::RollbackWorkspace {
+            session_id: "session-1".into(),
+            expected_turn_id: "turn-1".into(),
+        },
+        ClientMsg::InspectCodingSession {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::AcceptCodingSession {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::DiscardCodingSession {
+            session_id: "session-1".into(),
+        },
+    ];
+    for request in requests {
+        handle_client_msg(
+            request,
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+    }
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::ContextReport { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CompactionStarted {
+            automatic: false,
+            ..
+        })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CompactionCompleted { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::WorkspaceRollbackPreview { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::WorkspaceRollbackCompleted { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CodingSessionDiff { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CodingSessionAccepted { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CodingSessionDiscarded { .. })
+    ));
 }
 
 fn hello(version: u16) -> ClientMsg {
