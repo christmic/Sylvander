@@ -81,3 +81,27 @@ fn perception_fault_points_are_distinct_durable_boundaries() {
         );
     }
 }
+
+#[test]
+fn cognition_fault_points_cover_every_provider_crash_window() {
+    let points = [
+        FailurePoint::CognitionPromptPersisted,
+        FailurePoint::CognitionInferenceStarted,
+        FailurePoint::CognitionInferenceCompleted,
+        FailurePoint::CognitionArtifactPersisted,
+    ];
+    for point in points {
+        let mut controller = FaultController::new(FaultInjectionSpec {
+            point,
+            occurrence: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            controller.checkpoint(point),
+            FaultDecision::Interrupt(FaultReceipt {
+                point,
+                occurrence: 1,
+            })
+        );
+    }
+}
