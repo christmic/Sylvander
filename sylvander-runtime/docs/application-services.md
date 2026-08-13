@@ -19,6 +19,14 @@ Agent supervisor serializes work per Session, constructs one
 storage transaction. It maps internal events to API events only after applying
 product visibility and persistence rules.
 
+For an executing turn, Runtime reduces typed `TurnTransition` facts into one
+content-free `RuntimeTurnSnapshot` per Session. `active_turn_snapshot` exposes
+that typed view for diagnostics; it does not parse logs or copy state names.
+The snapshot is removed when the Runtime turn finishes, while the ordered
+transition facts remain available to observability for post-mortem analysis.
+Agent state completion and Runtime product completion remain separate: only
+Runtime may declare success after durable Session commit and publication.
+
 ## Execution service
 
 The execution service maps Agent logical workspace and target identifiers to
