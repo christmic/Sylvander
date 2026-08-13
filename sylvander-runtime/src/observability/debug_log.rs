@@ -201,6 +201,13 @@ fn event_json(event: &RuntimeEvent) -> Value {
             "event": event_name, "request_id": request_id,
             "session_id": session_id.0, "succeeded": succeeded,
         }),
+        RuntimeEvent::CoordinationTransition {
+            session_id,
+            outcome,
+        } => json!({
+            "event": event_name, "session_id": session_id.0,
+            "outcome": outcome.as_str(),
+        }),
         RuntimeEvent::TurnStarted {
             request_id,
             trace_id,

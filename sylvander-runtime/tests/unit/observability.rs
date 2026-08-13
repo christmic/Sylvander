@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::agent_definition::{AgentId, SessionId};
 use crate::observability::{
     DEBUG_OBSERVATION_LOG_MAX_FILES, DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES, RuntimeClock,
-    RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind, RuntimeObservability,
-    RuntimeObservabilitySnapshot, RuntimeObservationDebugLog, RuntimePersistenceOperation,
-    RuntimeToolFailureKind,
+    RuntimeCoordinationOutcome, RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind,
+    RuntimeObservability, RuntimeObservabilitySnapshot, RuntimeObservationDebugLog,
+    RuntimePersistenceOperation, RuntimeToolFailureKind,
 };
 use sylvander_api::MessageId;
 
@@ -17,6 +17,38 @@ impl TestClock {
     fn set(&self, micros: u64) {
         self.0.store(micros, Ordering::Relaxed);
     }
+}
+
+#[test]
+fn coordination_facts_reduce_to_low_cardinality_counters() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let session_id = SessionId::new("session-1");
+    for outcome in [
+        RuntimeCoordinationOutcome::Enqueued,
+        RuntimeCoordinationOutcome::ArbitrationRequired,
+        RuntimeCoordinationOutcome::ModeratorAuthorized,
+        RuntimeCoordinationOutcome::ModeratorRejected,
+        RuntimeCoordinationOutcome::ArbitrationApplied,
+        RuntimeCoordinationOutcome::MailboxEscalated,
+    ] {
+        recorder.record(RuntimeEvent::CoordinationTransition {
+            session_id: session_id.clone(),
+            outcome,
+        });
+    }
+    assert_eq!(
+        recorder.snapshot(),
+        RuntimeObservabilitySnapshot {
+            event_count: 6,
+            coordination_enqueued: 1,
+            coordination_arbitration_required: 1,
+            coordination_moderator_authorized: 1,
+            coordination_moderator_rejected: 1,
+            coordination_arbitration_applied: 1,
+            coordination_mailbox_escalated: 1,
+            ..RuntimeObservabilitySnapshot::default()
+        }
+    );
 }
 
 impl RuntimeClock for TestClock {

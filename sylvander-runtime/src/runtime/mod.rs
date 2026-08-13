@@ -16,7 +16,9 @@ use crate::agent::definition::AgentSpec;
 use crate::agent::definition::{AgentId, SessionId};
 use crate::mcp::stdio::McpResultArtifactSink;
 use crate::observability::RuntimeObservabilitySnapshot;
-use crate::observability::{RuntimeEvent, RuntimeObservability, RuntimeObservationDebugLog};
+use crate::observability::{
+    RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability, RuntimeObservationDebugLog,
+};
 #[cfg(test)]
 use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_agent::tools::MemoryStore;
@@ -4897,6 +4899,7 @@ impl Runtime {
         let mailbox_scheduler = mailbox_scheduler::AgentMailboxScheduler::start(
             sqlite_session_store.clone(),
             revision_provider.clone(),
+            observability.clone(),
         );
         for recipient in mailbox_recipients {
             mailbox_scheduler.wake(recipient);
@@ -4948,6 +4951,7 @@ impl Runtime {
         request: DispatchMessageRequest,
     ) -> Result<DispatchMessageOutcome, RuntimeError> {
         validate_coordination_actor(actor, &request.session_id, &request.sender_instance_id)?;
+        let session_id = request.session_id.clone();
         let outcome = self
             .storage
             .coordination()
@@ -4957,6 +4961,23 @@ impl Runtime {
             .dispatch_message(request, crate::session::now_secs())
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        let observed = match &outcome {
+            DispatchMessageOutcome::Enqueued(_) => RuntimeCoordinationOutcome::Enqueued,
+            DispatchMessageOutcome::EnqueuedByModerator { .. } => {
+                RuntimeCoordinationOutcome::ModeratorAuthorized
+            }
+            DispatchMessageOutcome::RequiresArbitration { .. } => {
+                RuntimeCoordinationOutcome::ArbitrationRequired
+            }
+            DispatchMessageOutcome::RejectedByModerator { .. } => {
+                RuntimeCoordinationOutcome::ModeratorRejected
+            }
+        };
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id,
+                outcome: observed,
+            });
         if let Some(scheduler) = &self.mailbox_scheduler {
             match &outcome {
                 DispatchMessageOutcome::Enqueued(message)
@@ -4987,10 +5008,16 @@ impl Runtime {
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?
             .ok_or_else(|| RuntimeError::Coordination("arbitration case disappeared".into()))?;
         validate_coordination_actor(actor, &case.session_id, &decision.decided_by)?;
-        coordination
+        let applied = coordination
             .decide_arbitration(decision, crate::session::now_secs())
             .await
-            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+        self.observability
+            .record(RuntimeEvent::CoordinationTransition {
+                session_id: applied.session_id.clone(),
+                outcome: RuntimeCoordinationOutcome::ArbitrationApplied,
+            });
+        Ok(applied)
     }
 
     /// Fork, attach, and activate one child Agent through durable spawn boundaries.

@@ -4,7 +4,9 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
-use sylvander_api::{AgentInstanceId, BusMessage, MessageId, MessageKind, Recipient, Sender};
+use sylvander_api::{
+    AgentInstanceId, BusMessage, MessageId, MessageKind, Recipient, Sender, SessionId,
+};
 use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::warn;
@@ -13,6 +15,7 @@ use super::{RuntimeError, RuntimeRevisionProvider};
 use crate::coordination::governance::GovernancePolicy;
 use crate::coordination::mailbox::{AgentMessageTurn, CoordinationMessage};
 use crate::coordination::service::{CoordinationService, DEFAULT_ARBITRATION_TTL_SECONDS};
+use crate::observability::{RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability};
 use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{SessionStore, SqliteSessionStore, TurnState};
@@ -29,9 +32,10 @@ impl AgentMailboxScheduler {
     pub(super) fn start(
         store: Arc<SqliteSessionStore>,
         revisions: Arc<RuntimeRevisionProvider>,
+        observability: RuntimeObservability,
     ) -> Self {
         let (wake, receiver) = mpsc::unbounded_channel();
-        let task = tokio::spawn(run_scheduler(receiver, store, revisions));
+        let task = tokio::spawn(run_scheduler(receiver, store, revisions, observability));
         Self { wake, task }
     }
 
@@ -50,6 +54,7 @@ async fn run_scheduler(
     mut receiver: mpsc::UnboundedReceiver<AgentInstanceId>,
     store: Arc<SqliteSessionStore>,
     revisions: Arc<RuntimeRevisionProvider>,
+    observability: RuntimeObservability,
 ) {
     let mut queued = VecDeque::new();
     let mut known = HashSet::new();
@@ -62,8 +67,16 @@ async fn run_scheduler(
         {
             let store = store.clone();
             let revisions = revisions.clone();
+            let observability = observability.clone();
             active.spawn(async move {
-                let wake = match Box::pin(drain_recipient(&store, &revisions, &recipient)).await {
+                let wake = match Box::pin(drain_recipient(
+                    &store,
+                    &revisions,
+                    &observability,
+                    &recipient,
+                ))
+                .await
+                {
                     Ok(wake) => wake,
                     Err(error) => {
                         warn!(%recipient, %error, "automatic Agent mailbox delivery paused");
@@ -107,6 +120,7 @@ async fn run_scheduler(
 async fn drain_recipient(
     store: &Arc<SqliteSessionStore>,
     revisions: &Arc<RuntimeRevisionProvider>,
+    observability: &RuntimeObservability,
     recipient: &AgentInstanceId,
 ) -> Result<Option<AgentInstanceId>, RuntimeError> {
     let service = CoordinationService::new(
@@ -131,8 +145,15 @@ async fn drain_recipient(
                     .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
             }
             None => {
-                if let Some(moderator) =
-                    execute_or_escalate(store, revisions, &service, &message, &receipt).await?
+                if let Some(moderator) = execute_or_escalate(
+                    store,
+                    revisions,
+                    observability,
+                    &service,
+                    &message,
+                    &receipt,
+                )
+                .await?
                 {
                     return Ok(Some(moderator));
                 }
@@ -142,6 +163,7 @@ async fn drain_recipient(
                     .escalate_mailbox_turn(&message, &receipt, crate::session::now_secs())
                     .await
                     .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+                record_mailbox_escalation(observability, &case.session_id);
                 return Ok(Some(case.moderator_instance_id));
             }
         }
@@ -159,8 +181,15 @@ async fn drain_recipient(
             .prepare_message_turn(&claim, &turn_id, crate::session::now_secs())
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
-        if let Some(moderator) =
-            execute_or_escalate(store, revisions, &service, &message, &receipt).await?
+        if let Some(moderator) = execute_or_escalate(
+            store,
+            revisions,
+            observability,
+            &service,
+            &message,
+            &receipt,
+        )
+        .await?
         {
             return Ok(Some(moderator));
         }
@@ -171,6 +200,7 @@ async fn drain_recipient(
 async fn execute_or_escalate(
     store: &Arc<SqliteSessionStore>,
     revisions: &Arc<RuntimeRevisionProvider>,
+    observability: &RuntimeObservability,
     service: &CoordinationService<SqliteSessionStore>,
     message: &CoordinationMessage,
     receipt: &AgentMessageTurn,
@@ -207,10 +237,18 @@ async fn execute_or_escalate(
                 .escalate_mailbox_turn(message, receipt, crate::session::now_secs())
                 .await
                 .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
+            record_mailbox_escalation(observability, &case.session_id);
             Ok(Some(case.moderator_instance_id))
         }
         None => Err(execution_error),
     }
+}
+
+fn record_mailbox_escalation(observability: &RuntimeObservability, session_id: &SessionId) {
+    observability.record(RuntimeEvent::CoordinationTransition {
+        session_id: session_id.clone(),
+        outcome: RuntimeCoordinationOutcome::MailboxEscalated,
+    });
 }
 
 async fn execute_message_turn(

@@ -127,6 +127,30 @@ pub(crate) enum RuntimeToolFailureKind {
     FilesystemBoundaryPolicyViolation,
 }
 
+/// Low-cardinality outcome for governed multi-Agent coordination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeCoordinationOutcome {
+    Enqueued,
+    ArbitrationRequired,
+    ModeratorAuthorized,
+    ModeratorRejected,
+    ArbitrationApplied,
+    MailboxEscalated,
+}
+
+impl RuntimeCoordinationOutcome {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enqueued => "enqueued",
+            Self::ArbitrationRequired => "arbitration_required",
+            Self::ModeratorAuthorized => "moderator_authorized",
+            Self::ModeratorRejected => "moderator_rejected",
+            Self::ArbitrationApplied => "arbitration_applied",
+            Self::MailboxEscalated => "mailbox_escalated",
+        }
+    }
+}
+
 impl RuntimeToolFailureKind {
     const FILESYSTEM_BOUNDARY_POLICY_VIOLATION: &'static str =
         "filesystem_boundary_policy_violation";
@@ -225,6 +249,10 @@ pub(crate) enum RuntimeEvent {
         session_id: SessionId,
         succeeded: bool,
     },
+    CoordinationTransition {
+        session_id: SessionId,
+        outcome: RuntimeCoordinationOutcome,
+    },
     TurnStarted {
         request_id: String,
         trace_id: String,
@@ -297,6 +325,7 @@ pub(crate) enum RuntimeEvent {
 impl RuntimeEvent {
     const CHAT_ADMITTED: &'static str = "chat_admitted";
     const CHAT_DISPATCH_FINISHED: &'static str = "chat_dispatch_finished";
+    const COORDINATION_TRANSITION: &'static str = "coordination_transition";
     const TURN_STARTED: &'static str = "turn_started";
     const TURN_TRANSITIONED: &'static str = "turn_transitioned";
     const MODEL_RETRIED: &'static str = "model_retried";
@@ -313,6 +342,7 @@ impl RuntimeEvent {
         match self {
             Self::ChatAdmitted { .. } => Self::CHAT_ADMITTED,
             Self::ChatDispatchFinished { .. } => Self::CHAT_DISPATCH_FINISHED,
+            Self::CoordinationTransition { .. } => Self::COORDINATION_TRANSITION,
             Self::TurnStarted { .. } => Self::TURN_STARTED,
             Self::TurnTransitioned { .. } => Self::TURN_TRANSITIONED,
             Self::ModelRetried { .. } => Self::MODEL_RETRIED,
@@ -395,6 +425,12 @@ pub struct RuntimeObservabilitySnapshot {
     pub persistence_succeeded: u64,
     /// Required Session persistence operations that failed.
     pub persistence_failed: u64,
+    pub coordination_enqueued: u64,
+    pub coordination_arbitration_required: u64,
+    pub coordination_moderator_authorized: u64,
+    pub coordination_moderator_rejected: u64,
+    pub coordination_arbitration_applied: u64,
+    pub coordination_mailbox_escalated: u64,
     /// Chat envelopes admitted but not yet accepted by the message bus.
     pub active_dispatches: u64,
     /// Turns with a start fact and no terminal fact yet.
@@ -446,6 +482,12 @@ struct RuntimeObservabilityInner {
     filesystem_policy_violations: AtomicU64,
     persistence_succeeded: AtomicU64,
     persistence_failed: AtomicU64,
+    coordination_enqueued: AtomicU64,
+    coordination_arbitration_required: AtomicU64,
+    coordination_moderator_authorized: AtomicU64,
+    coordination_moderator_rejected: AtomicU64,
+    coordination_arbitration_applied: AtomicU64,
+    coordination_mailbox_escalated: AtomicU64,
 }
 
 /// Cloneable handle to the mandatory built-in Runtime recorder.
@@ -485,6 +527,12 @@ impl RuntimeObservability {
                 filesystem_policy_violations: AtomicU64::new(0),
                 persistence_succeeded: AtomicU64::new(0),
                 persistence_failed: AtomicU64::new(0),
+                coordination_enqueued: AtomicU64::new(0),
+                coordination_arbitration_required: AtomicU64::new(0),
+                coordination_moderator_authorized: AtomicU64::new(0),
+                coordination_moderator_rejected: AtomicU64::new(0),
+                coordination_arbitration_applied: AtomicU64::new(0),
+                coordination_mailbox_escalated: AtomicU64::new(0),
             }),
         }
     }
@@ -535,6 +583,36 @@ impl RuntimeObservability {
                     %request_id,
                     %session_id,
                     succeeded,
+                    "runtime lifecycle fact"
+                );
+            }
+            RuntimeEvent::CoordinationTransition {
+                session_id,
+                outcome,
+            } => {
+                match outcome {
+                    RuntimeCoordinationOutcome::Enqueued => &self.inner.coordination_enqueued,
+                    RuntimeCoordinationOutcome::ArbitrationRequired => {
+                        &self.inner.coordination_arbitration_required
+                    }
+                    RuntimeCoordinationOutcome::ModeratorAuthorized => {
+                        &self.inner.coordination_moderator_authorized
+                    }
+                    RuntimeCoordinationOutcome::ModeratorRejected => {
+                        &self.inner.coordination_moderator_rejected
+                    }
+                    RuntimeCoordinationOutcome::ArbitrationApplied => {
+                        &self.inner.coordination_arbitration_applied
+                    }
+                    RuntimeCoordinationOutcome::MailboxEscalated => {
+                        &self.inner.coordination_mailbox_escalated
+                    }
+                }
+                .fetch_add(1, Ordering::Relaxed);
+                tracing::info!(
+                    event = event_name,
+                    %session_id,
+                    outcome = outcome.as_str(),
                     "runtime lifecycle fact"
                 );
             }
@@ -843,6 +921,7 @@ impl RuntimeObservability {
                 }
             }
             RuntimeEvent::TurnTransitioned { .. }
+            | RuntimeEvent::CoordinationTransition { .. }
             | RuntimeEvent::ModelRetried { .. }
             | RuntimeEvent::PersistenceFinished { .. }
             | RuntimeEvent::ToolRecoveryClassified { .. }
@@ -898,6 +977,27 @@ impl RuntimeObservability {
                 .load(Ordering::Relaxed),
             persistence_succeeded: self.inner.persistence_succeeded.load(Ordering::Relaxed),
             persistence_failed: self.inner.persistence_failed.load(Ordering::Relaxed),
+            coordination_enqueued: self.inner.coordination_enqueued.load(Ordering::Relaxed),
+            coordination_arbitration_required: self
+                .inner
+                .coordination_arbitration_required
+                .load(Ordering::Relaxed),
+            coordination_moderator_authorized: self
+                .inner
+                .coordination_moderator_authorized
+                .load(Ordering::Relaxed),
+            coordination_moderator_rejected: self
+                .inner
+                .coordination_moderator_rejected
+                .load(Ordering::Relaxed),
+            coordination_arbitration_applied: self
+                .inner
+                .coordination_arbitration_applied
+                .load(Ordering::Relaxed),
+            coordination_mailbox_escalated: self
+                .inner
+                .coordination_mailbox_escalated
+                .load(Ordering::Relaxed),
             active_dispatches: timing.dispatch_started.len() as u64,
             active_turns: timing.turn_started.len() as u64,
             active_tools: timing.tool_started.len() as u64,
