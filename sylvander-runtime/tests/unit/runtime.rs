@@ -1380,6 +1380,7 @@ fn channel_host_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> Runtime
         credential_resolver: runtime.channel_host.credential_resolver.clone(),
         credential_audit: runtime.channel_host.credential_audit.clone(),
         evidence: runtime.channel_host.evidence.clone(),
+        artifact_service: runtime.channel_host.artifact_service.clone(),
         evidence_run_id: runtime.channel_host.evidence_run_id.clone(),
         guardian: runtime.channel_host.guardian.clone(),
         identity_bindings: runtime.channel_host.identity_bindings.clone(),
@@ -1388,6 +1389,102 @@ fn channel_host_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> Runtime
         boundary: runtime.channel_host.boundary.clone(),
         execution_service: runtime.channel_host.execution_service.clone(),
     }
+}
+
+#[tokio::test]
+async fn channel_host_reads_only_owned_session_bound_artifact_ranges() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = configured_memory_test_config(&directory, &["assistant"]);
+    config.agents[0].access.allow_authenticated = true;
+    let runtime = Runtime::boot_config(config).await.unwrap();
+    let boundary = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
+            "alice",
+            sylvander_api::AuthenticationMethod::PlatformIdentity,
+        ),
+        "channel-a",
+        "websocket",
+        "request-artifact",
+    );
+    let created = sylvander_channel::ChannelHost::create_session(
+        runtime.channel_host.as_ref(),
+        &boundary,
+        SessionCreateRequest {
+            agent_id: AgentId::new("assistant"),
+            label: "artifact owner".into(),
+            channel_id: Some("channel-a".into()),
+            overrides: SessionConfigOverrides::default(),
+        },
+    )
+    .await
+    .unwrap();
+    let governed = EvidenceStore::open_governed_in_memory(
+        EvidenceGovernance::new(
+            "tenant-a",
+            30,
+            EvidenceEncryption::from_secret("key-a", &[9; 32]).unwrap(),
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let artifact_service = RuntimeArtifactService::new(governed).unwrap();
+    let stored = runtime
+        .channel_host
+        .sessions
+        .get(&created.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let port = artifact_service
+        .bind(crate::storage::artifact::ArtifactTurnBinding {
+            user_id: stored.metadata.user_id,
+            agent_id: "assistant".into(),
+            session_id: created.session_id.0.clone(),
+            turn_id: "turn-a".into(),
+            created_at: crate::session::now_secs(),
+        })
+        .unwrap();
+    let reference = port
+        .persist(sylvander_agent::artifact::ArtifactWrite {
+            call_id: "call-a".into(),
+            media_type: "text/plain".into(),
+            payload: b"hello artifact".to_vec(),
+        })
+        .await
+        .unwrap();
+    let mut host = channel_host_with_bus(&runtime, runtime.bus.clone());
+    host.artifact_service = Some(artifact_service);
+    let request = sylvander_api::ArtifactReadRequest {
+        version: sylvander_api::ARTIFACT_READ_PROTOCOL_VERSION,
+        session_id: created.session_id.0.clone(),
+        locator: reference.locator.clone(),
+        offset: 0,
+    };
+    let chunk = sylvander_channel::ChannelHost::read_artifact(&host, &boundary, request.clone())
+        .await
+        .unwrap();
+    assert_eq!(chunk.content_base64, "aGVsbG8gYXJ0aWZhY3Q=");
+    assert!(chunk.eof);
+
+    let other_user = sylvander_api::BoundaryContext::authenticated(
+        sylvander_api::AuthenticatedPrincipal::user(
+            "bob",
+            sylvander_api::AuthenticationMethod::PlatformIdentity,
+        ),
+        "channel-a",
+        "websocket",
+        "request-cross-user",
+    );
+    let denied = sylvander_channel::ChannelHost::read_artifact(&host, &other_user, request).await;
+    assert!(matches!(
+        denied,
+        Err(sylvander_api::BoundaryError {
+            code: sylvander_api::BoundaryErrorCode::Forbidden,
+            ..
+        })
+    ));
+    runtime.shutdown().await.unwrap();
 }
 
 #[tokio::test]

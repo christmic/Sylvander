@@ -339,8 +339,9 @@ async fn mcp_generated_artifacts_use_the_governed_store() {
     assert!(
         export.records[0]
             .source_ref
-            .starts_with("mcp:filesystem:read_file:session-sha256:")
+            .starts_with("artifact-session-sha256:")
     );
+    assert!(export.records[0].source_ref.contains(":mcp-source-sha256:"));
     assert_eq!(
         export.records[0].payload,
         br#"{"content":"PRIVATE-MCP-RESULT"}"#

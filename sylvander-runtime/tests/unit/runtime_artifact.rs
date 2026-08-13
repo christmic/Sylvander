@@ -56,7 +56,7 @@ async fn governed_artifact_is_encrypted_scoped_and_location_neutral() {
     assert!(
         export.records[0]
             .source_ref
-            .starts_with("agent-turn:sha256:")
+            .starts_with("artifact-session-sha256:")
     );
     drop(port);
     drop(service);
@@ -67,6 +67,132 @@ async fn governed_artifact_is_encrypted_scoped_and_location_neutral() {
             .windows(payload.len())
             .any(|window| window == payload)
     );
+}
+
+#[tokio::test]
+async fn range_read_is_bounded_session_scoped_and_audited() {
+    let store = EvidenceStore::open_governed_in_memory(governance())
+        .await
+        .unwrap();
+    let service = RuntimeArtifactService::new(store.clone()).unwrap();
+    let port = service.bind(binding("alice")).unwrap();
+    let payload = vec![b'x'; sylvander_api::MAX_ARTIFACT_READ_BYTES + 17];
+    let reference = port
+        .persist(ArtifactWrite {
+            call_id: "call-a".into(),
+            media_type: "application/octet-stream".into(),
+            payload: payload.clone(),
+        })
+        .await
+        .unwrap();
+    let now = crate::session::now_secs();
+
+    let first = service
+        .read_range(
+            "alice".into(),
+            "session-a".into(),
+            &reference.locator,
+            0,
+            sylvander_api::MAX_ARTIFACT_READ_BYTES,
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.bytes.len(), sylvander_api::MAX_ARTIFACT_READ_BYTES);
+    assert_eq!(first.total_bytes, payload.len());
+    let second = service
+        .read_range(
+            "alice".into(),
+            "session-a".into(),
+            &reference.locator,
+            first.bytes.len(),
+            sylvander_api::MAX_ARTIFACT_READ_BYTES,
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.bytes, vec![b'x'; 17]);
+    assert_eq!(first.payload_digest_sha256, second.payload_digest_sha256);
+
+    for (user, session) in [("bob", "session-a"), ("alice", "session-b")] {
+        let denied = service
+            .read_range(user.into(), session.into(), &reference.locator, 0, 1, now)
+            .await;
+        assert!(
+            matches!(denied, Err(EvidenceError::GovernedRecordNotFound)),
+            "unexpected range denial for {user}/{session}: {denied:?}"
+        );
+    }
+    let audits = store
+        .governance_audits(EvidenceScope::new("tenant-a", "alice"), 10)
+        .await
+        .unwrap();
+    assert_eq!(audits.len(), 2);
+    assert!(audits.iter().all(|audit| audit.action == "read"));
+}
+
+#[tokio::test]
+async fn range_read_rejects_invalid_locator_offset_expiry_and_deleted_record() {
+    let store = EvidenceStore::open_governed_in_memory(governance())
+        .await
+        .unwrap();
+    let service = RuntimeArtifactService::new(store.clone()).unwrap();
+    let port = service.bind(binding("alice")).unwrap();
+    let reference = port
+        .persist(ArtifactWrite {
+            call_id: "call-a".into(),
+            media_type: "text/plain".into(),
+            payload: b"artifact".to_vec(),
+        })
+        .await
+        .unwrap();
+    let now = crate::session::now_secs();
+
+    for (locator, offset, read_at) in [
+        ("file:///private/path", 0, now),
+        (reference.locator.as_str(), 9, now),
+        (reference.locator.as_str(), 0, now + 31 * 86_400),
+    ] {
+        let denied = service
+            .read_range(
+                "alice".into(),
+                "session-a".into(),
+                locator,
+                offset,
+                1,
+                read_at,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(EvidenceError::GovernedRecordNotFound)),
+            "unexpected range denial for {locator}: {denied:?}"
+        );
+    }
+
+    let record_id = reference.locator.strip_prefix("artifact:").unwrap();
+    store
+        .delete_governed_records(
+            EvidenceScope::new("tenant-a", "alice"),
+            vec![record_id.into()],
+            "user deletion".into(),
+            now,
+        )
+        .await
+        .unwrap();
+    let deleted = service
+        .read_range(
+            "alice".into(),
+            "session-a".into(),
+            &reference.locator,
+            0,
+            1,
+            now,
+        )
+        .await;
+    assert!(matches!(
+        deleted,
+        Err(EvidenceError::GovernedRecordNotFound)
+    ));
 }
 
 #[tokio::test]
