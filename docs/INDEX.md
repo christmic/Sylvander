@@ -70,6 +70,8 @@ Design notes for the platform, terminal substrate, and brand.
 - [tool-execution-architecture.md](tool-execution-architecture.md) — pinned
   upstream evidence and the implemented tool preparation, execution, and
   fail-closed sandbox boundary.
+- [runtime-artifacts.md](runtime-artifacts.md) — turn-bound oversized-output
+  retention, opaque locators, storage authority, and upstream design evidence.
 - [sylvander-tui-ux-design.md](sylvander-tui-ux-design.md) — terminal
   UI composition, focus, responsive dock, decision surfaces.
 - [sylvander-brand-system.md](sylvander-brand-system.md) — brand
