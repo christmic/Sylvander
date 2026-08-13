@@ -9,6 +9,7 @@ export type RuntimeCommand =
   | { type: "discover_agents" }
   | { type: "list_sessions" }
   | { type: "load_session"; session_id: string }
+  | { type: "reattach_session"; session_id: string }
   | { type: "rename_session"; session_id: string; label: string }
   | { type: "archive_session"; session_id: string }
   | { type: "delete_session"; session_id: string }
@@ -36,6 +37,19 @@ export interface RuntimeSession {
 export interface RuntimeHistoryMessage {
   role: string;
   text: string;
+}
+
+export interface RuntimeSessionHistory {
+  session: RuntimeSession;
+  messages: RuntimeHistoryMessage[];
+  iterations?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cost_nano_usd?: number;
+  notice?: string;
+  source_session_id?: string;
+  recovery?: boolean;
+  replay_truncated?: boolean;
 }
 
 export interface RuntimeAgent {
@@ -90,7 +104,7 @@ export type RuntimeMessage =
   | { type: "sessions_list"; sessions: RuntimeSession[] }
   | { type: "agents_discovered"; agents: RuntimeAgent[] }
   | ({ type: "runtime_info" } & RuntimeInfo)
-  | { type: "session_history"; session: RuntimeSession; messages: RuntimeHistoryMessage[] }
+  | ({ type: "session_history" } & RuntimeSessionHistory)
   | { type: "text_delta"; session_id: string; delta: string }
   | { type: "thinking_delta"; session_id: string; delta: string }
   | ({ type: "model_retry" } & RuntimeModelRetry)

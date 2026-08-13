@@ -32,7 +32,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `SubmitFeedback` | missing | terminal feedback surface |
 | `MemoryConfirmation` | missing | governed memory decision surface |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
-| `ReattachSession` | **P0 missing** | replay-aware reconnect instead of ordinary load |
+| `ReattachSession` | complete | selected Session reattaches only after a successful reconnect |
 | `RestoreSession`, `ForkSession` | missing | archived/fork workflows |
 | `GetContext`, `Compact` | missing | context and compaction surface |
 | `PreviewWorkspaceRollback`, `RollbackWorkspace` | missing | reviewed rollback flow |
@@ -47,7 +47,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `Welcome` | complete, native-owned | none |
 | `ProtocolError` | partial | preserve bounded public code/message instead of generic rejection |
 | `SessionCreated`, `SessionsList`, `SessionUpdated`, `SessionDeleted` | complete | restore/fork events use existing shapes |
-| `SessionHistory` | partial | project usage, notice, source, recovery, and replay truncation |
+| `SessionHistory` | partial | recovery notice/truncation complete; usage and source remain |
 | `TextDelta`, `ThinkingDelta`, `ToolOutputDelta` | complete | visual progressive disclosure |
 | `ToolCall`, `ToolResult`, `ToolRejected` | complete | bounded expandable tool input/details |
 | `Done`, `Error`, `TurnInterrupted` | complete | feedback target |
@@ -70,8 +70,7 @@ execution, persistence, or policy ownership moved into Desktop.
 
 1. Integrate the main Runtime lifecycle chain, including `TurnStarted`, in
    dependency order; do not cherry-pick only its enum.
-2. Close remaining P0 recovery: `ReattachSession` and bounded protocol-error
-   details.
+2. Close remaining P0 recovery: bounded protocol-error details.
 3. Complete Session history/replay metadata and approval scopes.
 4. Complete context, settings, model/permission selection, coding review, and
    rollback workflows.

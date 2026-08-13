@@ -156,11 +156,19 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         if (message.session.id !== selectedRef.current) break;
         setState((current) => ({
           ...current,
-          transcript: message.messages.map((item, index) => ({
+          transcript: [
+            ...(message.notice ? [{
+              id: "history-notice",
+              kind: "notice" as const,
+              body: message.notice,
+              status: message.replay_truncated ? "failed" as const : undefined,
+            }] : []),
+            ...message.messages.map((item, index) => ({
             id: `history-${index}`,
-            kind: item.role === "user" ? "user" : "assistant",
+            kind: item.role === "user" ? "user" as const : "assistant" as const,
             body: item.text,
-          })),
+            })),
+          ],
         }));
         break;
       case "session_created":
@@ -471,6 +479,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           window.clearTimeout(reconnectTimer);
           reconnectTimer = undefined;
         }
+        const reconnected = connectedOnce;
         connectedOnce = true;
         reconnectAttempt = 0;
         setState((current) => ({
@@ -486,6 +495,10 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         void submit({ type: "discover_agents" });
         void submit({ type: "list_sessions" });
         void submit({ type: "get_runtime_info" });
+        const selectedId = selectedRef.current;
+        if (reconnected && selectedId) {
+          void submit({ type: "reattach_session", session_id: selectedId });
+        }
       } else if (event.type === "message") {
         applyMessage(event.message);
       } else {

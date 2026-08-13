@@ -351,6 +351,11 @@ describe("Sylvander Work", () => {
         type: "connected",
         protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
       }));
+      act(() => gateway.emit({ type: "message", message: {
+        type: "sessions_list",
+        sessions: [{ id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1 }],
+      } }));
+      expect(screen.getByRole("heading", { name: "Recovery" })).toBeTruthy();
       act(() => gateway.emit({ type: "disconnected", reason: "runtime_closed" }));
 
       expect(screen.getAllByText("Reconnecting")).toHaveLength(2);
@@ -359,6 +364,27 @@ describe("Sylvander Work", () => {
         await Promise.resolve();
       });
       expect(gateway.connects).toBe(2);
+      await act(async () => {
+        gateway.emit({
+          type: "connected",
+          protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+        });
+        await Promise.resolve();
+      });
+      expect(gateway.commands.at(-1)).toEqual({
+        type: "reattach_session",
+        session_id: "session-1",
+      });
+      act(() => gateway.emit({ type: "message", message: {
+        type: "session_history",
+        session: { id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1 },
+        messages: [{ role: "assistant", text: "Recovered history" }],
+        recovery: true,
+        replay_truncated: true,
+        notice: "Some in-flight events were truncated",
+      } }));
+      expect(screen.getByText("Some in-flight events were truncated")).toBeTruthy();
+      expect(screen.getByText("Recovered history")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

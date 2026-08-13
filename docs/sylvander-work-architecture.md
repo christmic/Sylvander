@@ -204,6 +204,13 @@ clear gateway state and publish `Disconnected` only while its generation is
 still current. Replaced or explicitly closed tasks therefore cannot race a new
 handshake and schedule a redundant WebView reconnect.
 
+After a successful reconnect, Desktop sends `ReattachSession` for the selected
+Runtime identity instead of treating recovery as an ordinary history load.
+`SessionHistory.recovery` marks that response, `notice` is rendered verbatim as
+a public notice, and `replay_truncated` marks it failed-visible before the Unix/
+WebSocket relay resumes buffered in-flight events. Initial selection continues
+to use `LoadSession`.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled
