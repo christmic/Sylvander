@@ -67,7 +67,7 @@ impl AgentRun {
         let metadata = self.inner.session_metadata(session).await?;
         let artifacts = self
             .inner
-            .bind_perception_artifacts(session, &metadata, turn_id)?;
+            .bind_cognition_artifacts(session, &metadata, turn_id)?;
         let result = recover_perception_receipt(store, artifacts, snapshot).await;
         self.inner.record_perception_terminal(
             session,
@@ -106,7 +106,7 @@ impl AgentRunInner {
             .session_store
             .clone()
             .ok_or(PerceptionExecutionError::Unavailable)?;
-        let artifacts = self.bind_perception_artifacts(session, &metadata, &input.turn_id)?;
+        let artifacts = self.bind_cognition_artifacts(session, &metadata, &input.turn_id)?;
         let turn_id = input.turn_id.clone();
         let invocation_id = input.invocation_id.clone();
         let result = execute_perception(
@@ -154,17 +154,19 @@ impl AgentRunInner {
             .ok_or(PerceptionExecutionError::Unauthorized)
     }
 
-    fn bind_perception_artifacts(
+    pub(super) fn bind_cognition_artifacts(
         &self,
         session: &AuthenticatedSession,
         metadata: &crate::session::SessionMetadata,
         turn_id: &str,
-    ) -> Result<Arc<dyn crate::agent::perception::PerceptionArtifactStore>, PerceptionExecutionError>
-    {
+    ) -> Result<
+        Arc<dyn crate::agent::cognition_artifact::CognitionArtifactStore>,
+        PerceptionExecutionError,
+    > {
         self.artifact_service
             .as_ref()
             .ok_or(PerceptionExecutionError::Unavailable)?
-            .bind_perception(ArtifactTurnBinding {
+            .bind_cognition(ArtifactTurnBinding {
                 user_id: metadata.user_id.clone(),
                 agent_id: self.id.0.clone(),
                 session_id: session.session_id.0.clone(),

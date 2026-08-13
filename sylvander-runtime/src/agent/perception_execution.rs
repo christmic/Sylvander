@@ -15,7 +15,8 @@ use sylvander_llm_core::{
 };
 
 use super::cognition::CognitiveRole;
-use super::perception::{PerceptionArtifactKind, PerceptionArtifactStore, PerceptionModality};
+use super::cognition_artifact::{CognitionArtifactKind, CognitionArtifactStore};
+use super::perception::PerceptionModality;
 use crate::agent_definition::SessionId;
 use crate::storage::session::{
     PerceptionAdvance, PerceptionArtifactPersistence, PerceptionExecutionPosition,
@@ -104,7 +105,7 @@ pub enum PerceptionExecutionError {
 /// function; uncertainty is resolved only through the declared recovery policy.
 pub async fn execute_perception(
     store: Arc<dyn SessionStore>,
-    artifacts: Arc<dyn PerceptionArtifactStore>,
+    artifacts: Arc<dyn CognitionArtifactStore>,
     provider: Arc<dyn ModelProvider>,
     request: PerceptionExecutionRequest,
 ) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
@@ -131,8 +132,8 @@ pub async fn execute_perception(
         .map_err(|_| PerceptionExecutionError::Persistence)?;
     let media = artifacts
         .persist_exact(
-            &request.invocation_id,
-            PerceptionArtifactKind::SourceMedia,
+            request.invocation_id.as_str(),
+            CognitionArtifactKind::SourceMedia,
             &request.media_type,
             request.media_bytes.clone(),
         )
@@ -183,7 +184,7 @@ const fn perception_failure_kind(error: PerceptionExecutionError) -> PerceptionF
 /// Resume every post-inference durability window without calling the provider.
 pub async fn recover_perception_receipt(
     store: Arc<dyn SessionStore>,
-    artifacts: Arc<dyn PerceptionArtifactStore>,
+    artifacts: Arc<dyn CognitionArtifactStore>,
     snapshot: PerceptionInvocationSnapshot,
 ) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
     if !matches!(
@@ -198,8 +199,8 @@ pub async fn recover_perception_receipt(
     }
     let receipt = artifacts
         .load_exact(
-            &snapshot.invocation_id,
-            PerceptionArtifactKind::ProviderReceipt,
+            snapshot.invocation_id.as_str(),
+            CognitionArtifactKind::ProviderReceipt,
         )
         .await
         .map_err(|_| PerceptionExecutionError::Artifact)?
@@ -318,7 +319,7 @@ async fn consume_response(
 
 async fn finish_from_response(
     store: Arc<dyn SessionStore>,
-    artifacts: Arc<dyn PerceptionArtifactStore>,
+    artifacts: Arc<dyn CognitionArtifactStore>,
     invocation_id: PerceptionInvocationId,
     revision: u64,
     response: ModelResponse,
@@ -327,8 +328,8 @@ async fn finish_from_response(
         serde_json::to_vec(&response).map_err(|_| PerceptionExecutionError::InvalidResponse)?;
     let receipt = artifacts
         .persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::ProviderReceipt,
+            invocation_id.as_str(),
+            CognitionArtifactKind::ProviderReceipt,
             "application/json",
             receipt_payload,
         )
@@ -347,7 +348,7 @@ async fn finish_from_response(
 
 async fn finish_from_persisted_receipt(
     store: Arc<dyn SessionStore>,
-    artifacts: Arc<dyn PerceptionArtifactStore>,
+    artifacts: Arc<dyn CognitionArtifactStore>,
     invocation_id: PerceptionInvocationId,
     revision: u64,
     response: ModelResponse,
@@ -366,7 +367,7 @@ async fn finish_from_persisted_receipt(
 
 async fn persist_normalized_output(
     store: Arc<dyn SessionStore>,
-    artifacts: Arc<dyn PerceptionArtifactStore>,
+    artifacts: Arc<dyn CognitionArtifactStore>,
     invocation_id: PerceptionInvocationId,
     revision: u64,
     response: ModelResponse,
@@ -382,8 +383,8 @@ async fn persist_normalized_output(
         serde_json::to_vec(&output).map_err(|_| PerceptionExecutionError::InvalidResponse)?;
     let artifact = artifacts
         .persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::NormalizedOutput,
+            invocation_id.as_str(),
+            CognitionArtifactKind::NormalizedOutput,
             "application/json",
             output_payload,
         )
@@ -413,14 +414,14 @@ async fn persist_normalized_output(
 }
 
 async fn load_completed_result(
-    artifacts: &Arc<dyn PerceptionArtifactStore>,
+    artifacts: &Arc<dyn CognitionArtifactStore>,
     snapshot: &PerceptionInvocationSnapshot,
     response: ModelResponse,
 ) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
     let artifact = artifacts
         .load_exact(
-            &snapshot.invocation_id,
-            PerceptionArtifactKind::NormalizedOutput,
+            snapshot.invocation_id.as_str(),
+            CognitionArtifactKind::NormalizedOutput,
         )
         .await
         .map_err(|_| PerceptionExecutionError::Artifact)?

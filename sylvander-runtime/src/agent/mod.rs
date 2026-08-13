@@ -3,6 +3,7 @@
 pub(crate) mod administration;
 pub(crate) mod approval;
 pub mod cognition;
+pub mod cognition_artifact;
 pub mod definition;
 pub mod instance;
 pub mod perception;

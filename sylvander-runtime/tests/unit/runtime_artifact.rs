@@ -1,7 +1,7 @@
 use sylvander_agent::artifact::{ArtifactStoreError, ArtifactWrite};
 
 use super::*;
-use crate::agent::perception::{PerceptionArtifactError, PerceptionArtifactKind};
+use crate::agent::cognition_artifact::{CognitionArtifactError, CognitionArtifactKind};
 use crate::evidence::{EvidenceEncryption, EvidenceGovernance, EvidenceScope};
 use crate::storage::session::PerceptionInvocationId;
 
@@ -109,12 +109,12 @@ async fn exact_perception_artifact_is_idempotent_conflict_safe_and_restart_reada
         .await
         .unwrap();
     let service = RuntimeArtifactService::new(store).unwrap();
-    let port = service.bind_perception(binding("alice")).unwrap();
+    let port = service.bind_cognition(binding("alice")).unwrap();
 
     let first = port
         .persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::SourceMedia,
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourceMedia,
             "audio/wav",
             payload.clone(),
         )
@@ -122,8 +122,8 @@ async fn exact_perception_artifact_is_idempotent_conflict_safe_and_restart_reada
         .unwrap();
     let repeated = port
         .persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::SourceMedia,
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourceMedia,
             "audio/wav",
             payload.clone(),
         )
@@ -132,13 +132,13 @@ async fn exact_perception_artifact_is_idempotent_conflict_safe_and_restart_reada
     assert_eq!(first, repeated);
     assert_eq!(
         port.persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::SourceMedia,
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourceMedia,
             "audio/wav",
             b"different".to_vec(),
         )
         .await,
-        Err(PerceptionArtifactError::Conflict)
+        Err(CognitionArtifactError::Conflict)
     );
     drop(port);
     drop(service);
@@ -148,9 +148,9 @@ async fn exact_perception_artifact_is_idempotent_conflict_safe_and_restart_reada
         .unwrap();
     let recovered = RuntimeArtifactService::new(reopened)
         .unwrap()
-        .bind_perception(binding("alice"))
+        .bind_cognition(binding("alice"))
         .unwrap()
-        .load_exact(&invocation_id, PerceptionArtifactKind::SourceMedia)
+        .load_exact(invocation_id.as_str(), CognitionArtifactKind::SourceMedia)
         .await
         .unwrap()
         .unwrap();

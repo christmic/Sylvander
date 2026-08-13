@@ -10,13 +10,12 @@ use sylvander_llm_core::{
 };
 
 use crate::agent::cognition::CognitiveRole;
+use crate::agent::cognition_artifact::{CognitionArtifactKind, CognitionArtifactStore};
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute,
     HistoryView, SessionAgentRole,
 };
-use crate::agent::perception::{
-    PerceptionArtifactKind, PerceptionArtifactStore, PerceptionModality,
-};
+use crate::agent::perception::PerceptionModality;
 use crate::agent::perception_execution::{
     PerceptionExecutionRequest, execute_perception, recover_perception_receipt,
 };
@@ -170,13 +169,13 @@ async fn running_perception_turn(store: &SqliteSessionStore, turn_id: &str) -> S
 async fn perception_artifacts(
     evidence_path: &std::path::Path,
     turn_id: &str,
-) -> Arc<dyn PerceptionArtifactStore> {
+) -> Arc<dyn CognitionArtifactStore> {
     let evidence = EvidenceStore::open_governed(evidence_path, perception_governance())
         .await
         .unwrap();
     RuntimeArtifactService::new(evidence)
         .unwrap()
-        .bind_perception(ArtifactTurnBinding {
+        .bind_cognition(ArtifactTurnBinding {
             user_id: "user-1".into(),
             agent_id: "agent-1".into(),
             session_id: "sess-1".into(),
@@ -188,7 +187,7 @@ async fn perception_artifacts(
 
 async fn prepare_completed_inference(
     store: &SqliteSessionStore,
-    artifacts: &Arc<dyn PerceptionArtifactStore>,
+    artifacts: &Arc<dyn CognitionArtifactStore>,
     session: &StoredSession,
     turn_id: &str,
     invocation_id: &PerceptionInvocationId,
@@ -212,8 +211,8 @@ async fn prepare_completed_inference(
         .unwrap();
     let media = artifacts
         .persist_exact(
-            invocation_id,
-            PerceptionArtifactKind::SourceMedia,
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourceMedia,
             "audio/wav",
             b"RIFF-audio".to_vec(),
         )
@@ -247,8 +246,8 @@ async fn prepare_completed_inference(
     };
     let receipt = artifacts
         .persist_exact(
-            invocation_id,
-            PerceptionArtifactKind::ProviderReceipt,
+            invocation_id.as_str(),
+            CognitionArtifactKind::ProviderReceipt,
             "application/json",
             serde_json::to_vec(&response).unwrap(),
         )
@@ -1676,8 +1675,8 @@ async fn terminal_perception_failure_survives_restart_without_recovery_work() {
         .unwrap();
     let media = artifacts
         .persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::SourceMedia,
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourceMedia,
             "audio/wav",
             b"RIFF".to_vec(),
         )
@@ -1798,7 +1797,10 @@ async fn specialist_execution_commits_receipt_artifact_and_model_visible_result(
         invocations[0].receipt_locator.as_deref(),
         Some(
             artifacts
-                .load_exact(&invocation_id, PerceptionArtifactKind::ProviderReceipt)
+                .load_exact(
+                    invocation_id.as_str(),
+                    CognitionArtifactKind::ProviderReceipt,
+                )
                 .await
                 .unwrap()
                 .unwrap()
@@ -1855,8 +1857,8 @@ async fn receipt_written_before_ledger_advance_recovers_without_provider_replay(
         .unwrap();
     let media = artifacts
         .persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::SourceMedia,
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourceMedia,
             "audio/wav",
             b"RIFF-audio".to_vec(),
         )
@@ -1890,8 +1892,8 @@ async fn receipt_written_before_ledger_advance_recovers_without_provider_replay(
     };
     artifacts
         .persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::ProviderReceipt,
+            invocation_id.as_str(),
+            CognitionArtifactKind::ProviderReceipt,
             "application/json",
             serde_json::to_vec(&response).unwrap(),
         )
@@ -1984,8 +1986,8 @@ async fn post_receipt_and_post_artifact_positions_resume_without_provider_replay
     });
     let output = second_artifacts
         .persist_exact(
-            &invocation_id,
-            PerceptionArtifactKind::NormalizedOutput,
+            invocation_id.as_str(),
+            CognitionArtifactKind::NormalizedOutput,
             "application/json",
             serde_json::to_vec(&normalized).unwrap(),
         )

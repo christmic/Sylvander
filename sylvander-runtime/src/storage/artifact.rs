@@ -12,14 +12,12 @@ use sylvander_agent::artifact::{
     ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore,
 };
 
-use crate::agent::perception::{
-    PerceptionArtifactError, PerceptionArtifactKind, PerceptionArtifactRecord,
-    PerceptionArtifactStore,
+use crate::agent::cognition_artifact::{
+    CognitionArtifactError, CognitionArtifactKind, CognitionArtifactRecord, CognitionArtifactStore,
 };
 use crate::evidence::{
     EvidenceClassification, EvidenceError, EvidenceStore, GovernedRecordInput, GovernedRecordKind,
 };
-use crate::storage::session::PerceptionInvocationId;
 
 /// Identity and time fixed by Runtime for one admitted Agent turn.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,10 +67,10 @@ impl RuntimeArtifactService {
     }
 
     /// Bind deterministic encrypted storage for one turn's perception calls.
-    pub(crate) fn bind_perception(
+    pub(crate) fn bind_cognition(
         &self,
         binding: ArtifactTurnBinding,
-    ) -> Result<Arc<dyn PerceptionArtifactStore>, EvidenceError> {
+    ) -> Result<Arc<dyn CognitionArtifactStore>, EvidenceError> {
         if binding.created_at < 0
             || binding.agent_id.is_empty()
             || binding.session_id.is_empty()
@@ -127,14 +125,14 @@ impl TurnArtifactStore for BoundArtifactStore {
 }
 
 #[async_trait]
-impl PerceptionArtifactStore for BoundArtifactStore {
+impl CognitionArtifactStore for BoundArtifactStore {
     async fn persist_exact(
         &self,
-        invocation_id: &PerceptionInvocationId,
-        kind: PerceptionArtifactKind,
+        invocation_id: &str,
+        kind: CognitionArtifactKind,
         media_type: &str,
         payload: Vec<u8>,
-    ) -> Result<PerceptionArtifactRecord, PerceptionArtifactError> {
+    ) -> Result<CognitionArtifactRecord, CognitionArtifactError> {
         let id = perception_record_id(invocation_id, kind);
         if let Some(existing) = self.load_perception_record(invocation_id, kind).await? {
             return matching_artifact(existing, media_type, &payload);
@@ -157,18 +155,18 @@ impl PerceptionArtifactStore for BoundArtifactStore {
             if let Some(existing) = self.load_perception_record(invocation_id, kind).await? {
                 return matching_artifact(existing, media_type, &payload);
             }
-            return Err(PerceptionArtifactError::Unavailable);
+            return Err(CognitionArtifactError::Unavailable);
         }
         self.load_perception_record(invocation_id, kind)
             .await?
-            .ok_or(PerceptionArtifactError::Unavailable)
+            .ok_or(CognitionArtifactError::Unavailable)
     }
 
     async fn load_exact(
         &self,
-        invocation_id: &PerceptionInvocationId,
-        kind: PerceptionArtifactKind,
-    ) -> Result<Option<PerceptionArtifactRecord>, PerceptionArtifactError> {
+        invocation_id: &str,
+        kind: CognitionArtifactKind,
+    ) -> Result<Option<CognitionArtifactRecord>, CognitionArtifactError> {
         self.load_perception_record(invocation_id, kind).await
     }
 }
@@ -176,9 +174,9 @@ impl PerceptionArtifactStore for BoundArtifactStore {
 impl BoundArtifactStore {
     async fn load_perception_record(
         &self,
-        invocation_id: &PerceptionInvocationId,
-        kind: PerceptionArtifactKind,
-    ) -> Result<Option<PerceptionArtifactRecord>, PerceptionArtifactError> {
+        invocation_id: &str,
+        kind: CognitionArtifactKind,
+    ) -> Result<Option<CognitionArtifactRecord>, CognitionArtifactError> {
         let id = perception_record_id(invocation_id, kind);
         let export = self
             .store
@@ -187,20 +185,20 @@ impl BoundArtifactStore {
         let export = match export {
             Ok(export) => export,
             Err(EvidenceError::GovernedRecordNotFound) => return Ok(None),
-            Err(_) => return Err(PerceptionArtifactError::Unavailable),
+            Err(_) => return Err(CognitionArtifactError::Unavailable),
         };
         let record = export
             .records
             .into_iter()
             .next()
-            .ok_or(PerceptionArtifactError::Unavailable)?;
+            .ok_or(CognitionArtifactError::Unavailable)?;
         if record.id != id
             || record.kind != GovernedRecordKind::Artifact
             || record.source_ref != perception_source(&self.source_seed, invocation_id, kind)
         {
-            return Err(PerceptionArtifactError::Conflict);
+            return Err(CognitionArtifactError::Conflict);
         }
-        Ok(Some(PerceptionArtifactRecord {
+        Ok(Some(CognitionArtifactRecord {
             locator: format!("artifact:{}", record.id),
             media_type: record.media_type,
             payload: record.payload,
@@ -210,26 +208,23 @@ impl BoundArtifactStore {
 }
 
 fn matching_artifact(
-    existing: PerceptionArtifactRecord,
+    existing: CognitionArtifactRecord,
     media_type: &str,
     payload: &[u8],
-) -> Result<PerceptionArtifactRecord, PerceptionArtifactError> {
+) -> Result<CognitionArtifactRecord, CognitionArtifactError> {
     if existing.media_type == media_type && existing.payload == payload {
         Ok(existing)
     } else {
-        Err(PerceptionArtifactError::Conflict)
+        Err(CognitionArtifactError::Conflict)
     }
 }
 
-fn perception_record_id(
-    invocation_id: &PerceptionInvocationId,
-    kind: PerceptionArtifactKind,
-) -> String {
+fn perception_record_id(invocation_id: &str, kind: CognitionArtifactKind) -> String {
     uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_OID,
         format!(
             "sylvander-perception-artifact-v1:{}:{}",
-            invocation_id.as_str(),
+            invocation_id,
             kind.as_str()
         )
         .as_bytes(),
@@ -239,12 +234,12 @@ fn perception_record_id(
 
 fn perception_source(
     source_seed: &str,
-    invocation_id: &PerceptionInvocationId,
-    kind: PerceptionArtifactKind,
+    invocation_id: &str,
+    kind: CognitionArtifactKind,
 ) -> String {
     format!(
         "{source_seed}:perception:{}:{}",
-        invocation_id.as_str(),
+        invocation_id,
         kind.as_str()
     )
 }
