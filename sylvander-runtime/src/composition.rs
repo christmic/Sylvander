@@ -440,14 +440,24 @@ impl ConfiguredAgent {
             .iter()
             .filter_map(|reference| match reference {
                 ToolRef::McpServer(server) => Some(server.clone()),
-                ToolRef::Builtin { .. } => None,
+                ToolRef::Builtin { .. } | ToolRef::McpStreamableHttp(_) => None,
+            })
+            .collect();
+        let http_servers = self
+            .definition
+            .spec
+            .tools
+            .iter()
+            .filter_map(|reference| match reference {
+                ToolRef::McpStreamableHttp(server) => Some(server.clone()),
+                ToolRef::Builtin { .. } | ToolRef::McpServer(_) => None,
             })
             .collect();
         let lease = self.session_issuer.issue(session_id.clone(), metadata)?;
         let session = self.run.attach_authenticated_session(lease).await?;
         if let Err(error) = self
             .mcp_sessions
-            .attach(binding, servers, workspace_root)
+            .attach(binding, servers, http_servers, workspace_root)
             .await
         {
             self.run.leave_session(&session_id).await;

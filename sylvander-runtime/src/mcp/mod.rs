@@ -7,6 +7,7 @@
 
 mod session;
 pub(crate) mod stdio;
+mod streamable_http;
 
 pub(crate) use session::{SessionMcpBinding, SessionMcpRuntimeService};
 

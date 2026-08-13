@@ -502,23 +502,36 @@ impl AgentRun {
             .tools
             .iter()
             .filter_map(|tool| {
-                let crate::agent_definition::ToolRef::McpServer(server) = tool else {
-                    return None;
+                let (name, source, requires_authentication, summary) = match tool {
+                    crate::agent_definition::ToolRef::McpServer(server) => (
+                        server.name.clone(),
+                        std::path::Path::new(&server.command)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .map(str::to_string),
+                        !server.envs.is_empty(),
+                        "configured stdio; MCP runtime health is not available".to_owned(),
+                    ),
+                    crate::agent_definition::ToolRef::McpStreamableHttp(server) => (
+                        server.name.clone(),
+                        Some(server.url.clone()),
+                        server.bearer_token.is_some(),
+                        "configured Streamable HTTP; MCP runtime health is not available"
+                            .to_owned(),
+                    ),
+                    crate::agent_definition::ToolRef::Builtin { .. } => return None,
                 };
                 Some(PlatformFeature {
                     kind: PlatformFeatureKind::Mcp,
-                    name: server.name.clone(),
+                    name,
                     status: PlatformFeatureStatus::Configured,
-                    summary: "configured; MCP runtime health is not available".into(),
-                    source: std::path::Path::new(&server.command)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .map(str::to_string),
+                    summary,
+                    source,
                     trust: Some(PlatformTrust::External),
-                    auth: if server.envs.is_empty() {
-                        PlatformAuthStatus::NotRequired
-                    } else {
+                    auth: if requires_authentication {
                         PlatformAuthStatus::Configured
+                    } else {
+                        PlatformAuthStatus::NotRequired
                     },
                     capabilities: Vec::new(),
                     reloadable: false,

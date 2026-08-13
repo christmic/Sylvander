@@ -24,6 +24,7 @@ tracing = { workspace = true }
 toml = "1.1"
 rusqlite = { version = "0.40", features = ["backup", "bundled", "functions"] }
 reqwest = { workspace = true, features = ["blocking"] }
+rmcp = { version = "3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
 ring = "0.17"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }

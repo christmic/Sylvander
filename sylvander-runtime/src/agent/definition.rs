@@ -87,6 +87,8 @@ pub enum ToolRef {
     },
     /// A tool provided by an external MCP server.
     McpServer(McpServerConfig),
+    /// A remotely hosted MCP server using Streamable HTTP.
+    McpStreamableHttp(McpStreamableHttpConfig),
 }
 
 /// Configuration for an MCP server that provides tools.
@@ -106,6 +108,18 @@ pub struct McpServerConfig {
     /// Environment variables passed to the server process.
     #[serde(default)]
     pub envs: HashMap<String, String>,
+}
+
+/// Configuration for one remote Streamable HTTP MCP endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStreamableHttpConfig {
+    /// Stable namespace used for discovered tools.
+    pub name: String,
+    /// Exact single MCP endpoint URL.
+    pub url: String,
+    /// Encoded Runtime secret reference, never the bearer value.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
 }
 
 /// Declarative metadata for a long-term memory store.
