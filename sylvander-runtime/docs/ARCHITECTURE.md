@@ -37,7 +37,8 @@ src/
 ├── agent/                 # definition, run, supervision, approval, prompt
 │   └── run/               # cohesive services used by turn orchestration
 │       ├── interaction.rs # approval, question, and plan decision gates
-│       └── background.rs  # isolated background Agent task lifecycle
+│       ├── background.rs  # isolated background Agent task lifecycle
+│       └── error.rs       # run failures and persistence operation context
 ├── session/               # context, authenticated boundary, identity binding
 ├── registry/              # Agent/model/provider revision governance
 ├── provider/              # catalogs and request-scoped provider routing
