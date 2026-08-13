@@ -22,6 +22,8 @@
 pub mod agent_admin;
 /// Authenticated ingress context and content-safe boundary failures.
 pub mod boundary;
+/// Content-free auxiliary cognition governance evidence.
+pub mod cognition;
 /// Redacted execution policy, progress, and recovery DTOs.
 pub mod execution;
 /// Evidence-bound user feedback DTOs.
@@ -56,6 +58,7 @@ pub mod workspace_worker;
 
 pub use agent_admin::*;
 pub use boundary::*;
+pub use cognition::*;
 pub use execution::*;
 pub use feedback::*;
 pub use identity::*;

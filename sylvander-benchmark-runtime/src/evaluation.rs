@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use sylvander_api::CognitionActivationEvidence;
 
 use crate::{
     BenchmarkModelRole, CognitionProfile, FailurePoint, RuntimeBenchError, RuntimeBenchResult,
@@ -53,6 +54,34 @@ pub struct ActivationGateReport {
     pub quality_win_basis_points: u16,
     pub median_token_increase_basis_points: i32,
     pub p95_latency_increase_basis_points: i32,
+}
+
+impl ActivationGateReport {
+    pub fn activation_evidence(
+        &self,
+        evidence_set_sha256: String,
+        policy: ActivationGatePolicy,
+    ) -> Result<CognitionActivationEvidence, ActivationGateError> {
+        policy.validate()?;
+        if self.decision != ActivationDecision::Eligible {
+            return Err(ActivationGateError::IneligibleReport);
+        }
+        Ok(CognitionActivationEvidence {
+            evidence_set_sha256,
+            pairs: self.pairs,
+            minimum_pairs: policy.minimum_pairs,
+            unsafe_candidates: self.unsafe_candidates,
+            median_reward_gain_micros: self.median_reward_gain_micros,
+            minimum_reward_gain_micros: policy.minimum_reward_gain_micros,
+            quality_win_basis_points: self.quality_win_basis_points,
+            minimum_quality_win_basis_points: policy.minimum_quality_win_basis_points,
+            median_token_increase_basis_points: self.median_token_increase_basis_points,
+            maximum_token_increase_basis_points: policy.maximum_token_increase_basis_points,
+            p95_latency_increase_basis_points: self.p95_latency_increase_basis_points,
+            maximum_p95_latency_increase_basis_points: policy
+                .maximum_p95_latency_increase_basis_points,
+        })
+    }
 }
 
 /// Compare exact scenario/run pairs. Unpaired samples and mismatched primary
@@ -264,6 +293,8 @@ pub enum ActivationGateError {
     MetricOverflow,
     #[error("paired evidence exceeds the supported sample count")]
     TooManyPairs,
+    #[error("only an eligible activation report can become Registry evidence")]
+    IneligibleReport,
 }
 
 #[cfg(test)]

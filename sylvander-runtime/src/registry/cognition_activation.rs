@@ -6,55 +6,14 @@
 //! exact model selection; revision changes therefore fail closed.
 
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+pub use sylvander_api::CognitionActivationEvidence;
 use sylvander_api::{AgentId, AuthenticatedPrincipal, ModelSelection};
 use uuid::Uuid;
 
 use crate::agent::cognition::CognitiveRole;
 use crate::registry::administration::is_registry_administrator;
 use crate::registry::agent::{AgentRegistry, AgentRegistryError};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CognitionActivationEvidence {
-    pub evidence_set_sha256: String,
-    pub pairs: u32,
-    pub minimum_pairs: u32,
-    pub unsafe_candidates: u32,
-    pub median_reward_gain_micros: i64,
-    pub minimum_reward_gain_micros: i64,
-    pub quality_win_basis_points: u16,
-    pub minimum_quality_win_basis_points: u16,
-    pub median_token_increase_basis_points: i32,
-    pub maximum_token_increase_basis_points: u16,
-    pub p95_latency_increase_basis_points: i32,
-    pub maximum_p95_latency_increase_basis_points: u16,
-}
-
-impl CognitionActivationEvidence {
-    fn validate(&self) -> Result<(), CognitionActivationError> {
-        if !valid_sha256(&self.evidence_set_sha256)
-            || self.minimum_pairs == 0
-            || self.minimum_quality_win_basis_points > 10_000
-            || self.quality_win_basis_points > 10_000
-        {
-            return Err(CognitionActivationError::InvalidEvidence);
-        }
-        if self.pairs < self.minimum_pairs
-            || self.unsafe_candidates != 0
-            || self.median_reward_gain_micros < self.minimum_reward_gain_micros
-            || self.quality_win_basis_points < self.minimum_quality_win_basis_points
-            || self.median_token_increase_basis_points
-                > i32::from(self.maximum_token_increase_basis_points)
-            || self.p95_latency_increase_basis_points
-                > i32::from(self.maximum_p95_latency_increase_basis_points)
-        {
-            return Err(CognitionActivationError::IneligibleEvidence);
-        }
-        Ok(())
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CognitionActivationDraft {
@@ -92,7 +51,7 @@ impl AgentRegistry {
         draft: CognitionActivationDraft,
     ) -> Result<CognitionActivationRecord, CognitionActivationError> {
         let actor = administrator(principal)?;
-        draft.evidence.validate()?;
+        validate_evidence(&draft.evidence)?;
         if !valid_sha256(&draft.agent_definition_sha256) {
             return Err(CognitionActivationError::InvalidEvidence);
         }
@@ -295,7 +254,7 @@ fn load_record(
     ).optional().map_err(AgentRegistryError::sqlite)?.ok_or(CognitionActivationError::UnknownProposal)?;
     let evidence: CognitionActivationEvidence =
         serde_json::from_str(&row.6).map_err(AgentRegistryError::serde)?;
-    evidence.validate()?;
+    validate_evidence(&evidence)?;
     if hex_digest(row.6.as_bytes()) != row.7 {
         return Err(CognitionActivationError::Integrity);
     }
@@ -386,6 +345,30 @@ fn valid_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn validate_evidence(
+    evidence: &CognitionActivationEvidence,
+) -> Result<(), CognitionActivationError> {
+    if !valid_sha256(&evidence.evidence_set_sha256)
+        || evidence.minimum_pairs == 0
+        || evidence.minimum_quality_win_basis_points > 10_000
+        || evidence.quality_win_basis_points > 10_000
+    {
+        return Err(CognitionActivationError::InvalidEvidence);
+    }
+    if evidence.pairs < evidence.minimum_pairs
+        || evidence.unsafe_candidates != 0
+        || evidence.median_reward_gain_micros < evidence.minimum_reward_gain_micros
+        || evidence.quality_win_basis_points < evidence.minimum_quality_win_basis_points
+        || evidence.median_token_increase_basis_points
+            > i32::from(evidence.maximum_token_increase_basis_points)
+        || evidence.p95_latency_increase_basis_points
+            > i32::from(evidence.maximum_p95_latency_increase_basis_points)
+    {
+        return Err(CognitionActivationError::IneligibleEvidence);
+    }
+    Ok(())
 }
 fn hex_digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))

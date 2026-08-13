@@ -113,6 +113,11 @@ fn matched_quality_gain_with_bounded_cost_is_eligible() {
     assert_eq!(report.quality_win_basis_points, 10_000);
     assert_eq!(report.median_token_increase_basis_points, 1_000);
     assert_eq!(report.p95_latency_increase_basis_points, 1_000);
+    let evidence = report
+        .activation_evidence("c".repeat(64), policy())
+        .unwrap();
+    assert_eq!(evidence.evidence_set_sha256, "c".repeat(64));
+    assert_eq!(evidence.minimum_pairs, policy().minimum_pairs);
 }
 
 #[test]
@@ -134,6 +139,10 @@ fn one_safety_regression_keeps_the_candidate_disabled() {
     .unwrap();
     assert_eq!(report.decision, ActivationDecision::KeepDisabled);
     assert_eq!(report.unsafe_candidates, 1);
+    assert!(matches!(
+        report.activation_evidence("d".repeat(64), policy()),
+        Err(ActivationGateError::IneligibleReport)
+    ));
 }
 
 #[test]
