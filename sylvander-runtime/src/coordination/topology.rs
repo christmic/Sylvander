@@ -164,6 +164,52 @@ impl SessionTopology {
         }
         membership.governance.moderator_instance_id.clone()
     }
+
+    /// Find a bounded shortest route over governed relationship edges.
+    #[must_use]
+    pub fn route_between(
+        &self,
+        source: &AgentInstanceId,
+        target: &AgentInstanceId,
+    ) -> Option<Vec<AgentInstanceId>> {
+        if source == target {
+            return Some(vec![source.clone()]);
+        }
+        let mut neighbors: HashMap<AgentInstanceId, Vec<AgentInstanceId>> = HashMap::new();
+        for relation in &self.relations {
+            neighbors
+                .entry(relation.source.clone())
+                .or_default()
+                .push(relation.target.clone());
+            neighbors
+                .entry(relation.target.clone())
+                .or_default()
+                .push(relation.source.clone());
+        }
+        let mut predecessor = HashMap::new();
+        let mut visited = HashSet::from([source.clone()]);
+        let mut queue = VecDeque::from([source.clone()]);
+        while let Some(current) = queue.pop_front() {
+            for neighbor in neighbors.get(&current).into_iter().flatten() {
+                if !visited.insert(neighbor.clone()) {
+                    continue;
+                }
+                predecessor.insert(neighbor.clone(), current.clone());
+                if neighbor == target {
+                    let mut route = vec![target.clone()];
+                    let mut cursor = target;
+                    while cursor != source {
+                        cursor = predecessor.get(cursor)?;
+                        route.push(cursor.clone());
+                    }
+                    route.reverse();
+                    return Some(route);
+                }
+                queue.push_back(neighbor.clone());
+            }
+        }
+        None
+    }
 }
 
 fn relation_key(relation: &AgentRelation) -> (AgentRelationKind, String, String) {

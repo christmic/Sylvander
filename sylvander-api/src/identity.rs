@@ -89,6 +89,16 @@ impl HandoffId {
     }
 }
 
+/// Stable identity and deduplication key for one inter-Agent message.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinationMessageId(pub String);
+
+impl CoordinationMessageId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
 /// Stable identity for one durable unit of Agent work.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskId(pub String);
