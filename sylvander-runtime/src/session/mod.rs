@@ -11,6 +11,7 @@
 
 pub(crate) mod boundary;
 pub(crate) mod identity_binding;
+pub mod membership;
 pub mod principal_binding;
 
 use std::time::{SystemTime, UNIX_EPOCH};
