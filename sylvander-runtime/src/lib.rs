@@ -9,15 +9,10 @@
 /// Runtime-owned Agent definitions, turn application service, and supervision.
 pub mod agent;
 use agent::administration as agent_admin;
-#[cfg(test)]
-#[path = "../tests/unit/agent_admin_runtime_v3.rs"]
-mod agent_admin_runtime_v3_tests;
 /// Runtime-owned declarative Agent configuration.
 pub use agent::definition as agent_definition;
 /// Runtime-owned Agent, provider, model, and credential revision governance.
 pub mod registry;
-#[cfg(test)]
-use registry::administration as registry_admin;
 /// Versioned Agent definitions and active-revision lookup.
 pub use registry::agent as agent_registry;
 #[cfg(test)]
@@ -102,15 +97,12 @@ mod registry_composition_v3_tests;
 #[cfg(test)]
 #[path = "../tests/unit/registry_domain.rs"]
 mod registry_domain_tests;
-/// Durable executor-backed Git worktree leases for remote coding sessions.
-pub use workspace::remote as remote_git_worktree;
-#[cfg(test)]
-#[path = "../tests/unit/runtime_external_provider.rs"]
-mod runtime_external_provider_tests;
 pub use provider::request_scoped::{
     ExternalSecretLease, ExternalSecretLeaseError, ExternalSecretLeaseFuture,
     MAX_EXTERNAL_SECRET_LEASE_SECONDS, RenewableExternalSecretProvider, SecretLeaseMetadata,
 };
+/// Durable executor-backed Git worktree leases for remote coding sessions.
+pub use workspace::remote as remote_git_worktree;
 /// Evidence-backed, human-gated self-change experiments.
 pub use workspace::self_change;
 /// Runtime Session state and metadata.
@@ -128,14 +120,13 @@ pub use observability::{
     RUNTIME_DURATION_BUCKET_UPPER_BOUNDS_MICROS, RuntimeDurationHistogramSnapshot,
     RuntimeObservabilitySnapshot,
 };
+#[cfg(test)]
+pub(crate) use runtime::configure_test_memory_integrity;
 pub use runtime::{
     ChannelHealth, ChannelRegistration, ChannelRestartPolicy, ChannelStatus,
     ProviderCredentialSources, Runtime, RuntimeError, RuntimeHealthIssue,
     RuntimeOperationalSnapshot, SessionBindingError,
 };
-#[cfg(test)]
-pub(crate) use runtime::{SystemConfig, configure_test_memory_integrity};
-
 #[cfg(test)]
 #[path = "../tests/unit/support.rs"]
 mod test_support;

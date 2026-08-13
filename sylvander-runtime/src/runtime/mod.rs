@@ -99,6 +99,10 @@ use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
 use crate::workspace::{
     coding as coding_worktree, local as git_worktree, remote as remote_git_worktree,
 };
+#[cfg(test)]
+use crate::{
+    ExternalSecretLease, ExternalSecretLeaseError, ExternalSecretLeaseFuture, SecretLeaseMetadata,
+};
 use crate::{composition, config, evidence};
 
 fn bind_effective_workspace(effective: &mut SessionEffectiveConfig, workspace: &std::path::Path) {
@@ -245,7 +249,7 @@ pub struct Runtime {
     /// The agent lifecycle engine.
     engine: Arc<AgentRunEngine>,
     /// Closed facade over Runtime-owned durable repositories.
-    storage: RuntimeStorage,
+    pub(crate) storage: RuntimeStorage,
     /// Mandatory built-in lifecycle facts and counters.
     observability: RuntimeObservability,
     /// Immutable concrete execution environments shared by Agent revisions.
@@ -255,9 +259,9 @@ pub struct Runtime {
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
-    configured_agents: HashMap<AgentId, ConfiguredAgent>,
-    revision_provider: Option<Arc<RuntimeRevisionProvider>>,
-    channel_host: Arc<RuntimeChannelHost>,
+    pub(crate) configured_agents: HashMap<AgentId, ConfiguredAgent>,
+    pub(crate) revision_provider: Option<Arc<RuntimeRevisionProvider>>,
+    pub(crate) channel_host: Arc<RuntimeChannelHost>,
     evidence: Option<EvidenceRecorder>,
     credential_audit: Option<Arc<CredentialOperationAuditLedger>>,
     guardian: Option<Arc<GuardianRuntime>>,
@@ -377,13 +381,13 @@ pub enum RuntimeHealthIssue {
     Storage,
 }
 
-struct RuntimeChannelHost {
+pub(crate) struct RuntimeChannelHost {
     engine: Arc<AgentRunEngine>,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
     observability: RuntimeObservability,
     agents: HashMap<AgentId, ConfiguredAgent>,
-    agent_registry: Option<AgentRegistry>,
+    pub(crate) agent_registry: Option<AgentRegistry>,
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
     credential_resolver: Option<Arc<dyn CredentialSecretResolver>>,
     credential_audit: Option<Arc<CredentialOperationAuditLedger>>,
@@ -396,7 +400,7 @@ struct RuntimeChannelHost {
     boundary: BoundaryGuard,
 }
 
-struct RuntimeRevisionProvider {
+pub(crate) struct RuntimeRevisionProvider {
     config: ServerConfig,
     registry: AgentRegistry,
     bus: Arc<dyn MessageBus>,
@@ -476,7 +480,10 @@ impl RuntimeRevisionProvider {
         Ok(configured)
     }
 
-    async fn active_agent(&self, agent_id: &AgentId) -> Result<ConfiguredAgent, RuntimeError> {
+    pub(crate) async fn active_agent(
+        &self,
+        agent_id: &AgentId,
+    ) -> Result<ConfiguredAgent, RuntimeError> {
         let active = self
             .registry
             .load_active(agent_id)
@@ -4503,7 +4510,7 @@ impl Runtime {
     }
 
     #[cfg(test)]
-    fn configured_agent(&self, id: &AgentId) -> Option<&ConfiguredAgent> {
+    pub(crate) fn configured_agent(&self, id: &AgentId) -> Option<&ConfiguredAgent> {
         self.configured_agents.get(id)
     }
 
@@ -5210,3 +5217,11 @@ pub(crate) fn configure_test_memory_integrity(
 #[cfg(test)]
 #[path = "../../tests/unit/runtime.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/agent_admin_runtime_v3.rs"]
+mod agent_admin_runtime_v3_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/runtime_external_provider.rs"]
+mod runtime_external_provider_tests;
