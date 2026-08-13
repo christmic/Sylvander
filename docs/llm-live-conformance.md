@@ -54,11 +54,17 @@ result fields.
 | usage | required | no | input and output usage are positive and all reported optional dimensions are preserved |
 | image input | required when selected by the provider protocol binding | no | a fixed inline PNG is decoded and its concealed digit is identified exactly |
 | token count | required when the protocol exposes a count operation | no | remote count is positive and recorded separately from generated-response usage |
-| cache write/read | required for an advertised cache-capable model | no | first call reports creation or establishes an implicit prefix; a bounded repeated call reports positive cache-read tokens |
+| cache write/read | required for an advertised cache-capable model | no | an explicit cache breakpoint reports positive creation tokens on the first call; an implicit-cache protocol establishes a fresh prefix; a bounded repeated call reports positive cache-read tokens |
 | open timeout | no | required | the configured deadline yields `Timeout` in the `Open` phase |
 | transient retry | no | required | retryable open failures consume the exact Agent retry budget and a later success completes once |
 | truncated stream | no | required | visible deltas are never replayed and the stream terminates with a typed protocol/transport failure |
 | process interruption | required behind a delaying proxy | required | Runtime restart records interruption, never false completion, and never replays an uncertain tool effect |
+
+Image understanding and image generation are distinct capabilities. A text
+chat binding that does not accept image blocks records `image_input` as a
+protocol-level N/A. Provider-specific image generation endpoints require
+separate `text_to_image` and `image_to_image` cases; a successful generation
+must not be reported as chat image understanding.
 
 Unsupported provider capabilities are explicit `not_applicable` results, not
 passes. Missing configuration is `not_run` and makes an explicitly requested

@@ -456,7 +456,14 @@ async fn run_cache(
     max_output_tokens: u32,
     explicit_cache_hint: bool,
 ) -> Result<PassMetrics, ProviderError> {
-    let prefix = "Stable Sylvander cache benchmark context. ".repeat(600);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| protocol_error("system clock is before the Unix epoch"))?
+        .as_nanos();
+    let prefix = format!(
+        "Sylvander cache benchmark nonce: {nonce}. {}",
+        "Stable Sylvander cache benchmark context. ".repeat(600)
+    );
     if prefix.len() < CACHE_PREFIX_CHARS {
         return Err(protocol_error("cache prefix is below the declared bound"));
     }
@@ -471,6 +478,11 @@ async fn run_cache(
         ),
     )
     .await?;
+    if explicit_cache_hint && first.usage.cache_write_tokens.unwrap_or(0) == 0 {
+        return Err(protocol_error(
+            "explicit cache breakpoint reported no cache creation",
+        ));
+    }
     let second = complete(
         provider,
         request(
@@ -566,7 +578,10 @@ fn record(
 ) -> BenchResult {
     BenchResult::recorded(
         cell,
-        1,
+        match cell.coordinate.scenario {
+            BenchScenario::CacheWriteRead => 2,
+            _ => 1,
+        },
         status,
         origin,
         started_at,

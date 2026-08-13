@@ -4,22 +4,22 @@
   "request_timeout_ms": 60000,
   "max_output_tokens": 256,
   "max_retries": 0,
-  "scenarios": ["connectivity", "usage", "image_input"],
+  "scenarios": ["connectivity", "usage", "image_input", "cache_write_read"],
   "bindings": [
     {
       "provider_id": "minimax-cn",
       "protocol": "anthropic_messages",
       "base_url": "https://api.minimaxi.com/anthropic",
       "credential_env": "SYLVANDER_BENCH_MINIMAX_API_KEY",
-      "supported_scenarios": ["connectivity", "usage", "image_input", "cache_write_read"],
+      "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
       "models": [
         {
           "model_id": "MiniMax-M2.7",
-          "advertised_scenarios": ["connectivity", "usage", "image_input", "cache_write_read"]
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
         },
         {
           "model_id": "MiniMax-M2.7-highspeed",
-          "advertised_scenarios": ["connectivity", "usage", "image_input", "cache_write_read"]
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
         }
       ]
     },
@@ -28,15 +28,15 @@
       "protocol": "openai_chat_completions",
       "base_url": "https://api.minimaxi.com/v1",
       "credential_env": "SYLVANDER_BENCH_MINIMAX_API_KEY",
-      "supported_scenarios": ["connectivity", "usage", "image_input"],
+      "supported_scenarios": ["connectivity", "usage"],
       "models": [
         {
           "model_id": "MiniMax-M2.7",
-          "advertised_scenarios": ["connectivity", "usage", "image_input"]
+          "advertised_scenarios": ["connectivity", "usage"]
         },
         {
           "model_id": "MiniMax-M2.7-highspeed",
-          "advertised_scenarios": ["connectivity", "usage", "image_input"]
+          "advertised_scenarios": ["connectivity", "usage"]
         }
       ]
     }

@@ -5,7 +5,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -280,6 +280,101 @@ async fn cache_cell_requires_a_reported_read_on_the_repeated_prefix() {
     assert_eq!(result["scenario"], "cache_write_read");
     assert_eq!(result["attempts"], 2);
     assert_eq!(result["cache_read_tokens"], 10);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anthropic_cache_cell_requires_creation_then_read() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains("Reply only: first"))
+        .and(body_string_contains(
+            r#""cache_control":{"type":"ephemeral"}"#,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            anthropic_cache_stream("first", 4_096, 0),
+            "text/event-stream",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains("Reply only: second"))
+        .and(body_string_contains(
+            r#""cache_control":{"type":"ephemeral"}"#,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            anthropic_cache_stream("second", 0, 4_096),
+            "text/event-stream",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let matrix_path = std::env::temp_dir().join(format!(
+        "sylvander-llm-anthropic-cache-matrix-{}.json",
+        std::process::id()
+    ));
+    let matrix = json!({
+        "schema_version": 1,
+        "repetitions": 1,
+        "scenarios": ["cache_write_read"],
+        "bindings": [{
+            "provider_id": "anthropic-cache",
+            "protocol": "anthropic_messages",
+            "base_url": server.uri(),
+            "credential_env": "SYLVANDER_TESTBENCH_ANTHROPIC_CACHE_KEY",
+            "supported_scenarios": ["cache_write_read"],
+            "models": [{
+                "model_id": "model-cache",
+                "advertised_scenarios": ["cache_write_read"]
+            }]
+        }]
+    });
+    fs::write(&matrix_path, serde_json::to_vec(&matrix).unwrap()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sylvander-llm-bench"))
+        .args(["run", matrix_path.to_str().unwrap()])
+        .env("SYLVANDER_TESTBENCH_ANTHROPIC_CACHE_KEY", "cache-key")
+        .output()
+        .unwrap();
+    fs::remove_file(matrix_path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "passed");
+    assert_eq!(result["case_revision"], 2);
+    assert_eq!(result["attempts"], 2);
+    assert_eq!(result["cache_write_tokens"], 4_096);
+    assert_eq!(result["cache_read_tokens"], 4_096);
+}
+
+fn anthropic_cache_stream(id: &str, cache_write: u64, cache_read: u64) -> String {
+    let start = json!({
+        "type": "message_start",
+        "message": {
+            "id": format!("msg_{id}"),
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": "model-cache",
+            "stop_reason": null,
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_creation_input_tokens": cache_write,
+                "cache_read_input_tokens": cache_read
+            }
+        }
+    });
+    format!(
+        "event: message_start\ndata: {start}\n\nevent: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"ok\"}}}}\n\nevent: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":1}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
