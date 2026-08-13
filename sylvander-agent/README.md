@@ -22,7 +22,7 @@ Agent 不是产品 Session、服务协议或基础设施组合根：
 
 - Runtime 负责认证、Session 生命周期、模型与凭据解析、持久化、可观测性、沙箱和
   具体文件系统/进程实现；
-- API/Protocol 只定义稳定的客户端线协议；
+- `sylvander-api` 只定义稳定的客户端线协议；
 - provider crate 只负责官方协议的 wire 编解码；
 - Channel/TUI/Desktop 通过 Runtime 的应用端口工作，不直接读取 Agent 存储。
 
@@ -32,7 +32,7 @@ OCI、MCP stdio、SQLite、变更 manifest、崩溃恢复及文件系统产物�
 [`docs/agent-runtime-api-boundaries.md`](../docs/agent-runtime-api-boundaries.md) 为准。
 
 Agent 不导出服务消息总线类型。Rust 应用总线契约由 `sylvander-channel` 持有，消息
-负载才属于 API/Protocol；Runtime 负责组合两者。逻辑 workspace mount 使用 Agent
+负载才属于 `sylvander-api`；Runtime 负责组合两者。逻辑 workspace mount 使用 Agent
 自己的 `WorkspaceCapabilities`，Runtime 必须从已认证的会话配置显式映射，不能把
 可反序列化的 API 权限对象直接注入工具。Agent 的正常依赖图中，唯一第一方依赖是
 `sylvander-llm-core`。

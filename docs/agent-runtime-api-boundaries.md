@@ -173,20 +173,18 @@ AgentTurnRequest + immutable AgentExecutionPorts snapshot
   -> AgentOutcome
 ```
 
-## Target Agent source layout
+## Current Agent source layers
 
 ```text
 sylvander-agent/src/
-  agent.rs
-  conversation.rs
-  request.rs
-  outcome.rs
-  event.rs
-  error.rs
-  context/
-  compression/
-  tool/
-  ports/
+  request.rs + conversation.rs + execution_context.rs   immutable turn data
+  execution_ports.rs                                    selected turn services
+  loop_.rs + compress/                                   execution kernel
+  prompt.rs + turn_context.rs                            context composition
+  tool.rs + tool_context.rs + tool_invocation.rs         tool policy boundary
+  tools/                                                  built-in definitions
+  workspace_executor.rs + artifact.rs + *_gate.rs        neutral Runtime ports
+  event.rs + outcome.rs + error.rs                       progress and results
 ```
 
 Concrete persistence and transport implementations are intentionally absent.

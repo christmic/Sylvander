@@ -46,10 +46,19 @@ and context retrieval are injected through a separate immutable execution-port
 snapshot. This distinction prevents a request value from becoming a service
 locator while still pinning every dependency for the duration of one turn.
 
-The current `AgentLoop` builder and `AgentRun` modules still contain the old
-ownership arrangement. Migration removes those fields from long-lived Agent
-configuration and makes the request above the sole per-turn input. No alias for
-the removed API is retained.
+`AgentLoop` now retains only stable retry, iteration, and compression policy.
+Runtime owns `AgentRun` and supplies all per-turn data through
+`AgentTurnRequest` plus all selected service implementations through
+`AgentExecutionPorts`. No compatibility alias for the removed Agent-owned run
+service is retained.
+
+The execution boundary therefore has four conceptual layers:
+
+1. immutable turn data (`AgentTurnRequest`);
+2. immutable turn services and authority (`AgentExecutionPorts`);
+3. provider-neutral execution (`AgentLoop` and `run_stream`);
+4. chronological progress and terminal computation result (`AgentEvent` and
+   `AgentOutcome`).
 
 ## Local source evidence
 

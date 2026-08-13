@@ -65,9 +65,10 @@ exposing their transport to the Agent.
 ## Configuration and extension
 
 `TurnContextBudgets` provides production defaults and
-`AgentRunBuilder::turn_context_budgets` allows Runtime configuration to replace
-them as one immutable per-run policy. A running turn snapshots these budgets
-alongside its model, permission, and capability configuration.
+Runtime's `agent_run::AgentRunBuilder::turn_context_budgets` allows product
+configuration to replace them as one immutable per-run policy. A running turn
+snapshots these budgets alongside its model, permission, and capability
+configuration.
 
 New context sources must:
 

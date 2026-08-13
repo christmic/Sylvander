@@ -9,17 +9,17 @@
 //! - [`run_with_events`](crate::loop_::run_with_events) — consumes the stream, fires events into a
 //!   callback, returns the final `AgentOutcome`
 //!
-//! `AgentLoop` itself is just a configuration holder (LLM client,
-//! model, tools, compressor, iteration limits). The methods
-//! `AgentLoop::run`, `AgentLoop::run_stream`, and
-//! `AgentLoop::run_with_events` are 1-line delegates to the free
-//! functions for callers who prefer method syntax.
+//! `AgentLoop` itself holds only stable retry, iteration, and compression
+//! policy. Per-turn conversation, model, tools, and trusted execution identity
+//! arrive in `AgentTurnRequest`; Runtime-selected model, authorization,
+//! interaction, execution, and artifact services arrive separately in
+//! `AgentExecutionPorts`.
 //!
 //! Adding new event types or consumption patterns only touches
 //! `run_stream` — the single iteration implementation.
 //!
-//! See `projects/Sylvander/designs/sylvander-agent-design.md` for
-//! the full design.
+//! See `sylvander-agent/docs/ARCHITECTURE.md` and
+//! `sylvander-agent/docs/execution-kernel.md` for the current design.
 
 use std::sync::Arc;
 
@@ -178,8 +178,9 @@ impl AgentLoop {
 /// single source of truth for iteration logic. `run` and
 /// `run_with_events` consume the stream this returns.
 ///
-/// `config` carries the LLM client, model, tools, compressor, and
-/// iteration limits. `initial_messages` seeds the conversation.
+/// `config` carries stable loop policy. `request` carries immutable turn data,
+/// while `ports` carries the Runtime-selected service implementations and
+/// executable authority for that exact turn.
 ///
 /// Event order within an iteration:
 /// `IterationStart → [Compressed] → [TextChunk* / ThinkingChunk*] →

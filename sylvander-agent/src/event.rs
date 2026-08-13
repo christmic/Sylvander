@@ -128,7 +128,7 @@ pub enum AgentEvent {
     /// `Compressed`; consumers that only need telemetry can ignore it.
     HistoryCompacted {
         /// Exact history that the next provider request will receive.
-        /// `AgentRun` uses this to keep subsequent turns in sync.
+        /// Runtime's `AgentRun` uses this to keep subsequent turns in sync.
         history: Vec<ChatMessage>,
         layers: Vec<LayerReport>,
     },

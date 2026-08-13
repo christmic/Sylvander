@@ -72,9 +72,9 @@ impl CompressionPipeline {
     /// A sensible default pipeline for the given model: L0 through L4.
     ///
     /// L4 is included because it has zero cost below the trigger
-    /// threshold (returns no-op). When context fills up, it kicks in
-    /// automatically using the `AgentLoop`'s client. L0 is also a no-op when
-    /// Runtime did not attach a turn-bound artifact store.
+    /// threshold (returns no-op). When context fills up, it uses the exact
+    /// model service supplied in the current `AgentExecutionPorts`. L0 is also
+    /// a no-op when Runtime did not attach a turn-bound artifact store.
     ///
     /// Order matters: L1 runs before L2 so orphan removal happens
     /// before in-place condensation; L3 runs last among the cheap

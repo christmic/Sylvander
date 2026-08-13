@@ -1,7 +1,7 @@
 # `sylvander-agent` architecture
 
-`sylvander-agent` is being reduced to the deterministic execution kernel for
-one bounded Agent turn. It owns model/tool iteration and an in-memory
+`sylvander-agent` is the deterministic execution kernel for one bounded Agent
+turn. It owns model/tool iteration and an in-memory
 conversation snapshot, not the product Session that supplied that snapshot.
 Runtime owns authentication, Session lifecycle and persistence, scheduling,
 public stream events, and concrete infrastructure.
@@ -10,26 +10,29 @@ The normative target and migration rules are documented in
 [`../../docs/agent-runtime-api-boundaries.md`](../../docs/agent-runtime-api-boundaries.md).
 Runtime now owns `AgentRun`, supervision, Session persistence, public event
 mapping, MCP process transport, and durable relationship-memory persistence.
-The remaining bus, concrete workspace-journal/compression-disk persistence,
-and product-Protocol dependencies in this crate are migration debt, not the
-intended boundary.
 
 ## Internal layers
 
 ```text
 Runtime Agent service
-  -> immutable AgentTurnRequest + conversation snapshot
-  -> provider-neutral Agent execution kernel
-  -> ToolRegistry / ToolContext / approval & AskUser gates
-  -> injected execution ports
-  -> AgentEvent + AgentOutcome
+  -> turn data: AgentTurnRequest
+  -> turn services: AgentExecutionPorts
+  -> kernel policy and state machine: AgentLoop / run_stream
+  -> domain subsystems: context, compression, tools, gates, neutral ports
+  -> progress: AgentEvent
+  -> result: AgentOutcome
 ```
+
+`AgentTurnRequest` and `AgentExecutionPorts` are sibling inputs, not nested
+service objects. The request freezes model-visible domain data; the ports
+freeze Runtime-selected implementations and executable authority. The kernel
+validates that both describe the same turn before opening a provider stream or
+running a hook.
 
 - `turn_context` composes the immutable Safety/Agent/User Profile/
   Relationship Memory/Workspace Knowledge/Session precedence chain. It applies
   per-layer byte, token-estimate, and item budgets and records content-safe
   provenance plus digests for every included item.
-- `engine` serializes work per session and exposes run lifecycle to Runtime.
 - `loop_` contains only stable execution policy and the provider-neutral
   model/tool state machine. `AgentLoop` does not retain provider, model,
   transcript, tools, workspace, or authority. Runtime freezes those values in
@@ -57,8 +60,9 @@ Runtime Agent service
 
 ## Invariants
 
-1. `AgentRun` is issued by Runtime with an authenticated session lease. Raw bus
-   metadata and client-provided identifiers cannot create trusted authority.
+1. Runtime issues its `AgentRun` with an authenticated session lease and then
+   constructs Agent inputs. Raw bus metadata and client-provided identifiers
+   cannot create trusted authority.
 2. Each turn reads its effective Agent/model/workspace configuration from the
    durable session snapshot. A session override may be more specific than the
    Agent default but cannot select an unauthorized capability.
