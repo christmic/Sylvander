@@ -118,3 +118,8 @@ cargo run -p sylvander-benchmark-agent --bin sylvander-agent-bench -- \
 
 The command emits one content-safe JSON result and exits non-zero for a failed
 verifier or infrastructure outcome.
+
+Normalized records aggregate only within an exact benchmark, dataset version,
+Agent revision, provider, protocol, and model coordinate. Aggregation retains
+executed, failed, infrastructure, not-run, and not-applicable counts separately;
+it never turns missing runs into successful samples.

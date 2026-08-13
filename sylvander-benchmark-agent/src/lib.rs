@@ -4,6 +4,7 @@
 //! consumes their public events for cross-task evaluation and is never a
 //! production dependency.
 
+pub mod aggregate;
 pub mod atif;
 pub mod harbor;
 pub mod harbor_result;
