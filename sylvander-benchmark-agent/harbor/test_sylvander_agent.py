@@ -35,6 +35,7 @@ class BoundedDiagnosticTest(unittest.TestCase):
         self.assertEqual(_normalize_machine("aarch64"), "aarch64")
         self.assertEqual(_normalize_machine("amd64"), "x86_64")
         self.assertEqual(_normalize_machine(">>>> podman notice <<<<\nx86_64\n"), "x86_64")
+        self.assertEqual(_normalize_machine("\x1b[0maarch64\n"), "aarch64")
         self.assertNotEqual(_normalize_machine("amd64"), _normalize_machine("arm64"))
 
 

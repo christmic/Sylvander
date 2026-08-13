@@ -6,6 +6,7 @@ ea2fee78517f2e591bad69fcf1e6731f9c23ec99.
 
 import base64
 import json
+import re
 import shlex
 from pathlib import Path
 from typing import override
@@ -41,6 +42,7 @@ def _last_json_line(output: str) -> dict[str, object] | None:
 
 
 def _normalize_machine(machine: str) -> str:
+    machine = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", machine)
     aliases = {"arm64": "aarch64", "x86_64": "x86_64", "amd64": "x86_64"}
     tokens = machine.strip().lower().split()
     for token in reversed(tokens):
