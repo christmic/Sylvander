@@ -18,6 +18,12 @@ harbor trials start \
   --agent-env SYLVANDER_HARBOR_BASE_URL=https://api.minimaxi.com/v1
 ```
 
+`SYLVANDER_HARBOR_PROTOCOL` selects `anthropic_messages`,
+`openai_responses`, `openai_chat_completions`, or `dashscope_generation`.
+Provider-specific compatibility switches are a comma-separated
+`SYLVANDER_HARBOR_PROVIDER_FEATURES` value and are validated by that selected
+protocol adapter, never inferred from the model name.
+
 Add `sylvander-benchmark-agent/harbor` to Python's import path. Credentials are
 passed through Harbor's Agent environment mechanism and never appear in the
 command, trajectory, final answer, or aggregate evidence.

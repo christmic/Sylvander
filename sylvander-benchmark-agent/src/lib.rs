@@ -7,6 +7,7 @@
 pub mod atif;
 pub mod harbor;
 pub mod matrix;
+pub mod provider;
 pub mod recorder;
 pub mod result;
 pub mod swebench;

@@ -1,13 +1,9 @@
 use std::env;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sylvander_benchmark_agent::harbor::{HarborRunConfig, run_harbor_task};
-use sylvander_llm_openai::{
-    OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig, ProviderFeatures,
-};
-use url::Url;
+use sylvander_benchmark_agent::provider::{AgentProtocol, AgentProviderBinding, build_provider};
 
 #[tokio::main]
 async fn main() {
@@ -25,16 +21,25 @@ async fn run() -> Result<(), String> {
     let provider_id =
         env::var("SYLVANDER_HARBOR_PROVIDER_ID").unwrap_or_else(|_| "minimax-cn".into());
     let model_id = env::var("SYLVANDER_HARBOR_MODEL_ID").unwrap_or_else(|_| "MiniMax-M2.7".into());
+    let protocol =
+        env::var("SYLVANDER_HARBOR_PROTOCOL").unwrap_or_else(|_| "openai_chat_completions".into());
     let base_url = env::var("SYLVANDER_HARBOR_BASE_URL")
         .unwrap_or_else(|_| "https://api.minimaxi.com/v1".into());
-    let provider = OpenAiProvider::new_with_timeout(
-        OpenAiProviderConfig {
+    let provider_features = env::var("SYLVANDER_HARBOR_PROVIDER_FEATURES")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let provider = build_provider(
+        &AgentProviderBinding {
             provider_id: provider_id.clone(),
-            base_url: Url::parse(&base_url).map_err(|_| "invalid provider base URL")?,
-            api_key,
-            protocol: OpenAiProtocol::ChatCompletions,
-            features: ProviderFeatures::default(),
+            protocol: AgentProtocol::parse(&protocol).map_err(|error| error.to_string())?,
+            base_url,
+            provider_features,
         },
+        api_key,
         Duration::from_secs(arguments.timeout_secs),
     )
     .map_err(|error| error.to_string())?;
@@ -49,7 +54,7 @@ async fn run() -> Result<(), String> {
             .as_millis()
     );
     let trajectory = run_harbor_task(
-        Arc::new(provider),
+        provider,
         HarborRunConfig {
             session_id,
             provider_id,

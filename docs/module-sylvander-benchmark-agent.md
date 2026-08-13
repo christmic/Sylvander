@@ -87,6 +87,11 @@ Credentials enter only through explicitly named environment variables during
 an explicit live run. Dataset downloads, container pulls, verifier commands,
 and billable model calls are never triggered by `cargo test`.
 
+The Harbor runner constructs the selected production adapter for Anthropic
+Messages, OpenAI Responses, OpenAI Chat Completions, or native DashScope text
+generation. Endpoint and compatibility features belong to the provider and
+protocol binding; model identifiers never select wire behavior.
+
 ## Verification
 
 ```sh

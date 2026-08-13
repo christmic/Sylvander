@@ -13,7 +13,9 @@ futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sylvander-agent = { path = "../sylvander-agent" }
+sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-llm-core = { path = "../sylvander-llm-core" }
+sylvander-llm-dashscope = { path = "../sylvander-llm-dashscope" }
 sylvander-llm-openai = { path = "../sylvander-llm-openai" }
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["fs", "macros", "process", "rt-multi-thread", "time"] }
