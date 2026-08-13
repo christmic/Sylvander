@@ -218,6 +218,7 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
         .iter()
         .filter_map(|m| match &m.kind {
             MessageKind::Stream(ev) => Some(match ev {
+                StreamEvent::TurnStarted { .. } => "TurnStarted",
                 StreamEvent::TextDelta { .. } => "TextDelta",
                 StreamEvent::ThinkingDelta { .. } => "ThinkingDelta",
                 StreamEvent::ModelRetry { .. } => "ModelRetry",
@@ -577,6 +578,11 @@ async fn text_deltas_published_to_bus() {
     }
 
     let names = event_names(&events);
+    assert_eq!(names.first().map(String::as_str), Some("TurnStarted"));
+    assert!(matches!(
+        &events[0].kind,
+        MessageKind::Stream(StreamEvent::TurnStarted { turn_id }) if !turn_id.is_empty()
+    ));
     assert!(
         names.contains(&"IterationStart".into()),
         "expected IterationStart, got {names:?}"

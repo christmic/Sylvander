@@ -2364,6 +2364,13 @@ impl AgentRunInner {
             session_id: session_id.clone(),
             agent_id: self.id.clone(),
         });
+        self.publish_stream(
+            &session_id,
+            sylvander_api::StreamEvent::TurnStarted {
+                turn_id: correlation.turn.clone(),
+            },
+        )
+        .await;
         async {
             info!("turn started");
             let result = self

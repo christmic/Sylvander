@@ -529,7 +529,8 @@ fn render_nonterminal_event(event: &StreamEvent) -> Option<String> {
         // every token as a new sendMessage request is both unreadable and
         // likely to hit provider rate limits; the complete text arrives in
         // the terminal Done event.
-        StreamEvent::TextDelta { .. }
+        StreamEvent::TurnStarted { .. }
+        | StreamEvent::TextDelta { .. }
         | StreamEvent::ThinkingDelta { .. }
         | StreamEvent::CompactionStarted { .. }
         | StreamEvent::CompactionCompleted { .. }

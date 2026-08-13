@@ -17,6 +17,22 @@ fn minimal_chat_uses_current_optional_defaults() {
 }
 
 #[test]
+fn turn_started_preserves_runtime_turn_identity_at_the_service_edge() {
+    let message = UiServerMessage::TurnStarted {
+        session_id: "session-1".into(),
+        turn_id: "turn-1".into(),
+    };
+    let value = serde_json::to_value(&message).expect("serialize turn start");
+    assert_eq!(value["type"], "turn_started");
+    assert_eq!(value["session_id"], "session-1");
+    assert_eq!(value["turn_id"], "turn-1");
+    assert_eq!(
+        serde_json::from_value::<UiServerMessage>(value).expect("decode turn start"),
+        message
+    );
+}
+
+#[test]
 fn model_selection_requires_a_provider_qualified_wire_shape() {
     assert!(
         serde_json::from_str::<UiClientMessage>(

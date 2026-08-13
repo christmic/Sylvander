@@ -67,6 +67,10 @@ pub enum AgentStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
+    /// Runtime accepted the request and opened the authoritative turn.
+    TurnStarted {
+        turn_id: String,
+    },
     TextDelta {
         delta: String,
     },
