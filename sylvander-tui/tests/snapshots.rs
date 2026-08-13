@@ -625,9 +625,6 @@ fn file_mention_picker_is_a_focused_workspace_surface() {
 fn seed_state() -> AppState {
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
-    s.apply(DomainEvent::TurnStarted {
-        turn_id: "turn-full-panel".into(),
-    });
     s.messages.push(ChatMessage::User("Add JWT auth.".into()));
     s.apply(DomainEvent::TextChunk {
         delta: "Inspecting router.".into(),
@@ -779,7 +776,7 @@ fn full_panel_at_user_terminal_size_140x40() {
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
     s.apply(DomainEvent::TurnStarted {
-        turn_id: "turn-canonical-tools".into(),
+        turn_id: "turn-full-panel".into(),
     });
     s.messages
         .push(ChatMessage::User("Add JWT auth middleware".into()));
@@ -830,6 +827,9 @@ fn design_canonical_with_tool_step_grouped_120x36() {
     // bottom status row showing the Working mode glyph + tool count.
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
+    s.apply(DomainEvent::TurnStarted {
+        turn_id: "turn-canonical-tools".into(),
+    });
     s.messages
         .push(ChatMessage::User("Review the auth middleware".into()));
     s.apply(DomainEvent::ToolStarted {
