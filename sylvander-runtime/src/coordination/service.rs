@@ -1,6 +1,7 @@
 //! Governed application service for durable inter-Agent coordination.
 
 mod arbitration;
+mod define;
 mod handoff;
 mod message;
 mod spawn;
@@ -13,8 +14,8 @@ use sylvander_api::HandoffId;
 use sylvander_api::{AgentInstanceId, CoordinationMessageId, GovernanceCaseId, SessionId, TaskId};
 
 use crate::agent::instance::{
-    AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute, HistoryView,
-    SessionAgentRole,
+    AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute,
+    HistoryView, SessionAgentRole,
 };
 use crate::coordination::arbitration::ModeratorVerdict;
 use crate::coordination::arbitration::{ArbitrationCase, ArbitrationState, ModeratorDecision};
@@ -78,6 +79,35 @@ pub struct ForkAgentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForkAgentOutcome {
+    Created(AgentInstance),
+    CreatedByModerator {
+        participant: AgentInstance,
+        decision: ModeratorDecision,
+    },
+    RequiresArbitration {
+        case: ArbitrationCase,
+        assessment: GovernanceAssessment,
+    },
+    RejectedByModerator {
+        case: ArbitrationCase,
+        decision: ModeratorDecision,
+    },
+}
+
+/// Runtime-resolved intent to add a separately defined Agent to one Session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DefineAgentRequest {
+    pub instance_id: AgentInstanceId,
+    pub session_id: SessionId,
+    pub sponsor_instance_id: AgentInstanceId,
+    pub definition: AgentDefinitionKey,
+    pub role: SessionAgentRole,
+    pub capability_revision: String,
+    pub effective_config: sylvander_api::SessionEffectiveConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefineAgentOutcome {
     Created(AgentInstance),
     CreatedByModerator {
         participant: AgentInstance,

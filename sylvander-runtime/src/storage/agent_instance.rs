@@ -26,6 +26,13 @@ pub struct AgentInstanceConfig {
     pub updated_at: i64,
 }
 
+/// Configuration source committed atomically with a new participant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentInstanceConfigSeed {
+    Exact(Box<AgentInstanceConfig>),
+    InheritFrom(AgentInstanceId),
+}
+
 /// Runtime-owned persistence port for Agent participants and moderator truth.
 #[async_trait]
 pub trait AgentInstanceStore: Send + Sync {
@@ -60,6 +67,7 @@ pub trait AgentInstanceStore: Send + Sync {
     async fn add_session_participant(
         &self,
         participant: &AgentInstance,
+        config: AgentInstanceConfigSeed,
         next_membership: &SessionMembership,
         next_topology: &SessionTopology,
         expected_membership_revision: u64,
@@ -394,6 +402,7 @@ impl AgentInstanceStore for SqliteSessionStore {
     async fn add_session_participant(
         &self,
         participant: &AgentInstance,
+        config: AgentInstanceConfigSeed,
         next_membership: &SessionMembership,
         next_topology: &SessionTopology,
         expected_membership_revision: u64,
@@ -422,6 +431,7 @@ impl AgentInstanceStore for SqliteSessionStore {
             ));
         }
         let mut participant = participant.clone();
+        let config = config.clone();
         let mut membership = next_membership.clone();
         let topology = next_topology.clone();
         self.run(move |connection| {
@@ -441,21 +451,38 @@ impl AgentInstanceStore for SqliteSessionStore {
                 }
                 _ => None,
             };
-            let fork_config = fork_parent
-                .as_ref()
-                .map(|parent_instance_id| {
+            let participant_config = match config {
+                AgentInstanceConfigSeed::InheritFrom(parent_instance_id) => {
+                    if fork_parent.as_ref() != Some(&parent_instance_id) {
+                        return Err(SessionStoreError::Invalid(
+                            "inherited configuration must come from the declared fork parent"
+                                .into(),
+                        ));
+                    }
                     load_agent_instance_config(
                         &transaction,
                         &participant.session_id,
-                        parent_instance_id,
+                        &parent_instance_id,
                     )?
                     .ok_or_else(|| {
                         SessionStoreError::Invalid(
                             "fork parent has no durable Agent configuration".into(),
                         )
-                    })
-                })
-                .transpose()?;
+                    })?
+                }
+                AgentInstanceConfigSeed::Exact(config) => {
+                    if fork_parent.is_some()
+                        || config.session_id != participant.session_id
+                        || config.instance_id != participant.instance_id
+                        || config.config_revision != 0
+                    {
+                        return Err(SessionStoreError::Invalid(
+                            "new Agent configuration does not match participant creation".into(),
+                        ));
+                    }
+                    *config
+                }
+            };
             if let Some(parent_instance_id) = &fork_parent {
                 let cursor = transaction.query_row(
                     "SELECT COALESCE(MAX(seq) + 1, 0) FROM session_messages \
@@ -547,18 +574,16 @@ impl AgentInstanceStore for SqliteSessionStore {
                 &participant,
                 membership.participants.len().saturating_sub(1),
             )?;
-            if let Some(parent_config) = fork_config {
-                insert_agent_instance_config(
-                    &transaction,
-                    &AgentInstanceConfig {
-                        session_id: participant.session_id.clone(),
-                        instance_id: participant.instance_id.clone(),
-                        config_revision: parent_config.config_revision,
-                        effective: parent_config.effective,
-                        updated_at: participant.created_at,
-                    },
-                )?;
-            }
+            insert_agent_instance_config(
+                &transaction,
+                &AgentInstanceConfig {
+                    session_id: participant.session_id.clone(),
+                    instance_id: participant.instance_id.clone(),
+                    config_revision: participant_config.config_revision,
+                    effective: participant_config.effective,
+                    updated_at: participant.created_at,
+                },
+            )?;
             transaction.execute(
                 "INSERT OR IGNORE INTO session_agents(session_id,agent_id,joined_at) VALUES (?1,?2,?3)",
                 params![membership.session_id.0, participant.definition.agent_id.0, participant.created_at],

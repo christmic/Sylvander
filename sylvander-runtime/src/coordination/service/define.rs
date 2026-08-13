@@ -1,28 +1,34 @@
-//! Governed fork construction and durable Agent activation boundaries.
+//! Governed admission of independently defined Agent participants.
 
 use super::{
     AgentInstance, AgentInstanceOrigin, AgentInstanceState, AgentRelation, AgentRelationKind,
     ApprovalRoute, ArbitrationCase, ArbitrationState, CoordinationService,
-    CoordinationServiceError, ForkAgentOutcome, ForkAgentRequest, GovernanceSnapshot, HistoryView,
-    ModeratorVerdict, SessionAgentRole, SessionTaskGraph, SessionTopology, assess,
-    ensure_available, governance_case_id,
+    CoordinationServiceError, DefineAgentOutcome, DefineAgentRequest, GovernanceSnapshot,
+    HistoryView, ModeratorVerdict, SessionTaskGraph, SessionTopology, assess, ensure_available,
+    governance_case_id,
 };
-use crate::storage::agent_instance::{AgentInstanceConfigSeed, AgentInstanceStore};
+use crate::storage::agent_instance::{
+    AgentInstanceConfig, AgentInstanceConfigSeed, AgentInstanceStore,
+};
 use crate::storage::coordination::CoordinationStore;
 
 impl<S> CoordinationService<S>
 where
     S: AgentInstanceStore + CoordinationStore,
 {
-    /// Durably fork one child participant without rewriting existing members.
-    pub async fn fork_agent(
+    /// Admit one separately defined Agent under the current governance graph.
+    pub async fn define_agent(
         &self,
-        request: ForkAgentRequest,
+        request: DefineAgentRequest,
         now: i64,
-    ) -> Result<ForkAgentOutcome, CoordinationServiceError> {
-        if request.branch_id.trim().is_empty() || request.branch_id.len() > 256 {
+    ) -> Result<DefineAgentOutcome, CoordinationServiceError> {
+        if request.role.is_root_moderator()
+            || request.capability_revision.trim().is_empty()
+            || request.effective_config.agent_id != request.definition.agent_id
+            || request.effective_config.agent_revision != request.definition.revision
+        {
             return Err(CoordinationServiceError::InvalidAgentSpawn(
-                "fork branch identity is invalid".into(),
+                "defined Agent identity, role, or configuration is invalid".into(),
             ));
         }
         let membership = self
@@ -32,20 +38,19 @@ where
             .ok_or_else(|| {
                 CoordinationServiceError::MissingMembership(request.session_id.clone())
             })?;
-        let parent = membership
-            .participants
-            .iter()
-            .find(|participant| participant.instance_id == request.parent_instance_id)
-            .ok_or(CoordinationServiceError::UnknownAgent)?;
-        ensure_available(&membership, &request.parent_instance_id)?;
+        ensure_available(&membership, &request.sponsor_instance_id)?;
         if let Some(existing) = membership
             .participants
             .iter()
             .find(|participant| participant.instance_id == request.instance_id)
         {
             ensure_available(&membership, &existing.instance_id)?;
-            return if same_fork_intent(existing, parent, &request) {
-                Ok(ForkAgentOutcome::Created(existing.clone()))
+            let config = self
+                .store
+                .agent_instance_config(&request.session_id, &request.instance_id)
+                .await?;
+            return if same_defined_intent(existing, config.as_ref(), &request, &membership) {
+                Ok(DefineAgentOutcome::Created(existing.clone()))
             } else {
                 Err(CoordinationServiceError::IdempotencyConflict)
             };
@@ -55,45 +60,23 @@ where
             .topology(&request.session_id)
             .await?
             .ok_or_else(|| CoordinationServiceError::MissingTopology(request.session_id.clone()))?;
-        let fork_sequence = membership
-            .participants
-            .iter()
-            .filter_map(|participant| match &participant.origin {
-                AgentInstanceOrigin::Forked {
-                    parent_instance_id,
-                    fork_sequence,
-                } if parent_instance_id == &request.parent_instance_id => Some(*fork_sequence),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or(CoordinationServiceError::InvalidAgentSpawn(
-                "fork sequence overflow".into(),
-            ))?;
         let participant = AgentInstance {
             instance_id: request.instance_id.clone(),
             session_id: request.session_id.clone(),
-            definition: parent.definition.clone(),
-            origin: AgentInstanceOrigin::Forked {
-                parent_instance_id: request.parent_instance_id.clone(),
-                fork_sequence,
-            },
-            role: SessionAgentRole::Worker,
-            history_view: HistoryView::ForkSnapshot {
-                base_sequence: 0,
-                branch_id: request.branch_id.clone(),
-            },
-            approval_route: ApprovalRoute::Parent {
-                instance_id: request.parent_instance_id.clone(),
+            definition: request.definition.clone(),
+            origin: AgentInstanceOrigin::Defined,
+            role: request.role.clone(),
+            history_view: HistoryView::SharedLane { cursor: 0 },
+            approval_route: ApprovalRoute::Moderator {
+                instance_id: membership.governance.moderator_instance_id.clone(),
             },
             state: AgentInstanceState::Created,
             lifecycle_revision: 0,
-            capability_revision: parent.capability_revision.clone(),
+            capability_revision: request.capability_revision.clone(),
             created_at: now,
             updated_at: now,
         };
-        let next_membership_revision = membership
+        let membership_revision = membership
             .governance
             .membership_revision
             .checked_add(1)
@@ -106,26 +89,26 @@ where
             request.session_id.clone(),
             participants,
             crate::session::membership::SessionGovernance {
-                membership_revision: next_membership_revision,
+                membership_revision,
                 updated_at: now,
                 ..membership.governance.clone()
             },
         )
         .map_err(|error| CoordinationServiceError::InvalidAgentSpawn(error.to_string()))?;
-        let next_topology_revision = topology.topology_revision.checked_add(1).ok_or(
+        let topology_revision = topology.topology_revision.checked_add(1).ok_or(
             CoordinationServiceError::InvalidAgentSpawn("topology revision overflow".into()),
         )?;
         let mut relations = topology.relations.clone();
         relations.push(AgentRelation {
-            source: request.parent_instance_id.clone(),
+            source: request.sponsor_instance_id.clone(),
             target: request.instance_id.clone(),
             kind: AgentRelationKind::ParentOf,
             created_at: now,
         });
         let next_topology = SessionTopology::new(
             request.session_id.clone(),
-            next_membership_revision,
-            next_topology_revision,
+            membership_revision,
+            topology_revision,
             relations,
             now,
             &next_membership,
@@ -137,13 +120,13 @@ where
             .await?
             .unwrap_or_else(|| SessionTaskGraph {
                 session_id: request.session_id.clone(),
-                membership_revision: next_membership_revision,
+                membership_revision,
                 tasks: Vec::new(),
                 dependencies: Vec::new(),
             });
-        tasks.membership_revision = next_membership_revision;
+        tasks.membership_revision = membership_revision;
         for task in &mut tasks.tasks {
-            task.membership_revision = next_membership_revision;
+            task.membership_revision = membership_revision;
         }
         tasks
             .validate(&next_membership)
@@ -174,7 +157,7 @@ where
             let (case_id, existing_case) = self
                 .current_arbitration(
                     governance_case_id(
-                        "fork",
+                        "define",
                         &request,
                         membership.governance.membership_revision,
                         topology.topology_revision,
@@ -191,18 +174,18 @@ where
                     ) {
                         moderator_authorization = Some(decision);
                     } else {
-                        return Ok(ForkAgentOutcome::RejectedByModerator { case, decision });
+                        return Ok(DefineAgentOutcome::RejectedByModerator { case, decision });
                     }
                 } else {
                     self.ensure_arbitration_notification(
-                        &request.parent_instance_id,
+                        &request.sponsor_instance_id,
                         None,
                         &case,
                         &membership,
                         &topology,
                     )
                     .await?;
-                    return Ok(ForkAgentOutcome::RequiresArbitration { case, assessment });
+                    return Ok(DefineAgentOutcome::RequiresArbitration { case, assessment });
                 }
             } else {
                 let ttl = i64::try_from(self.arbitration_ttl_seconds)
@@ -228,21 +211,27 @@ where
                     .create_arbitration_case(&case, &membership, &topology, now)
                     .await?;
                 self.ensure_arbitration_notification(
-                    &request.parent_instance_id,
+                    &request.sponsor_instance_id,
                     None,
                     &case,
                     &membership,
                     &topology,
                 )
                 .await?;
-                return Ok(ForkAgentOutcome::RequiresArbitration { case, assessment });
+                return Ok(DefineAgentOutcome::RequiresArbitration { case, assessment });
             }
         }
         let participant = self
             .store
             .add_session_participant(
                 &participant,
-                AgentInstanceConfigSeed::InheritFrom(request.parent_instance_id.clone()),
+                AgentInstanceConfigSeed::Exact(Box::new(AgentInstanceConfig {
+                    session_id: request.session_id,
+                    instance_id: request.instance_id,
+                    config_revision: 0,
+                    effective: request.effective_config,
+                    updated_at: now,
+                })),
                 &next_membership,
                 &next_topology,
                 membership.governance.membership_revision,
@@ -250,58 +239,32 @@ where
             )
             .await?;
         Ok(match moderator_authorization {
-            Some(decision) => ForkAgentOutcome::CreatedByModerator {
+            Some(decision) => DefineAgentOutcome::CreatedByModerator {
                 participant,
                 decision,
             },
-            None => ForkAgentOutcome::Created(participant),
+            None => DefineAgentOutcome::Created(participant),
         })
-    }
-
-    /// Commit completion of external attach/provision effects for one spawn intent.
-    pub async fn mark_agent_ready(
-        &self,
-        participant: &AgentInstance,
-        now: i64,
-    ) -> Result<AgentInstance, CoordinationServiceError> {
-        if participant.state != AgentInstanceState::Created {
-            return Ok(participant.clone());
-        }
-        self.store
-            .transition_agent_instance(
-                &participant.session_id,
-                &participant.instance_id,
-                participant.lifecycle_revision,
-                AgentInstanceState::Ready,
-                now,
-            )
-            .await
-            .map_err(Into::into)
     }
 }
 
-fn same_fork_intent(
+fn same_defined_intent(
     existing: &AgentInstance,
-    parent: &AgentInstance,
-    request: &ForkAgentRequest,
+    config: Option<&AgentInstanceConfig>,
+    request: &DefineAgentRequest,
+    membership: &crate::session::membership::SessionMembership,
 ) -> bool {
     existing.session_id == request.session_id
-        && existing.definition == parent.definition
-        && existing.role == SessionAgentRole::Worker
-        && existing.capability_revision == parent.capability_revision
-        && matches!(
-            &existing.origin,
-            AgentInstanceOrigin::Forked {
-                parent_instance_id,
-                ..
-            } if parent_instance_id == &request.parent_instance_id
-        )
-        && matches!(
-            &existing.history_view,
-            HistoryView::ForkSnapshot { branch_id, .. } if branch_id == &request.branch_id
-        )
+        && existing.definition == request.definition
+        && existing.origin == AgentInstanceOrigin::Defined
+        && existing.role == request.role
+        && existing.capability_revision == request.capability_revision
+        && existing.history_view == (HistoryView::SharedLane { cursor: 0 })
         && existing.approval_route
-            == (ApprovalRoute::Parent {
-                instance_id: request.parent_instance_id.clone(),
+            == (ApprovalRoute::Moderator {
+                instance_id: membership.governance.moderator_instance_id.clone(),
             })
+        && config.is_some_and(|config| {
+            config.config_revision == 0 && config.effective == request.effective_config
+        })
 }

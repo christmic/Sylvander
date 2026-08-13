@@ -924,6 +924,7 @@ impl crate::storage::agent_instance::AgentInstanceStore for FailingSessionStore 
     async fn add_session_participant(
         &self,
         participant: &crate::agent::instance::AgentInstance,
+        config: crate::storage::agent_instance::AgentInstanceConfigSeed,
         next_membership: &crate::session::membership::SessionMembership,
         next_topology: &crate::coordination::topology::SessionTopology,
         expected_membership_revision: u64,
@@ -933,6 +934,7 @@ impl crate::storage::agent_instance::AgentInstanceStore for FailingSessionStore 
         self.inner
             .add_session_participant(
                 participant,
+                config,
                 next_membership,
                 next_topology,
                 expected_membership_revision,

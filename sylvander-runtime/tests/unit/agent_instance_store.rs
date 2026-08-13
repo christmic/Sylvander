@@ -15,8 +15,9 @@ use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
 };
 use crate::coordination::service::{
-    CoordinationService, DispatchMessageOutcome, DispatchMessageRequest, ForkAgentOutcome,
-    ForkAgentRequest, ProposeHandoffRequest, ReportWaitRequest,
+    CoordinationService, DefineAgentOutcome, DefineAgentRequest, DispatchMessageOutcome,
+    DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest, ProposeHandoffRequest,
+    ReportWaitRequest,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -188,6 +189,50 @@ fn dispatch_request(id: &str) -> DispatchMessageRequest {
         max_hops: 4,
         expires_at: 100,
     }
+}
+
+#[tokio::test]
+async fn defined_agent_joins_with_exact_configuration_atomically() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
+    let request = DefineAgentRequest {
+        instance_id: AgentInstanceId::new("defined-reviewer"),
+        session_id: membership.session_id.clone(),
+        sponsor_instance_id: membership.governance.moderator_instance_id.clone(),
+        definition: AgentDefinitionKey {
+            agent_id: AgentId::new("reviewer"),
+            revision: 7,
+        },
+        role: SessionAgentRole::Reviewer,
+        capability_revision: "sha256:reviewer".into(),
+        effective_config: effective_config("reviewer"),
+    };
+    let DefineAgentOutcome::Created(created) =
+        service.define_agent(request.clone(), 20).await.unwrap()
+    else {
+        panic!("valid defined Agent should be admitted");
+    };
+    let config = store
+        .agent_instance_config(&created.session_id, &created.instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(config.effective, request.effective_config);
+    assert_eq!(config.config_revision, 0);
+    assert_eq!(
+        service.define_agent(request, 21).await.unwrap(),
+        DefineAgentOutcome::Created(created)
+    );
 }
 
 #[tokio::test]
@@ -1365,7 +1410,14 @@ async fn participant_append_updates_membership_and_topology_in_one_transaction()
     .unwrap();
 
     let committed = store
-        .add_session_participant(&child, &next_membership, &next_topology, 0, 0)
+        .add_session_participant(
+            &child,
+            AgentInstanceConfigSeed::InheritFrom(AgentInstanceId::new("worker-1")),
+            &next_membership,
+            &next_topology,
+            0,
+            0,
+        )
         .await
         .unwrap();
     assert_eq!(committed, child);
@@ -1382,7 +1434,14 @@ async fn participant_append_updates_membership_and_topology_in_one_transaction()
     );
     assert!(matches!(
         store
-            .add_session_participant(&child, &next_membership, &next_topology, 0, 0)
+            .add_session_participant(
+                &child,
+                AgentInstanceConfigSeed::InheritFrom(AgentInstanceId::new("worker-1")),
+                &next_membership,
+                &next_topology,
+                0,
+                0,
+            )
             .await
             .unwrap_err(),
         SessionStoreError::MembershipConflict {
