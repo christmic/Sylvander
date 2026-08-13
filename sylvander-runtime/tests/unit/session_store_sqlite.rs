@@ -558,6 +558,118 @@ async fn interrupted_calls_are_classified_under_a_bounded_lease() {
 }
 
 #[tokio::test]
+async fn tool_result_and_result_position_commit_atomically() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-result".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "read"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-result".into(),
+            call_id: "call-result".into(),
+            invocation_id: ToolInvocationId::new(),
+            tool_name: "Read".into(),
+            invocation_class: Some(ToolInvocationClass::Read),
+            declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            capability_revision: "sha256:result-surface".into(),
+            input_digest: "sha256:result-input".into(),
+        })
+        .await
+        .unwrap();
+    let mut revision = 0;
+    for (current, next) in [
+        (
+            ToolExecutionPosition::Prepared,
+            ToolExecutionPosition::Authorized,
+        ),
+        (
+            ToolExecutionPosition::Authorized,
+            ToolExecutionPosition::EffectStarted,
+        ),
+        (
+            ToolExecutionPosition::EffectStarted,
+            ToolExecutionPosition::EffectCommitted,
+        ),
+    ] {
+        revision = store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session.id.clone(),
+                turn_id: "turn-result".into(),
+                call_id: "call-result".into(),
+                expected_revision: revision,
+                expected_position: current,
+                next_position: next,
+            })
+            .await
+            .unwrap();
+    }
+    let content = serde_json::to_value(sylvander_llm_core::ChatMessage::user_blocks(vec![
+        sylvander_llm_core::ContentBlock::tool_result_text("call-result", "value", false),
+    ]))
+    .unwrap();
+    assert_eq!(
+        store
+            .persist_tool_result(
+                &ctx().with_trace_id("turn-result"),
+                ToolResultPersistence {
+                    session_id: session.id.clone(),
+                    turn_id: "turn-result".into(),
+                    call_id: "call-result".into(),
+                    expected_revision: revision,
+                    expected_position: ToolExecutionPosition::EffectCommitted,
+                    content: content.clone(),
+                    tool_name: "Read".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        4,
+    );
+    let calls = store.tool_calls(&session.id, "turn-result").await.unwrap();
+    assert_eq!(calls[0].position, ToolExecutionPosition::ResultPersisted);
+    let history = store
+        .read_history(&ctx(), &session.id, false, None)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[1].role, MessageRole::Tool);
+    assert_eq!(history[1].content, content);
+    assert!(
+        store
+            .persist_tool_result(
+                &ctx(),
+                ToolResultPersistence {
+                    session_id: session.id,
+                    turn_id: "turn-result".into(),
+                    call_id: "call-result".into(),
+                    expected_revision: revision,
+                    expected_position: ToolExecutionPosition::EffectCommitted,
+                    content: serde_json::json!({}),
+                    tool_name: "Read".into(),
+                },
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn boot_recovery_persists_manual_decision_and_observes_it() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     let mut session = make_session("sess-1", SessionLifetime::Persistent);
@@ -616,6 +728,15 @@ async fn boot_recovery_persists_manual_decision_and_observes_it() {
             .await
             .unwrap();
     }
+    store
+        .finish_turn(
+            &session.id,
+            "turn-crashed",
+            TurnState::Failed,
+            Some(TurnFailureKind::Persistence),
+        )
+        .await
+        .unwrap();
 
     let observability = crate::observability::RuntimeObservability::new();
     let summary = crate::agent::run::recovery::classify_interrupted_tool_calls(

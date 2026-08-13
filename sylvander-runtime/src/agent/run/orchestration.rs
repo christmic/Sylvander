@@ -66,7 +66,8 @@ use crate::storage::artifact::ArtifactTurnBinding;
 use crate::storage::session::{
     SessionStoreError, ToolCallAdvance, ToolCallCompletion,
     ToolCallFailureKind as StoredToolCallFailureKind, ToolCallStart, ToolCallState,
-    ToolExecutionPosition, ToolInvocationId, TurnCompletion, TurnStart, TurnState,
+    ToolExecutionPosition, ToolInvocationId, ToolResultPersistence, TurnCompletion, TurnStart,
+    TurnState,
 };
 use crate::storage::workspace_journal::WorkspaceJournal;
 
@@ -1048,6 +1049,90 @@ impl AgentRunInner {
                             }
                             Some(AgentToolFailureKind::Unclassified) | None => None,
                         };
+                        let durable = store
+                            .tool_calls(&session_id, turn_id)
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::PersistToolResult,
+                                    source,
+                                )
+                            })?
+                            .into_iter()
+                            .find(|call| call.call_id == id)
+                            .ok_or_else(|| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::PersistToolResult,
+                                    SessionStoreError::Invalid(
+                                        "running durable tool call is missing".into(),
+                                    ),
+                                )
+                            })?;
+                        let mut ledger_revision = durable.ledger_revision;
+                        let mut result_position = ToolExecutionPosition::EffectStarted;
+                        if !is_error {
+                            ledger_revision = store
+                                .advance_tool_call(ToolCallAdvance {
+                                    session_id: session_id.clone(),
+                                    turn_id: turn_id.to_owned(),
+                                    call_id: id.clone(),
+                                    expected_revision: ledger_revision,
+                                    expected_position: ToolExecutionPosition::EffectStarted,
+                                    next_position: ToolExecutionPosition::EffectCommitted,
+                                })
+                                .await
+                                .map_err(|source| {
+                                    AgentRunError::session_persistence(
+                                        SessionPersistenceOperation::AdvanceToolCall,
+                                        source,
+                                    )
+                                })?;
+                            result_position = ToolExecutionPosition::EffectCommitted;
+                        }
+                        let result_content = serde_json::to_value(ChatMessage::user_blocks(vec![
+                            ContentBlock::tool_result_text(id.clone(), output.clone(), is_error),
+                        ]))
+                        .map_err(|_| {
+                            AgentRunError::session_persistence(
+                                SessionPersistenceOperation::PersistToolResult,
+                                SessionStoreError::Invalid(
+                                    "tool result serialization failed".into(),
+                                ),
+                            )
+                        })?;
+                        let caller = sylvander_api::SessionContext::new(
+                            session_metadata.user_id.clone(),
+                            self.id.clone(),
+                            session_id.clone(),
+                        )
+                        .with_trace_id(turn_id);
+                        store
+                            .persist_tool_result(
+                                &caller,
+                                ToolResultPersistence {
+                                    session_id: session_id.clone(),
+                                    turn_id: turn_id.to_owned(),
+                                    call_id: id.clone(),
+                                    expected_revision: ledger_revision,
+                                    expected_position: result_position,
+                                    content: result_content,
+                                    tool_name: name.clone(),
+                                },
+                            )
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::PersistToolResult,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::PersistToolResult,
+                                succeeded: true,
+                            });
                         store
                             .finish_tool_call(ToolCallCompletion {
                                 session_id: session_id.clone(),

@@ -355,6 +355,18 @@ pub struct ToolRecoveryWrite {
     pub classification: RecoveryClassification,
 }
 
+/// Exact model-visible tool observation committed with its ledger boundary.
+#[derive(Debug, Clone)]
+pub struct ToolResultPersistence {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub expected_revision: u64,
+    pub expected_position: ToolExecutionPosition,
+    pub content: JsonValue,
+    pub tool_name: String,
+}
+
 // ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
@@ -450,6 +462,13 @@ pub trait SessionStore: Send + Sync {
 
     /// Advance one adjacent execution boundary using a monotonic CAS.
     async fn advance_tool_call(&self, advance: ToolCallAdvance) -> Result<u64, SessionStoreError>;
+
+    /// Atomically append the model-visible observation and mark it durable.
+    async fn persist_tool_result(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        result: ToolResultPersistence,
+    ) -> Result<u64, SessionStoreError>;
 
     /// Atomically replace a running tool call with exactly one terminal.
     async fn finish_tool_call(

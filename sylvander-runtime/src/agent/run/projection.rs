@@ -181,6 +181,9 @@ pub(super) fn runtime_persistence_operation(
         SessionPersistenceOperation::AdvanceToolCall => {
             RuntimePersistenceOperation::AdvanceToolCall
         }
+        SessionPersistenceOperation::PersistToolResult => {
+            RuntimePersistenceOperation::PersistToolResult
+        }
         SessionPersistenceOperation::FinishToolCall => RuntimePersistenceOperation::FinishToolCall,
         SessionPersistenceOperation::RecordUsage => RuntimePersistenceOperation::RecordUsage,
         SessionPersistenceOperation::CompleteTurn => RuntimePersistenceOperation::CompleteTurn,

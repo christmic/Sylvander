@@ -38,7 +38,8 @@ use super::{
     SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession, ToolCallAdvance,
     ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState,
     ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason,
-    ToolRecoveryWrite, TurnCompletion, TurnFailureKind, TurnSnapshot, TurnStart, TurnState,
+    ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot,
+    TurnStart, TurnState,
 };
 
 /// SQLite-backed session store.
@@ -766,6 +767,19 @@ impl SessionStore for SqliteSessionStore {
                     "turn configuration does not match the persisted session revision".into(),
                 ));
             }
+            let unresolved_effect: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_tool_calls \
+                     WHERE session_id=?1 AND state='running')",
+                    [&start.session_id.0],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_err)?;
+            if unresolved_effect {
+                return Err(SessionStoreError::Invalid(
+                    "session has an unresolved tool execution".into(),
+                ));
+            }
 
             let now = crate::session::now_secs();
             transaction
@@ -1027,7 +1041,8 @@ impl SessionStore for SqliteSessionStore {
             transaction
                 .execute(
                     "UPDATE session_tool_calls SET state = 'abandoned', ended_at = ?3 \
-                     WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running'",
+                     WHERE session_id = ?1 AND turn_id = ?2 AND state = 'running' \
+                       AND position IN ('prepared','authorized')",
                     params![session_id.0, turn_id, now],
                 )
                 .map_err(sqlite_err)?;
@@ -1206,6 +1221,92 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
+    async fn persist_tool_result(
+        &self,
+        ctx: &sylvander_api::SessionContext,
+        result: ToolResultPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        if result.tool_name.trim().is_empty()
+            || !matches!(
+                result.expected_position,
+                ToolExecutionPosition::EffectStarted | ToolExecutionPosition::EffectCommitted
+            )
+        {
+            return Err(SessionStoreError::Invalid(
+                "tool result persistence boundary is invalid".into(),
+            ));
+        }
+        let content_json = serde_json::to_string(&result.content)
+            .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
+        let user_id = ctx.identity.user_id.0.clone();
+        let agent_id = ctx.identity.agent_id.0.clone();
+        let trace_id = ctx.request.trace_id.clone();
+        let priority = priority_str(ctx.request.priority);
+        self.run(move |connection| {
+            let expected_revision = i64::try_from(result.expected_revision).map_err(|_| {
+                SessionStoreError::Invalid("tool ledger revision exceeds SQLite range".into())
+            })?;
+            let next_revision = expected_revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("tool ledger revision overflow".into())
+            })?;
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let now = crate::session::now_secs();
+            let advanced = transaction
+                .execute(
+                    "UPDATE session_tool_calls \
+                     SET position='result_persisted', ledger_revision=?5, updated_at=?6 \
+                     WHERE session_id=?1 AND turn_id=?2 AND call_id=?3 \
+                       AND ledger_revision=?4 AND position=?7 AND state='running'",
+                    params![
+                        result.session_id.0,
+                        result.turn_id,
+                        result.call_id,
+                        expected_revision,
+                        next_revision,
+                        now,
+                        tool_execution_position_str(result.expected_position),
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if advanced != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "tool result position compare-and-swap conflict".into(),
+                ));
+            }
+            let next_seq = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages \
+                     WHERE session_id=?1",
+                    [&result.session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(sqlite_err)?;
+            transaction
+                .execute(
+                    "INSERT INTO session_messages \
+                     (session_id,seq,role,content_json,user_id,agent_id,trace_id,priority, \
+                      tool_name,is_summarized,created_at) \
+                     VALUES (?1,?2,'tool',?3,?4,?5,?6,?7,?8,0,?9)",
+                    params![
+                        result.session_id.0,
+                        next_seq,
+                        content_json,
+                        user_id,
+                        agent_id,
+                        trace_id,
+                        priority,
+                        result.tool_name,
+                        now,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)?;
+            u64::try_from(next_revision)
+                .map_err(|_| SessionStoreError::Invalid("negative tool ledger revision".into()))
+        })
+        .await
+    }
+
     async fn finish_tool_call(
         &self,
         completion: ToolCallCompletion,
@@ -1293,7 +1394,7 @@ impl SessionStore for SqliteSessionStore {
                      FROM session_tool_calls AS calls \
                      JOIN session_turns AS turns \
                        ON turns.session_id = calls.session_id AND turns.turn_id = calls.turn_id \
-                     WHERE calls.state = 'running' AND turns.state = 'running' \
+                     WHERE calls.state = 'running' \
                      ORDER BY calls.started_at, calls.invocation_id",
                 )
                 .map_err(sqlite_err)?;
