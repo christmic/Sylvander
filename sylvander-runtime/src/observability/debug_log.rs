@@ -307,6 +307,27 @@ fn event_json(event: &RuntimeEvent) -> Value {
             "recovered_from_receipt": recovered_from_receipt,
             "automatic": automatic,
         }),
+        RuntimeEvent::CognitionRecoveryClassified {
+            turn_id,
+            session_id,
+            invocation_id,
+            position,
+            decision,
+        } => json!({
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
+            "invocation_id": invocation_id, "position": position, "decision": decision,
+        }),
+        RuntimeEvent::CognitionConsultationFinished {
+            turn_id,
+            session_id,
+            invocation_id,
+            succeeded,
+            recovered_from_receipt,
+        } => json!({
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
+            "invocation_id": invocation_id, "succeeded": succeeded,
+            "recovered_from_receipt": recovered_from_receipt,
+        }),
         RuntimeEvent::PersistenceFinished {
             turn_id,
             session_id,

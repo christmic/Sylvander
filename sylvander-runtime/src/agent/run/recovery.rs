@@ -70,6 +70,7 @@ pub(crate) async fn classify_interrupted_tool_calls(
     .await?;
     recover_interrupted_cognition(
         store.clone(),
+        observability,
         &owner,
         observed_at,
         lease_expires_at,
@@ -191,6 +192,7 @@ pub(crate) async fn classify_interrupted_tool_calls(
 
 async fn recover_interrupted_cognition(
     store: Arc<dyn SessionStore>,
+    observability: &RuntimeObservability,
     owner: &str,
     observed_at: i64,
     lease_expires_at: i64,
@@ -212,7 +214,7 @@ async fn recover_interrupted_cognition(
         let classification = CognitionRecoveryClassification::for_interrupted(invocation.position);
         store
             .classify_cognition_recovery(CognitionRecoveryWrite {
-                invocation_id: invocation.invocation_id,
+                invocation_id: invocation.invocation_id.clone(),
                 expected_revision: invocation.ledger_revision,
                 recovery_owner: owner.to_owned(),
                 observed_at,
@@ -221,6 +223,13 @@ async fn recover_interrupted_cognition(
             })
             .await?;
         summary.cognition_classified = summary.cognition_classified.saturating_add(1);
+        observability.record(RuntimeEvent::CognitionRecoveryClassified {
+            turn_id: invocation.turn_id,
+            session_id: invocation.session_id,
+            invocation_id: invocation.invocation_id.as_str().to_owned(),
+            position: invocation.position,
+            decision: classification.decision,
+        });
     }
     Ok(())
 }

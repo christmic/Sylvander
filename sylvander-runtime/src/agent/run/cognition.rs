@@ -20,6 +20,7 @@ use crate::agent::perception::{
 };
 use crate::agent::perception_execution::{PerceptionEvaluationInput, PerceptionInvocationId};
 use crate::agent_definition::SessionId;
+use crate::observability::{RuntimeEvent, RuntimeObservability};
 use crate::storage::session::PerceptionRecoveryPolicy;
 use crate::storage::session::{CognitionInvocationId, SessionStore};
 use sylvander_api::AgentInstanceId;
@@ -161,6 +162,7 @@ pub(super) struct RuntimeCognitionGate {
     pub turn_id: String,
     pub models: HashMap<AgentCognitionRole, ModelInfo>,
     pub max_turn_calls: u8,
+    pub observability: RuntimeObservability,
 }
 
 #[async_trait]
@@ -176,7 +178,7 @@ impl CognitionGate for RuntimeCognitionGate {
             &self.turn_id,
             &request.invocation_id,
         );
-        execute_cognition(
+        let result = execute_cognition(
             self.store.clone(),
             self.artifacts.clone(),
             self.provider.clone(),
@@ -184,19 +186,28 @@ impl CognitionGate for RuntimeCognitionGate {
                 session_id: self.session_id.clone(),
                 turn_id: self.turn_id.clone(),
                 agent_instance_id: self.agent_instance_id.clone(),
-                invocation_id,
+                invocation_id: invocation_id.clone(),
                 role: runtime_cognition_role(request.role),
                 model,
                 prompt: request.prompt,
                 max_turn_calls: self.max_turn_calls,
             },
         )
-        .await
-        .map(|result| CognitionObservation {
-            role: request.role,
-            text: result.text,
-        })
-        .map_err(|error| error.to_string())
+        .await;
+        self.observability
+            .record(RuntimeEvent::CognitionConsultationFinished {
+                turn_id: self.turn_id.clone(),
+                session_id: self.session_id.clone(),
+                invocation_id: invocation_id.as_str().to_owned(),
+                succeeded: result.is_ok(),
+                recovered_from_receipt: false,
+            });
+        result
+            .map(|result| CognitionObservation {
+                role: request.role,
+                text: result.text,
+            })
+            .map_err(|error| error.to_string())
     }
 }
 

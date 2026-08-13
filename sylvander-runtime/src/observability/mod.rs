@@ -24,8 +24,9 @@ use tokio::sync::broadcast;
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::storage::session::{
-    ModelExecutionPosition, ModelRecoveryDecision, PerceptionExecutionPosition,
-    PerceptionRecoveryDecision, ToolExecutionPosition, ToolRecoveryDecision,
+    CognitionExecutionPosition, CognitionRecoveryDecision, ModelExecutionPosition,
+    ModelRecoveryDecision, PerceptionExecutionPosition, PerceptionRecoveryDecision,
+    ToolExecutionPosition, ToolRecoveryDecision,
 };
 
 /// Inclusive upper bounds for the first seven duration buckets. The eighth
@@ -350,6 +351,20 @@ pub(crate) enum RuntimeEvent {
         recovered_from_receipt: bool,
         automatic: bool,
     },
+    CognitionRecoveryClassified {
+        turn_id: String,
+        session_id: SessionId,
+        invocation_id: String,
+        position: CognitionExecutionPosition,
+        decision: CognitionRecoveryDecision,
+    },
+    CognitionConsultationFinished {
+        turn_id: String,
+        session_id: SessionId,
+        invocation_id: String,
+        succeeded: bool,
+        recovered_from_receipt: bool,
+    },
     PersistenceFinished {
         turn_id: String,
         session_id: SessionId,
@@ -384,6 +399,8 @@ impl RuntimeEvent {
     const MODEL_RECOVERY_CLASSIFIED: &'static str = "model_recovery_classified";
     const PERCEPTION_RECOVERY_CLASSIFIED: &'static str = "perception_recovery_classified";
     const PERCEPTION_EVALUATION_FINISHED: &'static str = "perception_evaluation_finished";
+    const COGNITION_RECOVERY_CLASSIFIED: &'static str = "cognition_recovery_classified";
+    const COGNITION_CONSULTATION_FINISHED: &'static str = "cognition_consultation_finished";
     const PERSISTENCE_FINISHED: &'static str = "persistence_finished";
     const TURN_COMPLETED: &'static str = "turn_completed";
     const TURN_INTERRUPTED: &'static str = "turn_interrupted";
@@ -403,6 +420,8 @@ impl RuntimeEvent {
             Self::ModelRecoveryClassified { .. } => Self::MODEL_RECOVERY_CLASSIFIED,
             Self::PerceptionRecoveryClassified { .. } => Self::PERCEPTION_RECOVERY_CLASSIFIED,
             Self::PerceptionEvaluationFinished { .. } => Self::PERCEPTION_EVALUATION_FINISHED,
+            Self::CognitionRecoveryClassified { .. } => Self::COGNITION_RECOVERY_CLASSIFIED,
+            Self::CognitionConsultationFinished { .. } => Self::COGNITION_CONSULTATION_FINISHED,
             Self::PersistenceFinished { .. } => Self::PERSISTENCE_FINISHED,
             Self::TurnCompleted { .. } => Self::TURN_COMPLETED,
             Self::TurnInterrupted { .. } => Self::TURN_INTERRUPTED,
@@ -490,6 +509,11 @@ pub struct RuntimeObservabilitySnapshot {
     pub perception_automatic_routes_soft_failed: u64,
     /// Successful evaluations reconstructed from a durable provider receipt.
     pub perception_receipts_recovered: u64,
+    pub cognition_recoveries_classified: u64,
+    pub cognition_consultations: u64,
+    pub cognition_consultations_succeeded: u64,
+    pub cognition_consultations_failed: u64,
+    pub cognition_receipts_recovered: u64,
     /// Explicit filesystem-boundary policy denials reported by an adapter.
     pub filesystem_policy_violations: u64,
     /// Required Session persistence operations that committed.
@@ -574,6 +598,11 @@ struct RuntimeObservabilityInner {
     perception_automatic_routes_succeeded: AtomicU64,
     perception_automatic_routes_soft_failed: AtomicU64,
     perception_receipts_recovered: AtomicU64,
+    cognition_recoveries_classified: AtomicU64,
+    cognition_consultations: AtomicU64,
+    cognition_consultations_succeeded: AtomicU64,
+    cognition_consultations_failed: AtomicU64,
+    cognition_receipts_recovered: AtomicU64,
     filesystem_policy_violations: AtomicU64,
     persistence_succeeded: AtomicU64,
     persistence_failed: AtomicU64,
@@ -643,6 +672,11 @@ impl RuntimeObservability {
                 perception_automatic_routes_succeeded: AtomicU64::new(0),
                 perception_automatic_routes_soft_failed: AtomicU64::new(0),
                 perception_receipts_recovered: AtomicU64::new(0),
+                cognition_recoveries_classified: AtomicU64::new(0),
+                cognition_consultations: AtomicU64::new(0),
+                cognition_consultations_succeeded: AtomicU64::new(0),
+                cognition_consultations_failed: AtomicU64::new(0),
+                cognition_receipts_recovered: AtomicU64::new(0),
                 filesystem_policy_violations: AtomicU64::new(0),
                 persistence_succeeded: AtomicU64::new(0),
                 persistence_failed: AtomicU64::new(0),
@@ -1022,6 +1056,60 @@ impl RuntimeObservability {
                     "runtime lifecycle fact"
                 );
             }
+            RuntimeEvent::CognitionRecoveryClassified {
+                turn_id,
+                session_id,
+                invocation_id,
+                position,
+                decision,
+            } => {
+                self.inner
+                    .cognition_recoveries_classified
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::info!(
+                    event = event_name,
+                    %turn_id,
+                    %session_id,
+                    %invocation_id,
+                    ?position,
+                    ?decision,
+                    "runtime lifecycle fact"
+                );
+            }
+            RuntimeEvent::CognitionConsultationFinished {
+                turn_id,
+                session_id,
+                invocation_id,
+                succeeded,
+                recovered_from_receipt,
+            } => {
+                self.inner
+                    .cognition_consultations
+                    .fetch_add(1, Ordering::Relaxed);
+                if succeeded {
+                    self.inner
+                        .cognition_consultations_succeeded
+                        .fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.inner
+                        .cognition_consultations_failed
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                if succeeded && recovered_from_receipt {
+                    self.inner
+                        .cognition_receipts_recovered
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                tracing::info!(
+                    event = event_name,
+                    %turn_id,
+                    %session_id,
+                    %invocation_id,
+                    succeeded,
+                    recovered_from_receipt,
+                    "runtime lifecycle fact"
+                );
+            }
             RuntimeEvent::PersistenceFinished {
                 turn_id,
                 session_id,
@@ -1184,7 +1272,9 @@ impl RuntimeObservability {
             | RuntimeEvent::ToolRecoveryClassified { .. }
             | RuntimeEvent::ModelRecoveryClassified { .. }
             | RuntimeEvent::PerceptionRecoveryClassified { .. }
-            | RuntimeEvent::PerceptionEvaluationFinished { .. } => {}
+            | RuntimeEvent::PerceptionEvaluationFinished { .. }
+            | RuntimeEvent::CognitionRecoveryClassified { .. }
+            | RuntimeEvent::CognitionConsultationFinished { .. } => {}
         }
     }
 
@@ -1262,6 +1352,23 @@ impl RuntimeObservability {
             perception_receipts_recovered: self
                 .inner
                 .perception_receipts_recovered
+                .load(Ordering::Relaxed),
+            cognition_recoveries_classified: self
+                .inner
+                .cognition_recoveries_classified
+                .load(Ordering::Relaxed),
+            cognition_consultations: self.inner.cognition_consultations.load(Ordering::Relaxed),
+            cognition_consultations_succeeded: self
+                .inner
+                .cognition_consultations_succeeded
+                .load(Ordering::Relaxed),
+            cognition_consultations_failed: self
+                .inner
+                .cognition_consultations_failed
+                .load(Ordering::Relaxed),
+            cognition_receipts_recovered: self
+                .inner
+                .cognition_receipts_recovered
                 .load(Ordering::Relaxed),
             filesystem_policy_violations: self
                 .inner

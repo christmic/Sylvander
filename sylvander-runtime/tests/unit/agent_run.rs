@@ -757,6 +757,10 @@ async fn approved_text_cognition_is_durable_advisory_and_primary_remains_final()
         durable[0].position,
         crate::storage::session::CognitionExecutionPosition::ResultPersisted
     );
+    let observed = run.inner.observability.snapshot();
+    assert_eq!(observed.cognition_consultations, 1);
+    assert_eq!(observed.cognition_consultations_succeeded, 1);
+    assert_eq!(observed.cognition_consultations_failed, 0);
 }
 
 #[derive(Clone)]

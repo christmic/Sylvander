@@ -1108,6 +1108,7 @@ impl AgentRunInner {
                 turn_id: turn_id.to_owned(),
                 models: cognition_models,
                 max_turn_calls: self.spec.cognition.max_auxiliary_calls,
+                observability: self.observability.clone(),
             })
                 as Arc<dyn sylvander_agent::cognition_gate::CognitionGate>)
         };
