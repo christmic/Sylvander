@@ -2026,6 +2026,252 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
+    async fn begin_perception(
+        &self,
+        start: PerceptionInvocationStart,
+    ) -> Result<(), SessionStoreError> {
+        if start.input_bytes == 0 {
+            return Err(SessionStoreError::InvalidData(
+                "perception input bytes must be greater than zero".into(),
+            ));
+        }
+        if start.turn_id.trim().is_empty()
+            || start.provider_id.trim().is_empty()
+            || start.model_id.trim().is_empty()
+            || !matches!(
+                start.role,
+                CognitiveRole::Vision | CognitiveRole::Audio | CognitiveRole::Document
+            )
+            || !valid_digest(&start.capability_revision)
+            || !valid_digest(&start.input_digest)
+        {
+            return Err(SessionStoreError::Invalid(
+                "perception identity or frozen route facts are invalid".into(),
+            ));
+        }
+        let input_bytes = session_i64(start.input_bytes, "perception input bytes")?;
+        self.run(move |connection| {
+            let now = crate::session::now_secs();
+            let changed = connection
+                .execute(
+                    "INSERT INTO session_perception_invocations
+                     (session_id,turn_id,agent_instance_id,invocation_id,modality,cognitive_role,
+                      provider_id,model_id,recovery_policy,capability_revision,input_digest,
+                      input_bytes,position,ledger_revision,started_at,updated_at)
+                     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'prepared',0,?13,?13
+                     WHERE EXISTS (SELECT 1 FROM session_turns t WHERE t.session_id=?1
+                       AND t.turn_id=?2 AND t.agent_instance_id=?3 AND t.state='running')",
+                    params![
+                        start.session_id.0,
+                        start.turn_id,
+                        start.agent_instance_id.0,
+                        start.invocation_id.as_str(),
+                        perception_modality_str(start.modality),
+                        cognitive_role_str(start.role),
+                        start.provider_id,
+                        start.model_id,
+                        perception_policy_str(start.recovery_policy),
+                        start.capability_revision,
+                        start.input_digest,
+                        input_bytes,
+                        now,
+                    ],
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::SqliteFailure(ref inner, _)
+                        if inner.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        SessionStoreError::Invalid(
+                            "conflicting perception invocation identity".into(),
+                        )
+                    }
+                    error => sqlite_err(error),
+                })?;
+            if changed == 1 {
+                Ok(())
+            } else {
+                Err(SessionStoreError::Invalid(
+                    "perception requires its running Agent turn".into(),
+                ))
+            }
+        })
+        .await
+    }
+
+    async fn persist_perception_media(
+        &self,
+        write: PerceptionMediaPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        if !valid_artifact_locator(&write.artifact_locator) {
+            return Err(SessionStoreError::Invalid(
+                "perception media artifact locator is invalid".into(),
+            ));
+        }
+        perception_update(
+            self,
+            write.invocation_id,
+            write.expected_revision,
+            PerceptionExecutionPosition::Prepared,
+            PerceptionExecutionPosition::MediaPersisted,
+            Some(write.artifact_locator),
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn advance_perception(
+        &self,
+        advance: PerceptionAdvance,
+    ) -> Result<u64, SessionStoreError> {
+        if advance.expected_position != PerceptionExecutionPosition::MediaPersisted
+            || advance.next_position != PerceptionExecutionPosition::InferenceStarted
+        {
+            return Err(SessionStoreError::Invalid(
+                "perception inference must cross its adjacent effect boundary".into(),
+            ));
+        }
+        perception_update(
+            self,
+            advance.invocation_id,
+            advance.expected_revision,
+            advance.expected_position,
+            advance.next_position,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn persist_perception_receipt(
+        &self,
+        write: PerceptionReceiptPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        if !valid_artifact_locator(&write.receipt_locator) {
+            return Err(SessionStoreError::Invalid(
+                "perception receipt locator is invalid".into(),
+            ));
+        }
+        perception_update(
+            self,
+            write.invocation_id,
+            write.expected_revision,
+            PerceptionExecutionPosition::InferenceStarted,
+            PerceptionExecutionPosition::InferenceCompleted,
+            None,
+            Some(write.receipt_locator),
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn persist_perception_artifact(
+        &self,
+        write: PerceptionArtifactPersistence,
+    ) -> Result<u64, SessionStoreError> {
+        if !valid_artifact_locator(&write.artifact_locator) || !valid_digest(&write.output_digest) {
+            return Err(SessionStoreError::Invalid(
+                "normalized perception artifact facts are invalid".into(),
+            ));
+        }
+        perception_update(
+            self,
+            write.invocation_id,
+            write.expected_revision,
+            PerceptionExecutionPosition::InferenceCompleted,
+            PerceptionExecutionPosition::ArtifactPersisted,
+            None,
+            None,
+            Some(write.artifact_locator),
+            Some(write.output_digest),
+        )
+        .await
+    }
+
+    async fn complete_perception(
+        &self,
+        invocation_id: &PerceptionInvocationId,
+        expected_revision: u64,
+    ) -> Result<u64, SessionStoreError> {
+        perception_update(
+            self,
+            invocation_id.clone(),
+            expected_revision,
+            PerceptionExecutionPosition::ArtifactPersisted,
+            PerceptionExecutionPosition::ResultPersisted,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn perception_invocations(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Vec<PerceptionInvocationSnapshot>, SessionStoreError> {
+        query_perception_invocations(self, Some((session_id.clone(), turn_id.to_owned()))).await
+    }
+
+    async fn interrupted_perception_invocations(
+        &self,
+    ) -> Result<Vec<PerceptionInvocationSnapshot>, SessionStoreError> {
+        query_perception_invocations(self, None).await
+    }
+
+    async fn classify_perception_recovery(
+        &self,
+        write: PerceptionRecoveryWrite,
+    ) -> Result<u64, SessionStoreError> {
+        if write.recovery_owner.trim().is_empty() || write.lease_expires_at <= write.observed_at {
+            return Err(SessionStoreError::Invalid(
+                "perception recovery lease is invalid".into(),
+            ));
+        }
+        let expected = session_i64(write.expected_revision, "perception ledger revision")?;
+        let next = write.expected_revision.checked_add(1).ok_or_else(|| {
+            SessionStoreError::Invalid("perception ledger revision overflow".into())
+        })?;
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE session_perception_invocations SET ledger_revision=ledger_revision+1,
+                     recovery_decision=?1,recovery_reason=?2,operator_action_required=?3,
+                     recovery_attempts=recovery_attempts+1,recovery_owner=?4,
+                     recovery_lease_expires_at=?5,first_interrupted_at=COALESCE(first_interrupted_at,?6),
+                     updated_at=?6 WHERE invocation_id=?7 AND ledger_revision=?8
+                     AND position!='result_persisted'
+                     AND (recovery_lease_expires_at IS NULL OR recovery_lease_expires_at<=?6
+                          OR recovery_owner=?4)",
+                    params![
+                        perception_decision_str(write.classification.decision),
+                        perception_reason_str(write.classification.reason),
+                        write.classification.operator_action_required,
+                        write.recovery_owner,
+                        write.lease_expires_at,
+                        write.observed_at,
+                        write.invocation_id.as_str(),
+                        expected,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 1 {
+                Ok(next)
+            } else {
+                Err(SessionStoreError::Invalid(
+                    "perception recovery lease or ledger CAS conflict".into(),
+                ))
+            }
+        })
+        .await
+    }
+
     async fn resolve_execution_recovery(
         &self,
         write: ExecutionRecoveryActionWrite,
