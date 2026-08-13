@@ -175,3 +175,107 @@ async fn open_timeout_passes_only_after_the_expected_typed_fault() {
     assert_eq!(result["scenario"], "open_timeout");
     assert_eq!(result["attempts"], 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cache_cell_requires_a_reported_read_on_the_repeated_prefix() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            concat!(
+                "data: {\"type\":\"response.completed\",\"response\":{",
+                "\"id\":\"resp_cache\",\"model\":\"model-cache\",\"status\":\"completed\",",
+                "\"output\":[{\"type\":\"message\",\"id\":\"msg_cache\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\",\"annotations\":[]}]}],",
+                "\"usage\":{\"input_tokens\":7,\"output_tokens\":2,\"total_tokens\":9,",
+                "\"input_tokens_details\":{\"cached_tokens\":5,\"cache_write_tokens\":0},",
+                "\"output_tokens_details\":{\"reasoning_tokens\":0}}}}\n\n"
+            ),
+            "text/event-stream",
+        ))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let matrix_path = std::env::temp_dir().join(format!(
+        "sylvander-llm-cache-matrix-{}.json",
+        std::process::id()
+    ));
+    let matrix = json!({
+        "schema_version": 1,
+        "repetitions": 1,
+        "scenarios": ["cache_write_read"],
+        "bindings": [{
+            "provider_id": "provider-cache",
+            "protocol": "openai_responses",
+            "base_url": server.uri(),
+            "credential_env": "SYLVANDER_TESTBENCH_CACHE_CHILD_KEY",
+            "supported_scenarios": ["cache_write_read"],
+            "models": [{
+                "model_id": "model-cache",
+                "advertised_scenarios": ["cache_write_read"]
+            }]
+        }]
+    });
+    fs::write(&matrix_path, serde_json::to_vec(&matrix).unwrap()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sylvander-llm-bench"))
+        .args(["run", matrix_path.to_str().unwrap()])
+        .env("SYLVANDER_TESTBENCH_CACHE_CHILD_KEY", "cache-key")
+        .output()
+        .unwrap();
+    fs::remove_file(matrix_path).unwrap();
+
+    assert!(output.status.success());
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "passed");
+    assert_eq!(result["scenario"], "cache_write_read");
+    assert_eq!(result["attempts"], 2);
+    assert_eq!(result["cache_read_tokens"], 10);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn truncated_stream_passes_only_after_a_typed_stream_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"sequence_number\":1,\"logprobs\":[],\"delta\":\"partial\"}\n\n",
+            "text/event-stream",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let matrix_path = std::env::temp_dir().join(format!(
+        "sylvander-llm-truncated-matrix-{}.json",
+        std::process::id()
+    ));
+    let matrix = json!({
+        "schema_version": 1,
+        "repetitions": 1,
+        "scenarios": ["truncated_stream"],
+        "bindings": [{
+            "provider_id": "provider-truncated",
+            "protocol": "openai_responses",
+            "base_url": server.uri(),
+            "credential_env": "SYLVANDER_TESTBENCH_TRUNCATED_CHILD_KEY",
+            "supported_scenarios": ["truncated_stream"],
+            "models": [{
+                "model_id": "model-truncated",
+                "advertised_scenarios": ["truncated_stream"]
+            }]
+        }]
+    });
+    fs::write(&matrix_path, serde_json::to_vec(&matrix).unwrap()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sylvander-llm-bench"))
+        .args(["run", matrix_path.to_str().unwrap()])
+        .env("SYLVANDER_TESTBENCH_TRUNCATED_CHILD_KEY", "truncated-key")
+        .output()
+        .unwrap();
+    fs::remove_file(matrix_path).unwrap();
+
+    assert!(output.status.success());
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "passed");
+    assert_eq!(result["scenario"], "truncated_stream");
+    assert_eq!(result["attempts"], 1);
+}
