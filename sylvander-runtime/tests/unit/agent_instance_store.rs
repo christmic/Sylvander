@@ -269,4 +269,36 @@ async fn task_creation_is_durable_and_duplicate_safe() {
             ..
         }
     ));
+
+    let mut ready = task.clone();
+    ready.state = CoordinationTaskState::Ready;
+    ready.consumed_tokens = 25;
+    ready.revision = 1;
+    ready.updated_at = 13;
+    store.update_task(&ready, 0).await.unwrap();
+    assert_eq!(
+        store.task(&task.task_id).await.unwrap(),
+        Some(ready.clone())
+    );
+
+    let mut stale = ready.clone();
+    stale.revision = 1;
+    assert!(matches!(
+        store.update_task(&stale, 0).await.unwrap_err(),
+        SessionStoreError::TaskConflict {
+            expected: Some(0),
+            actual: Some(1),
+            ..
+        }
+    ));
+
+    let mut illicit_assignment = ready;
+    illicit_assignment.assigned_to = Some(AgentInstanceId::new("coordinator-1"));
+    illicit_assignment.state = CoordinationTaskState::Running;
+    illicit_assignment.revision = 2;
+    illicit_assignment.updated_at = 14;
+    assert!(matches!(
+        store.update_task(&illicit_assignment, 1).await.unwrap_err(),
+        SessionStoreError::Invalid(_)
+    ));
 }

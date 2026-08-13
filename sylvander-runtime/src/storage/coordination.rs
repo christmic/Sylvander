@@ -25,6 +25,12 @@ pub trait CoordinationStore: Send + Sync {
 
     async fn create_task(&self, task: &CoordinationTask) -> Result<(), SessionStoreError>;
 
+    async fn update_task(
+        &self,
+        task: &CoordinationTask,
+        expected_revision: u64,
+    ) -> Result<(), SessionStoreError>;
+
     async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError>;
 }
 
@@ -270,41 +276,128 @@ impl CoordinationStore for SqliteSessionStore {
         .await
     }
 
-    async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError> {
-        let task_id = task_id.clone();
+    async fn update_task(
+        &self,
+        task: &CoordinationTask,
+        expected_revision: u64,
+    ) -> Result<(), SessionStoreError> {
+        let task = task.clone();
         self.run(move |connection| {
-            connection
-                .query_row(
-                    "SELECT session_id,membership_revision,parent_task_id,created_by_instance_id,
-                            assigned_to_instance_id,objective,state,token_budget,consumed_tokens,
-                            max_handoffs,handoff_count,revision,created_at,updated_at
-                     FROM coordination_tasks WHERE task_id=?1",
-                    [&task_id.0],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, Option<String>>(2)?,
-                            row.get::<_, String>(3)?,
-                            row.get::<_, Option<String>>(4)?,
-                            row.get::<_, String>(5)?,
-                            row.get::<_, String>(6)?,
-                            row.get::<_, i64>(7)?,
-                            row.get::<_, i64>(8)?,
-                            row.get::<_, i64>(9)?,
-                            row.get::<_, i64>(10)?,
-                            row.get::<_, i64>(11)?,
-                            row.get::<_, i64>(12)?,
-                            row.get::<_, i64>(13)?,
-                        ))
-                    },
-                )
-                .optional()?
-                .map(|row| decode_task(task_id, row))
-                .transpose()
+            let transaction = connection.unchecked_transaction()?;
+            let Some(current) = load_task(&transaction, &task.task_id)? else {
+                return Err(SessionStoreError::TaskConflict {
+                    task_id: task.task_id,
+                    expected: Some(expected_revision),
+                    actual: None,
+                });
+            };
+            if current.revision != expected_revision {
+                return Err(SessionStoreError::TaskConflict {
+                    task_id: task.task_id,
+                    expected: Some(expected_revision),
+                    actual: Some(current.revision),
+                });
+            }
+            let next_revision = expected_revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("task revision overflow".into())
+            })?;
+            if task.revision != next_revision
+                || task.session_id != current.session_id
+                || task.membership_revision != current.membership_revision
+                || task.parent_task_id != current.parent_task_id
+                || task.created_by != current.created_by
+                || task.assigned_to != current.assigned_to
+                || task.objective != current.objective
+                || task.token_budget != current.token_budget
+                || task.max_handoffs != current.max_handoffs
+                || task.handoff_count != current.handoff_count
+                || task.created_at != current.created_at
+                || task.updated_at < current.updated_at
+                || task.consumed_tokens < current.consumed_tokens
+                || task.consumed_tokens > task.token_budget
+                || !current.state.can_transition_to(task.state)
+            {
+                return Err(SessionStoreError::Invalid(
+                    "task update violates immutable facts or lifecycle rules".into(),
+                ));
+            }
+            let durable_membership_revision = transaction.query_row(
+                "SELECT membership_revision FROM session_governance WHERE session_id=?1",
+                [&task.session_id.0],
+                |row| row.get::<_, i64>(0),
+            )?;
+            if checked_u64(durable_membership_revision, "membership revision")?
+                != task.membership_revision
+            {
+                return Err(SessionStoreError::Invalid(
+                    "task update requires membership reconciliation".into(),
+                ));
+            }
+            let changed = transaction.execute(
+                "UPDATE coordination_tasks SET state=?1,consumed_tokens=?2,revision=?3,updated_at=?4 \
+                 WHERE task_id=?5 AND revision=?6",
+                params![
+                    encode_task_state(task.state),
+                    checked_i64(task.consumed_tokens, "task consumed tokens")?,
+                    checked_i64(task.revision, "task revision")?,
+                    task.updated_at,
+                    task.task_id.0,
+                    checked_i64(expected_revision, "expected task revision")?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(SessionStoreError::TaskConflict {
+                    task_id: task.task_id,
+                    expected: Some(expected_revision),
+                    actual: None,
+                });
+            }
+            transaction.commit()?;
+            Ok(())
         })
         .await
     }
+
+    async fn task(&self, task_id: &TaskId) -> Result<Option<CoordinationTask>, SessionStoreError> {
+        let task_id = task_id.clone();
+        self.run(move |connection| load_task(connection, &task_id))
+            .await
+    }
+}
+
+fn load_task(
+    connection: &rusqlite::Connection,
+    task_id: &TaskId,
+) -> Result<Option<CoordinationTask>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT session_id,membership_revision,parent_task_id,created_by_instance_id,
+                    assigned_to_instance_id,objective,state,token_budget,consumed_tokens,
+                    max_handoffs,handoff_count,revision,created_at,updated_at
+             FROM coordination_tasks WHERE task_id=?1",
+            [&task_id.0],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, i64>(12)?,
+                    row.get::<_, i64>(13)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| decode_task(task_id.clone(), row))
+        .transpose()
 }
 
 type EncodedTask = (
