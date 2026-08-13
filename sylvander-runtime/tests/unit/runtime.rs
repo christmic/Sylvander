@@ -1396,10 +1396,10 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
     .await
     .expect("the durable session Agent must override the channel creation default");
     let selected_chat = selected_submission.events.recv().await.unwrap();
-    assert_eq!(
+    assert!(matches!(
         selected_chat.recipient,
-        Recipient::Agent(AgentId::new("assistant"))
-    );
+        Recipient::AgentInstance { agent_id, .. } if agent_id == AgentId::new("assistant")
+    ));
 
     let success_bus = Arc::new(InstrumentedBus::new(false, false));
     let success_service = channel_host_with_bus(&runtime, success_bus.clone());

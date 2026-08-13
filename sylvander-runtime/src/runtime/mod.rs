@@ -1796,16 +1796,17 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         self.authorize_message(boundary, &chat).await?;
         validate_external_metadata(boundary, &external_meta)?;
 
-        let (session_id, created_agent) = if let Some(session_id) = existing_session {
+        let (session_id, created_agent, moderator) = if let Some(session_id) = existing_session {
             let session = self
                 .owned_session(boundary, &session_id, "submit_chat")
                 .await?;
+            let moderator = self
+                .moderator_instance(boundary, &session.id, "submit_chat")
+                .await?;
             // A durable session owns its Agent identity. Channel defaults are
             // creation defaults and must not override a TUI-selected Agent.
-            agent_id = self
-                .moderator_definition(boundary, &session.id, "submit_chat")
-                .await?;
-            (session_id, None)
+            agent_id.clone_from(&moderator.definition.agent_id);
+            (session_id, None, moderator)
         } else {
             let create = SessionCreateRequest {
                 agent_id: agent_id.clone(),
@@ -1826,7 +1827,10 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             let state = self
                 .create_session_with_metadata(boundary, create, external_meta)
                 .await?;
-            (state.session_id, Some(created_agent))
+            let moderator = self
+                .moderator_instance(boundary, &state.session_id, "submit_chat")
+                .await?;
+            (state.session_id, Some(created_agent), moderator)
         };
 
         let submission = async {
@@ -1846,7 +1850,10 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
                 sender: sylvander_api::Sender::User(
                     self.effective_user_id(boundary, "submit_chat").await?.0,
                 ),
-                recipient: Recipient::Agent(agent_id.clone()),
+                recipient: Recipient::AgentInstance {
+                    instance_id: moderator.instance_id.clone(),
+                    agent_id: agent_id.clone(),
+                },
                 kind: sylvander_api::MessageKind::Chat,
                 payload: text,
                 attachments,
@@ -1909,10 +1916,9 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
         let session = self
             .owned_session(boundary, &session_id, "submit_control")
             .await?;
-        let agent_id =
-            session.agents.first().cloned().ok_or_else(|| {
-                sylvander_api::BoundaryError::forbidden(boundary, "submit_control")
-            })?;
+        let moderator = self
+            .moderator_instance(boundary, &session.id, "submit_control")
+            .await?;
         let system = match message {
             ClientMessage::Approve {
                 call_id,
@@ -1951,7 +1957,10 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
             .publish(BusMessage {
                 session_id,
                 sender: sylvander_api::Sender::System,
-                recipient: Recipient::Agent(agent_id),
+                recipient: Recipient::AgentInstance {
+                    instance_id: moderator.instance_id,
+                    agent_id: moderator.definition.agent_id,
+                },
                 kind: sylvander_api::MessageKind::System(system),
                 payload: String::new(),
                 attachments: Vec::new(),
@@ -2419,12 +2428,12 @@ impl sylvander_channel::ChannelHost for RuntimeChannelHost {
 }
 
 impl RuntimeChannelHost {
-    async fn moderator_definition(
+    async fn moderator_instance(
         &self,
         boundary: &sylvander_api::BoundaryContext,
         session_id: &SessionId,
         operation: &str,
-    ) -> Result<AgentId, sylvander_api::BoundaryError> {
+    ) -> Result<AgentInstance, sylvander_api::BoundaryError> {
         let membership = self
             .agent_instances
             .session_membership(session_id)
@@ -2436,7 +2445,7 @@ impl RuntimeChannelHost {
         membership
             .validate()
             .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?;
-        Ok(membership.moderator().definition.agent_id.clone())
+        Ok(membership.moderator().clone())
     }
 
     async fn session_history(
