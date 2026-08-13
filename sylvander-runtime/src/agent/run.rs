@@ -1181,6 +1181,24 @@ impl AgentRun {
         self.inner.handle_message(msg).await
     }
 
+    /// Execute one Runtime-scheduled durable envelope under its persisted turn id.
+    pub(crate) async fn execute_durable_message(
+        &self,
+        msg: BusMessage,
+        turn_id: String,
+    ) -> Result<(), AgentRunError> {
+        let key = AgentSessionKey::new(
+            msg.session_id.clone(),
+            orchestration::turn_agent_instance_id(&msg, &msg.session_id)?,
+        );
+        if !self.inner.sessions.read().await.contains_key(&key) {
+            return Err(AgentRunError::UnknownSession(msg.session_id));
+        }
+        let lock = self.get_session_lock(&key).await;
+        let _guard = lock.lock().await;
+        self.inner.handle_message_with_turn_id(msg, turn_id).await
+    }
+
     /// Main event loop.
     ///
     /// Chat messages are spawned as separate tasks so `run()` can

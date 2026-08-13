@@ -74,7 +74,7 @@ use crate::storage::session::{
 
 use crate::storage::workspace_journal::WorkspaceJournal;
 
-fn turn_agent_instance_id(
+pub(super) fn turn_agent_instance_id(
     message: &BusMessage,
     session_id: &SessionId,
 ) -> Result<AgentInstanceId, AgentRunError> {
@@ -472,8 +472,12 @@ impl AgentRunInner {
 
     /// Core: handle a chat message. Runs the loop with streaming.
     pub(super) async fn handle_message(&self, msg: BusMessage) -> Result<(), AgentRunError> {
-        self.handle_message_correlated(msg, std::future::pending::<()>(), uuid::Uuid::new_v4())
-            .await
+        self.handle_message_correlated(
+            msg,
+            std::future::pending::<()>(),
+            uuid::Uuid::new_v4().to_string(),
+        )
+        .await
     }
 
     pub(super) async fn handle_message_interruptible(
@@ -482,7 +486,16 @@ impl AgentRunInner {
         interrupted: oneshot::Receiver<()>,
         turn_id: uuid::Uuid,
     ) -> Result<(), AgentRunError> {
-        self.handle_message_correlated(msg, interrupted, turn_id)
+        self.handle_message_correlated(msg, interrupted, turn_id.to_string())
+            .await
+    }
+
+    pub(super) async fn handle_message_with_turn_id(
+        &self,
+        msg: BusMessage,
+        turn_id: String,
+    ) -> Result<(), AgentRunError> {
+        self.handle_message_correlated(msg, std::future::pending::<()>(), turn_id)
             .await
     }
 
@@ -490,7 +503,7 @@ impl AgentRunInner {
         &self,
         msg: BusMessage,
         interrupted: F,
-        turn_id: uuid::Uuid,
+        turn_id: String,
     ) -> Result<(), AgentRunError>
     where
         F: std::future::Future,
@@ -2154,8 +2167,7 @@ pub(super) struct TurnCorrelation {
 }
 
 impl TurnCorrelation {
-    pub(super) fn new(message: &BusMessage, turn_id: uuid::Uuid) -> Self {
-        let turn_id = turn_id.to_string();
+    pub(super) fn new(message: &BusMessage, turn_id: String) -> Self {
         Self {
             request: message.id.0.to_string(),
             trace: turn_id.clone(),

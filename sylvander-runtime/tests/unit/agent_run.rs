@@ -2323,7 +2323,7 @@ fn turn_correlation_keeps_request_and_trace_boundaries_explicit() {
     let request_id = message.id.0.to_string();
     let turn_id = uuid::Uuid::parse_str("13fcf8b4-31f8-4b3a-9432-0cc9ad73d7c0").unwrap();
 
-    let correlation = TurnCorrelation::new(&message, turn_id);
+    let correlation = TurnCorrelation::new(&message, turn_id.to_string());
 
     assert_eq!(correlation.request, request_id);
     assert_eq!(correlation.turn, turn_id.to_string());

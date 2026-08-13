@@ -65,7 +65,7 @@ use crate::config::{
     MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
 };
 use crate::coordination::handoff::TaskHandoff;
-use crate::coordination::mailbox::{CoordinationMessage, MessageClaim};
+use crate::coordination::mailbox::{AgentMessageTurn, CoordinationMessage, MessageClaim};
 use crate::coordination::service::{
     DispatchMessageOutcome, DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest,
     ReportProgressRequest, ReportWaitRequest,
@@ -5161,6 +5161,107 @@ impl Runtime {
             .acknowledge_message(
                 message,
                 actor.agent_instance_id(),
+                crate::session::now_secs(),
+            )
+            .await
+            .map_err(|error| RuntimeError::Coordination(error.to_string()))
+    }
+
+    /// Execute a previously prepared mailbox receipt and acknowledge it only
+    /// after the corresponding Agent turn commits successfully.
+    pub async fn execute_agent_message_turn(
+        &self,
+        message: &CoordinationMessage,
+        receipt: &AgentMessageTurn,
+    ) -> Result<CoordinationMessage, RuntimeError> {
+        if message.state != crate::coordination::mailbox::MessageDeliveryState::Delivered
+            || receipt.message_id != message.message_id
+            || receipt.session_id != message.session_id
+            || receipt.recipient_instance_id != message.recipient_instance_id
+        {
+            return Err(RuntimeError::Coordination(
+                "mailbox execution receipt does not match delivered message".into(),
+            ));
+        }
+        let membership = self
+            .storage
+            .sessions()
+            .session_membership(&message.session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Coordination("mailbox membership disappeared".into()))?;
+        let recipient = membership
+            .participants
+            .iter()
+            .find(|participant| participant.instance_id == message.recipient_instance_id)
+            .ok_or_else(|| RuntimeError::Coordination("mailbox recipient disappeared".into()))?;
+        let sender = membership
+            .participants
+            .iter()
+            .find(|participant| participant.instance_id == message.sender_instance_id)
+            .ok_or_else(|| RuntimeError::Coordination("mailbox sender disappeared".into()))?;
+        let configured = if let Some(provider) = &self.revision_provider {
+            provider
+                .configured_revision(
+                    &recipient.definition.agent_id,
+                    recipient.definition.revision,
+                )
+                .await?
+        } else {
+            self.configured_agents
+                .get(&recipient.definition.agent_id)
+                .filter(|configured| {
+                    configured.definition.revision == recipient.definition.revision
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    RuntimeError::Coordination(
+                        "mailbox recipient definition revision is unavailable".into(),
+                    )
+                })?
+        };
+        let prompt = format!(
+            "[inter-agent {:?}; message_id={}; sender={}; task={}]\n{}",
+            message.kind,
+            message.message_id.0,
+            message.sender_instance_id.0,
+            message
+                .task_id
+                .as_ref()
+                .map_or("none", |task| task.0.as_str()),
+            message.payload
+        );
+        configured
+            .run
+            .execute_durable_message(
+                BusMessage {
+                    session_id: message.session_id.clone(),
+                    sender: sylvander_api::Sender::AgentInstance {
+                        instance_id: sender.instance_id.clone(),
+                        agent_id: sender.definition.agent_id.clone(),
+                    },
+                    recipient: Recipient::AgentInstance {
+                        instance_id: recipient.instance_id.clone(),
+                        agent_id: recipient.definition.agent_id.clone(),
+                    },
+                    kind: sylvander_api::MessageKind::Chat,
+                    payload: prompt,
+                    attachments: Vec::new(),
+                    timestamp: crate::session::now_secs(),
+                    id: sylvander_api::MessageId::new(),
+                },
+                receipt.turn_id.clone(),
+            )
+            .await
+            .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+        self.storage
+            .coordination()
+            .ok_or_else(|| {
+                RuntimeError::Coordination("durable coordination is unavailable".into())
+            })?
+            .acknowledge_message(
+                message,
+                &message.recipient_instance_id,
                 crate::session::now_secs(),
             )
             .await
