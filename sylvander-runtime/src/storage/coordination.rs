@@ -9,6 +9,7 @@ use sylvander_api::{
 use crate::coordination::arbitration::{
     ArbitrationCase, ArbitrationState, ModeratorDecision, ModeratorVerdict,
 };
+use crate::coordination::governance::{ProgressObservation, WaitDependency};
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MAX_MESSAGE_LEASE_SECONDS, MessageClaim,
@@ -56,6 +57,27 @@ pub trait CoordinationStore: Send + Sync {
         &self,
         session_id: &SessionId,
     ) -> Result<Option<SessionTaskGraph>, SessionStoreError>;
+
+    async fn record_wait(
+        &self,
+        session_id: &SessionId,
+        wait: &WaitDependency,
+        task_revision: u64,
+        topology_revision: u64,
+        now: i64,
+    ) -> Result<(), SessionStoreError>;
+
+    async fn clear_wait(
+        &self,
+        session_id: &SessionId,
+        wait: &WaitDependency,
+    ) -> Result<(), SessionStoreError>;
+
+    async fn record_progress(
+        &self,
+        session_id: &SessionId,
+        observation: &ProgressObservation,
+    ) -> Result<(), SessionStoreError>;
 
     async fn create_arbitration_case(
         &self,
@@ -548,6 +570,148 @@ impl CoordinationStore for SqliteSessionStore {
         let session_id = session_id.clone();
         self.run(move |connection| load_task_graph(connection, &session_id))
             .await
+    }
+
+    async fn record_wait(
+        &self,
+        session_id: &SessionId,
+        wait: &WaitDependency,
+        task_revision: u64,
+        topology_revision: u64,
+        now: i64,
+    ) -> Result<(), SessionStoreError> {
+        if wait.waiter == wait.awaited {
+            return Err(SessionStoreError::Invalid(
+                "an Agent cannot wait on itself".into(),
+            ));
+        }
+        let session_id = session_id.clone();
+        let wait = wait.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let task = load_task(&transaction, &wait.task_id)?
+                .ok_or_else(|| SessionStoreError::Invalid("wait task does not exist".into()))?;
+            let current_topology = transaction
+                .query_row(
+                    "SELECT topology_revision FROM session_topology WHERE session_id=?1",
+                    [&session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|value| checked_u64(value, "topology revision"))
+                .transpose()?;
+            if task.session_id != session_id
+                || task.revision != task_revision
+                || task.assigned_to.as_ref() != Some(&wait.waiter)
+                || task.state.is_terminal()
+                || current_topology != Some(topology_revision)
+            {
+                return Err(SessionStoreError::Invalid(
+                    "wait does not match current task ownership and topology".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO coordination_waits \
+                 (session_id,task_id,waiter_instance_id,awaited_instance_id,task_revision,
+                  topology_revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7) \
+                 ON CONFLICT(session_id,task_id,waiter_instance_id,awaited_instance_id) DO UPDATE \
+                 SET task_revision=excluded.task_revision,topology_revision=excluded.topology_revision,
+                     updated_at=excluded.updated_at",
+                params![
+                    session_id.0,
+                    wait.task_id.0,
+                    wait.waiter.0,
+                    wait.awaited.0,
+                    checked_i64(task_revision, "wait task revision")?,
+                    checked_i64(topology_revision, "wait topology revision")?,
+                    now,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn clear_wait(
+        &self,
+        session_id: &SessionId,
+        wait: &WaitDependency,
+    ) -> Result<(), SessionStoreError> {
+        let session_id = session_id.clone();
+        let wait = wait.clone();
+        self.run(move |connection| {
+            connection.execute(
+                "DELETE FROM coordination_waits WHERE session_id=?1 AND task_id=?2 \
+                 AND waiter_instance_id=?3 AND awaited_instance_id=?4",
+                params![session_id.0, wait.task_id.0, wait.waiter.0, wait.awaited.0],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn record_progress(
+        &self,
+        session_id: &SessionId,
+        observation: &ProgressObservation,
+    ) -> Result<(), SessionStoreError> {
+        if observation.observation_id.trim().is_empty()
+            || observation.observation_id.len() > 256
+            || observation
+                .evidence_digest
+                .as_ref()
+                .is_some_and(|digest| digest.trim().is_empty() || digest.len() > 256)
+        {
+            return Err(SessionStoreError::Invalid(
+                "progress observation identity or evidence digest is invalid".into(),
+            ));
+        }
+        let session_id = session_id.clone();
+        let observation = observation.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            if let Some(existing) = load_progress(&transaction, &observation.observation_id)? {
+                return if existing == (session_id.clone(), observation.clone()) {
+                    Ok(())
+                } else {
+                    Err(SessionStoreError::Invalid(
+                        "progress observation id was reused for different facts".into(),
+                    ))
+                };
+            }
+            let task = load_task(&transaction, &observation.task_id)?
+                .ok_or_else(|| SessionStoreError::Invalid("progress task does not exist".into()))?;
+            if task.session_id != session_id
+                || task.revision != observation.task_revision
+                || task.assigned_to.as_ref() != Some(&observation.agent_instance_id)
+                || task.state.is_terminal()
+                || observation.consumed_tokens < task.consumed_tokens
+                || observation.consumed_tokens > task.token_budget
+            {
+                return Err(SessionStoreError::Invalid(
+                    "progress does not match current task execution facts".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO coordination_progress \
+                 (observation_id,session_id,task_id,agent_instance_id,task_revision,
+                  consumed_tokens,evidence_digest,observed_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    observation.observation_id,
+                    session_id.0,
+                    observation.task_id.0,
+                    observation.agent_instance_id.0,
+                    checked_i64(observation.task_revision, "progress task revision")?,
+                    checked_i64(observation.consumed_tokens, "progress token count")?,
+                    observation.evidence_digest,
+                    observation.observed_at,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
     }
 
     async fn create_arbitration_case(
@@ -1334,6 +1498,45 @@ fn load_message(
                 created_at: row.13,
                 updated_at: row.14,
             })
+        })
+        .transpose()
+}
+
+fn load_progress(
+    connection: &rusqlite::Connection,
+    observation_id: &str,
+) -> Result<Option<(SessionId, ProgressObservation)>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT session_id,task_id,agent_instance_id,task_revision,consumed_tokens,
+                    evidence_digest,observed_at FROM coordination_progress WHERE observation_id=?1",
+            [observation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            Ok((
+                SessionId::new(row.0),
+                ProgressObservation {
+                    observation_id: observation_id.to_owned(),
+                    task_id: TaskId::new(row.1),
+                    agent_instance_id: AgentInstanceId::new(row.2),
+                    task_revision: checked_u64(row.3, "progress task revision")?,
+                    consumed_tokens: checked_u64(row.4, "progress token count")?,
+                    evidence_digest: row.5,
+                    observed_at: row.6,
+                },
+            ))
         })
         .transpose()
 }

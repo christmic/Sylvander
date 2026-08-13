@@ -7,7 +7,9 @@ use crate::agent::instance::{
 use crate::coordination::arbitration::{
     ArbitrationCase, ArbitrationState, ModeratorDecision, ModeratorVerdict,
 };
-use crate::coordination::governance::{GovernanceFinding, GovernancePolicy};
+use crate::coordination::governance::{
+    GovernanceFinding, GovernancePolicy, ProgressObservation, WaitDependency,
+};
 use crate::coordination::handoff::{HandoffState, TaskHandoff};
 use crate::coordination::mailbox::{
     CoordinationMessage, CoordinationMessageKind, MessageDeliveryState,
@@ -316,6 +318,86 @@ async fn coordination_service_dead_letters_poison_message_after_bounded_retries(
             .state,
         MessageDeliveryState::DeadLetter
     );
+}
+
+#[tokio::test]
+async fn governance_wait_and_progress_facts_are_revision_fenced_and_idempotent() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let task = CoordinationTask {
+        task_id: TaskId::new("observed-task"),
+        session_id: SessionId::new("multi-session"),
+        membership_revision: 0,
+        parent_task_id: None,
+        created_by: AgentInstanceId::new("moderator-1"),
+        assigned_to: Some(AgentInstanceId::new("worker-1")),
+        objective: "observe governed progress".into(),
+        state: CoordinationTaskState::Running,
+        token_budget: 1_000,
+        consumed_tokens: 100,
+        max_handoffs: 2,
+        handoff_count: 0,
+        revision: 0,
+        created_at: 10,
+        updated_at: 10,
+    };
+    store.create_task(&task).await.unwrap();
+    let wait = WaitDependency {
+        task_id: task.task_id.clone(),
+        waiter: AgentInstanceId::new("worker-1"),
+        awaited: AgentInstanceId::new("coordinator-1"),
+    };
+    store
+        .record_wait(&task.session_id, &wait, 0, 0, 20)
+        .await
+        .unwrap();
+    store
+        .record_wait(&task.session_id, &wait, 0, 0, 21)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .record_wait(&task.session_id, &wait, 0, 1, 22)
+            .await
+            .is_err()
+    );
+
+    let progress = ProgressObservation {
+        observation_id: "progress-1".into(),
+        task_id: task.task_id.clone(),
+        agent_instance_id: AgentInstanceId::new("worker-1"),
+        task_revision: 0,
+        consumed_tokens: 150,
+        evidence_digest: Some("sha256:new-evidence".into()),
+        observed_at: 20,
+    };
+    store
+        .record_progress(&task.session_id, &progress)
+        .await
+        .unwrap();
+    store
+        .record_progress(&task.session_id, &progress)
+        .await
+        .unwrap();
+    let mut conflicting = progress;
+    conflicting.consumed_tokens = 151;
+    assert!(
+        store
+            .record_progress(&task.session_id, &conflicting)
+            .await
+            .is_err()
+    );
+    store.clear_wait(&task.session_id, &wait).await.unwrap();
+    store.clear_wait(&task.session_id, &wait).await.unwrap();
 }
 
 #[tokio::test]
