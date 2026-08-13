@@ -7,16 +7,21 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+mod evaluation;
 mod fault;
 mod ledger;
 
+pub use evaluation::{
+    ActivationDecision, ActivationGateError, ActivationGatePolicy, ActivationGateReport,
+    evaluate_cognition_activation,
+};
 pub use fault::{
     FaultController, FaultDecision, FaultInjectionError, FaultInjectionSpec, FaultReceipt,
 };
 pub use ledger::{AppendOutcome, BenchmarkLedger, BenchmarkLedgerError, PlanCoverage};
 
 /// Runtime capability family under evaluation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioFamily {
     CrashRecovery,
@@ -28,7 +33,7 @@ pub enum ScenarioFamily {
 }
 
 /// Exact durable boundary at which a controlled harness interrupts Runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailurePoint {
     None,
@@ -47,7 +52,7 @@ pub enum FailurePoint {
     WorkspaceMergeStarted,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TopologyProfile {
     SingleAgent,
@@ -56,7 +61,7 @@ pub enum TopologyProfile {
     ModeratorSwarm,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceProfile {
     ReadOnlyShared,
