@@ -9,6 +9,7 @@
 
 mod execution_ledger;
 mod model_ledger;
+mod recovery_action;
 mod sqlite;
 
 pub(crate) use sqlite::materialize_fork_history;
@@ -20,6 +21,10 @@ pub use execution_ledger::{
 pub use model_ledger::{
     ModelExecutionPosition, ModelInvocationId, ModelRecoveryClassification, ModelRecoveryDecision,
     ModelRecoveryReason,
+};
+pub use recovery_action::{
+    ExecutionRecoveryAction, ExecutionRecoveryActionId, ExecutionRecoveryActionReceipt,
+    ExecutionRecoveryActionTarget, ExecutionRecoveryActionWrite,
 };
 pub use sqlite::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 
@@ -606,6 +611,16 @@ pub trait SessionStore: AgentInstanceStore + Send + Sync {
         &self,
         write: ModelRecoveryWrite,
     ) -> Result<u64, SessionStoreError>;
+
+    /// Atomically record and apply an exact moderator recovery decision.
+    async fn resolve_execution_recovery(
+        &self,
+        _write: ExecutionRecoveryActionWrite,
+    ) -> Result<ExecutionRecoveryActionReceipt, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "execution recovery actions are unavailable".into(),
+        ))
+    }
 
     /// Persist tool identity before approval or execution can produce a
     /// terminal. The addressed turn must currently be running.
