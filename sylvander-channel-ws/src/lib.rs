@@ -662,6 +662,50 @@ async fn handle_client_msg(
                 boundary_denied(tx, error);
             }
         }
+        ClientMsg::Interrupt { session_id } => {
+            if let Err(error) = ctx
+                .submit_control(&boundary, ClientMsg::Interrupt { session_id })
+                .await
+            {
+                boundary_denied(tx, error);
+            }
+        }
+        ClientMsg::ResolvePlan {
+            session_id,
+            plan_id,
+            decision,
+        } => {
+            if let Err(error) = ctx
+                .submit_control(
+                    &boundary,
+                    ClientMsg::ResolvePlan {
+                        session_id,
+                        plan_id,
+                        decision,
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
+        }
+        ClientMsg::CancelTask {
+            session_id,
+            task_id,
+        } => {
+            if let Err(error) = ctx
+                .submit_control(
+                    &boundary,
+                    ClientMsg::CancelTask {
+                        session_id,
+                        task_id,
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
+        }
         ClientMsg::DiscoverAgents => {
             if let Some(host) = &ctx.host {
                 match host.discover_agents(&boundary).await {
