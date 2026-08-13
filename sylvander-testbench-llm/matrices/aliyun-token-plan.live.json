@@ -4,30 +4,30 @@
   "request_timeout_ms": 60000,
   "max_output_tokens": 256,
   "max_retries": 0,
-  "scenarios": ["connectivity", "usage"],
+  "scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"],
   "bindings": [
     {
       "provider_id": "aliyun-token-plan-cn",
       "protocol": "anthropic_messages",
       "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
       "credential_env": "SYLVANDER_BENCH_ALIYUN_TOKEN_PLAN_API_KEY",
-      "supported_scenarios": ["connectivity", "usage"],
+      "supported_scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"],
       "models": [
         {
           "model_id": "qwen3.7-plus",
-          "advertised_scenarios": ["connectivity", "usage"]
+          "advertised_scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"]
         },
         {
           "model_id": "qwen3.8-max",
-          "advertised_scenarios": ["connectivity", "usage"]
+          "advertised_scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"]
         },
         {
           "model_id": "deepseek-v4-pro",
-          "advertised_scenarios": ["connectivity", "usage"]
+          "advertised_scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"]
         },
         {
           "model_id": "glm-5.2",
-          "advertised_scenarios": ["connectivity", "usage"]
+          "advertised_scenarios": ["connectivity", "usage", "remote_token_count", "cache_write_read"]
         }
       ]
     },
@@ -36,23 +36,23 @@
       "protocol": "openai_chat_completions",
       "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
       "credential_env": "SYLVANDER_BENCH_ALIYUN_TOKEN_PLAN_API_KEY",
-      "supported_scenarios": ["connectivity", "usage"],
+      "supported_scenarios": ["connectivity", "usage", "cache_write_read"],
       "models": [
         {
           "model_id": "qwen3.7-plus",
-          "advertised_scenarios": ["connectivity", "usage"]
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
         },
         {
           "model_id": "qwen3.8-max",
-          "advertised_scenarios": ["connectivity", "usage"]
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
         },
         {
           "model_id": "deepseek-v4-pro",
-          "advertised_scenarios": ["connectivity", "usage"]
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
         },
         {
           "model_id": "glm-5.2",
-          "advertised_scenarios": ["connectivity", "usage"]
+          "advertised_scenarios": ["connectivity", "usage", "cache_write_read"]
         }
       ]
     }
