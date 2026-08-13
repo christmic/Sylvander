@@ -194,10 +194,10 @@ pub(crate) struct AgentRunInner {
     user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
     curated_context_provider: Option<Arc<dyn CuratedContextProvider>>,
     turn_context_budgets: TurnContextBudgets,
-    turn_context_manifests: RwLock<HashMap<SessionId, TurnContextManifest>>,
+    turn_context_manifests: RwLock<HashMap<AgentSessionKey, TurnContextManifest>>,
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
-    context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
+    context_usage: RwLock<HashMap<AgentSessionKey, ContextUsage>>,
     workspace_journal: Option<Arc<WorkspaceJournal>>,
     /// Immutable Runtime-owned execution environment registry.
     execution_service: RuntimeExecutionService,
@@ -243,12 +243,12 @@ pub(crate) struct AgentRunInner {
     /// Independently cancellable read-only background runs.
     background_tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
     /// Per-session concurrency locks (M12).
-    session_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
+    session_locks: Mutex<HashMap<AgentSessionKey, Arc<Mutex<()>>>>,
     /// One cancellation sender per session that currently owns its execution
     /// lock. Queued turns do not replace the active sender.
-    active_turns: Mutex<HashMap<SessionId, ActiveTurn>>,
+    active_turns: Mutex<HashMap<AgentSessionKey, ActiveTurn>>,
     /// Latest typed Agent-machine state for each currently executing turn.
-    turn_snapshots: RwLock<HashMap<SessionId, RuntimeTurnSnapshot>>,
+    turn_snapshots: RwLock<HashMap<AgentSessionKey, RuntimeTurnSnapshot>>,
 }
 
 fn sole_session_context<'a>(
@@ -261,6 +261,23 @@ fn sole_session_context<'a>(
         .map(|(_, context)| context);
     let context = matches.next()?;
     matches.next().is_none().then_some(context)
+}
+
+fn sole_session_key(
+    sessions: &HashMap<AgentSessionKey, SessionContext>,
+    session_id: &SessionId,
+) -> Option<AgentSessionKey> {
+    let mut matches = sessions.keys().filter(|key| &key.session_id == session_id);
+    let key = matches.next()?.clone();
+    matches.next().is_none().then_some(key)
+}
+
+fn any_key_for_session<T>(values: &HashMap<AgentSessionKey, T>, session_id: &SessionId) -> bool {
+    values.keys().any(|key| &key.session_id == session_id)
+}
+
+fn remove_session_values<T>(values: &mut HashMap<AgentSessionKey, T>, session_id: &SessionId) {
+    values.retain(|key, _| &key.session_id != session_id);
 }
 
 fn sole_session_context_mut<'a>(
@@ -432,12 +449,18 @@ pub struct AuthenticatedSessionLease {
 pub struct AuthenticatedSession {
     authority: Arc<SessionAuthorityMarker>,
     session_id: SessionId,
+    agent_instance_id: AgentInstanceId,
 }
 
 impl AuthenticatedSession {
     #[must_use]
     pub fn id(&self) -> &SessionId {
         &self.session_id
+    }
+
+    #[must_use]
+    pub fn agent_instance_id(&self) -> &AgentInstanceId {
+        &self.agent_instance_id
     }
 }
 
@@ -703,22 +726,29 @@ impl AgentRun {
             .available
             .get(&models.current)
             .expect("current model belongs to runtime catalog");
-        let usage = match session_id {
-            Some(session_id) => self
+        let session_key = match session_id {
+            Some(session_id) => sole_session_key(&*self.inner.sessions.read().await, session_id),
+            None => None,
+        };
+        let usage = match &session_key {
+            Some(key) => self
                 .inner
                 .context_usage
                 .read()
                 .await
-                .get(session_id)
+                .get(key)
                 .copied()
                 .unwrap_or_default(),
             None => ContextUsage::default(),
         };
-        let conversation_items = match session_id {
-            Some(session_id) => {
-                let sessions = self.inner.sessions.read().await;
-                sole_session_context(&sessions, session_id).map_or(0, SessionContext::len)
-            }
+        let conversation_items = match &session_key {
+            Some(key) => self
+                .inner
+                .sessions
+                .read()
+                .await
+                .get(key)
+                .map_or(0, SessionContext::len),
             None => 0,
         };
         let mut sources = Vec::new();
@@ -772,29 +802,20 @@ impl AgentRun {
         session_id: &SessionId,
     ) -> Result<sylvander_api::CompactionReport, sylvander_agent::compress::error::CompactionError>
     {
-        if self
-            .inner
-            .active_turns
-            .lock()
-            .await
-            .contains_key(session_id)
-        {
+        let key = sole_session_key(&*self.inner.sessions.read().await, session_id)
+            .ok_or_else(|| CompactionError::new(CompactionFailureCode::SessionUnavailable))?;
+        if self.inner.active_turns.lock().await.contains_key(&key) {
             return Err(CompactionError::new(CompactionFailureCode::Busy));
         }
-        let lock = self.get_session_lock(session_id).await;
+        let lock = self.get_session_lock(&key).await;
         let _guard = lock.lock().await;
-        if self
-            .inner
-            .active_turns
-            .lock()
-            .await
-            .contains_key(session_id)
-        {
+        if self.inner.active_turns.lock().await.contains_key(&key) {
             return Err(CompactionError::new(CompactionFailureCode::Busy));
         }
         let mut history = {
             let sessions = self.inner.sessions.read().await;
-            sole_session_context(&sessions, session_id)
+            sessions
+                .get(&key)
                 .ok_or_else(|| CompactionError::new(CompactionFailureCode::SessionUnavailable))?
                 .history_snapshot()
         };
@@ -846,13 +867,7 @@ impl AgentRun {
         &self,
         session_id: &SessionId,
     ) -> Result<RollbackPreview, String> {
-        if self
-            .inner
-            .active_turns
-            .lock()
-            .await
-            .contains_key(session_id)
-        {
+        if any_key_for_session(&*self.inner.active_turns.lock().await, session_id) {
             return Err("interrupt active work before rolling back files".into());
         }
         if sole_session_context(&*self.inner.sessions.read().await, session_id).is_none() {
@@ -870,13 +885,7 @@ impl AgentRun {
         session_id: &SessionId,
         expected_turn_id: &str,
     ) -> Result<RollbackReport, String> {
-        if self
-            .inner
-            .active_turns
-            .lock()
-            .await
-            .contains_key(session_id)
-        {
+        if any_key_for_session(&*self.inner.active_turns.lock().await, session_id) {
             return Err("interrupt active work before rolling back files".into());
         }
         self.inner
@@ -943,10 +952,11 @@ impl AgentRun {
             }
         };
         let key = ctx.key();
-        self.inner.sessions.write().await.insert(key, ctx);
+        self.inner.sessions.write().await.insert(key.clone(), ctx);
         Ok(AuthenticatedSession {
             authority: lease.authority,
             session_id: lease.session_id,
+            agent_instance_id: key.agent_instance_id,
         })
     }
 
@@ -963,12 +973,12 @@ impl AgentRun {
             .write()
             .await
             .remove(session_id);
-        self.inner.context_usage.write().await.remove(session_id);
-        self.inner
-            .turn_context_manifests
-            .write()
-            .await
-            .remove(session_id);
+        remove_session_values(&mut *self.inner.context_usage.write().await, session_id);
+        remove_session_values(
+            &mut *self.inner.turn_context_manifests.write().await,
+            session_id,
+        );
+        remove_session_values(&mut *self.inner.turn_snapshots.write().await, session_id);
         self.inner
             .approval_memory
             .lock()
@@ -1034,12 +1044,13 @@ impl AgentRun {
         &self,
         session_id: &SessionId,
     ) -> Option<RuntimeTurnSnapshot> {
-        self.inner
-            .turn_snapshots
-            .read()
-            .await
-            .get(session_id)
-            .cloned()
+        let snapshots = self.inner.turn_snapshots.read().await;
+        let mut matching = snapshots
+            .iter()
+            .filter(|(key, _)| &key.session_id == session_id)
+            .map(|(_, snapshot)| snapshot);
+        let snapshot = matching.next()?.clone();
+        matching.next().is_none().then_some(snapshot)
     }
 
     /// Return the latest content-free typed context manifest for this
@@ -1065,7 +1076,10 @@ impl AgentRun {
             .turn_context_manifests
             .read()
             .await
-            .get(&session.session_id)
+            .get(&AgentSessionKey::new(
+                session.session_id.clone(),
+                session.agent_instance_id.clone(),
+            ))
             .cloned())
     }
 
@@ -1169,12 +1183,14 @@ impl AgentRun {
                                 .write()
                                 .await
                                 .remove(session_id);
-                            self.inner.context_usage.write().await.remove(session_id);
-                            self.inner
-                                .turn_context_manifests
-                                .write()
-                                .await
-                                .remove(session_id);
+                            remove_session_values(
+                                &mut *self.inner.context_usage.write().await,
+                                session_id,
+                            );
+                            remove_session_values(
+                                &mut *self.inner.turn_context_manifests.write().await,
+                                session_id,
+                            );
                             self.inner
                                 .approval_memory
                                 .lock()
@@ -1290,24 +1306,36 @@ impl AgentRun {
                 // -- Chat messages → spawn as task (M12) --
                 MessageKind::Chat => {
                     let sid = msg.session_id.clone();
-                    {
+                    let key = {
                         let sessions = self.inner.sessions.read().await;
-                        if sole_session_context(&sessions, &sid).is_none() {
+                        let key = if let Recipient::AgentInstance { instance_id, .. } =
+                            &msg.recipient
+                        {
+                            AgentSessionKey::new(sid.clone(), instance_id.clone())
+                        } else {
+                            let Some(key) = sole_session_key(&sessions, &sid) else {
+                                warn!(agent_id = %self.inner.id, %sid, "chat has ambiguous Agent recipient");
+                                continue;
+                            };
+                            key
+                        };
+                        if !sessions.contains_key(&key) {
                             warn!(agent_id = %self.inner.id, %sid, "chat for unknown session");
                             continue;
                         }
-                    }
+                        key
+                    };
 
                     let inner = self.inner.clone();
                     let msg = msg.clone();
-                    let lock = self.get_session_lock(&sid).await;
+                    let lock = self.get_session_lock(&key).await;
 
                     tokio::spawn(async move {
                         let _guard = lock.lock().await;
                         let turn_id = uuid::Uuid::new_v4();
                         let (interrupt, interrupted) = oneshot::channel();
                         inner.active_turns.lock().await.insert(
-                            sid.clone(),
+                            key.clone(),
                             ActiveTurn {
                                 id: turn_id,
                                 interrupt,
@@ -1317,8 +1345,8 @@ impl AgentRun {
                             .handle_message_interruptible(msg, interrupted, turn_id)
                             .await;
                         let mut active = inner.active_turns.lock().await;
-                        if active.get(&sid).is_some_and(|turn| turn.id == turn_id) {
-                            active.remove(&sid);
+                        if active.get(&key).is_some_and(|turn| turn.id == turn_id) {
+                            active.remove(&key);
                         }
                         drop(active);
                         if let Err(e) = result {
@@ -1345,10 +1373,10 @@ impl AgentRun {
     }
 
     /// Get or create a per-session concurrency lock.
-    async fn get_session_lock(&self, sid: &SessionId) -> Arc<Mutex<()>> {
+    async fn get_session_lock(&self, key: &AgentSessionKey) -> Arc<Mutex<()>> {
         let mut locks = self.inner.session_locks.lock().await;
         locks
-            .entry(sid.clone())
+            .entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
@@ -1581,7 +1609,7 @@ impl AgentRunInner {
                 self.id.clone(),
                 session_id.clone(),
             )
-            .with_agent_instance(agent_instance_id);
+            .with_agent_instance(agent_instance_id.clone());
             let mut replacement = Vec::with_capacity(history.len());
             for (index, message) in history.iter().enumerate() {
                 let content = serde_json::to_value(message).map_err(|_| {
@@ -1616,7 +1644,10 @@ impl AgentRunInner {
         session.history = history.to_vec();
         session.updated_at = now_secs();
         drop(sessions);
-        self.context_usage.write().await.remove(session_id);
+        self.context_usage
+            .write()
+            .await
+            .remove(&AgentSessionKey::new(session_id.clone(), agent_instance_id));
         Ok(())
     }
 

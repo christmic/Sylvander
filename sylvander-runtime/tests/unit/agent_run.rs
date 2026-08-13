@@ -187,6 +187,7 @@ impl AgentRun {
     fn authenticated_session_for_test(&self, session_id: SessionId) -> AuthenticatedSession {
         AuthenticatedSession {
             authority: self.inner.session_authority.clone(),
+            agent_instance_id: AgentInstanceId::new(format!("moderator:{session_id}")),
             session_id,
         }
     }
@@ -223,6 +224,13 @@ fn direct_turn(
         snapshot,
     );
     (request, ports)
+}
+
+fn test_agent_key(session_id: &SessionId) -> AgentSessionKey {
+    AgentSessionKey::new(
+        session_id.clone(),
+        AgentInstanceId::new(format!("moderator:{session_id}")),
+    )
 }
 
 #[test]
@@ -2236,7 +2244,7 @@ async fn manual_compaction_failures_are_typed_before_string_facade() {
     );
     let (interrupt, _receiver) = oneshot::channel();
     run.inner.active_turns.lock().await.insert(
-        session_id.clone(),
+        test_agent_key(&session_id),
         ActiveTurn {
             id: uuid::Uuid::new_v4(),
             interrupt,
@@ -2615,7 +2623,7 @@ async fn active_turn_snapshot_is_typed_and_session_scoped() {
         .turn_snapshots
         .write()
         .await
-        .insert(session_id.clone(), expected.clone());
+        .insert(test_agent_key(&session_id), expected.clone());
 
     assert_eq!(run.active_turn_snapshot(&session_id).await, Some(expected));
     assert_eq!(
@@ -2779,7 +2787,7 @@ async fn context_report_separates_window_usage_from_cumulative_accounting() {
         .expect("session")
         .append_user_message(ChatMessage::user("hello"));
     run.inner.context_usage.write().await.insert(
-        session_id.clone(),
+        test_agent_key(&session_id),
         ContextUsage {
             used: 1_250,
             cache_read: 900,
@@ -3143,14 +3151,14 @@ async fn interrupt_is_scoped_to_the_selected_session() {
     let (interrupt_a, interrupted_a) = oneshot::channel();
     let (interrupt_b, mut interrupted_b) = oneshot::channel();
     run.inner.active_turns.lock().await.insert(
-        session_a.clone(),
+        test_agent_key(&session_a),
         ActiveTurn {
             id: uuid::Uuid::new_v4(),
             interrupt: interrupt_a,
         },
     );
     run.inner.active_turns.lock().await.insert(
-        session_b,
+        test_agent_key(&session_b),
         ActiveTurn {
             id: uuid::Uuid::new_v4(),
             interrupt: interrupt_b,
@@ -4020,6 +4028,7 @@ async fn one_session_can_hold_multiple_agent_contexts_without_implicit_selection
         .build()
         .unwrap();
     let session_id = SessionId::new("multi-agent-contexts");
+    let mut keys = Vec::new();
     for instance in ["moderator", "worker"] {
         let context = SessionContext::new(
             session_id.clone(),
@@ -4031,11 +4040,34 @@ async fn one_session_can_hold_multiple_agent_contexts_without_implicit_selection
             .write()
             .await
             .insert(context.key(), context);
+        keys.push(AgentSessionKey::new(
+            session_id.clone(),
+            AgentInstanceId::new(instance),
+        ));
     }
 
     assert_eq!(run.list_sessions().await, vec![session_id.clone()]);
     assert!(run.get_session(&session_id).await.is_none());
     assert_eq!(run.inner.sessions.read().await.len(), 2);
+    let moderator_lock = run.get_session_lock(&keys[0]).await;
+    let worker_lock = run.get_session_lock(&keys[1]).await;
+    assert!(!Arc::ptr_eq(&moderator_lock, &worker_lock));
+
+    for (index, key) in keys.into_iter().enumerate() {
+        run.inner.turn_snapshots.write().await.insert(
+            key,
+            RuntimeTurnSnapshot {
+                turn_id: format!("turn-{index}"),
+                state: sylvander_agent::turn::machine::TurnSnapshot {
+                    sequence: 0,
+                    iteration: 0,
+                    phase: sylvander_agent::turn::machine::TurnPhase::Created,
+                    continuation: None,
+                },
+            },
+        );
+    }
+    assert!(run.active_turn_snapshot(&session_id).await.is_none());
 }
 
 #[tokio::test]

@@ -385,7 +385,18 @@ impl AgentRunInner {
     }
 
     pub(super) async fn interrupt_turn(&self, session_id: &SessionId) {
-        if let Some(turn) = self.active_turns.lock().await.remove(session_id) {
+        let turns = {
+            let mut active = self.active_turns.lock().await;
+            let keys = active
+                .keys()
+                .filter(|key| &key.session_id == session_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| active.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        for turn in turns {
             let _ = turn.interrupt.send(());
         }
     }
@@ -470,6 +481,10 @@ impl AgentRunInner {
     {
         let correlation = TurnCorrelation::new(&msg, turn_id);
         let session_id = msg.session_id.clone();
+        let agent_key = AgentSessionKey::new(
+            session_id.clone(),
+            turn_agent_instance_id(&msg, &session_id)?,
+        );
         let span = tracing::info_span!(
             "agent_turn",
             agent_id = %self.id,
@@ -547,7 +562,7 @@ impl AgentRunInner {
                     | AgentRunError::Configuration(_) => {}
                 }
             }
-            self.turn_snapshots.write().await.remove(&session_id);
+            self.turn_snapshots.write().await.remove(&agent_key);
             info!(succeeded = result.is_ok(), "turn finished");
             result
         }
@@ -886,10 +901,10 @@ impl AgentRunInner {
                     succeeded: true,
                 });
         }
-        self.turn_context_manifests
-            .write()
-            .await
-            .insert(session_id.clone(), context_manifest);
+        self.turn_context_manifests.write().await.insert(
+            AgentSessionKey::new(session_id.clone(), agent_instance_id.clone()),
+            context_manifest,
+        );
         let history = {
             let mut sessions = self.sessions.write().await;
             let ctx = sessions
@@ -1144,7 +1159,7 @@ impl AgentRunInner {
             match event {
                 sylvander_agent::turn::event::AgentEvent::TurnTransition(transition) => {
                     self.turn_snapshots.write().await.insert(
-                        session_id.clone(),
+                        AgentSessionKey::new(session_id.clone(), agent_instance_id.clone()),
                         RuntimeTurnSnapshot {
                             turn_id: turn_id.to_owned(),
                             state: transition.into(),
@@ -1692,7 +1707,7 @@ impl AgentRunInner {
                         model_invocation = None;
                     }
                     self.context_usage.write().await.insert(
-                        session_id.clone(),
+                        AgentSessionKey::new(session_id.clone(), agent_instance_id.clone()),
                         ContextUsage {
                             used: u32::try_from(provider_usage.total_input_tokens())
                                 .unwrap_or(u32::MAX),
