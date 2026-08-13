@@ -47,7 +47,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `Welcome` | complete, native-owned | none |
 | `ProtocolError` | complete, native-owned | public code/message/version range; transport details remain generic |
 | `SessionCreated`, `SessionsList`, `SessionUpdated`, `SessionDeleted` | complete | restore/fork events use existing shapes |
-| `SessionHistory` | partial | recovery notice/truncation complete; usage and source remain |
+| `SessionHistory` | complete | messages, usage, cost, source, recovery notice, and truncation |
 | `TextDelta`, `ThinkingDelta`, `ToolOutputDelta` | complete | visual progressive disclosure |
 | `ToolCall`, `ToolResult`, `ToolRejected` | complete | bounded expandable tool input/details |
 | `Done`, `Error`, `TurnInterrupted` | complete | feedback target |

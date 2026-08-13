@@ -379,12 +379,19 @@ describe("Sylvander Work", () => {
         type: "session_history",
         session: { id: "session-1", label: "Recovery", workspace: "/workspace", last_seen_secs: 1 },
         messages: [{ role: "assistant", text: "Recovered history" }],
+        iterations: 3,
+        input_tokens: 120,
+        output_tokens: 30,
+        cost_nano_usd: 2_500_000,
+        source_session_id: "source-session",
         recovery: true,
         replay_truncated: true,
         notice: "Some in-flight events were truncated",
       } }));
       expect(screen.getByText("Some in-flight events were truncated")).toBeTruthy();
       expect(screen.getByText("Recovered history")).toBeTruthy();
+      act(() => screen.getByRole("button", { name: /^Plan / }).click());
+      expect(screen.getByText(/3 iterations · 150 tokens · \$0\.002500 · fork of source-s/)).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

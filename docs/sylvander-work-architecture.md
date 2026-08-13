@@ -221,6 +221,11 @@ a public notice, and `replay_truncated` marks it failed-visible before the Unix/
 WebSocket relay resumes buffered in-flight events. Initial selection continues
 to use `LoadSession`.
 
+Session history also projects Runtime's iteration count, input/output tokens,
+optional nano-USD cost, and source Session identity. These are read-only run
+artifacts: the inspector formats them for display, clears them on selection
+change/removal, and never recomputes provider usage or price locally.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled

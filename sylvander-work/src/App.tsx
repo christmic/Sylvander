@@ -265,7 +265,7 @@ export default function App({ gateway }: AppProps) {
       {inspector === "plan" && state.activePlan && <form className="plan-editor" onSubmit={(event) => void revisePlan(event)}><fieldset><legend>Revise plan</legend>{planRevision.map((step, index) => <label key={index}>Step {index + 1}<input value={step} onChange={(event) => updatePlanStep(index, event.target.value)} /></label>)}</fieldset><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "rejected", reason: "cancelled by user" })}>Reject plan</button><button type="submit" className="secondary-button" disabled={planRevision.every((step) => !step.trim())}>Submit revision</button><button type="button" className="primary-button" onClick={() => void resolvePlan(state.activePlan!.planId, { decision: "approved" })}>Approve plan</button></div></form>}
       {inspector === "tasks" && <div className="task-list">{state.tasks.map((task) => <article key={task.id}><span className={`presence ${task.state}`} /><div><strong>{task.purpose}</strong><p>{task.owner} · {task.state}{task.detail ? ` · ${task.detail}` : ""}</p></div>{task.state === "running" && <button className="secondary-button" onClick={() => void cancelTask(task.id)}>Cancel</button>}</article>)}</div>}
       {inspector === "changes" && <div className="empty-inspector"><span>±</span><h3>No reviewable diff</h3><p>Runtime-owned changes will appear here.</p></div>}
-      <footer className="inspector-summary"><span>Protocol</span><strong>{state.protocol ? `v${state.protocol.version}` : "—"}</strong><div><span style={{ width: state.connection === "live" ? "100%" : "0%" }} /></div></footer>
+      <footer className="inspector-summary"><span>{state.sessionStats ? `${state.sessionStats.iterations} iterations · ${state.sessionStats.inputTokens + state.sessionStats.outputTokens} tokens${state.sessionStats.costNanoUsd === undefined ? "" : ` · ${formatCost(state.sessionStats.costNanoUsd)}`}${state.sessionStats.sourceSessionId ? ` · fork of ${state.sessionStats.sourceSessionId.slice(0, 8)}` : ""}` : "Protocol"}</span><strong>{state.protocol ? `v${state.protocol.version}` : "—"}</strong><div><span style={{ width: state.connection === "live" ? "100%" : "0%" }} /></div></footer>
     </aside>}
     <div className="sr-only" aria-live="polite">{connectionLabel(state.connection)}</div>
   </div>;
@@ -293,4 +293,8 @@ function approvalScopeLabel(scope: ApprovalScope) {
     case "session": return "Allow for Session";
     case "persistent": return "Always allow";
   }
+}
+
+function formatCost(costNanoUsd: number) {
+  return `$${(costNanoUsd / 1_000_000_000).toFixed(6)}`;
 }

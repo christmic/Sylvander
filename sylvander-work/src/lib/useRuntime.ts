@@ -17,6 +17,13 @@ export interface RuntimeViewState {
   agents: Array<{ id: string; name: string; providerId: string; modelId: string }>;
   sessions: SessionSummary[];
   selectedId?: string;
+  sessionStats?: {
+    iterations: number;
+    inputTokens: number;
+    outputTokens: number;
+    costNanoUsd?: number;
+    sourceSessionId?: string;
+  };
   transcript: TranscriptEntry[];
   plan: PlanStep[];
   activePlan?: { sessionId: string; planId: string };
@@ -157,6 +164,13 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         if (message.session.id !== selectedRef.current) break;
         setState((current) => ({
           ...current,
+          sessionStats: {
+            iterations: message.iterations ?? 0,
+            inputTokens: message.input_tokens ?? 0,
+            outputTokens: message.output_tokens ?? 0,
+            costNanoUsd: message.cost_nano_usd,
+            sourceSessionId: message.source_session_id,
+          },
           transcript: [
             ...(message.notice ? [{
               id: "history-notice",
@@ -180,6 +194,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           transcript: [],
           plan: [],
           tasks: [],
+          sessionStats: undefined,
         }));
         void submit({ type: "list_sessions" });
         void submit({ type: "load_session", session_id: message.session_id });
@@ -194,6 +209,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             transcript: current.selectedId === message.session_id ? [] : current.transcript,
             plan: current.selectedId === message.session_id ? [] : current.plan,
             tasks: current.selectedId === message.session_id ? [] : current.tasks,
+            sessionStats: current.selectedId === message.session_id ? undefined : current.sessionStats,
           }));
         } else {
           setState((current) => ({
@@ -213,6 +229,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           transcript: current.selectedId === message.session_id ? [] : current.transcript,
           plan: current.selectedId === message.session_id ? [] : current.plan,
           tasks: current.selectedId === message.session_id ? [] : current.tasks,
+          sessionStats: current.selectedId === message.session_id ? undefined : current.sessionStats,
         }));
         break;
       case "operation_error":
@@ -539,6 +556,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       ...current,
       selectedId: sessionId,
       transcript: [],
+      sessionStats: undefined,
       plan: [],
       activePlan: undefined,
       tasks: [],
