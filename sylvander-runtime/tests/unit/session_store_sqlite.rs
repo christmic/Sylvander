@@ -10,6 +10,7 @@ use crate::session::membership::{SessionGovernance, SessionMembership};
 use crate::storage::agent_instance::{AgentInstanceConfig, AgentInstanceStore};
 use crate::storage::session::{
     ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryReason,
+    PerceptionRecoveryClassification,
 };
 use crate::storage::workspace_journal::WorkspaceJournal;
 
@@ -1322,6 +1323,154 @@ async fn boot_recovery_reconciles_committed_workspace_effect_without_replay() {
     assert_eq!(
         calls[0].recovery_decision,
         Some(ToolRecoveryDecision::ManualReconciliation),
+    );
+}
+
+#[tokio::test]
+async fn perception_positions_recover_from_receipt_and_survive_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("perception.sqlite3");
+    let store = SqliteSessionStore::open(&path).await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    persist_turn_member(&store, &session, &effective_config()).await;
+    store
+        .begin_turn(
+            &turn_ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-perception".into(),
+                agent_instance_id: turn_instance(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role":"user","content":"inspect image"}),
+                model_id: "primary".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let invocation_id = PerceptionInvocationId::new();
+    store
+        .begin_perception(PerceptionInvocationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-perception".into(),
+            agent_instance_id: turn_instance(),
+            invocation_id: invocation_id.clone(),
+            modality: crate::agent::perception::PerceptionModality::Image,
+            role: crate::agent::cognition::CognitiveRole::Vision,
+            provider_id: "provider".into(),
+            model_id: "vision".into(),
+            recovery_policy: PerceptionRecoveryPolicy::RecoverFromReceipt,
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            input_digest: format!("sha256:{}", "b".repeat(64)),
+            input_bytes: 1024,
+        })
+        .await
+        .unwrap();
+    let media_locator = format!("artifact:{}", uuid::Uuid::new_v4());
+    assert_eq!(
+        store
+            .persist_perception_media(PerceptionMediaPersistence {
+                invocation_id: invocation_id.clone(),
+                expected_revision: 0,
+                artifact_locator: media_locator.clone(),
+            })
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .advance_perception(PerceptionAdvance {
+                invocation_id: invocation_id.clone(),
+                expected_revision: 1,
+                expected_position: PerceptionExecutionPosition::MediaPersisted,
+                next_position: PerceptionExecutionPosition::InferenceStarted,
+            })
+            .await
+            .unwrap(),
+        2
+    );
+    let interrupted = store.interrupted_perception_invocations().await.unwrap();
+    assert_eq!(interrupted.len(), 1);
+    let classification = PerceptionRecoveryClassification::for_interrupted(
+        interrupted[0].position,
+        interrupted[0].recovery_policy,
+    );
+    assert_eq!(
+        classification.decision,
+        PerceptionRecoveryDecision::RecoverReceipt
+    );
+    assert_eq!(
+        store
+            .classify_perception_recovery(PerceptionRecoveryWrite {
+                invocation_id: invocation_id.clone(),
+                expected_revision: 2,
+                recovery_owner: "boot-perception".into(),
+                observed_at: 1_000,
+                lease_expires_at: 1_030,
+                classification,
+            })
+            .await
+            .unwrap(),
+        3
+    );
+    let receipt_locator = format!("artifact:{}", uuid::Uuid::new_v4());
+    store
+        .persist_perception_receipt(PerceptionReceiptPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 3,
+            receipt_locator: receipt_locator.clone(),
+        })
+        .await
+        .unwrap();
+    let output_locator = format!("artifact:{}", uuid::Uuid::new_v4());
+    store
+        .persist_perception_artifact(PerceptionArtifactPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 4,
+            artifact_locator: output_locator.clone(),
+            output_digest: format!("sha256:{}", "c".repeat(64)),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store.complete_perception(&invocation_id, 5).await.unwrap(),
+        6
+    );
+    assert!(
+        store
+            .interrupted_perception_invocations()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(store);
+
+    let reopened = SqliteSessionStore::open(path).await.unwrap();
+    let invocations = reopened
+        .perception_invocations(&session.id, "turn-perception")
+        .await
+        .unwrap();
+    let [snapshot] = invocations.as_slice() else {
+        panic!("one durable perception invocation must survive restart");
+    };
+    assert_eq!(
+        snapshot.position,
+        PerceptionExecutionPosition::ResultPersisted
+    );
+    assert_eq!(
+        snapshot.media_artifact_locator.as_deref(),
+        Some(media_locator.as_str())
+    );
+    assert_eq!(
+        snapshot.receipt_locator.as_deref(),
+        Some(receipt_locator.as_str())
+    );
+    assert_eq!(
+        snapshot.output_artifact_locator.as_deref(),
+        Some(output_locator.as_str())
     );
 }
 

@@ -2031,7 +2031,7 @@ impl SessionStore for SqliteSessionStore {
         start: PerceptionInvocationStart,
     ) -> Result<(), SessionStoreError> {
         if start.input_bytes == 0 {
-            return Err(SessionStoreError::InvalidData(
+            return Err(SessionStoreError::Invalid(
                 "perception input bytes must be greater than zero".into(),
             ));
         }
