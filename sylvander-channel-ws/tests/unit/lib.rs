@@ -53,6 +53,138 @@ struct ControlHost {
     history: sylvander_api::UiSessionHistory,
 }
 
+struct RuntimeOperationsHost;
+
+#[async_trait]
+impl ChannelHost for RuntimeOperationsHost {
+    async fn authorize_message(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &ClientMsg,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        Ok(())
+    }
+
+    async fn discover_agents(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+    ) -> Result<Vec<sylvander_api::AgentDescriptor>, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn create_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionCreateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn session_config(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn update_session_config(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::SessionConfigUpdateRequest,
+    ) -> Result<sylvander_api::SessionConfigState, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn submit_feedback(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: sylvander_api::RunFeedback,
+    ) -> Result<String, sylvander_api::BoundaryError> {
+        unreachable!()
+    }
+
+    async fn context_report(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::ContextReport, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::ContextReport {
+            model: "model".into(),
+            context_window: 100,
+            used_tokens: 40,
+            remaining_tokens: 60,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            sources: Vec::new(),
+        })
+    }
+
+    async fn compact_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::CompactionReport, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::CompactionReport {
+            automatic: false,
+            removed_messages: 2,
+            condensed_blocks: 1,
+            freed_tokens: 20,
+            summary: Some("summary".into()),
+        })
+    }
+
+    async fn preview_workspace_rollback(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::WorkspaceRollbackPreview, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::WorkspaceRollbackPreview {
+            turn_id: "turn-1".into(),
+            files: vec!["file.txt".into()],
+        })
+    }
+
+    async fn rollback_workspace(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+        expected_turn_id: &str,
+    ) -> Result<sylvander_api::WorkspaceRollbackReport, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::WorkspaceRollbackReport {
+            turn_id: expected_turn_id.into(),
+            restored: vec!["file.txt".into()],
+        })
+    }
+
+    async fn inspect_coding_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<sylvander_api::CodingSessionDiff, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::CodingSessionDiff {
+            status: "ready".into(),
+            patch: "diff".into(),
+        })
+    }
+
+    async fn accept_coding_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        Ok(())
+    }
+
+    async fn discard_coding_session(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<(), sylvander_api::BoundaryError> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl ChannelHost for ControlHost {
     async fn authorize_message(
@@ -194,6 +326,7 @@ fn session_history() -> sylvander_api::UiSessionHistory {
             label: "Branched".into(),
             workspace: "/workspace".into(),
             last_seen_secs: 7,
+            archived: false,
         },
         messages: vec![sylvander_api::UiHistoryMessage {
             role: "user".into(),
@@ -392,6 +525,7 @@ impl ChannelHost for SessionConfigHost {
     async fn list_sessions(
         &self,
         _: &sylvander_api::BoundaryContext,
+        include_archived: bool,
     ) -> Result<Vec<sylvander_api::UiSessionInfo>, sylvander_api::BoundaryError> {
         let mut sessions = self
             .states
@@ -403,6 +537,7 @@ impl ChannelHost for SessionConfigHost {
                 label: format!("Session {id}"),
                 workspace: "/workspace".into(),
                 last_seen_secs: 7,
+                archived: include_archived && id == "session-b",
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| left.id.cmp(&right.id));
@@ -437,6 +572,34 @@ impl ChannelHost for SessionConfigHost {
             default_prompt_profile: None,
             agent_workspace: None,
         }])
+    }
+
+    async fn runtime_snapshot(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        agent_id: &AgentId,
+        _: Option<&SessionId>,
+    ) -> Result<sylvander_api::RuntimeUiSnapshot, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::RuntimeUiSnapshot {
+            agent_id: agent_id.clone(),
+            model: sylvander_api::ModelSelection {
+                provider_id: "test".into(),
+                model_id: "default-model".into(),
+            },
+            reasoning_effort: sylvander_api::ReasoningEffort::Off,
+            models: self
+                .discover_agents(&sylvander_api::BoundaryContext::unauthenticated(
+                    "test", "test", "test",
+                ))
+                .await?
+                .remove(0)
+                .models,
+            permissions: sylvander_api::PermissionProfile::default(),
+            capabilities: 0,
+            approval_enabled: true,
+            max_request_bytes: 4096,
+            platform: sylvander_api::PlatformSnapshot::default(),
+        })
     }
 
     async fn create_session(
@@ -622,7 +785,9 @@ async fn list_sessions_dispatches_to_runtime_channel_host_and_returns_typed_rows
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     handle_client_msg(
-        ClientMsg::ListSessions,
+        ClientMsg::ListSessions {
+            include_archived: false,
+        },
         &context,
         &AgentId::new("agent-1"),
         &tx,
@@ -633,9 +798,46 @@ async fn list_sessions_dispatches_to_runtime_channel_host_and_returns_typed_rows
 
     assert!(matches!(
         rx.recv().await,
-        Some(ServerMsg::SessionsList { sessions })
+        Some(ServerMsg::SessionsList { include_archived: false, sessions })
             if sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>()
                 == ["session-a", "session-b"]
+    ));
+}
+
+#[tokio::test]
+async fn runtime_info_dispatches_to_the_runtime_owned_snapshot() {
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(Arc::new(SessionConfigHost {
+            states: Mutex::new(HashMap::new()),
+        })),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    handle_client_msg(
+        ClientMsg::GetRuntimeInfo {
+            agent_id: AgentId::new("agent-1"),
+        },
+        &context,
+        &AgentId::new("agent-1"),
+        &tx,
+        &principal,
+        "websocket-test",
+    )
+    .await;
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::RuntimeInfo { snapshot })
+            if snapshot.agent_id == AgentId::new("agent-1")
+                && snapshot.model.provider_id == "test"
+                && snapshot.max_request_bytes == 4096
     ));
 }
 
@@ -812,6 +1014,237 @@ async fn session_lifecycle_dispatches_and_returns_protocol_events() {
             "fork:session-1:Some(1):false",
         ]
     );
+}
+
+#[tokio::test]
+async fn reattach_returns_durable_history_then_buffered_live_events() {
+    let host = Arc::new(ControlHost {
+        received: Mutex::new(Vec::new()),
+        lifecycle: Mutex::new(Vec::new()),
+        history: session_history(),
+    });
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(host),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let relay = Arc::new(Mutex::new(RelayHub::default()));
+    let clients = Arc::new(Mutex::new(HashMap::new()));
+    let session_id = SessionId::new("session-2");
+    relay.lock().await.replay.insert(
+        session_id.clone(),
+        SessionReplay {
+            active: true,
+            ..SessionReplay::default()
+        },
+    );
+    relay_event(
+        &relay,
+        &clients,
+        &session_id,
+        ServerMsg::TextDelta {
+            session_id: session_id.0.clone(),
+            delta: "live".into(),
+        },
+    )
+    .await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    clients.lock().await.insert(2, tx.clone());
+
+    handle_client_msg_for_client(
+        ClientMsg::ReattachSession {
+            session_id: session_id.0.clone(),
+        },
+        ClientHandler {
+            ctx: &context,
+            agent_id: &AgentId::new("agent-1"),
+            tx: &tx,
+            principal: &principal,
+            instance_id: "websocket-test",
+            relay: Some(ClientRelay {
+                hub: &relay,
+                client_id: 2,
+                clients: &clients,
+            }),
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::SessionHistory {
+            recovery: true,
+            replay_truncated: false,
+            ..
+        })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::TextDelta { delta, .. }) if delta == "live"
+    ));
+}
+
+#[tokio::test]
+async fn reattach_reports_when_one_live_event_exceeds_the_replay_bound() {
+    let host = Arc::new(ControlHost {
+        received: Mutex::new(Vec::new()),
+        lifecycle: Mutex::new(Vec::new()),
+        history: session_history(),
+    });
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(host),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let relay = Arc::new(Mutex::new(RelayHub::default()));
+    let clients = Arc::new(Mutex::new(HashMap::new()));
+    let session_id = SessionId::new("session-2");
+    relay.lock().await.replay.insert(
+        session_id.clone(),
+        SessionReplay {
+            active: true,
+            ..SessionReplay::default()
+        },
+    );
+    relay_event(
+        &relay,
+        &clients,
+        &session_id,
+        ServerMsg::TextDelta {
+            session_id: session_id.0.clone(),
+            delta: "x".repeat(4 * 1024 * 1024 + 1),
+        },
+    )
+    .await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    handle_client_msg_for_client(
+        ClientMsg::ReattachSession {
+            session_id: session_id.0,
+        },
+        ClientHandler {
+            ctx: &context,
+            agent_id: &AgentId::new("agent-1"),
+            tx: &tx,
+            principal: &principal,
+            instance_id: "websocket-test",
+            relay: Some(ClientRelay {
+                hub: &relay,
+                client_id: 2,
+                clients: &clients,
+            }),
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::SessionHistory {
+            recovery: true,
+            replay_truncated: true,
+            ..
+        })
+    ));
+    assert!(
+        rx.try_recv().is_err(),
+        "oversized event must not be replayed"
+    );
+}
+
+#[tokio::test]
+async fn runtime_session_operations_dispatch_through_the_channel_host() {
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(Arc::new(RuntimeOperationsHost)),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let requests = [
+        ClientMsg::GetContext {
+            session_id: Some("session-1".into()),
+        },
+        ClientMsg::Compact {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::PreviewWorkspaceRollback {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::RollbackWorkspace {
+            session_id: "session-1".into(),
+            expected_turn_id: "turn-1".into(),
+        },
+        ClientMsg::InspectCodingSession {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::AcceptCodingSession {
+            session_id: "session-1".into(),
+        },
+        ClientMsg::DiscardCodingSession {
+            session_id: "session-1".into(),
+        },
+    ];
+    for request in requests {
+        handle_client_msg(
+            request,
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+    }
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::ContextReport { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CompactionStarted {
+            automatic: false,
+            ..
+        })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CompactionCompleted { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::WorkspaceRollbackPreview { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::WorkspaceRollbackCompleted { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CodingSessionDiff { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CodingSessionAccepted { .. })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::CodingSessionDiscarded { .. })
+    ));
 }
 
 fn hello(version: u16) -> ClientMsg {
@@ -1439,6 +1872,7 @@ async fn websocket_upgrade_uses_live_rotating_bearer_lease() {
         )),
         agent_id: AgentId::new("agent"),
         clients: Arc::new(Mutex::new(HashMap::new())),
+        relay: Arc::new(Mutex::new(RelayHub::default())),
         next_id: Arc::new(Mutex::new(0)),
         instance_id: "ws-primary".into(),
         auth: Some(WsAuth {
@@ -1530,6 +1964,7 @@ async fn authentication_rejection_uses_runtime_status() {
         )),
         agent_id: AgentId::new("private-agent"),
         clients: Arc::new(Mutex::new(HashMap::new())),
+        relay: Arc::new(Mutex::new(RelayHub::default())),
         next_id: Arc::new(Mutex::new(0)),
         instance_id: "ws-private".into(),
         auth: None,

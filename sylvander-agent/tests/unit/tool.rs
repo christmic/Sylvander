@@ -464,7 +464,7 @@ async fn mock_tool_error_response() {
 }
 
 #[tokio::test]
-async fn hooks_report_lifecycle_and_block_before_tool_execution() {
+async fn hooks_cannot_bypass_the_prepared_process_sandbox_requirement() {
     let directory = tempfile::tempdir().unwrap();
     let inner = MockTool::new("write", "write", ToolOutput::ok("written"));
     let observed = inner.clone();
@@ -505,9 +505,7 @@ async fn hooks_report_lifecycle_and_block_before_tool_execution() {
     );
     assert_eq!(observed.call_count(), 0);
     let lifecycle = deltas.lock().unwrap().join("");
-    assert!(lifecycle.contains("hook lint · before_tool · running"));
-    assert!(lifecycle.contains("hook lint · before_tool · passed"));
-    assert!(lifecycle.contains("hook policy · before_tool · blocked · exit 7"));
+    assert!(lifecycle.is_empty());
     let features = registry.platform_features();
     assert_eq!(features.len(), 2);
     assert_eq!(features[1].status, ToolSourceStatus::Configured);
@@ -572,7 +570,7 @@ async fn blocking_after_tool_hook_rejects_an_already_executed_result() {
 }
 
 #[tokio::test]
-async fn turn_hook_entry_runs_only_the_requested_phase() {
+async fn turn_hook_fails_closed_before_host_process_execution() {
     let directory = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::new().with_hooks(vec![
         ToolHookConfig {
@@ -592,14 +590,12 @@ async fn turn_hook_entry_runs_only_the_requested_phase() {
     ]);
     let context = ctx().with_fs_root(directory.path());
 
-    registry
+    let error = registry
         .run_turn_hooks(AgentHookPhase::BeforeTurn, &context)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(
-        std::fs::read_to_string(directory.path().join("before-turn")).unwrap(),
-        "before"
-    );
+    assert_eq!(error.hook_name, "before");
+    assert!(!directory.path().join("before-turn").exists());
     assert!(!directory.path().join("after-turn").exists());
 }

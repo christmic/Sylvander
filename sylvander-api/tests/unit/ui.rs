@@ -1,5 +1,5 @@
 use super::{UiClientMessage, UiServerMessage};
-use crate::{PermissionProfile, ReasoningEffort};
+use crate::{AgentId, PermissionProfile, ReasoningEffort, RuntimeUiSnapshot};
 
 #[test]
 fn minimal_chat_uses_current_optional_defaults() {
@@ -47,30 +47,70 @@ fn runtime_info_requires_a_provider_qualified_model() {
     assert!(
         serde_json::from_value::<UiServerMessage>(serde_json::json!({
             "type": "runtime_info",
-            "model": "shared",
-            "capabilities": 0,
-            "approval_enabled": false,
-            "max_attachment_bytes": 1024
+            "snapshot": {"model": "shared"}
         }))
         .is_err()
     );
 
     let qualified = UiServerMessage::RuntimeInfo {
-        model: crate::ModelSelection {
-            provider_id: "openai".into(),
-            model_id: "shared".into(),
+        snapshot: RuntimeUiSnapshot {
+            agent_id: AgentId::new("agent-1"),
+            model: crate::ModelSelection {
+                provider_id: "openai".into(),
+                model_id: "shared".into(),
+            },
+            reasoning_effort: ReasoningEffort::Off,
+            models: Vec::new(),
+            permissions: PermissionProfile::default(),
+            capabilities: 0,
+            approval_enabled: false,
+            max_request_bytes: 1024,
+            platform: crate::PlatformSnapshot::default(),
         },
-        reasoning_effort: ReasoningEffort::Off,
-        models: Vec::new(),
-        permissions: PermissionProfile::default(),
-        capabilities: 0,
-        approval_enabled: false,
-        max_attachment_bytes: 1024,
-        platform: crate::PlatformSnapshot::default(),
     };
     let value = serde_json::to_value(qualified).unwrap();
-    assert_eq!(value["model"]["provider_id"], "openai");
-    assert_eq!(value["model"]["model_id"], "shared");
+    assert_eq!(value["snapshot"]["model"]["provider_id"], "openai");
+    assert_eq!(value["snapshot"]["model"]["model_id"], "shared");
+    assert_eq!(value["snapshot"]["max_request_bytes"], 1024);
+    assert!(value["snapshot"].get("max_attachment_bytes").is_none());
+}
+
+#[test]
+fn runtime_and_session_queries_are_explicit() {
+    let runtime: UiClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "get_runtime_info",
+        "agent_id": "agent-1"
+    }))
+    .unwrap();
+    assert!(matches!(
+        runtime,
+        UiClientMessage::GetRuntimeInfo { agent_id } if agent_id == AgentId::new("agent-1")
+    ));
+
+    let active: UiClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "list_sessions",
+        "include_archived": false
+    }))
+    .unwrap();
+    assert!(matches!(
+        active,
+        UiClientMessage::ListSessions {
+            include_archived: false
+        }
+    ));
+    let archived = UiServerMessage::SessionsList {
+        include_archived: true,
+        sessions: vec![crate::UiSessionInfo {
+            id: "session-1".into(),
+            label: "Archived".into(),
+            workspace: "/workspace".into(),
+            last_seen_secs: 1,
+            archived: true,
+        }],
+    };
+    let value = serde_json::to_value(archived).unwrap();
+    assert_eq!(value["include_archived"], true);
+    assert_eq!(value["sessions"][0]["archived"], true);
 }
 
 #[test]

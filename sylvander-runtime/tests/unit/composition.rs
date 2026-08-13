@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
+use crate::execution::ExecutionTargetKind;
 use crate::observability::RuntimeObservability;
 use crate::storage::session::SqliteSessionStore;
 use sylvander_agent::tools::InMemoryMemoryStore;
@@ -79,6 +80,18 @@ fn config_capability_mapping_uses_domain_aliases_and_fails_closed() {
     let error = model_capabilities(&model).unwrap_err();
     assert!(!error.to_string().contains(raw));
     assert!(!format!("{error:?}").contains(raw));
+}
+
+#[test]
+fn macos_execution_selection_is_sandbox_first_and_fallback_is_explicit() {
+    let sandbox = select_macos_execution_target("native", true, true).unwrap();
+    assert_eq!(sandbox.kind, ExecutionTargetKind::MacosSeatbelt);
+    assert!(!sandbox.local_fallback);
+
+    assert!(select_macos_execution_target("native", false, false).is_err());
+    let fallback = select_macos_execution_target("native", true, false).unwrap();
+    assert_eq!(fallback.kind, ExecutionTargetKind::Local);
+    assert!(fallback.local_fallback);
 }
 
 fn versioned_config() -> ServerConfig {

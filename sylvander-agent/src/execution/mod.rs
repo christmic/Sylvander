@@ -3,5 +3,6 @@
 pub mod artifact;
 pub mod mutation_journal;
 pub mod ports;
+pub mod risk;
 pub mod tool_context;
 pub mod workspace;

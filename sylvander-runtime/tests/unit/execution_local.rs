@@ -62,7 +62,7 @@ async fn local_executor_contract_covers_bounded_files_queries_and_commands() {
         .await
         .unwrap();
     assert_eq!(command.stdout, b"ready");
-    assert!(!executor.process_isolation().enforces_sandbox());
+    assert!(!executor.process_isolation().enforces_process_sandbox());
 }
 
 #[tokio::test]

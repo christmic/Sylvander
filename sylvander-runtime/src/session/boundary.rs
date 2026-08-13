@@ -42,6 +42,10 @@ impl BoundaryGuard {
         }
     }
 
+    pub(crate) const fn max_request_bytes(&self) -> usize {
+        self.settings.max_request_bytes
+    }
+
     pub(crate) async fn check(
         &self,
         boundary: &BoundaryContext,

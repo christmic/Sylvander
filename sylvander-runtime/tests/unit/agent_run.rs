@@ -864,8 +864,9 @@ impl FailingSessionStore {
 impl SessionStore for FailingSessionStore {
     async fn list_persistent(
         &self,
+        include_archived: bool,
     ) -> Result<Vec<StoredSession>, crate::storage::session::SessionStoreError> {
-        self.inner.list_persistent().await
+        self.inner.list_persistent(include_archived).await
     }
 
     async fn save(
@@ -2403,6 +2404,7 @@ async fn approval_timeout_rejects_and_clears_the_pending_request() {
             ToolInvocationClass::FilesystemMutation,
             ToolExecutionMode::Exclusive,
             ToolExecutionPolicy::workspace_write(),
+            sylvander_agent::risk::CommandRiskAssessment::routine(),
         ),
     };
     let task = tokio::spawn(async move { gate.check_batch(&[request]).await });
@@ -2639,7 +2641,13 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         .expect("build");
 
     let initial = run.runtime_model_info().await;
-    assert_eq!(initial.current_model, "claude-sonnet-5-20260601");
+    assert_eq!(
+        initial.current,
+        sylvander_api::ModelSelection {
+            provider_id: "anthropic".into(),
+            model_id: "claude-sonnet-5-20260601".into(),
+        }
+    );
     assert_eq!(initial.models.len(), 2);
     assert!(matches!(
         initial
@@ -2661,7 +2669,13 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         )
         .await
         .expect("select");
-    assert_eq!(selected.current_model, "thinking-model");
+    assert_eq!(
+        selected.current,
+        sylvander_api::ModelSelection {
+            provider_id: "anthropic".into(),
+            model_id: "thinking-model".into(),
+        }
+    );
     assert_eq!(
         selected.reasoning_effort,
         sylvander_api::ReasoningEffort::High
@@ -2678,8 +2692,11 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         .is_err()
     );
     assert_eq!(
-        run.runtime_model_info().await.current_model,
-        "thinking-model"
+        run.runtime_model_info().await.current,
+        sylvander_api::ModelSelection {
+            provider_id: "anthropic".into(),
+            model_id: "thinking-model".into(),
+        }
     );
 }
 
@@ -3122,6 +3139,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
                 ToolInvocationClass::FilesystemMutation,
                 ToolExecutionMode::Exclusive,
                 ToolExecutionPolicy::workspace_write(),
+                sylvander_agent::risk::CommandRiskAssessment::routine(),
             ),
         });
         run.inner.pending_approvals.lock().await.insert(

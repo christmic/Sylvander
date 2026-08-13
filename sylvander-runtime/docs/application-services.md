@@ -65,14 +65,14 @@ outside the sandbox; model-triggered processes are isolated data-plane work.
 
 The service owns process launch, filesystem mounts, network enforcement,
 resource ceilings, cancellation, bounded output, artifact collection,
-violations, and cleanup. OCI is the current enforcing adapter. Local and SSH
-remain non-sandboxed adapters and cannot execute a tool whose prepared policy
-requires a sandbox.
+violations, and cleanup. OCI and macOS Seatbelt are enforcing process adapters.
+Local and SSH remain non-sandboxed adapters and cannot execute a tool whose
+prepared policy requires a sandbox.
 
-Full-sandbox health is the conjunction of filesystem isolation, denied
-network, resource ceilings, and process-tree ownership. Runtime publishes each
-truth separately and derives `sandbox_enforced`; it never upgrades a partially
-isolated adapter. OCI owns the named container tree and force-removes it when a
+Process-sandbox health is the conjunction of filesystem isolation, denied
+network, and process-tree ownership. Resource limits remain a separate fact.
+Runtime publishes each truth separately and derives `sandbox_enforced`; it
+never upgrades a partially isolated adapter. OCI owns the named container tree and force-removes it when a
 timeout, cancellation, transport loss, or dropped future prevents ordinary
 completion.
 
@@ -86,7 +86,9 @@ by extensions.
 
 Current implementation status: Runtime boot constructs one crate-private,
 immutable `RuntimeExecutionService` from the built-in exact `local` target and
-configured SSH/OCI targets. It resolves adapter credentials at composition,
+configured SSH/OCI/macOS Seatbelt targets. Seatbelt is selected first; host
+local fallback occurs only when the target explicitly enables it and is
+reported as `local_fallback`. Runtime resolves adapter credentials at composition,
 rejects invalid target registries, and shares the same service with initial
 and lazily recomposed Agent revisions. Unknown target identifiers receive an
 explicit unavailable executor; they never fall back to `local`. Worktree

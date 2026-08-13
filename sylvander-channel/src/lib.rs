@@ -48,10 +48,10 @@ use sylvander_api::{
     IdentityBindingErrorCode, IdentityBindingOperation, IdentityBindingRequest,
     IdentityBindingResponse, IdentityBindingValidationError, MemoryConfirmationRequest,
     MemoryConfirmationResponse, PrincipalKind, RegistryAdminError, RegistryAdminErrorCode,
-    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, SessionConfigOverrides,
-    SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest, SessionId,
-    USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo, UserProfileCapabilities,
-    UserProfileError, UserProfileRequest, UserProfileResponse,
+    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, RuntimeUiSnapshot,
+    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
+    SessionId, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo,
+    UserProfileCapabilities, UserProfileError, UserProfileRequest, UserProfileResponse,
 };
 
 /// Complete normalized input for one authenticated external chat turn.
@@ -162,6 +162,36 @@ fn validate_ingress_part(value: &str) -> Result<(), IdentityIngressError> {
 /// Transport-neutral UI service boundary owned by the runtime.
 #[async_trait]
 pub trait ChannelHost: Send + Sync {
+    /// Attach one authenticated outbound workspace worker. The returned
+    /// receiver is the only request stream for this connection generation.
+    async fn attach_workspace_worker(
+        &self,
+        boundary: &BoundaryContext,
+        _hello: &sylvander_api::WorkspaceWorkerHello,
+    ) -> Result<
+        (
+            String,
+            tokio::sync::mpsc::Receiver<sylvander_api::WorkspaceWorkerServerMessage>,
+        ),
+        BoundaryError,
+    > {
+        Err(BoundaryError::forbidden(
+            boundary,
+            "attach_workspace_worker",
+        ))
+    }
+
+    async fn workspace_worker_event(
+        &self,
+        boundary: &BoundaryContext,
+        _generation: &str,
+        _event: sylvander_api::WorkspaceWorkerEvent,
+    ) -> Result<(), BoundaryError> {
+        Err(BoundaryError::forbidden(boundary, "workspace_worker_event"))
+    }
+
+    async fn detach_workspace_worker(&self, _target_id: &str, _generation: &str) {}
+
     /// Reject an ingress request that failed authentication before a public
     /// message existed. Production runtimes override this to rate-limit and
     /// persist a content-free audit fact.
@@ -187,6 +217,7 @@ pub trait ChannelHost: Send + Sync {
     async fn list_sessions(
         &self,
         boundary: &BoundaryContext,
+        _include_archived: bool,
     ) -> Result<Vec<UiSessionInfo>, BoundaryError> {
         Err(BoundaryError {
             code: BoundaryErrorCode::InvalidScope,
@@ -195,6 +226,18 @@ pub trait ChannelHost: Send + Sync {
             message: "runtime-owned session discovery is unavailable".into(),
             retry_after_ms: None,
         })
+    }
+    /// Return live, redacted Runtime state for one visible Agent.
+    ///
+    /// The transport supplies the configured Agent identity but must not
+    /// assemble model, permission, platform, or boundary-limit fields itself.
+    async fn runtime_snapshot(
+        &self,
+        boundary: &BoundaryContext,
+        _agent_id: &AgentId,
+        _session_id: Option<&SessionId>,
+    ) -> Result<RuntimeUiSnapshot, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "runtime_snapshot"))
     }
     /// Load one visible session and its durable transcript.
     async fn load_session(

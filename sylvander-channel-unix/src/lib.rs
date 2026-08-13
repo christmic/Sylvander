@@ -80,39 +80,7 @@ pub struct UnixChannel {
     socket_path: PathBuf,
     instance_id: String,
     agent_id: AgentId,
-    runtime: RuntimeInfo,
     max_request_bytes: usize,
-}
-
-/// Current Runtime truth advertised to a negotiated local UI client.
-#[derive(Clone)]
-pub struct RuntimeInfo {
-    /// Provider-qualified effective default model.
-    pub model: sylvander_api::ModelSelection,
-    /// Effective default reasoning effort.
-    pub reasoning_effort: sylvander_api::ReasoningEffort,
-    /// Models the selected Agent currently permits.
-    pub models: Vec<sylvander_api::ModelDescriptor>,
-    /// Effective permission profile.
-    pub permissions: sylvander_api::PermissionProfile,
-    /// Compact capability bitset carried by the current UI protocol.
-    pub capabilities: u8,
-    /// Whether the selected Agent can issue approval requests.
-    pub approval_enabled: bool,
-    /// Maximum encoded attachment size accepted from a client.
-    pub max_attachment_bytes: usize,
-    /// Initial MCP, Skill, and memory platform snapshot.
-    pub platform: sylvander_api::PlatformSnapshot,
-    /// Optional callback used to refresh platform truth per request.
-    pub platform_provider: Option<Arc<dyn Fn() -> sylvander_api::PlatformSnapshot + Send + Sync>>,
-}
-
-impl RuntimeInfo {
-    fn platform_snapshot(&self) -> sylvander_api::PlatformSnapshot {
-        self.platform_provider
-            .as_ref()
-            .map_or_else(|| self.platform.clone(), |provider| provider())
-    }
 }
 
 impl UnixChannel {
@@ -122,20 +90,6 @@ impl UnixChannel {
             socket_path: socket_path.into(),
             instance_id: "unix".into(),
             agent_id: agent_id.into(),
-            runtime: RuntimeInfo {
-                model: sylvander_api::ModelSelection {
-                    provider_id: "unknown".into(),
-                    model_id: "unknown".into(),
-                },
-                reasoning_effort: sylvander_api::ReasoningEffort::Off,
-                models: Vec::new(),
-                permissions: sylvander_api::PermissionProfile::default(),
-                capabilities: 0,
-                approval_enabled: false,
-                max_attachment_bytes: 512 * 1024,
-                platform: sylvander_api::PlatformSnapshot::default(),
-                platform_provider: None,
-            },
             max_request_bytes: 1024 * 1024,
         }
     }
@@ -144,13 +98,6 @@ impl UnixChannel {
     #[must_use]
     pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
         self.instance_id = instance_id.into();
-        self
-    }
-
-    /// Supply the Runtime-owned information advertised after negotiation.
-    #[must_use]
-    pub fn with_runtime_info(mut self, runtime: RuntimeInfo) -> Self {
-        self.runtime = runtime;
         self
     }
 
@@ -273,7 +220,6 @@ impl Channel for UnixChannel {
             // Spawn reader task
             let ctx_clone = ctx.clone();
             let agent_id_clone = agent_id.clone();
-            let runtime = self.runtime.clone();
             let reader_hub = hub.clone();
             let client_id_clone = client_id;
             let instance_id = self.instance_id.clone();
@@ -356,7 +302,6 @@ impl Channel for UnixChannel {
                             ctx: &ctx_clone,
                             agent_id: &agent_id_clone,
                             tx: &tx,
-                            runtime: &runtime,
                             hub: &reader_hub,
                             client_id,
                             ui_protocol_version: negotiated_version
@@ -470,7 +415,6 @@ struct ClientHandler<'a> {
     ctx: &'a ChannelContext,
     agent_id: &'a AgentId,
     tx: &'a mpsc::UnboundedSender<ServerMsg>,
-    runtime: &'a RuntimeInfo,
     hub: &'a Arc<Mutex<RelayHub>>,
     client_id: u64,
     ui_protocol_version: u16,
@@ -482,7 +426,6 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         ctx,
         agent_id,
         tx,
-        runtime,
         hub,
         client_id,
         ui_protocol_version,
@@ -1046,14 +989,17 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 response: Arc::new(response),
             });
         }
-        ClientMsg::ListSessions => {
+        ClientMsg::ListSessions { include_archived } => {
             let Some(host) = &ctx.host else {
                 operation_error(tx, "list_sessions", "Runtime channel host is unavailable");
                 return;
             };
-            match host.list_sessions(boundary).await {
+            match host.list_sessions(boundary, include_archived).await {
                 Ok(sessions) => {
-                    let _ = tx.send(ServerMsg::SessionsList { sessions });
+                    let _ = tx.send(ServerMsg::SessionsList {
+                        include_archived,
+                        sessions,
+                    });
                 }
                 Err(error) => {
                     warn!(error = %error, "unix: failed to list sessions");
@@ -1236,25 +1182,21 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 Err(error) => operation_error(tx, "fork_session", error.to_string()),
             }
         }
-        ClientMsg::GetRuntimeInfo => {
-            let capabilities = runtime
-                .models
-                .iter()
-                .find(|model| {
-                    model.id == runtime.model.model_id
-                        && model.provider == runtime.model.provider_id
-                })
-                .map_or(runtime.capabilities, |model| model.capabilities);
-            let _ = tx.send(ServerMsg::RuntimeInfo {
-                model: runtime.model.clone(),
-                reasoning_effort: runtime.reasoning_effort,
-                models: runtime.models.clone(),
-                permissions: runtime.permissions.clone(),
-                capabilities,
-                approval_enabled: runtime.approval_enabled,
-                max_attachment_bytes: runtime.max_attachment_bytes,
-                platform: runtime.platform_snapshot(),
-            });
+        ClientMsg::GetRuntimeInfo { agent_id } => {
+            let Some(host) = &ctx.host else {
+                operation_error(
+                    tx,
+                    "get_runtime_info",
+                    "Runtime channel host is unavailable",
+                );
+                return;
+            };
+            match host.runtime_snapshot(boundary, &agent_id, None).await {
+                Ok(snapshot) => {
+                    let _ = tx.send(ServerMsg::RuntimeInfo { snapshot });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
         }
         ClientMsg::GetContext { session_id } => {
             let (Some(host), Some(session_id)) = (&ctx.host, session_id.as_deref()) else {
@@ -1493,7 +1435,9 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 )
                 .await
             {
-                Ok(state) => send_session_runtime_info(tx, runtime, &state.effective),
+                Ok(state) => {
+                    send_session_runtime_info(boundary, ctx, tx, &state).await;
+                }
                 Err(error) => boundary_denied(tx, error),
             }
         }
@@ -1534,7 +1478,9 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 )
                 .await
             {
-                Ok(state) => send_session_runtime_info(tx, runtime, &state.effective),
+                Ok(state) => {
+                    send_session_runtime_info(boundary, ctx, tx, &state).await;
+                }
                 Err(error) => boundary_denied(tx, error),
             }
         }
@@ -1544,26 +1490,29 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
     }
 }
 
-fn send_session_runtime_info(
+async fn send_session_runtime_info(
+    boundary: &sylvander_api::BoundaryContext,
+    ctx: &ChannelContext,
     tx: &mpsc::UnboundedSender<ServerMsg>,
-    runtime: &RuntimeInfo,
-    effective: &sylvander_api::SessionEffectiveConfig,
+    state: &sylvander_api::SessionConfigState,
 ) {
-    let capabilities = runtime
-        .models
-        .iter()
-        .find(|entry| entry.id == effective.model_id && entry.provider == effective.provider_id)
-        .map_or(0, |entry| entry.capabilities);
-    let _ = tx.send(ServerMsg::RuntimeInfo {
-        model: effective.model_selection(),
-        reasoning_effort: effective.reasoning_effort,
-        models: runtime.models.clone(),
-        permissions: effective.permissions.clone(),
-        capabilities,
-        approval_enabled: runtime.approval_enabled,
-        max_attachment_bytes: runtime.max_attachment_bytes,
-        platform: runtime.platform_snapshot(),
-    });
+    let Some(host) = &ctx.host else {
+        operation_error(
+            tx,
+            "runtime_snapshot",
+            "Runtime channel host is unavailable",
+        );
+        return;
+    };
+    match host
+        .runtime_snapshot(boundary, &state.effective.agent_id, Some(&state.session_id))
+        .await
+    {
+        Ok(snapshot) => {
+            let _ = tx.send(ServerMsg::RuntimeInfo { snapshot });
+        }
+        Err(error) => boundary_denied(tx, error),
+    }
 }
 
 fn visible_model_catalog(

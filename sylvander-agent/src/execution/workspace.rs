@@ -89,6 +89,15 @@ impl WorkspaceFileRevision {
     pub fn for_bytes(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
     }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 /// Complete bounded read used to prepare one conflict-detecting mutation.
@@ -272,9 +281,17 @@ impl ProcessIsolation {
         }
     }
 
+    /// Whether the backend enforces the security boundary required for
+    /// untrusted process execution. Resource ceilings are reported separately.
     #[must_use]
-    pub const fn enforces_sandbox(self) -> bool {
-        self.filesystem && self.network_denied && self.resource_limits && self.process_tree
+    pub const fn enforces_process_sandbox(self) -> bool {
+        self.filesystem && self.network_denied && self.process_tree
+    }
+
+    /// Whether the backend additionally enforces hard process resource limits.
+    #[must_use]
+    pub const fn enforces_resource_limits(self) -> bool {
+        self.resource_limits
     }
 }
 

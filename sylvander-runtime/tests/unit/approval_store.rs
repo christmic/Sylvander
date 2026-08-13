@@ -26,6 +26,7 @@ fn request(operation: &str, input: serde_json::Value) -> ToolUseRequest {
             ToolInvocationClass::FilesystemMutation,
             ToolExecutionMode::Exclusive,
             ToolExecutionPolicy::workspace_write(),
+            sylvander_agent::risk::CommandRiskAssessment::routine(),
         ),
     }
 }
@@ -52,6 +53,7 @@ fn input_specific_execution_facts_invalidate_a_grant() {
         ToolInvocationClass::Read,
         ToolExecutionMode::Parallel,
         ToolExecutionPolicy::workspace_read(),
+        sylvander_agent::risk::CommandRiskAssessment::routine(),
     );
 
     assert_ne!(

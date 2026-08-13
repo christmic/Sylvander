@@ -4,7 +4,7 @@ expression: "render_buf(state, 100, 28)"
 ---
               ⢀⣤⣴⡆               Sylvander                                                          
             ⢀⣚⣿⣿⣿⣿⢓⣀             agent workspace                                                    
-         ⢀⣴⣾⢿⣳⡿⠛⠙⢿⣾⣿⣷⣦           model     claude-sonnet / low                                      
+         ⢀⣴⣾⢿⣳⡿⠛⠙⢿⣾⣿⣷⣦           model     anthropic-compatible/claude-sonnet / low                 
   ⢀ ⣴⠆  ⣰⣿⣿⣵⠟⠉    ⠙⠻⣿⠿⣾⣦         workspace ~/workspace                                              
  ⠈⠛⠃⡁⡀  ⣿⡻⢾⡇ ⣶⣶  ⣶⣆ ⢻⣥⣿⣿⡄        branch    — · session new                                          
  ⢀⣤⣶⣿⡣⣤⢀⢽⠿⣮⢷⣄⣉⠁  ⠉⣁⣤⡎⣵⠟⣭⣁⡔⢿⣄⡀                                                                       
@@ -22,11 +22,11 @@ expression: "render_buf(state, 100, 28)"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯                                                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-  Model · applies next turn  current  claude-sonnet  reasoning low  · in $3 / out $15 · 1M          
+  Model · applies next turn  current  anthropic-compatible/claude-sonnet  reasoning low  · in $3 /  
                                                                                                     
   › ● claude-sonnet           anthropic-compatible  low                                             
     ○ fast-code               deprecated → claude-sonnet                                            
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 /model claude-sonnet low                                                                            
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model claude-sonnet / low · branch —                        connecting…   draft local
+◌ connecting · model anthropic-compatible/claude-sonnet / low · branch —   connecting…   draft local

@@ -10,7 +10,7 @@ async fn handle_client_msg(
     ctx: &ChannelContext,
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
-    runtime: &RuntimeInfo,
+    _runtime: &sylvander_api::RuntimeUiSnapshot,
 ) {
     let hub = Arc::new(Mutex::new(RelayHub::default()));
     hub.lock().await.clients.insert(0, tx.clone());
@@ -30,7 +30,6 @@ async fn handle_client_msg(
             ctx,
             agent_id,
             tx,
-            runtime,
             hub: &hub,
             client_id: 0,
             ui_protocol_version: sylvander_api::UI_PROTOCOL_MAX_VERSION,
@@ -43,6 +42,7 @@ async fn handle_client_msg(
 struct EmptyChannelHost {
     registry_authorizations: AtomicUsize,
     registry_dispatches: AtomicUsize,
+    snapshot_dispatches: AtomicUsize,
     allow_registry: bool,
     session_config: Option<sylvander_api::SessionConfigState>,
     chat_bus: Option<Arc<dyn MessageBus>>,
@@ -301,6 +301,16 @@ impl sylvander_channel::ChannelHost for EmptyChannelHost {
         Ok(Vec::new())
     }
 
+    async fn runtime_snapshot(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        _: &AgentId,
+        _: Option<&SessionId>,
+    ) -> Result<sylvander_api::RuntimeUiSnapshot, sylvander_api::BoundaryError> {
+        self.snapshot_dispatches.fetch_add(1, Ordering::Relaxed);
+        Ok(runtime_info())
+    }
+
     async fn create_session(
         &self,
         boundary: &sylvander_api::BoundaryContext,
@@ -493,8 +503,9 @@ fn socket_path() -> PathBuf {
     ))
 }
 
-fn runtime_info() -> RuntimeInfo {
-    RuntimeInfo {
+fn runtime_info() -> sylvander_api::RuntimeUiSnapshot {
+    sylvander_api::RuntimeUiSnapshot {
+        agent_id: AgentId::new("agent-1"),
         model: sylvander_api::ModelSelection {
             provider_id: "test".into(),
             model_id: "test-model".into(),
@@ -512,9 +523,8 @@ fn runtime_info() -> RuntimeInfo {
         permissions: sylvander_api::PermissionProfile::default(),
         capabilities: 0b101,
         approval_enabled: true,
-        max_attachment_bytes: 1024,
+        max_request_bytes: 1024,
         platform: sylvander_api::PlatformSnapshot::default(),
-        platform_provider: None,
     }
 }
 
@@ -640,10 +650,17 @@ async fn negotiate(
 #[tokio::test]
 async fn runtime_info_reports_server_truth() {
     let bus = Arc::new(InProcessMessageBus::new());
-    let context = ChannelContext::with_services(bus, Some("unix".into()), None, None);
+    let context = ChannelContext::with_services(
+        bus,
+        Some("unix".into()),
+        Some(Arc::new(EmptyChannelHost::default())),
+        None,
+    );
     let (tx, mut rx) = mpsc::unbounded_channel();
     handle_client_msg(
-        ClientMsg::GetRuntimeInfo,
+        ClientMsg::GetRuntimeInfo {
+            agent_id: AgentId::new("agent-1"),
+        },
         &context,
         &AgentId::new("agent-1"),
         &tx,
@@ -655,6 +672,7 @@ async fn runtime_info_reports_server_truth() {
     assert!(matches!(
         response,
         ServerMsg::RuntimeInfo {
+            snapshot: sylvander_api::RuntimeUiSnapshot {
             model,
             reasoning_effort: sylvander_api::ReasoningEffort::Off,
             models,
@@ -665,8 +683,9 @@ async fn runtime_info_reports_server_truth() {
             },
             capabilities: 0b101,
             approval_enabled: true,
-            max_attachment_bytes: 1024,
+            max_request_bytes: 1024,
             ..
+            }
         } if model.provider_id == "test"
             && model.model_id == "test-model"
             && models.len() == 1
@@ -674,47 +693,29 @@ async fn runtime_info_reports_server_truth() {
 }
 
 #[tokio::test]
-async fn runtime_info_reads_fresh_platform_truth_for_each_request() {
+async fn runtime_info_queries_the_channel_host_for_each_request() {
     let bus = Arc::new(InProcessMessageBus::new());
-    let context = ChannelContext::with_services(bus, Some("unix".into()), None, None);
-    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let observed = calls.clone();
-    let mut runtime = runtime_info();
-    runtime.platform_provider = Some(Arc::new(move || {
-        let generation = observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        sylvander_api::PlatformSnapshot {
-            features: vec![sylvander_api::PlatformFeature {
-                kind: sylvander_api::PlatformFeatureKind::Mcp,
-                name: "search".into(),
-                status: sylvander_api::PlatformFeatureStatus::Active,
-                summary: format!("generation {generation}"),
-                source: None,
-                trust: None,
-                auth: sylvander_api::PlatformAuthStatus::NotRequired,
-                capabilities: vec!["tools".into()],
-                reloadable: true,
-            }],
-            commands: Vec::new(),
-            tool_presentations: Vec::new(),
-        }
-    }));
+    let host = Arc::new(EmptyChannelHost::default());
+    let context = ChannelContext::with_services(bus, Some("unix".into()), Some(host.clone()), None);
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    for expected in ["generation 1", "generation 2"] {
+    for _ in 0..2 {
         handle_client_msg(
-            ClientMsg::GetRuntimeInfo,
+            ClientMsg::GetRuntimeInfo {
+                agent_id: AgentId::new("agent-1"),
+            },
             &context,
             &AgentId::new("agent-1"),
             &tx,
-            &runtime,
+            &runtime_info(),
         )
         .await;
-        let ServerMsg::RuntimeInfo { platform, .. } = rx.recv().await.expect("runtime response")
-        else {
-            panic!("expected runtime info");
-        };
-        assert_eq!(platform.features[0].summary, expected);
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::RuntimeInfo { .. })
+        ));
     }
+    assert_eq!(host.snapshot_dispatches.load(Ordering::Relaxed), 2);
 }
 
 #[tokio::test]
@@ -797,7 +798,6 @@ async fn identity_binding_round_trip_uses_authenticated_unix_ingress() {
             ctx: &context,
             agent_id: &AgentId::new("agent-1"),
             tx: &tx,
-            runtime: &runtime_info(),
             hub: &Arc::new(Mutex::new(RelayHub::default())),
             client_id: 1,
             ui_protocol_version: sylvander_api::UI_PROTOCOL_MAX_VERSION,
@@ -939,7 +939,6 @@ async fn dispatch_client_message_as(
             ctx: &context,
             agent_id: &AgentId::new("agent-1"),
             tx: &tx,
-            runtime: &runtime_info(),
             hub: &Arc::new(Mutex::new(RelayHub::default())),
             client_id: 1,
             ui_protocol_version: sylvander_api::UI_PROTOCOL_MAX_VERSION,
@@ -1409,6 +1408,7 @@ async fn persisted_session_load_rename_fork_and_archive_round_trip() {
             label: "Original".into(),
             workspace: "/workspace/project".into(),
             last_seen_secs: 0,
+            archived: false,
         },
         messages: vec![
             sylvander_api::UiHistoryMessage {
@@ -1605,6 +1605,7 @@ async fn reconnect_replays_the_complete_in_flight_turn() {
                 label: "Recovery".into(),
                 workspace: "/workspace/project".into(),
                 last_seen_secs: 0,
+                archived: false,
             },
             messages: Vec::new(),
             iterations: 0,

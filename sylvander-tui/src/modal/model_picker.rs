@@ -27,7 +27,10 @@ impl ModelPicker {
             .metadata
             .models
             .iter()
-            .position(|model| model.id == state.metadata.model)
+            .position(|model| {
+                model.provider == state.metadata.model.provider_id
+                    && model.id == state.metadata.model.model_id
+            })
             .unwrap_or(0);
         let effort_index = state
             .metadata
@@ -54,13 +57,15 @@ impl ModelPicker {
         self.effort_index = self
             .selected(state)
             .and_then(|model| {
-                (model.id == state.metadata.model).then(|| {
-                    model
-                        .reasoning_efforts
-                        .iter()
-                        .position(|effort| *effort == state.metadata.reasoning_effort)
-                        .unwrap_or(0)
-                })
+                (model.provider == state.metadata.model.provider_id
+                    && model.id == state.metadata.model.model_id)
+                    .then(|| {
+                        model
+                            .reasoning_efforts
+                            .iter()
+                            .position(|effort| *effort == state.metadata.reasoning_effort)
+                            .unwrap_or(0)
+                    })
             })
             .unwrap_or(0);
     }
@@ -88,7 +93,10 @@ impl Modal for ModelPicker {
         let mut active_line = vec![
             Span::styled("Model · applies next turn  ", theme::brand_violet()),
             Span::styled("current  ", theme::text_muted()),
-            Span::styled(&state.metadata.model, theme::header()),
+            Span::styled(
+                state.metadata.model_label_without_reasoning(),
+                theme::header(),
+            ),
             Span::styled("  reasoning ", theme::text_muted()),
             Span::styled(
                 reasoning_label(state.metadata.reasoning_effort),
@@ -99,7 +107,10 @@ impl Modal for ModelPicker {
             .metadata
             .models
             .iter()
-            .find(|model| model.id == state.metadata.model)
+            .find(|model| {
+                model.provider == state.metadata.model.provider_id
+                    && model.id == state.metadata.model.model_id
+            })
             .and_then(|model| model.pricing)
         {
             active_line.push(Span::styled(
@@ -124,7 +135,8 @@ impl Modal for ModelPicker {
                 .take(visible)
                 .map(|(index, model)| {
                     let selected = index == self.cursor;
-                    let active = model.id == state.metadata.model;
+                    let active = model.provider == state.metadata.model.provider_id
+                        && model.id == state.metadata.model.model_id;
                     let effort = if selected {
                         model.reasoning_efforts.get(self.effort_index).copied()
                     } else if active {
@@ -241,7 +253,7 @@ impl Modal for ModelPicker {
                         });
                     state.status = "Selecting model…".into();
                 } else {
-                    state.metadata.model.clone_from(&selection.model_id);
+                    state.metadata.model.clone_from(&selection);
                     state.metadata.reasoning_effort = effort;
                     state.session_model_override = Some((selection, effort));
                     state.status = "Model override ready · applies when the session starts".into();

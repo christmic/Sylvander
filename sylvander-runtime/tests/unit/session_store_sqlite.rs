@@ -189,7 +189,7 @@ async fn list_persistent_filters_correctly() {
         .await
         .unwrap();
 
-    let persistent = store.list_persistent().await.unwrap();
+    let persistent = store.list_persistent(false).await.unwrap();
     assert_eq!(persistent.len(), 1);
     assert_eq!(persistent[0].id, SessionId::new("s1"));
     assert_eq!(persistent[0].agents, vec![AgentId::new("agent-1")]);
@@ -1196,6 +1196,10 @@ async fn archive_soft_deletes() {
     };
     let all = store.list(&ctx(), filter).await.unwrap();
     assert_eq!(all.len(), 1);
+    assert!(all[0].archived);
+    let persistent = store.list_persistent(true).await.unwrap();
+    assert_eq!(persistent.len(), 1);
+    assert!(persistent[0].archived);
 }
 
 #[tokio::test]

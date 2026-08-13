@@ -63,12 +63,12 @@ progress. Each command runs in its own process group. Timeout or future
 cancellation terminates the whole group so descendants cannot outlive the
 Agent turn.
 
-`ProcessIsolation::enforces_sandbox()` requires four independent truths:
-filesystem isolation, denied network, resource ceilings, and owned process-tree
-cleanup. Missing any one dimension fails closed for a prepared call whose
-sandbox is required. This matches the persistent-process environment contract;
-a backend cannot claim a complete sandbox merely because its filesystem mount
-is restricted.
+`ProcessIsolation::enforces_process_sandbox()` requires three independent
+truths: filesystem isolation, denied network, and owned process-tree cleanup.
+Hard CPU/memory/process ceilings are reported separately through
+`enforces_resource_limits()`. Missing any process-sandbox dimension fails
+closed for a prepared call whose sandbox is required; a backend cannot claim
+resource ceilings merely because it constrains filesystem and network access.
 
 Agent tests cover executor injection, logical mount routing, prepared-policy
 bounds, capability denial, conditional Edit behavior, and unavailable-target
@@ -106,9 +106,21 @@ to `Unclassified`. Runtime can therefore count or persist policy facts without
 parsing tool output, and adapters that lack explicit evidence cannot fabricate
 a stronger classification.
 
-This conservative rule is intentional. Linux container and syscall sandboxes
+This conservative rule is intentional. Container and native process sandboxes
 do not universally provide attribution for denied operations, and treating an
 arbitrary `EPERM` or exit code as a violation would fabricate observability.
 Future native adapters may add kinds only together with a backend-owned signal,
 per-invocation correlation, and tests proving that ordinary command failures
 cannot be misclassified.
+
+## Split server and local workspace
+
+When the Agent control plane runs on a server but the workspace lives on a
+user's Mac, the directory is not a server mount. The location-neutral contract
+supports the built-in client worker, which establishes an authenticated outbound
+connection, registers one exact execution target, validates workspace authority
+locally, and executes through the macOS sandbox. The server remains responsible
+for risk assessment, approval, and target selection; the client worker remains
+responsible for enforcing the local path and Seatbelt policy. This avoids bulk
+workspace upload, inbound SSH exposure, and any illusion of a cross-machine
+filesystem mount.

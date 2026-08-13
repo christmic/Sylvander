@@ -613,6 +613,17 @@ pub enum ExecutionTransportConfig {
     Local {
         root: Option<PathBuf>,
     },
+    /// Native macOS Seatbelt sandbox. Host execution is used only when the
+    /// fixed system sandbox executable is unavailable and fallback is explicit.
+    MacosSeatbelt {
+        root: Option<PathBuf>,
+        #[serde(default)]
+        allow_local_fallback: bool,
+    },
+    /// A macOS workspace worker that connects outbound to a WebSocket channel.
+    ClientWorker {
+        channel_instance_id: String,
+    },
     Ssh {
         host: String,
         #[serde(default = "default_ssh_port")]
@@ -1048,6 +1059,21 @@ impl ServerConfig {
             }
             validate_channel(channel, &mut errors);
         }
+        for target in &self.execution_targets {
+            if let ExecutionTransportConfig::ClientWorker {
+                channel_instance_id,
+            } = &target.transport
+                && !self.channels.iter().any(|channel| {
+                    channel.id == *channel_instance_id
+                        && matches!(channel.transport, ChannelTransportConfig::Websocket { .. })
+                })
+            {
+                errors.push(format!(
+                    "client worker target {} requires WebSocket channel instance {}",
+                    target.id, channel_instance_id
+                ));
+            }
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -1205,7 +1231,8 @@ fn validate_workspace(
 
 fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<String>) {
     match &target.transport {
-        ExecutionTransportConfig::Local { root } => {
+        ExecutionTransportConfig::Local { root }
+        | ExecutionTransportConfig::MacosSeatbelt { root, .. } => {
             if let Some(root) = root
                 && (!root.is_absolute()
                     || root
@@ -1218,6 +1245,13 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
                 ));
             }
         }
+        ExecutionTransportConfig::ClientWorker {
+            channel_instance_id,
+        } => require_text(
+            "client worker channel_instance_id",
+            channel_instance_id,
+            errors,
+        ),
         ExecutionTransportConfig::Ssh {
             host,
             port,

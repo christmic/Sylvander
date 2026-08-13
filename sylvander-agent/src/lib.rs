@@ -106,7 +106,7 @@ pub use context::{
     user_profile_provider,
 };
 pub use execution::{
-    artifact, mutation_journal as workspace_journal, ports as execution_ports, tool_context,
+    artifact, mutation_journal as workspace_journal, ports as execution_ports, risk, tool_context,
     workspace as workspace_executor,
 };
 pub use interaction::{
@@ -146,6 +146,7 @@ pub mod prelude {
         ArtifactReference, ArtifactStoreError, ArtifactWrite, TurnArtifactStore,
     };
     pub use crate::execution::ports::AgentExecutionPorts;
+    pub use crate::execution::risk::{CommandRiskAssessment, CommandRiskLevel, CommandRiskReason};
     pub use crate::execution::tool_context::ToolContext;
     pub use crate::execution::workspace::{
         ProcessIsolation, WorkspaceCommandOutput, WorkspaceCommandProgressSink,

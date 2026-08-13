@@ -52,6 +52,8 @@ mod credential_registry_tests;
 pub mod evidence;
 /// Workspace target selection and execution policy composition.
 pub mod execution;
+/// Outbound macOS workspace worker client.
+pub mod workspace_worker_client;
 /// Isolated local Git worktree lease lifecycle for coding sessions.
 pub use workspace::local as git_worktree;
 mod guardian;

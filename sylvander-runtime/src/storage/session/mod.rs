@@ -81,6 +81,10 @@ pub struct StoredSession {
     /// durable schema rejects unresolved persisted sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_config: Option<SessionEffectiveConfig>,
+    /// Durable lifecycle state. Only archive-aware Runtime queries expose
+    /// records for which this is true.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// Atomic metadata-only changes that never rewrite session configuration.
@@ -124,6 +128,7 @@ impl StoredSession {
             config_revision: 0,
             config_overrides: SessionConfigOverrides::default(),
             effective_config: None,
+            archived: false,
         }
     }
 
@@ -491,8 +496,12 @@ pub struct SessionFilter {
 pub trait SessionStore: Send + Sync {
     // ---- session metadata CRUD ----
 
-    /// List persistent, non-archived sessions (boot loader).
-    async fn list_persistent(&self) -> Result<Vec<StoredSession>, SessionStoreError>;
+    /// List persistent sessions for Runtime lifecycle and authorized UI paths.
+    /// Boot callers pass `false`; only explicit archive discovery passes true.
+    async fn list_persistent(
+        &self,
+        include_archived: bool,
+    ) -> Result<Vec<StoredSession>, SessionStoreError>;
 
     /// Save or update a session record (upsert).
     async fn save(&self, session: &StoredSession) -> Result<(), SessionStoreError>;
