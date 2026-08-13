@@ -99,6 +99,8 @@ pub struct ExecutionRecoveryActionReceipt {
     pub target: ExecutionRecoveryActionTarget,
     pub action: ExecutionRecoveryAction,
     pub resolved_by: AgentInstanceId,
+    pub expected_ledger_revision: u64,
     pub outcome_ledger_revision: u64,
+    pub rationale_digest: String,
     pub recorded_at: i64,
 }

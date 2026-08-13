@@ -1995,19 +1995,6 @@ impl SessionStore for SqliteSessionStore {
         let write = write.clone();
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
-            if let Some(existing) = load_execution_recovery_action(&transaction, &write.action_id)? {
-                if existing.session_id == write.session_id
-                    && existing.turn_id == write.turn_id
-                    && existing.target == write.target
-                    && existing.action == write.action
-                    && existing.resolved_by == write.resolved_by
-                {
-                    return Ok(existing);
-                }
-                return Err(SessionStoreError::Invalid(
-                    "execution recovery action idempotency conflict".into(),
-                ));
-            }
             let moderator: Option<String> = transaction
                 .query_row(
                     "SELECT moderator_instance_id FROM session_governance WHERE session_id=?1",
@@ -2019,6 +2006,21 @@ impl SessionStore for SqliteSessionStore {
             if moderator.as_deref() != Some(write.resolved_by.0.as_str()) {
                 return Err(SessionStoreError::Invalid(
                     "execution recovery requires the current Session moderator".into(),
+                ));
+            }
+            if let Some(existing) = load_execution_recovery_action(&transaction, &write.action_id)? {
+                if existing.session_id == write.session_id
+                    && existing.turn_id == write.turn_id
+                    && existing.target == write.target
+                    && existing.action == write.action
+                    && existing.resolved_by == write.resolved_by
+                    && existing.expected_ledger_revision == write.expected_ledger_revision
+                    && existing.rationale_digest == write.rationale_digest
+                {
+                    return Ok(existing);
+                }
+                return Err(SessionStoreError::Invalid(
+                    "execution recovery action idempotency conflict".into(),
                 ));
             }
             let next = write.expected_ledger_revision.checked_add(1).ok_or_else(|| {
@@ -2076,12 +2078,14 @@ impl SessionStore for SqliteSessionStore {
                 ) => transaction
                     .execute(
                         "UPDATE session_tool_calls SET ledger_revision=?1,
-                         recovery_decision='operator_confirmed_no_effect',
+                         recovery_decision='retry_same_invocation',
                          recovery_reason='operator_confirmed_no_effect',operator_action_required=0,
                          recovery_owner=?2,recovery_lease_expires_at=?3,recovery_attempts=recovery_attempts+1,
                          updated_at=?4 WHERE invocation_id=?5 AND session_id=?6 AND turn_id=?7
                          AND ledger_revision=?8 AND state='running' AND position='effect_started'
-                         AND operator_action_required=1 AND recovery_decision='manual_reconciliation'",
+                         AND operator_action_required=1 AND recovery_decision='manual_reconciliation'
+                         AND EXISTS (SELECT 1 FROM session_turns t WHERE t.session_id=?6
+                           AND t.turn_id=?7 AND t.state='running')",
                         params![
                             next_i64,
                             write.action_id.as_str(),
@@ -2152,7 +2156,9 @@ impl SessionStore for SqliteSessionStore {
                 target: write.target,
                 action: write.action,
                 resolved_by: write.resolved_by,
+                expected_ledger_revision: write.expected_ledger_revision,
                 outcome_ledger_revision: next,
+                rationale_digest: write.rationale_digest,
                 recorded_at: write.observed_at,
             })
         })
@@ -3692,7 +3698,8 @@ fn load_execution_recovery_action(
     connection
         .query_row(
             "SELECT session_id,turn_id,target_kind,invocation_id,action,
-                    resolved_by_instance_id,outcome_ledger_revision,recorded_at
+                    resolved_by_instance_id,expected_ledger_revision,outcome_ledger_revision,
+                    rationale_digest,recorded_at
              FROM execution_recovery_actions WHERE action_id=?1",
             [action_id.as_str()],
             |row| {
@@ -3728,9 +3735,12 @@ fn load_execution_recovery_action(
                     target,
                     action: decode_recovery_action(&row.get::<_, String>(4)?)?,
                     resolved_by: AgentInstanceId::new(row.get::<_, String>(5)?),
-                    outcome_ledger_revision: session_u64(row.get(6)?, "ledger revision")
+                    expected_ledger_revision: session_u64(row.get(6)?, "ledger revision")
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    recorded_at: row.get(7)?,
+                    outcome_ledger_revision: session_u64(row.get(7)?, "ledger revision")
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    rationale_digest: row.get(8)?,
+                    recorded_at: row.get(9)?,
                 })
             },
         )
@@ -3922,7 +3932,6 @@ const fn tool_recovery_decision_str(decision: ToolRecoveryDecision) -> &'static 
         ToolRecoveryDecision::RecoverResult => "recover_result",
         ToolRecoveryDecision::ContinueTurn => "continue_turn",
         ToolRecoveryDecision::ManualReconciliation => "manual_reconciliation",
-        ToolRecoveryDecision::OperatorConfirmedNoEffect => "operator_confirmed_no_effect",
         ToolRecoveryDecision::OperatorAbandoned => "operator_abandoned",
     }
 }
@@ -3936,7 +3945,6 @@ fn decode_tool_recovery_decision(value: &str) -> rusqlite::Result<ToolRecoveryDe
         "recover_result" => Ok(ToolRecoveryDecision::RecoverResult),
         "continue_turn" => Ok(ToolRecoveryDecision::ContinueTurn),
         "manual_reconciliation" => Ok(ToolRecoveryDecision::ManualReconciliation),
-        "operator_confirmed_no_effect" => Ok(ToolRecoveryDecision::OperatorConfirmedNoEffect),
         "operator_abandoned" => Ok(ToolRecoveryDecision::OperatorAbandoned),
         _ => Err(rusqlite::Error::InvalidQuery),
     }

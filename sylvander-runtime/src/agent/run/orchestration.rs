@@ -147,11 +147,12 @@ impl AgentRunInner {
                     && call.recovery_decision
                         == Some(crate::storage::session::ToolRecoveryDecision::RetrySameInvocation)
                     && call.recovery_owner.as_deref() == Some(recovery_owner)
-                    && matches!(
+                    && (matches!(
                         call.effective_recovery_policy,
                         sylvander_agent::tool::invocation::ToolRecoveryPolicy::RetryWithSameInvocation
                             | sylvander_agent::tool::invocation::ToolRecoveryPolicy::ReconcileBeforeRetry
-                    )
+                    ) || call.recovery_reason
+                        == Some(crate::storage::session::ToolRecoveryReason::OperatorConfirmedNoEffect))
                     && call
                         .recovery_lease_expires_at
                         .is_some_and(|expires_at| expires_at > observed_at)

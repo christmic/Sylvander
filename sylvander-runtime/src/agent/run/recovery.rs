@@ -79,8 +79,22 @@ pub(crate) async fn classify_interrupted_tool_calls(
             });
             continue;
         }
-        let mut classification =
-            RecoveryClassification::for_interrupted(call.position, call.effective_recovery_policy);
+        let mut classification = if call.recovery_decision
+            == Some(ToolRecoveryDecision::RetrySameInvocation)
+            && call.recovery_reason == Some(ToolRecoveryReason::OperatorConfirmedNoEffect)
+        {
+            // The moderator established a durable external fact. Once its
+            // previous lease expires, preserve that fact while transferring
+            // replay ownership to this recovery pass; never fall back to the
+            // tool's conservative default policy and lose the authorization.
+            RecoveryClassification::reconciled(
+                ToolRecoveryDecision::RetrySameInvocation,
+                ToolRecoveryReason::OperatorConfirmedNoEffect,
+                false,
+            )
+        } else {
+            RecoveryClassification::for_interrupted(call.position, call.effective_recovery_policy)
+        };
         if classification.decision == ToolRecoveryDecision::Reconcile {
             let recovery =
                 workspace_journal.map_or(WorkspaceMutationRecovery::Unknown, |journal| {

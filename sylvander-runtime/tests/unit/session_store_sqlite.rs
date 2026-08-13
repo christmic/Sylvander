@@ -1141,16 +1141,6 @@ async fn boot_recovery_persists_manual_decision_and_observes_it() {
             .await
             .unwrap();
     }
-    store
-        .finish_turn(
-            &session.id,
-            "turn-crashed",
-            TurnState::Failed,
-            Some(TurnFailureKind::Persistence),
-        )
-        .await
-        .unwrap();
-
     let observability = crate::observability::RuntimeObservability::new();
     let summary = crate::agent::run::recovery::classify_interrupted_tool_calls(
         std::sync::Arc::new(store.clone()),
@@ -1194,15 +1184,44 @@ async fn boot_recovery_persists_manual_decision_and_observes_it() {
     let resolved = store.tool_calls(&session.id, "turn-crashed").await.unwrap();
     assert_eq!(
         resolved[0].recovery_decision,
-        Some(ToolRecoveryDecision::OperatorConfirmedNoEffect)
+        Some(ToolRecoveryDecision::RetrySameInvocation)
     );
     assert_eq!(
         resolved[0].recovery_reason,
         Some(ToolRecoveryReason::OperatorConfirmedNoEffect)
     );
     assert!(!resolved[0].operator_action_required);
+    let deferred = crate::agent::run::recovery::classify_interrupted_tool_calls(
+        std::sync::Arc::new(store.clone()),
+        &observability,
+        None,
+        1_002,
+    )
+    .await
+    .unwrap();
+    assert_eq!(deferred.lease_deferred, 1);
+    let reacquired = crate::agent::run::recovery::classify_interrupted_tool_calls(
+        std::sync::Arc::new(store.clone()),
+        &observability,
+        None,
+        1_031,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reacquired.classified, 1);
+    assert_eq!(reacquired.manual_reconciliation, 0);
+    let recovered = store.tool_calls(&session.id, "turn-crashed").await.unwrap();
+    assert_eq!(
+        recovered[0].recovery_decision,
+        Some(ToolRecoveryDecision::RetrySameInvocation)
+    );
+    assert_eq!(
+        recovered[0].recovery_reason,
+        Some(ToolRecoveryReason::OperatorConfirmedNoEffect)
+    );
+    assert_ne!(recovered[0].recovery_owner, resolved[0].recovery_owner);
     let observed = observability.snapshot();
-    assert_eq!(observed.tool_recoveries_classified, 1);
+    assert_eq!(observed.tool_recoveries_classified, 3);
     assert_eq!(observed.tool_recoveries_manual, 1);
 }
 

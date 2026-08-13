@@ -4,7 +4,7 @@ use crate::storage::agent_instance::AgentInstanceStore;
 use crate::storage::session::{
     ModelInvocationId, ModelIterationStart, ModelResponsePersistence, RecoveryClassification,
     ToolCallAdvance, ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId,
-    ToolRecoveryWrite,
+    ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
 };
 use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
@@ -1471,7 +1471,7 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
 }
 
 #[tokio::test]
-async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
+async fn operator_confirmed_no_effect_replays_same_identity_once_and_persists_result() {
     let store = Arc::new(
         crate::storage::session::SqliteSessionStore::open_in_memory()
             .await
@@ -1588,8 +1588,8 @@ async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
             invocation_id: tool_invocation.clone(),
             tool_name: "replay_read".into(),
             invocation_class: Some(ToolInvocationClass::Read),
-            declared_recovery_policy: ToolRecoveryPolicy::RetryWithSameInvocation,
-            effective_recovery_policy: ToolRecoveryPolicy::RetryWithSameInvocation,
+            declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
             capability_revision,
             input_digest: prepared_input_digest(&input),
         })
@@ -1625,9 +1625,10 @@ async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
             recovery_owner: "test-owner".into(),
             observed_at: 100,
             lease_expires_at: 130,
-            classification: RecoveryClassification::for_interrupted(
-                ToolExecutionPosition::EffectStarted,
-                ToolRecoveryPolicy::RetryWithSameInvocation,
+            classification: RecoveryClassification::reconciled(
+                ToolRecoveryDecision::RetrySameInvocation,
+                ToolRecoveryReason::OperatorConfirmedNoEffect,
+                false,
             ),
         })
         .await

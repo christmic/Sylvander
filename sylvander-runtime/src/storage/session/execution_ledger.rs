@@ -81,7 +81,6 @@ pub enum ToolRecoveryDecision {
     RecoverResult,
     ContinueTurn,
     ManualReconciliation,
-    OperatorConfirmedNoEffect,
     OperatorAbandoned,
 }
 
