@@ -238,10 +238,16 @@ count no longer makes the health endpoint fail before it can report Storage as
 degraded. Paths, database errors, row data, and anchor material never enter the
 snapshot.
 
-Turn artifacts are now location-neutral, encrypted, scoped, and independently
-represented in unified health. Authorized retrieval, cross-repository
-transactions, and unified backup lifecycle remain incomplete. Callers must not
-infer those target capabilities from this architecture contract.
+Turn artifacts are location-neutral, encrypted, scoped, and independently
+represented in unified health. The retrieval boundary is Runtime-owned: a
+client supplies only an opaque locator, owning Session, and byte offset;
+Runtime derives user identity, verifies Session ownership and artifact
+provenance, performs an audited governed-store read, and returns at most 48
+KiB of plaintext as Base64. Cross-user, cross-Session, expired, and deleted
+records are uniformly not visible. Channels never receive storage handles and
+Agent never receives a read authority. Cross-repository transactions and a
+unified backup lifecycle remain incomplete. See
+`sylvander-runtime/docs/application-services.md` for the exact contract.
 
 ## Built-in observability
 

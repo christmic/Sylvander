@@ -194,8 +194,36 @@ location-neutral port and opaque locator. Runtime boot clones that bounded
 factory from `RuntimeStorage`; no sibling service selects another backend.
 Messages remain the turn terminal authority, so this ownership closure does
 not claim an atomic transaction across the Session and evidence databases.
-There is not yet an authorized
-retrieval service, cross-domain transaction, or unified backup lifecycle;
+
+Artifact retrieval follows the same ownership direction as persistence. The
+public protocol carries an opaque locator, the owning Session, and a bounded
+byte offset; it never carries a tenant, user, filesystem path, database key,
+or backend URL. Channel authenticates transport identity but does not open
+storage. Runtime derives the stable user, proves ownership of the requested
+Session, resolves the locator inside that exact tenant/user scope, verifies
+that the stored artifact provenance is bound to the same Session, and only
+then returns a range. A locator that belongs to another user or Session, has
+expired, or has been deleted is uniformly not visible; the response must not
+reveal which check failed.
+
+One response contains at most 48 KiB of plaintext, encoded as Base64 for the
+JSON transport. This produces at most 64 KiB of encoded content and prevents a
+16 MiB governed record from becoming one unbounded UI message. The response
+also carries media type, total size, offset, next offset, terminal status, and
+the digest of the complete plaintext. The governed store may need to decrypt
+the complete authenticated ciphertext before slicing because the current
+record format uses one AEAD envelope; that bounded internal allocation is not
+permission to return the complete record. Each successful range read appends
+a content-free governance audit in the same database transaction as the read.
+
+The provenance binding is a stable SHA-256 digest of the Session identifier,
+stored as a parseable prefix of the content-safe `source_ref`. Both Agent turn
+artifacts and MCP result artifacts use the same prefix; provider-specific
+metadata follows only as a digest. Retrieval accepts only the exact supported
+locator namespaces and exact provenance format. This is an internal storage
+contract, not a public capability for guessing or constructing locators.
+
+Cross-domain transactions and a unified backup lifecycle remain incomplete;
 callers must not infer those target capabilities today.
 
 Evidence has two deliberately separate health facts. Database/schema failures

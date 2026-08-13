@@ -214,8 +214,10 @@ crate without retaining a second production path.
   one start and one terminal per call, no successful turn with a running call,
   and atomic abandonment with failed/interrupted turns. Turn-bound artifacts
   use the encrypted governed store, an
-  independent health component, and opaque locators. Retrieval,
-  cross-domain transactions, and unified backup remain incomplete; see
+  independent health component, and opaque locators. Runtime owns authorized,
+  audited, Session-bound range retrieval; Channel transports its DTO and Agent
+  receives no read authority. Cross-domain transactions and unified backup
+  remain incomplete; see
   [`application-services.md`](application-services.md) for exact status.
 - `observability` is the closed typed lifecycle recorder. Its first slice
   covers authorized chat admission, message-bus dispatch, turn terminals,
