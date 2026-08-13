@@ -143,7 +143,10 @@ impl ToolInvocationSnapshot {
                 .filter(|feature| matches!(feature.kind, CapabilityFeatureKind::Executable(_))))
     }
 
-    pub(crate) fn authorizes(&self, name: &str, class: ToolInvocationClass) -> bool {
+    /// Test whether one exact executable route belongs to this frozen surface.
+    /// Runtime uses this when atomically installing Session-owned extensions.
+    #[must_use]
+    pub fn authorizes(&self, name: &str, class: ToolInvocationClass) -> bool {
         self.features.contains(&CapabilityFeature {
             name: name.to_owned(),
             kind: CapabilityFeatureKind::Executable(class),

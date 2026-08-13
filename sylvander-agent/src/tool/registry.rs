@@ -125,6 +125,18 @@ pub struct ToolRegistry {
     hooks: Vec<ToolHookConfig>,
 }
 
+/// Failure to compose a Runtime-supplied Session tool surface with the
+/// immutable Agent-revision registry.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ToolRegistryCompositionError {
+    /// Session extensions cannot replace an Agent-revision route.
+    #[error("Session tool route `{0}` collides with the Agent tool surface")]
+    DuplicateRoute(String),
+    /// Lifecycle hooks belong to the Agent revision, not a Session extension.
+    #[error("Session tool extensions cannot contribute lifecycle hooks")]
+    ExtensionHooks,
+}
+
 impl ToolRegistry {
     /// Create an empty registry.
     #[must_use]
@@ -143,6 +155,29 @@ impl ToolRegistry {
     pub fn register_dynamic_source<S: DynamicToolSource + 'static>(mut self, source: S) -> Self {
         self.dynamic_sources.push(Arc::new(source));
         self
+    }
+
+    /// Freeze and compose a neutral Session extension without allowing it to
+    /// replace revision-owned tools or hooks.
+    ///
+    /// Runtime uses this boundary for Session-scoped capability sources such
+    /// as MCP. Transport and protocol types remain outside Agent; the result
+    /// is an ordinary immutable registry suitable for one turn.
+    pub fn compose_session_extensions(
+        &self,
+        extensions: &Self,
+    ) -> Result<Self, ToolRegistryCompositionError> {
+        if !extensions.hooks.is_empty() {
+            return Err(ToolRegistryCompositionError::ExtensionHooks);
+        }
+        let (mut base, _) = self.freeze_for_turn();
+        let (extensions, _) = extensions.freeze_for_turn();
+        for (name, tool) in extensions.tools {
+            if base.tools.insert(name.clone(), tool).is_some() {
+                return Err(ToolRegistryCompositionError::DuplicateRoute(name));
+            }
+        }
+        Ok(base)
     }
 
     /// Replace the hook set for this immutable registry composition.

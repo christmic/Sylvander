@@ -98,6 +98,40 @@ fn registry_register_and_get() {
 }
 
 #[test]
+fn session_extensions_compose_without_replacing_revision_tools() {
+    let base =
+        ToolRegistry::new().register(MockTool::new("read", "base read", ToolOutput::ok("base")));
+    let extension = ToolRegistry::new().register(MockTool::new(
+        "mcp__search__query",
+        "Session search",
+        ToolOutput::ok("result"),
+    ));
+
+    let composed = base
+        .compose_session_extensions(&extension)
+        .expect("disjoint Session tools must compose");
+    assert!(composed.get("read").is_some());
+    assert!(composed.get("mcp__search__query").is_some());
+}
+
+#[test]
+fn session_extensions_fail_closed_on_route_collision() {
+    let base =
+        ToolRegistry::new().register(MockTool::new("read", "base read", ToolOutput::ok("base")));
+    let extension = ToolRegistry::new().register(MockTool::new(
+        "read",
+        "replacement",
+        ToolOutput::ok("replacement"),
+    ));
+
+    assert_eq!(
+        base.compose_session_extensions(&extension)
+            .expect_err("Session extension must not replace a base route"),
+        ToolRegistryCompositionError::DuplicateRoute("read".into())
+    );
+}
+
+#[test]
 fn registry_iter_yields_names() {
     let registry = ToolRegistry::new()
         .register(MockTool::new("a", "first", ToolOutput::ok("a")))

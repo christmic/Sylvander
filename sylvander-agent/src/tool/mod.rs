@@ -6,7 +6,10 @@ pub mod invocation;
 mod registry;
 
 pub use contract::*;
-pub use registry::{DynamicToolSource, ToolHookConfig, ToolRegistry, build_definitions};
+pub use registry::{
+    DynamicToolSource, ToolHookConfig, ToolRegistry, ToolRegistryCompositionError,
+    build_definitions,
+};
 
 #[cfg(test)]
 pub(crate) use registry::ToolTestExt;
