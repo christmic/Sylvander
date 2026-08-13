@@ -906,6 +906,7 @@ fn default_tools_with_candidate(
         .register(AskUserTool::new())
         .register(PresentPlanTool::new())
         .register(UpdatePlanTool::new())
+        .register(sylvander_agent::tools::ManageWorkflowTool::new())
         .register(StartBackgroundTaskTool::new());
     match candidate_sink {
         Some(sink) => registry.register(sylvander_agent::tools::MemoryWriteTool::candidate(sink)),

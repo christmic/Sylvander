@@ -18,6 +18,7 @@ pub mod plan;
 pub mod read;
 pub mod search;
 pub mod update_plan;
+pub mod workflow;
 pub mod write;
 
 // Public tool facade while workspace callers migrate to `memory::store`.
@@ -40,6 +41,7 @@ pub use plan::PresentPlanTool;
 pub use read::ReadTool;
 pub use search::SearchTool;
 pub use update_plan::UpdatePlanTool;
+pub use workflow::ManageWorkflowTool;
 pub use write::WriteTool;
 
 fn workspace_error_output(error: WorkspaceExecutorError) -> ToolOutput {
