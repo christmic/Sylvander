@@ -778,6 +778,11 @@ pub enum SessionStoreError {
         expected: Option<u64>,
         actual: Option<u64>,
     },
+    #[error("session topology revision conflict: expected {expected:?}, actual {actual:?}")]
+    TopologyConflict {
+        expected: Option<u64>,
+        actual: Option<u64>,
+    },
 }
 
 impl From<rusqlite::Error> for SessionStoreError {

@@ -33,20 +33,26 @@ pub struct AgentRelation {
 pub struct SessionTopology {
     pub session_id: SessionId,
     pub membership_revision: u64,
+    pub topology_revision: u64,
     pub relations: Vec<AgentRelation>,
+    pub updated_at: i64,
 }
 
 impl SessionTopology {
     pub fn new(
         session_id: SessionId,
         membership_revision: u64,
+        topology_revision: u64,
         relations: Vec<AgentRelation>,
+        updated_at: i64,
         membership: &SessionMembership,
     ) -> Result<Self, TopologyError> {
         let topology = Self {
             session_id,
             membership_revision,
+            topology_revision,
             relations,
+            updated_at,
         };
         topology.validate(membership)?;
         Ok(topology)

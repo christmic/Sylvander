@@ -78,7 +78,7 @@ fn moderator_rooted_hierarchy_accepts_peer_and_review_edges() {
         created_at: 1,
     });
 
-    SessionTopology::new(SessionId::new("session"), 0, relations, &membership()).unwrap();
+    SessionTopology::new(SessionId::new("session"), 0, 0, relations, 1, &membership()).unwrap();
 }
 
 #[test]
@@ -86,7 +86,9 @@ fn disconnected_ownership_is_rejected() {
     let error = SessionTopology::new(
         SessionId::new("session"),
         0,
+        0,
         vec![parent("moderator", "worker")],
+        1,
         &membership(),
     )
     .unwrap_err();
@@ -99,7 +101,9 @@ fn ancestor_cycle_is_rejected() {
     let error = SessionTopology::new(
         SessionId::new("session"),
         0,
+        0,
         vec![parent("worker", "reviewer"), parent("reviewer", "worker")],
+        1,
         &membership(),
     )
     .unwrap_err();
@@ -118,12 +122,14 @@ fn symmetric_peer_duplicates_are_rejected() {
     let error = SessionTopology::new(
         SessionId::new("session"),
         0,
+        0,
         vec![
             parent("moderator", "worker"),
             parent("moderator", "reviewer"),
             peer("worker", "reviewer"),
             peer("reviewer", "worker"),
         ],
+        1,
         &membership(),
     )
     .unwrap_err();

@@ -82,6 +82,10 @@ impl AgentInstanceStore for SqliteSessionStore {
                 [&membership.session_id.0],
             )?;
             transaction.execute(
+                "DELETE FROM session_topology WHERE session_id=?1",
+                [&membership.session_id.0],
+            )?;
+            transaction.execute(
                 "DELETE FROM session_agent_instances WHERE session_id=?1",
                 [&membership.session_id.0],
             )?;

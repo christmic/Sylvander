@@ -272,6 +272,8 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_agents",
     "session_agent_instances",
     "session_governance",
+    "session_topology",
+    "agent_relations",
     "session_messages",
     "session_usage",
     "session_turns",
@@ -363,6 +365,28 @@ CREATE TABLE session_governance (
     FOREIGN KEY(session_id, moderator_instance_id, moderator_role)
         REFERENCES session_agent_instances(session_id, instance_id, role)
         ON DELETE CASCADE
+);
+
+CREATE TABLE session_topology (
+    session_id          TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    membership_revision INTEGER NOT NULL CHECK(membership_revision >= 0),
+    topology_revision   INTEGER NOT NULL CHECK(topology_revision >= 0),
+    updated_at          INTEGER NOT NULL
+);
+
+CREATE TABLE agent_relations (
+    session_id          TEXT NOT NULL,
+    relation_ordinal    INTEGER NOT NULL CHECK(relation_ordinal >= 0),
+    source_instance_id  TEXT NOT NULL,
+    target_instance_id  TEXT NOT NULL,
+    relation_kind       TEXT NOT NULL CHECK(relation_kind IN ('parent_of','peer','reviews')),
+    created_at          INTEGER NOT NULL,
+    PRIMARY KEY(session_id, relation_ordinal),
+    FOREIGN KEY(session_id) REFERENCES session_topology(session_id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id, source_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id, target_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE
 );
 
 -- Messages (one row per user/assistant/tool message)

@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstanceOrigin, ApprovalRoute, HistoryView, SessionAgentRole,
 };
+use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::SessionMetadata;
+use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{SessionLifetime, SessionStore, StoredSession};
 use sylvander_api::{AgentId, AgentInstanceId, SwarmId};
 
@@ -173,4 +175,59 @@ async fn stale_membership_writer_is_rejected_without_overwriting_snapshot() {
             .unwrap(),
         membership()
     );
+}
+
+#[tokio::test]
+async fn topology_is_durable_and_fenced_by_its_own_revision() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    let topology = SessionTopology::new(
+        SessionId::new("multi-session"),
+        0,
+        0,
+        vec![
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("worker-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+            AgentRelation {
+                source: AgentInstanceId::new("moderator-1"),
+                target: AgentInstanceId::new("coordinator-1"),
+                kind: AgentRelationKind::ParentOf,
+                created_at: 11,
+            },
+        ],
+        11,
+        &membership,
+    )
+    .unwrap();
+
+    store
+        .save_topology(&topology, &membership, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .topology(&SessionId::new("multi-session"))
+            .await
+            .unwrap(),
+        Some(topology.clone())
+    );
+    assert!(matches!(
+        store
+            .save_topology(&topology, &membership, None)
+            .await
+            .unwrap_err(),
+        SessionStoreError::TopologyConflict {
+            expected: None,
+            actual: Some(0)
+        }
+    ));
 }
