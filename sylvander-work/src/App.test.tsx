@@ -192,6 +192,39 @@ describe("Sylvander Work", () => {
     expect(screen.queryByRole("heading", { name: "Which constraints apply?" })).toBeNull();
   });
 
+  it("resolves a Runtime-owned plan with its typed identity", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Plans", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    await waitFor(() => expect(gateway.commands.at(-1)?.type).toBe("load_session"));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "plan_proposed",
+      session_id: "session-1",
+      plan_id: "plan-1",
+      steps: ["Inspect", "Verify"],
+      current: 0,
+    } }));
+
+    act(() => screen.getByRole("button", { name: /^Plan / }).click());
+    expect(await screen.findByText("Inspect")).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Approve plan" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "resolve_plan",
+      session_id: "session-1",
+      plan_id: "plan-1",
+      decision: { decision: "approved" },
+    }));
+    expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+  });
+
   it("projects the complete Runtime task lifecycle by task identity", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);

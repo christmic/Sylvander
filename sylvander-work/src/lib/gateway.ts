@@ -12,7 +12,13 @@ export type RuntimeCommand =
   | { type: "approve"; session_id: string; call_id: string; approved: boolean; scope: "once"; reason?: string }
   | { type: "interrupt"; session_id: string }
   | { type: "answer"; session_id: string; call_id: string; answer: string }
+  | { type: "resolve_plan"; session_id: string; plan_id: string; decision: PlanDecision }
   | { type: "get_runtime_info" };
+
+export type PlanDecision =
+  | { decision: "approved" }
+  | { decision: "revised"; steps: string[] }
+  | { decision: "rejected"; reason: string };
 
 export interface RuntimeSession {
   id: string;

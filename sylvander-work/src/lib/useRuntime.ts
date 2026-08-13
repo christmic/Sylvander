@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { RuntimeGateway, type DesktopEvent, type RuntimeCommand, type RuntimeGatewayPort, type RuntimeMessage } from "./gateway";
+import { RuntimeGateway, type DesktopEvent, type PlanDecision, type RuntimeCommand, type RuntimeGatewayPort, type RuntimeMessage } from "./gateway";
 import type { ConnectionState, PlanStep, SessionSummary, TaskSummary, TranscriptEntry } from "./types";
 
 export interface RuntimeViewState {
@@ -9,6 +9,7 @@ export interface RuntimeViewState {
   selectedId?: string;
   transcript: TranscriptEntry[];
   plan: PlanStep[];
+  activePlan?: { sessionId: string; planId: string };
   tasks: TaskSummary[];
   approval?: {
     sessionId: string;
@@ -154,10 +155,14 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       case "plan_proposed":
       case "plan_updated":
         if (message.session_id === selectedRef.current) {
-          setState((current) => ({ ...current, plan: message.steps.map((label, index) => ({
-            label,
-            state: index < message.current ? "complete" : index === message.current ? "current" : "pending",
-          })) }));
+          setState((current) => ({
+            ...current,
+            activePlan: { sessionId: message.session_id, planId: message.plan_id },
+            plan: message.steps.map((label, index) => ({
+              label,
+              state: index < message.current ? "complete" : index === message.current ? "current" : "pending",
+            })),
+          }));
         }
         break;
       case "task_started":
@@ -210,6 +215,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             ...current,
             approval: undefined,
             question: undefined,
+            activePlan: undefined,
             sessions: current.sessions.map((session) => session.id === message.session_id
               ? { ...session, state: message.type === "error" ? "failed" : "idle" }
               : session),
@@ -293,6 +299,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       selectedId: sessionId,
       transcript: [],
       plan: [],
+      activePlan: undefined,
       tasks: [],
       approval: undefined,
       question: undefined,
@@ -314,7 +321,24 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       : current);
   }, [state.question, submit]);
 
-  return { state, submit, selectSession, answerQuestion };
+  const resolvePlan = useCallback(async (
+    planId: string,
+    decision: PlanDecision,
+  ) => {
+    const plan = state.activePlan;
+    if (!plan || plan.planId !== planId) return;
+    await submit({
+      type: "resolve_plan",
+      session_id: plan.sessionId,
+      plan_id: plan.planId,
+      decision,
+    });
+    setState((current) => current.activePlan?.planId === planId
+      ? { ...current, activePlan: undefined }
+      : current);
+  }, [state.activePlan, submit]);
+
+  return { state, submit, selectSession, answerQuestion, resolvePlan };
 }
 
 function appendDelta(entries: TranscriptEntry[], delta: string): TranscriptEntry[] {

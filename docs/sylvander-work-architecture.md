@@ -116,6 +116,13 @@ selected choices after `; `. The desktop sends only the public `Answer`
 command. It owns temporary form selection and clears that form after submission
 or a turn terminal; Runtime owns whether and how execution resumes.
 
+Plan review retains Runtime's `plan_id` alongside display steps. Approve and
+reject send the protocol's typed `PlanDecision` and clear only the pending
+review control after successful submission; they do not mark execution
+complete. Revised steps remain represented by the same protocol decision and
+will be enabled with the dedicated editor surface rather than an ad-hoc wire
+message.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem
