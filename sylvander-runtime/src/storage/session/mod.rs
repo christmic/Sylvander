@@ -8,11 +8,16 @@
 //! remain auditable on disk while the active loop view excludes them.
 
 mod execution_ledger;
+mod model_ledger;
 mod sqlite;
 
 pub use execution_ledger::{
     RecoveryClassification, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
     ToolRecoveryReason,
+};
+pub use model_ledger::{
+    ModelExecutionPosition, ModelInvocationId, ModelRecoveryClassification, ModelRecoveryDecision,
+    ModelRecoveryReason,
 };
 pub use sqlite::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 
@@ -259,6 +264,62 @@ pub struct TurnCompletion {
     pub turn_id: String,
     pub assistant_content: JsonValue,
     pub model_id: String,
+}
+
+/// Immutable facts written before one provider request may begin.
+#[derive(Debug, Clone)]
+pub struct ModelIterationStart {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub iteration: u32,
+    pub invocation_id: ModelInvocationId,
+    pub model_id: String,
+    pub capability_revision: String,
+    pub request_digest: String,
+}
+
+/// Optimistic transition after all tool work for an iteration is durable.
+#[derive(Debug, Clone)]
+pub struct ModelIterationAdvance {
+    pub invocation_id: ModelInvocationId,
+    pub expected_revision: u64,
+    pub expected_position: ModelExecutionPosition,
+    pub next_position: ModelExecutionPosition,
+}
+
+/// Assistant response and its execution boundary, committed atomically.
+#[derive(Debug, Clone)]
+pub struct ModelResponsePersistence {
+    pub invocation_id: ModelInvocationId,
+    pub expected_revision: u64,
+    pub assistant_content: JsonValue,
+    pub model_id: String,
+    pub terminal: bool,
+}
+
+/// Result of atomically persisting one provider-neutral response.
+#[derive(Debug, Clone)]
+pub struct ModelResponseCommit {
+    pub message: StoredMessage,
+    pub ledger_revision: u64,
+}
+
+/// Content-free durable model iteration used by recovery and diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelIterationSnapshot {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub iteration: u32,
+    pub invocation_id: ModelInvocationId,
+    pub model_id: String,
+    pub capability_revision: String,
+    pub request_digest: String,
+    pub position: ModelExecutionPosition,
+    pub ledger_revision: u64,
+    pub response_message_id: Option<i64>,
+    pub response_terminal: Option<bool>,
+    pub started_at: i64,
+    pub updated_at: i64,
 }
 
 /// Durable lifecycle state of one tool call inside a turn.

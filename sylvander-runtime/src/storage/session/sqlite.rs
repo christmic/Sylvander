@@ -257,7 +257,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 5;
+const SESSION_SCHEMA_VERSION: i64 = 6;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -270,6 +270,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_messages",
     "session_usage",
     "session_turns",
+    "session_turn_iterations",
     "session_tool_calls",
     "idx_messages_user",
     "idx_messages_agent",
@@ -282,6 +283,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_messages_unsummarized",
     "idx_tool_calls_turn",
     "idx_tool_calls_recovery",
+    "idx_turn_iterations_recovery",
     "idx_running_turn_per_session",
 ];
 
@@ -362,6 +364,27 @@ CREATE TABLE session_turns (
     PRIMARY KEY (session_id, turn_id)
 );
 
+CREATE TABLE session_turn_iterations (
+    session_id      TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    iteration       INTEGER NOT NULL CHECK(iteration > 0),
+    invocation_id   TEXT NOT NULL UNIQUE,
+    model_id        TEXT NOT NULL,
+    capability_revision TEXT NOT NULL,
+    request_digest  TEXT NOT NULL,
+    position        TEXT NOT NULL CHECK(position IN ('model_started','response_persisted','tools_resolved')),
+    ledger_revision INTEGER NOT NULL DEFAULT 0,
+    response_message_id INTEGER REFERENCES session_messages(id) ON DELETE RESTRICT,
+    response_terminal INTEGER CHECK(response_terminal IN (0, 1)),
+    started_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    CHECK((position = 'model_started' AND response_message_id IS NULL AND response_terminal IS NULL)
+       OR (position != 'model_started' AND response_message_id IS NOT NULL AND response_terminal IS NOT NULL)),
+    PRIMARY KEY (session_id, turn_id, iteration),
+    FOREIGN KEY (session_id, turn_id)
+        REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE
+);
+
 CREATE TABLE session_tool_calls (
     session_id      TEXT NOT NULL,
     turn_id         TEXT NOT NULL,
@@ -418,9 +441,11 @@ CREATE INDEX idx_tool_calls_turn
     ON session_tool_calls(session_id, turn_id, started_at, call_id);
 CREATE INDEX idx_tool_calls_recovery
     ON session_tool_calls(state, position, updated_at, invocation_id);
+CREATE INDEX idx_turn_iterations_recovery
+    ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_session
     ON session_turns(session_id) WHERE state = 'running';
-PRAGMA user_version=5;
+PRAGMA user_version=6;
 COMMIT;
 ";
 
