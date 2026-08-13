@@ -347,6 +347,20 @@ pub struct ToolOutput {
     /// accordingly. Distinct from [`ToolError`] (which is a system-level
     /// error that terminates the loop).
     pub is_error: bool,
+    /// Trusted, content-safe classification for a model-visible failure.
+    ///
+    /// This is deliberately independent from the human-readable content:
+    /// Runtime must never infer security facts by parsing error prose.
+    failure_kind: Option<ToolFailureKind>,
+}
+
+/// Trusted classification for a model-visible tool failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolFailureKind {
+    /// The tool failed without a stronger, adapter-provided classification.
+    Unclassified,
+    /// The execution environment explicitly rejected a filesystem boundary.
+    FilesystemBoundaryPolicyViolation,
 }
 
 impl ToolOutput {
@@ -356,6 +370,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            failure_kind: None,
         }
     }
 
@@ -365,7 +380,24 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            failure_kind: Some(ToolFailureKind::Unclassified),
         }
+    }
+
+    /// Model-visible failure carrying a trusted machine classification.
+    #[must_use]
+    pub fn classified_err(content: impl Into<String>, kind: ToolFailureKind) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            failure_kind: Some(kind),
+        }
+    }
+
+    /// Return the trusted failure classification, if this output failed.
+    #[must_use]
+    pub const fn failure_kind(&self) -> Option<ToolFailureKind> {
+        self.failure_kind
     }
 }
 

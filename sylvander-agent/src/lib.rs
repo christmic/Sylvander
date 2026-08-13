@@ -173,9 +173,9 @@ pub mod prelude {
     pub use crate::tool::{
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
         ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
-        ToolExposure, ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput, ToolPreparation,
-        ToolPrepareError, ToolProgressSink, ToolRegistry, ToolSourceFeature, ToolSourceKind,
-        ToolSourceStatus, ToolSpec,
+        ToolExposure, ToolFailureKind, ToolFilesystemPolicy, ToolNetworkPolicy, ToolOutput,
+        ToolPreparation, ToolPrepareError, ToolProgressSink, ToolRegistry, ToolSourceFeature,
+        ToolSourceKind, ToolSourceStatus, ToolSpec,
     };
     pub use crate::turn::conversation::ConversationSnapshot;
     pub use crate::turn::error::AgentLoopError;

@@ -26,6 +26,8 @@ use crate::tool::{
     ToolSpec,
 };
 
+use super::workspace_error_output;
+
 const MAX_READ_FILE_BYTES: usize = 1024 * 1024;
 
 /// Read a file from the invocation's explicit workspace.
@@ -87,7 +89,7 @@ impl ToolExecutor for ReadTool {
 
         let target = match ctx.require_execution_target() {
             Ok(target) => target,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let read = match ctx
             .executor
@@ -105,7 +107,7 @@ impl ToolExecutor for ReadTool {
                     "cannot resolve `{path_str}`: {error}"
                 )));
             }
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
 
         if read.truncated {

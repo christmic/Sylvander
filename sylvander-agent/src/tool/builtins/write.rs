@@ -19,6 +19,8 @@ use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
 
+use super::workspace_error_output;
+
 /// Write a file into the invocation's explicit workspace.
 /// If the parent directory does not exist, it is created.
 #[derive(Debug, Clone, Copy, Default)]
@@ -84,7 +86,7 @@ impl ToolExecutor for WriteTool {
 
         let target = match ctx.require_execution_target() {
             Ok(target) => target,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         if target.read_only {
             return Ok(ToolOutput::err(format!(
@@ -125,7 +127,7 @@ impl ToolExecutor for WriteTool {
                     content.len()
                 )))
             }
-            Err(error) => Ok(ToolOutput::err(error.to_string())),
+            Err(error) => Ok(workspace_error_output(error)),
         }
     }
 }

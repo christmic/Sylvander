@@ -15,6 +15,7 @@ use crate::tool::{
 };
 
 use super::list::{optional_string, parse_max_results, strict_object};
+use super::workspace_error_output;
 
 /// Search workspace text through the invocation's workspace executor.
 #[derive(Debug, Clone, Copy, Default)]
@@ -84,7 +85,7 @@ impl ToolExecutor for SearchTool {
         };
         let target = match ctx.require_execution_target() {
             Ok(target) => target,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let result = match ctx
             .executor
@@ -99,7 +100,7 @@ impl ToolExecutor for SearchTool {
             .await
         {
             Ok(result) => result,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let matches = result
             .matches

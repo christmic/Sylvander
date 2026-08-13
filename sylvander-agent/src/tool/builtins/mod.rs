@@ -3,6 +3,9 @@
 //! Runtime tools implement the shared definition and executor contracts. Test
 //! doubles are kept in the crate's `tests/` tree.
 
+use crate::execution::workspace::{WorkspaceExecutorError, WorkspacePolicyViolation};
+use crate::tool::{ToolFailureKind, ToolOutput};
+
 pub mod ask_user;
 pub mod background_task;
 pub mod command;
@@ -38,3 +41,15 @@ pub use read::ReadTool;
 pub use search::SearchTool;
 pub use update_plan::UpdatePlanTool;
 pub use write::WriteTool;
+
+fn workspace_error_output(error: WorkspaceExecutorError) -> ToolOutput {
+    match error {
+        error @ WorkspaceExecutorError::PolicyViolation(
+            WorkspacePolicyViolation::FilesystemBoundary,
+        ) => ToolOutput::classified_err(
+            error.to_string(),
+            ToolFailureKind::FilesystemBoundaryPolicyViolation,
+        ),
+        error => ToolOutput::err(error.to_string()),
+    }
+}

@@ -21,6 +21,8 @@ use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
 
+use super::workspace_error_output;
+
 const MAX_EDIT_FILE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Replace text in a file inside the invocation's explicit workspace.
@@ -112,7 +114,7 @@ impl ToolExecutor for EditTool {
 
         let target = match ctx.require_execution_target() {
             Ok(target) => target,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         if target.read_only {
             return Ok(ToolOutput::err(format!(
@@ -126,7 +128,7 @@ impl ToolExecutor for EditTool {
             .await
         {
             Ok(update) => update,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let WorkspaceFileUpdate { read, revision } = update;
         if read.truncated {
@@ -200,7 +202,7 @@ impl ToolExecutor for EditTool {
                     path_str
                 )))
             }
-            Err(error) => Ok(ToolOutput::err(error.to_string())),
+            Err(error) => Ok(workspace_error_output(error)),
         }
     }
 }

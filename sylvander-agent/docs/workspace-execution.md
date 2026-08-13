@@ -98,6 +98,13 @@ path crossing the mounted workspace boundary, so Runtime maps only that status
 to `WorkspacePolicyViolation::FilesystemBoundary`. Other non-zero statuses,
 stderr text, and generic permission errors remain ordinary operation failures.
 
+Built-in workspace tools preserve that explicit denial as
+`ToolFailureKind::FilesystemBoundaryPolicyViolation` while keeping the
+human-readable result model-visible. All other model-visible failures default
+to `Unclassified`. Runtime can therefore count or persist policy facts without
+parsing tool output, and adapters that lack explicit evidence cannot fabricate
+a stronger classification.
+
 This conservative rule is intentional. Linux container and syscall sandboxes
 do not universally provide attribution for denied operations, and treating an
 arbitrary `EPERM` or exit code as a violation would fabricate observability.

@@ -16,6 +16,8 @@ use crate::tool::{
     ToolExecutor, ToolOutput, ToolPreparation, ToolPrepareError, ToolSpec,
 };
 
+use super::workspace_error_output;
+
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const DEFAULT_LOG_COUNT: u64 = 20;
@@ -120,11 +122,11 @@ impl ToolExecutor for GitTool {
         let workspace = object.get("workspace").and_then(JsonValue::as_str);
         let base_target = match ctx.require_execution_target() {
             Ok(target) => target,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let target = match ctx.executor.select_mount_target(base_target, workspace) {
             Ok(target) => target,
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
         let timeout = ctx.budget.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let output = match ctx
@@ -136,7 +138,7 @@ impl ToolExecutor for GitTool {
             Err(WorkspaceExecutorError::Timeout(timeout)) => {
                 return Err(ToolError::Timeout(timeout));
             }
-            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+            Err(error) => return Ok(workspace_error_output(error)),
         };
 
         let stdout = bounded_text(&output.stdout);
