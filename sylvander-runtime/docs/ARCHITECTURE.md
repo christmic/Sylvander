@@ -148,9 +148,11 @@ crate without retaining a second production path.
   durable Session turn is the product terminal authority; Evidence remains a
   separate asynchronous governance projection. Metric durability and sink
   health remain incomplete.
-- `mcp_stdio` owns the MCP child process, JSON-RPC protocol, health probing,
-  cancellation, reconnect, discovery, and governed result-artifact handoff.
-  Agent receives only implementations of its generic dynamic-tool contract.
+- `mcp` owns authenticated Session bindings, secret resolution, persistent
+  sandbox selection, server lifecycles, and governed results. `mcp_stdio`
+  implements JSON-RPC, discovery, cancellation, health, and reconnection over
+  Runtime's persistent-process port; production code has no host-spawn path.
+  Immutable per-turn MCP tool snapshots remain the next integration boundary.
 - `self_change` runs evidence-backed, isolated experiments and requires a
   distinct human merge gate.
 

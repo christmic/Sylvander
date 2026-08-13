@@ -185,8 +185,8 @@ properties:
 - descendants remain inside the same boundary;
 - cancellation, violations, exit, and cleanup are observable.
 
-Initial production adapters are a persistent OCI environment and an explicit
-native sandbox adapter. Direct host spawning is test-only. Missing Seatbelt,
+The first production adapter is a persistent OCI environment. A native
+sandbox adapter remains planned. Direct host spawning is test-only. Missing Seatbelt,
 bubblewrap, Windows restricted-token/WFP support, OCI daemon, or configured
 sandbox runtime is an unavailable environment, never permission to run on the
 host.
@@ -261,12 +261,19 @@ the boundary. Tests must also cover model families routed through Anthropic,
 OpenAI Responses, OpenAI Chat Completions, and DashScope because wire adapters
 must preserve the same neutral tool snapshot.
 
-## Current implementation gap
+## Current implementation status
 
-The current `mcp_stdio.rs` still constructs clients while composing an Agent
-revision and therefore shares a process beyond one authenticated Session. It
-now has official cursor pagination, strict schema validation, bounded results,
-cancellation, reconnection, governed artifacts, and ambient-environment
-scrubbing. Those are retained mechanisms, not proof of the final ownership or
-sandbox boundary. Until the migration above lands, production stdio MCP must
-be treated as incomplete and must not be advertised as sandboxed.
+Runtime now owns a neutral persistent-process port and an OCI adapter that
+enforces a read-only root, exact workspace bind, denied network, dropped
+capabilities, no-new-privileges, and memory/CPU/PID ceilings. `mcp_stdio`
+consumes that port; its direct host process path is compiled only for protocol
+tests. Authenticated Session attach resolves secret references, checks the
+named environment's isolation truth, constructs read/write workspace
+authority, starts and initializes one client per Session, and Session detach
+awaits graceful close or complete process-tree termination.
+
+The remaining production gap is turn integration: discovered MCP tools are not
+yet merged as a generation-bound immutable `SessionToolSnapshot`. Native
+sandbox, fixed observability events, and Streamable HTTP also remain pending.
+Therefore the process boundary and Session ownership are implemented, while
+model-visible MCP exposure remains intentionally unavailable.

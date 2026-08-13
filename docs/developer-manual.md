@@ -290,7 +290,7 @@ that `build_channels` returns.
 ## 11. Adding a new tool
 
 Tools implement `ToolDefinition` and `ToolExecutor` in
-`sylvander-agent/src/tool.rs`. Definition and preparation are synchronous;
+`sylvander-agent/src/tool/contract.rs`. Definition and preparation are synchronous;
 execution is `async_trait`-bound for dyn-compatibility and Send safety. The
 per-call context is `ToolContext`.
 
@@ -371,7 +371,7 @@ statically couple a tool to a hard-coded model or provider.
 
 ## 12. Adding a new executor
 
-Executor contracts live in `sylvander-agent/src/workspace_executor.rs`;
+Executor contracts live in `sylvander-agent/src/execution/workspace.rs`;
 concrete local, SSH, and OCI adapters live under `sylvander-runtime/src/execution/`.
 Runtime selects an adapter and dispatches workspace operations to the bound
 target. The full contract lives in
@@ -401,16 +401,18 @@ Sylvander treats MCP servers as supervised external tool sources and
 Skill packages as workspace-scoped instruction bundles. Both have
 dedicated docs that are authoritative:
 
-- MCP runtime lifecycle, frames, health, reconnection:
+- MCP Session ownership, persistent sandbox, frames, health, and reconnection:
   [`sylvander-runtime/docs/mcp.md`](../sylvander-runtime/docs/mcp.md).
 - Skill packages, manifest schema, activation, and the
   per-turn budget:
   [`sylvander-agent/docs/skills.md`](../sylvander-agent/docs/skills.md).
 
-When you wire a new MCP server, match the existing pattern: declare
-the entry in the Agent TOML, resolve its `command` and any secrets
-through `SecretRef`, and let the runtime own the child process via
-kill-on-drop. When you ship a new Skill directive, place it under
+When you wire a new MCP server, declare its required
+`execution_environment`, explicit `workspace_access`, `command`, and secret references in the Agent
+definition. The target must resolve to a Runtime-owned persistent environment
+that proves filesystem, network, resource, and process-tree isolation. An
+unknown, local-unconfined, or unavailable target fails before process creation;
+there is no host fallback. When you ship a new Skill directive, place it under
 `.agents/skills/` (Agent home trust) or `.sylvander/skills/` /
 `skills/` (task workspace trust), and keep the SKILL.md under 16 KiB
 to fit the shared `48 KiB / 24-document` budget.
