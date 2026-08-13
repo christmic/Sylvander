@@ -24,8 +24,9 @@ pub use model_ledger::{
     ModelRecoveryReason,
 };
 pub use perception_ledger::{
-    PerceptionExecutionPosition, PerceptionInvocationId, PerceptionRecoveryClassification,
-    PerceptionRecoveryDecision, PerceptionRecoveryPolicy, PerceptionRecoveryReason,
+    PerceptionExecutionPosition, PerceptionFailureKind, PerceptionInvocationId,
+    PerceptionRecoveryClassification, PerceptionRecoveryDecision, PerceptionRecoveryPolicy,
+    PerceptionRecoveryReason,
 };
 pub use recovery_action::{
     ExecutionRecoveryAction, ExecutionRecoveryActionId, ExecutionRecoveryActionReceipt,
@@ -515,6 +516,13 @@ pub struct PerceptionArtifactPersistence {
     pub output_digest: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PerceptionFailurePersistence {
+    pub invocation_id: PerceptionInvocationId,
+    pub expected_revision: u64,
+    pub failure_kind: PerceptionFailureKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerceptionInvocationSnapshot {
     pub session_id: SessionId,
@@ -535,6 +543,7 @@ pub struct PerceptionInvocationSnapshot {
     pub receipt_locator: Option<String>,
     pub output_artifact_locator: Option<String>,
     pub output_digest: Option<String>,
+    pub failure_kind: Option<PerceptionFailureKind>,
     pub recovery_decision: Option<PerceptionRecoveryDecision>,
     pub recovery_reason: Option<PerceptionRecoveryReason>,
     pub operator_action_required: bool,
@@ -770,6 +779,16 @@ pub trait SessionStore: AgentInstanceStore + Send + Sync {
         &self,
         _invocation_id: &PerceptionInvocationId,
         _expected_revision: u64,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable perception is unavailable".into(),
+        ))
+    }
+
+    /// Close a specialist attempt with a content-safe terminal failure fact.
+    async fn fail_perception(
+        &self,
+        _write: PerceptionFailurePersistence,
     ) -> Result<u64, SessionStoreError> {
         Err(SessionStoreError::Invalid(
             "durable perception is unavailable".into(),

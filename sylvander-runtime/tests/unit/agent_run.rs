@@ -4173,6 +4173,8 @@ struct AutomaticCognitionOutcome {
     primary_has_audio: bool,
     durable_perceptions: usize,
     completed_perceptions: usize,
+    failed_perceptions: usize,
+    interrupted_perceptions: u64,
     automatic_succeeded: u64,
     automatic_soft_failed: u64,
     durable_has_media: bool,
@@ -4315,6 +4317,7 @@ async fn run_automatic_audio_turn(
         .unwrap();
     let durable_json = serde_json::to_string(&durable_history).unwrap();
     let snapshot = run.inner.observability.snapshot();
+    let perception_summary = store.perception_session_summary(&session_id).await.unwrap();
     AutomaticCognitionOutcome {
         requested_models,
         primary_text,
@@ -4327,6 +4330,15 @@ async fn run_automatic_audio_turn(
                     == crate::storage::session::PerceptionExecutionPosition::ResultPersisted
             })
             .count(),
+        failed_perceptions: perceptions
+            .iter()
+            .filter(|entry| {
+                entry.position == crate::storage::session::PerceptionExecutionPosition::Failed
+                    && entry.failure_kind
+                        == Some(crate::storage::session::PerceptionFailureKind::Provider)
+            })
+            .count(),
+        interrupted_perceptions: perception_summary.interrupted,
         automatic_succeeded: snapshot.perception_automatic_routes_succeeded,
         automatic_soft_failed: snapshot.perception_automatic_routes_soft_failed,
         durable_has_media: durable_json.contains("UklGRg=="),
@@ -4358,6 +4370,8 @@ async fn automatic_perception_requires_approval_and_softly_survives_specialist_f
     assert!(degraded.primary_text.contains("perception unavailable"));
     assert!(!degraded.primary_has_audio);
     assert_eq!(degraded.automatic_soft_failed, 1);
+    assert_eq!(degraded.failed_perceptions, 1);
+    assert_eq!(degraded.interrupted_perceptions, 0);
 }
 
 #[test]

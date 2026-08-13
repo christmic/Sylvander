@@ -43,16 +43,16 @@ use super::{
     ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance, ModelIterationSnapshot,
     ModelIterationStart, ModelRecoveryDecision, ModelRecoveryReason, ModelRecoveryWrite,
     ModelResponseCommit, ModelResponsePersistence, PerceptionAdvance,
-    PerceptionArtifactPersistence, PerceptionExecutionPosition, PerceptionInvocationId,
-    PerceptionInvocationSnapshot, PerceptionInvocationStart, PerceptionMediaPersistence,
-    PerceptionReceiptPersistence, PerceptionRecoveryDecision, PerceptionRecoveryPolicy,
-    PerceptionRecoveryReason, PerceptionRecoveryWrite, PerceptionSessionSummary,
-    PersistedTurnCompletion, ReplacementMessage, SessionFilter, SessionLifetime,
-    SessionMetadataPatch, SessionStore, SessionStoreError, SessionUsage, StoredMessage,
-    StoredSession, ToolCallAdvance, ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot,
-    ToolCallStart, ToolCallState, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
-    ToolRecoveryReason, ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind,
-    TurnSnapshot, TurnStart, TurnState,
+    PerceptionArtifactPersistence, PerceptionExecutionPosition, PerceptionFailureKind,
+    PerceptionFailurePersistence, PerceptionInvocationId, PerceptionInvocationSnapshot,
+    PerceptionInvocationStart, PerceptionMediaPersistence, PerceptionReceiptPersistence,
+    PerceptionRecoveryDecision, PerceptionRecoveryPolicy, PerceptionRecoveryReason,
+    PerceptionRecoveryWrite, PerceptionSessionSummary, PersistedTurnCompletion, ReplacementMessage,
+    SessionFilter, SessionLifetime, SessionMetadataPatch, SessionStore, SessionStoreError,
+    SessionUsage, StoredMessage, StoredSession, ToolCallAdvance, ToolCallCompletion,
+    ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState, ToolExecutionPosition,
+    ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
+    ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot, TurnStart, TurnState,
 };
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -270,7 +270,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 19;
+const SESSION_SCHEMA_VERSION: i64 = 20;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -814,12 +814,13 @@ CREATE TABLE session_perception_invocations (
     capability_revision TEXT NOT NULL,
     input_digest    TEXT NOT NULL,
     input_bytes     INTEGER NOT NULL CHECK(input_bytes > 0),
-    position        TEXT NOT NULL CHECK(position IN ('prepared','media_persisted','inference_started','inference_completed','artifact_persisted','result_persisted')),
+    position        TEXT NOT NULL CHECK(position IN ('prepared','media_persisted','inference_started','inference_completed','artifact_persisted','result_persisted','failed')),
     ledger_revision INTEGER NOT NULL DEFAULT 0,
     media_artifact_locator TEXT,
     receipt_locator TEXT,
     output_artifact_locator TEXT,
     output_digest TEXT,
+    failure_kind TEXT CHECK(failure_kind IN ('provider','timed_out','invalid_response')),
     recovery_decision TEXT,
     recovery_reason TEXT,
     operator_action_required INTEGER NOT NULL DEFAULT 0,
@@ -832,7 +833,9 @@ CREATE TABLE session_perception_invocations (
     CHECK((position='prepared' AND media_artifact_locator IS NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
        OR (position IN ('media_persisted','inference_started') AND media_artifact_locator IS NOT NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
        OR (position='inference_completed' AND media_artifact_locator IS NOT NULL AND receipt_locator IS NOT NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
-       OR (position IN ('artifact_persisted','result_persisted') AND media_artifact_locator IS NOT NULL AND receipt_locator IS NOT NULL AND output_artifact_locator IS NOT NULL AND output_digest IS NOT NULL)),
+       OR (position IN ('artifact_persisted','result_persisted') AND media_artifact_locator IS NOT NULL AND receipt_locator IS NOT NULL AND output_artifact_locator IS NOT NULL AND output_digest IS NOT NULL)
+       OR (position='failed' AND media_artifact_locator IS NOT NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL AND failure_kind IS NOT NULL)),
+    CHECK((position='failed') = (failure_kind IS NOT NULL)),
     PRIMARY KEY(session_id, turn_id, invocation_id),
     FOREIGN KEY(session_id, turn_id) REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE,
     FOREIGN KEY(session_id, agent_instance_id) REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE
@@ -895,7 +898,7 @@ CREATE INDEX idx_perception_recovery
     ON session_perception_invocations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=19;
+PRAGMA user_version=20;
 COMMIT;
 ";
 
@@ -2212,6 +2215,43 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
+    async fn fail_perception(
+        &self,
+        write: PerceptionFailurePersistence,
+    ) -> Result<u64, SessionStoreError> {
+        let expected = session_i64(write.expected_revision, "perception ledger revision")?;
+        let next = write.expected_revision.checked_add(1).ok_or_else(|| {
+            SessionStoreError::Invalid("perception ledger revision overflow".into())
+        })?;
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE session_perception_invocations SET position='failed',
+                     ledger_revision=ledger_revision+1,failure_kind=?1,updated_at=?2
+                     WHERE invocation_id=?3 AND position='inference_started'
+                     AND ledger_revision=?4 AND EXISTS (
+                       SELECT 1 FROM session_turns t
+                       WHERE t.session_id=session_perception_invocations.session_id
+                       AND t.turn_id=session_perception_invocations.turn_id AND t.state='running')",
+                    params![
+                        perception_failure_str(write.failure_kind),
+                        crate::session::now_secs(),
+                        write.invocation_id.as_str(),
+                        expected,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 1 {
+                Ok(next)
+            } else {
+                Err(SessionStoreError::Invalid(
+                    "perception failure CAS conflict or turn is no longer running".into(),
+                ))
+            }
+        })
+        .await
+    }
+
     async fn perception_invocations(
         &self,
         session_id: &SessionId,
@@ -2235,8 +2275,8 @@ impl SessionStore for SqliteSessionStore {
             let (invocations, completed, interrupted, operator): (i64, i64, i64, i64) = connection
                 .query_row(
                     "SELECT COUNT(*),
-                         COALESCE(SUM(position='result_persisted'),0),
-                         COALESCE(SUM(position!='result_persisted'),0),
+                         COALESCE(SUM(position IN ('result_persisted','failed')),0),
+                         COALESCE(SUM(position NOT IN ('result_persisted','failed')),0),
                          COALESCE(SUM(operator_action_required=1),0)
                          FROM session_perception_invocations WHERE session_id=?1",
                     params![session_id.0],
@@ -2274,7 +2314,7 @@ impl SessionStore for SqliteSessionStore {
                      recovery_attempts=recovery_attempts+1,recovery_owner=?4,
                      recovery_lease_expires_at=?5,first_interrupted_at=COALESCE(first_interrupted_at,?6),
                      updated_at=?6 WHERE invocation_id=?7 AND ledger_revision=?8
-                     AND position!='result_persisted'
+                     AND position NOT IN ('result_persisted','failed')
                      AND (recovery_lease_expires_at IS NULL OR recovery_lease_expires_at<=?6
                           OR recovery_owner=?4)",
                     params![
@@ -3759,8 +3799,8 @@ async fn query_perception_invocations(
                 p.modality,p.cognitive_role,p.provider_id,p.model_id,p.recovery_policy,
                 p.capability_revision,p.input_digest,p.input_bytes,p.position,p.ledger_revision,
                 p.media_artifact_locator,p.receipt_locator,p.output_artifact_locator,p.output_digest,
-                p.recovery_decision,p.recovery_reason,p.operator_action_required,p.recovery_owner,
-                p.recovery_lease_expires_at,p.started_at,p.updated_at";
+                p.failure_kind,p.recovery_decision,p.recovery_reason,p.operator_action_required,
+                p.recovery_owner,p.recovery_lease_expires_at,p.started_at,p.updated_at";
             let sql = if scope.is_some() {
                 format!(
                     "SELECT {columns} FROM session_perception_invocations p
@@ -3770,18 +3810,19 @@ async fn query_perception_invocations(
                 format!(
                     "SELECT {columns} FROM session_perception_invocations p
                      JOIN session_turns t ON t.session_id=p.session_id AND t.turn_id=p.turn_id
-                     WHERE t.state='running' AND p.position!='result_persisted'
+                     WHERE t.state='running'
+                       AND p.position NOT IN ('result_persisted','failed')
                      ORDER BY p.updated_at,p.invocation_id"
                 )
             };
             let mut statement = connection.prepare(&sql).map_err(sqlite_err)?;
             let map = |row: &rusqlite::Row<'_>| -> rusqlite::Result<_> {
                 let decision = row
-                    .get::<_, Option<String>>(18)?
+                    .get::<_, Option<String>>(19)?
                     .map(|value| decode_perception_decision(&value))
                     .transpose()?;
                 let reason = row
-                    .get::<_, Option<String>>(19)?
+                    .get::<_, Option<String>>(20)?
                     .map(|value| decode_perception_reason(&value))
                     .transpose()?;
                 Ok(PerceptionInvocationSnapshot {
@@ -3806,13 +3847,17 @@ async fn query_perception_invocations(
                     receipt_locator: row.get(15)?,
                     output_artifact_locator: row.get(16)?,
                     output_digest: row.get(17)?,
+                    failure_kind: row
+                        .get::<_, Option<String>>(18)?
+                        .map(|value| decode_perception_failure(&value))
+                        .transpose()?,
                     recovery_decision: decision,
                     recovery_reason: reason,
-                    operator_action_required: row.get(20)?,
-                    recovery_owner: row.get(21)?,
-                    recovery_lease_expires_at: row.get(22)?,
-                    started_at: row.get(23)?,
-                    updated_at: row.get(24)?,
+                    operator_action_required: row.get(21)?,
+                    recovery_owner: row.get(22)?,
+                    recovery_lease_expires_at: row.get(23)?,
+                    started_at: row.get(24)?,
+                    updated_at: row.get(25)?,
                 })
             };
             let rows = match scope {
@@ -4347,6 +4392,7 @@ const fn perception_position_str(position: PerceptionExecutionPosition) -> &'sta
         PerceptionExecutionPosition::InferenceCompleted => "inference_completed",
         PerceptionExecutionPosition::ArtifactPersisted => "artifact_persisted",
         PerceptionExecutionPosition::ResultPersisted => "result_persisted",
+        PerceptionExecutionPosition::Failed => "failed",
     }
 }
 
@@ -4358,6 +4404,24 @@ fn decode_perception_position(value: &str) -> rusqlite::Result<PerceptionExecuti
         "inference_completed" => Ok(PerceptionExecutionPosition::InferenceCompleted),
         "artifact_persisted" => Ok(PerceptionExecutionPosition::ArtifactPersisted),
         "result_persisted" => Ok(PerceptionExecutionPosition::ResultPersisted),
+        "failed" => Ok(PerceptionExecutionPosition::Failed),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn perception_failure_str(failure: PerceptionFailureKind) -> &'static str {
+    match failure {
+        PerceptionFailureKind::Provider => "provider",
+        PerceptionFailureKind::TimedOut => "timed_out",
+        PerceptionFailureKind::InvalidResponse => "invalid_response",
+    }
+}
+
+fn decode_perception_failure(value: &str) -> rusqlite::Result<PerceptionFailureKind> {
+    match value {
+        "provider" => Ok(PerceptionFailureKind::Provider),
+        "timed_out" => Ok(PerceptionFailureKind::TimedOut),
+        "invalid_response" => Ok(PerceptionFailureKind::InvalidResponse),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
@@ -4396,6 +4460,7 @@ const fn perception_reason_str(reason: PerceptionRecoveryReason) -> &'static str
         PerceptionRecoveryReason::ReceiptAlreadyPersisted => "receipt_already_persisted",
         PerceptionRecoveryReason::ArtifactAlreadyPersisted => "artifact_already_persisted",
         PerceptionRecoveryReason::ResultAlreadyPersisted => "result_already_persisted",
+        PerceptionRecoveryReason::TerminalFailurePersisted => "terminal_failure_persisted",
     }
 }
 
@@ -4408,6 +4473,7 @@ fn decode_perception_reason(value: &str) -> rusqlite::Result<PerceptionRecoveryR
         "receipt_already_persisted" => Ok(PerceptionRecoveryReason::ReceiptAlreadyPersisted),
         "artifact_already_persisted" => Ok(PerceptionRecoveryReason::ArtifactAlreadyPersisted),
         "result_already_persisted" => Ok(PerceptionRecoveryReason::ResultAlreadyPersisted),
+        "terminal_failure_persisted" => Ok(PerceptionRecoveryReason::TerminalFailurePersisted),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }

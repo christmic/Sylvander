@@ -19,8 +19,9 @@ use super::perception::{PerceptionArtifactKind, PerceptionArtifactStore, Percept
 use crate::agent_definition::SessionId;
 use crate::storage::session::{
     PerceptionAdvance, PerceptionArtifactPersistence, PerceptionExecutionPosition,
-    PerceptionInvocationSnapshot, PerceptionInvocationStart, PerceptionMediaPersistence,
-    PerceptionReceiptPersistence, PerceptionRecoveryPolicy, SessionStore,
+    PerceptionFailureKind, PerceptionFailurePersistence, PerceptionInvocationSnapshot,
+    PerceptionInvocationStart, PerceptionMediaPersistence, PerceptionReceiptPersistence,
+    PerceptionRecoveryPolicy, SessionStore,
 };
 
 pub use crate::storage::session::PerceptionInvocationId;
@@ -154,8 +155,29 @@ pub async fn execute_perception(
         })
         .await
         .map_err(|_| PerceptionExecutionError::Persistence)?;
-    let response = call_specialist(provider.as_ref(), &request).await?;
+    let response = match call_specialist(provider.as_ref(), &request).await {
+        Ok(response) => response,
+        Err(error) => {
+            store
+                .fail_perception(PerceptionFailurePersistence {
+                    invocation_id: request.invocation_id.clone(),
+                    expected_revision: revision,
+                    failure_kind: perception_failure_kind(error),
+                })
+                .await
+                .map_err(|_| PerceptionExecutionError::Persistence)?;
+            return Err(error);
+        }
+    };
     finish_from_response(store, artifacts, request.invocation_id, revision, response).await
+}
+
+const fn perception_failure_kind(error: PerceptionExecutionError) -> PerceptionFailureKind {
+    match error {
+        PerceptionExecutionError::TimedOut => PerceptionFailureKind::TimedOut,
+        PerceptionExecutionError::InvalidResponse => PerceptionFailureKind::InvalidResponse,
+        _ => PerceptionFailureKind::Provider,
+    }
 }
 
 /// Resume every post-inference durability window without calling the provider.
@@ -221,6 +243,7 @@ pub async fn recover_perception_receipt(
         PerceptionExecutionPosition::ResultPersisted => {
             load_completed_result(&artifacts, &snapshot, response).await
         }
+        PerceptionExecutionPosition::Failed => Err(PerceptionExecutionError::InvalidRequest),
         PerceptionExecutionPosition::Prepared | PerceptionExecutionPosition::MediaPersisted => {
             Err(PerceptionExecutionError::InvalidRequest)
         }

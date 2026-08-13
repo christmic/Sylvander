@@ -45,6 +45,7 @@ pub enum PerceptionExecutionPosition {
     InferenceCompleted,
     ArtifactPersisted,
     ResultPersisted,
+    Failed,
 }
 
 impl PerceptionExecutionPosition {
@@ -91,6 +92,15 @@ pub enum PerceptionRecoveryReason {
     ReceiptAlreadyPersisted,
     ArtifactAlreadyPersisted,
     ResultAlreadyPersisted,
+    TerminalFailurePersisted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PerceptionFailureKind {
+    Provider,
+    TimedOut,
+    InvalidResponse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +157,11 @@ impl PerceptionRecoveryClassification {
             PerceptionExecutionPosition::ResultPersisted => (
                 PerceptionRecoveryDecision::ContinueTurn,
                 PerceptionRecoveryReason::ResultAlreadyPersisted,
+                false,
+            ),
+            PerceptionExecutionPosition::Failed => (
+                PerceptionRecoveryDecision::ContinueTurn,
+                PerceptionRecoveryReason::TerminalFailurePersisted,
                 false,
             ),
         };

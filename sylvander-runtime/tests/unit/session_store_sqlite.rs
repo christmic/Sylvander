@@ -1646,6 +1646,102 @@ async fn perception_positions_recover_from_receipt_and_survive_restart() {
 }
 
 #[tokio::test]
+async fn terminal_perception_failure_survives_restart_without_recovery_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("perception-failed.sqlite3");
+    let store = SqliteSessionStore::open(&path).await.unwrap();
+    let session = running_perception_turn(&store, "turn-perception-failed").await;
+    let artifacts = perception_artifacts(
+        &directory.path().join("failed-evidence.sqlite"),
+        "turn-perception-failed",
+    )
+    .await;
+    let invocation_id = PerceptionInvocationId::new();
+    store
+        .begin_perception(PerceptionInvocationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-perception-failed".into(),
+            agent_instance_id: turn_instance(),
+            invocation_id: invocation_id.clone(),
+            modality: PerceptionModality::Audio,
+            role: CognitiveRole::Audio,
+            provider_id: "test-provider".into(),
+            model_id: "audio-specialist".into(),
+            recovery_policy: PerceptionRecoveryPolicy::RecoverFromReceipt,
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            input_digest: format!("sha256:{}", "b".repeat(64)),
+            input_bytes: 4,
+        })
+        .await
+        .unwrap();
+    let media = artifacts
+        .persist_exact(
+            &invocation_id,
+            PerceptionArtifactKind::SourceMedia,
+            "audio/wav",
+            b"RIFF".to_vec(),
+        )
+        .await
+        .unwrap();
+    let revision = store
+        .persist_perception_media(PerceptionMediaPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 0,
+            artifact_locator: media.locator,
+        })
+        .await
+        .unwrap();
+    let revision = store
+        .advance_perception(PerceptionAdvance {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            expected_position: PerceptionExecutionPosition::MediaPersisted,
+            next_position: PerceptionExecutionPosition::InferenceStarted,
+        })
+        .await
+        .unwrap();
+    store
+        .fail_perception(PerceptionFailurePersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            failure_kind: PerceptionFailureKind::Provider,
+        })
+        .await
+        .unwrap();
+    drop(store);
+
+    let reopened = SqliteSessionStore::open(path).await.unwrap();
+    let invocations = reopened
+        .perception_invocations(&session.id, "turn-perception-failed")
+        .await
+        .unwrap();
+    assert_eq!(invocations[0].position, PerceptionExecutionPosition::Failed);
+    assert_eq!(
+        invocations[0].failure_kind,
+        Some(PerceptionFailureKind::Provider)
+    );
+    assert!(
+        reopened
+            .interrupted_perception_invocations()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        reopened
+            .perception_session_summary(&session.id)
+            .await
+            .unwrap(),
+        PerceptionSessionSummary {
+            invocations: 1,
+            completed: 1,
+            interrupted: 0,
+            operator_action_required: 0,
+        }
+    );
+}
+
+#[tokio::test]
 async fn specialist_execution_commits_receipt_artifact_and_model_visible_result() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(
