@@ -12,6 +12,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sylvander-agent = { path = "../sylvander-agent" }
 sylvander-llm-core = { path = "../sylvander-llm-core" }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

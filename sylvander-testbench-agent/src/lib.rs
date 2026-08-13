@@ -5,8 +5,10 @@
 //! production dependency.
 
 pub mod atif;
+pub mod recorder;
 
 pub use atif::{
     Agent, FinalMetrics, Metrics, Observation, ObservationResult, Source, Step, ToolCall,
     Trajectory,
 };
+pub use recorder::{RecorderError, TrajectoryRecorder};
