@@ -19,7 +19,7 @@ use crate::storage::workspace_journal::{WorkspaceJournal, WorkspaceMutationRecov
 const RECOVERY_LEASE_SECS: i64 = 30;
 
 /// Content-free outcome of one complete boot classification pass.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct BootRecoverySummary {
     pub discovered: u64,
     pub classified: u64,
@@ -28,6 +28,7 @@ pub(crate) struct BootRecoverySummary {
     pub model_discovered: u64,
     pub model_classified: u64,
     pub turns_completed: u64,
+    pub recovery_owner: Option<String>,
 }
 
 /// Classify every interrupted call before persistent Sessions are attached.
@@ -52,6 +53,7 @@ pub(crate) async fn classify_interrupted_tool_calls(
         lease_expires_at,
     )
     .await?;
+    summary.recovery_owner = Some(owner.clone());
     let calls = store.interrupted_tool_calls().await?;
     summary.discovered = calls.len() as u64;
     if calls.is_empty() {
