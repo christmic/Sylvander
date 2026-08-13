@@ -7,7 +7,7 @@ use crate::agent::instance::{
     HistoryView, SessionAgentRole,
 };
 use crate::session::membership::{SessionGovernance, SessionMembership};
-use crate::storage::agent_instance::AgentInstanceStore;
+use crate::storage::agent_instance::{AgentInstanceConfig, AgentInstanceStore};
 use crate::storage::session::{
     ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryReason,
 };
@@ -1558,7 +1558,7 @@ async fn histories_and_compaction_are_isolated_by_agent_instance() {
         session_id: session.id.clone(),
         definition: AgentDefinitionKey {
             agent_id: AgentId::new("agent-1"),
-            revision: 1,
+            revision: 7,
         },
         origin: AgentInstanceOrigin::Defined,
         role,
@@ -1592,6 +1592,19 @@ async fn histories_and_compaction_are_isolated_by_agent_instance() {
     .unwrap();
     store
         .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_agent_instance_config(
+            &AgentInstanceConfig {
+                session_id: session.id.clone(),
+                instance_id: worker_id.clone(),
+                config_revision: 0,
+                effective: effective_config(),
+                updated_at: now,
+            },
+            None,
+        )
         .await
         .unwrap();
 

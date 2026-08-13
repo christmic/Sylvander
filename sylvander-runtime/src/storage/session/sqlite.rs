@@ -261,7 +261,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 14;
+const SESSION_SCHEMA_VERSION: i64 = 15;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -272,6 +272,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "sessions",
     "session_agents",
     "session_agent_instances",
+    "session_agent_configs",
     "session_governance",
     "session_topology",
     "agent_relations",
@@ -370,6 +371,21 @@ CREATE TABLE session_agent_instances (
     UNIQUE(session_id, instance_id),
     UNIQUE(session_id, instance_id, role),
     UNIQUE(session_id, membership_ordinal)
+);
+
+-- One independently revisioned execution configuration per runnable Agent
+-- instance. Turns copy this complete cell, making recovery a single-row read
+-- rather than reconstruction from mutable Session or registry state.
+CREATE TABLE session_agent_configs (
+    session_id         TEXT NOT NULL,
+    instance_id        TEXT NOT NULL,
+    config_revision    INTEGER NOT NULL CHECK(config_revision >= 0),
+    effective_config   TEXT NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    PRIMARY KEY(session_id, instance_id),
+    FOREIGN KEY(session_id, instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id)
+        ON DELETE CASCADE
 );
 
 -- Exactly one current root moderator signs final Session arbitration. The
@@ -787,7 +803,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=14;
+PRAGMA user_version=15;
 COMMIT;
 ";
 
@@ -1075,11 +1091,15 @@ impl SessionStore for SqliteSessionStore {
         let overrides = serde_json::to_string(&overrides).map_err(|error| {
             SessionStoreError::Store(format!("serialize session config overrides: {error}"))
         })?;
+        let effective_agent_id = effective.agent_id.0.clone();
+        let effective_agent_revision = effective.agent_revision;
         let effective = serde_json::to_string(&effective).map_err(|error| {
             SessionStoreError::Store(format!("serialize effective config: {error}"))
         })?;
         self.run(move |connection| {
-            let updated = connection.execute(
+            let transaction = connection.unchecked_transaction()?;
+            let now = crate::session::now_secs();
+            let updated = transaction.execute(
                 "UPDATE sessions SET config_revision = ?1, config_overrides = ?2, \
                                      effective_config = ?3, updated_at = ?4 \
                  WHERE id = ?5 AND is_archived = 0 AND config_revision = ?6",
@@ -1087,15 +1107,59 @@ impl SessionStore for SqliteSessionStore {
                     next_sql,
                     overrides,
                     effective,
-                    crate::session::now_secs(),
+                    now,
                     id.0,
                     expected,
                 ],
             )?;
             if updated == 1 {
+                let moderator = transaction
+                    .query_row(
+                        "SELECT g.moderator_instance_id,i.agent_id,i.definition_revision \
+                         FROM session_governance g JOIN session_agent_instances i \
+                           ON i.session_id=g.session_id AND i.instance_id=g.moderator_instance_id \
+                         WHERE g.session_id=?1",
+                        [&id.0],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                if let Some((moderator, agent_id, agent_revision)) = moderator {
+                    let agent_revision = u64::try_from(agent_revision).map_err(|_| {
+                        SessionStoreError::Store(
+                            "stored Agent definition revision is negative".into(),
+                        )
+                    })?;
+                    if agent_id != effective_agent_id || agent_revision != effective_agent_revision {
+                        return Err(SessionStoreError::Invalid(
+                            "moderator configuration does not match its Agent definition".into(),
+                        ));
+                    }
+                    let config_updated = transaction.execute(
+                        "INSERT INTO session_agent_configs \
+                         (session_id,instance_id,config_revision,effective_config,updated_at) \
+                         VALUES (?4,?5,?1,?2,?3) \
+                         ON CONFLICT(session_id,instance_id) DO UPDATE SET \
+                           config_revision=excluded.config_revision, \
+                           effective_config=excluded.effective_config,updated_at=excluded.updated_at \
+                         WHERE session_agent_configs.config_revision=?6",
+                        params![next_sql, effective, now, id.0, moderator, expected],
+                    )?;
+                    if config_updated != 1 {
+                        return Err(SessionStoreError::Invalid(
+                            "moderator Agent configuration revision is missing or stale".into(),
+                        ));
+                    }
+                }
+                transaction.commit()?;
                 return Ok(next);
             }
-            let actual: Option<i64> = connection
+            let actual: Option<i64> = transaction
                 .query_row(
                     "SELECT config_revision FROM sessions WHERE id = ?1 AND is_archived = 0",
                     params![id.0],
@@ -1147,17 +1211,21 @@ impl SessionStore for SqliteSessionStore {
         let stored_priority = Some(ctx.request.priority);
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
-            let stored: Option<(i64, Option<String>)> = transaction
+            let stored: Option<(i64, String)> = transaction
                 .query_row(
-                    "SELECT config_revision, effective_config FROM sessions \
-                     WHERE id = ?1 AND is_archived = 0",
-                    params![start.session_id.0],
+                    "SELECT c.config_revision,c.effective_config \
+                     FROM session_agent_configs c \
+                     JOIN sessions s ON s.id=c.session_id \
+                     WHERE c.session_id=?1 AND c.instance_id=?2 AND s.is_archived=0",
+                    params![start.session_id.0, start.agent_instance_id.0],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(sqlite_err)?;
             let Some((actual_revision, stored_effective)) = stored else {
-                return Err(SessionStoreError::NotFound(start.session_id));
+                return Err(SessionStoreError::Invalid(
+                    "turn Agent instance has no durable configuration".into(),
+                ));
             };
             if actual_revision != config_revision {
                 return Err(SessionStoreError::ConfigConflict {
@@ -1167,14 +1235,11 @@ impl SessionStore for SqliteSessionStore {
                     })?,
                 });
             }
-            let stored_effective = stored_effective.ok_or_else(|| {
-                SessionStoreError::Invalid("session effective configuration is unresolved".into())
-            })?;
             let persisted: sylvander_api::SessionEffectiveConfig =
                 decode_json(1, &stored_effective).map_err(sqlite_err)?;
             if persisted != start.effective_config {
                 return Err(SessionStoreError::Invalid(
-                    "turn configuration does not match the persisted session revision".into(),
+                    "turn configuration does not match the persisted Agent revision".into(),
                 ));
             }
             let instance = transaction

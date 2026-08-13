@@ -35,7 +35,7 @@ use sylvander_api::{
 use super::*;
 
 fn stored_session() -> StoredSession {
-    StoredSession::new(
+    let mut session = StoredSession::new(
         SessionId::new("multi-session"),
         "multi-session",
         SessionLifetime::Persistent,
@@ -45,7 +45,63 @@ fn stored_session() -> StoredSession {
             user_id: "user-1".into(),
         },
         vec![AgentId::new("orchestrator")],
-    )
+    );
+    session.effective_config = Some(effective_config("orchestrator"));
+    session
+}
+
+fn effective_config(agent_id: &str) -> sylvander_api::SessionEffectiveConfig {
+    let source = sylvander_api::SessionConfigSource {
+        kind: sylvander_api::SessionConfigSourceKind::AgentDefault,
+        reference: Some(format!("{agent_id}@7")),
+    };
+    sylvander_api::SessionEffectiveConfig {
+        agent_id: AgentId::new(agent_id),
+        agent_revision: 7,
+        provider_id: "primary".into(),
+        provider_revision: 1,
+        model_id: "model-a".into(),
+        model_revision: 1,
+        reasoning_effort: sylvander_api::ReasoningEffort::Medium,
+        permissions: sylvander_api::PermissionProfile::default(),
+        prompt_profile: None,
+        system_prompt_sha256: "sha256:test".into(),
+        prompt_manifest: sylvander_api::PromptManifest {
+            layers: Vec::new(),
+            aggregate_sha256: "sha256:manifest".into(),
+            total_bytes: 0,
+        },
+        agent_workspace: None,
+        user_workspace: None,
+        workspace_mounts: Vec::new(),
+        execution_target: "local".into(),
+        provenance: sylvander_api::SessionConfigProvenance {
+            model: source.clone(),
+            reasoning_effort: source.clone(),
+            permissions: source.clone(),
+            prompt_profile: source.clone(),
+            system_prompt: source.clone(),
+            agent_workspace: source.clone(),
+            user_workspace: source.clone(),
+            execution_target: source,
+        },
+    }
+}
+
+async fn bind_test_config(store: &SqliteSessionStore, instance_id: &str, agent_id: &str) {
+    store
+        .save_agent_instance_config(
+            &AgentInstanceConfig {
+                session_id: SessionId::new("multi-session"),
+                instance_id: AgentInstanceId::new(instance_id),
+                config_revision: 0,
+                effective: effective_config(agent_id),
+                updated_at: 10,
+            },
+            None,
+        )
+        .await
+        .unwrap();
 }
 
 fn instance(id: &str, agent: &str, role: SessionAgentRole) -> AgentInstance {
@@ -789,6 +845,7 @@ async fn governed_fork_is_idempotent_and_reconciles_task_membership_revision() {
         .save_session_membership(&membership, None)
         .await
         .unwrap();
+    bind_test_config(&store, "worker-1", "researcher").await;
     store
         .save_topology(&topology(&membership), &membership, None)
         .await
@@ -900,6 +957,7 @@ async fn fork_history_cursor_is_runtime_derived_and_stable() {
         .save_session_membership(&membership, None)
         .await
         .unwrap();
+    bind_test_config(&store, "worker-1", "researcher").await;
     store
         .save_topology(&topology(&membership), &membership, None)
         .await
@@ -1017,6 +1075,7 @@ async fn empty_fork_cursor_excludes_messages_appended_after_snapshot() {
         .save_session_membership(&membership, None)
         .await
         .unwrap();
+    bind_test_config(&store, "worker-1", "researcher").await;
     store
         .save_topology(&topology(&membership), &membership, None)
         .await
@@ -1245,6 +1304,7 @@ async fn participant_append_updates_membership_and_topology_in_one_transaction()
         .save_session_membership(&membership, None)
         .await
         .unwrap();
+    bind_test_config(&store, "worker-1", "researcher").await;
     let topology = topology(&membership);
     store
         .save_topology(&topology, &membership, None)

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, params};
-use sylvander_api::{AgentId, AgentInstanceId, SessionId, SwarmId};
+use sylvander_api::{AgentId, AgentInstanceId, SessionEffectiveConfig, SessionId, SwarmId};
 
 use crate::agent::instance::{
     AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, HistoryView,
@@ -11,6 +11,20 @@ use crate::agent::instance::{
 use crate::coordination::topology::{SessionTopology, encode_relation_kind};
 use crate::session::membership::{SessionGovernance, SessionMembership};
 use crate::storage::session::{SessionStoreError, SqliteSessionStore};
+
+/// Durable configuration baseline owned by one concrete Session participant.
+///
+/// Turns snapshot this value before effects begin. The revision is independent
+/// from membership and lifecycle revisions so configuration changes cannot
+/// accidentally fence unrelated topology or execution transitions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentInstanceConfig {
+    pub session_id: SessionId,
+    pub instance_id: AgentInstanceId,
+    pub config_revision: u64,
+    pub effective: SessionEffectiveConfig,
+    pub updated_at: i64,
+}
 
 /// Runtime-owned persistence port for Agent participants and moderator truth.
 #[async_trait]
@@ -27,6 +41,20 @@ pub trait AgentInstanceStore: Send + Sync {
         &self,
         session_id: &SessionId,
     ) -> Result<Option<SessionMembership>, SessionStoreError>;
+
+    /// Load the exact effective configuration baseline for one participant.
+    async fn agent_instance_config(
+        &self,
+        session_id: &SessionId,
+        instance_id: &AgentInstanceId,
+    ) -> Result<Option<AgentInstanceConfig>, SessionStoreError>;
+
+    /// Create or compare-and-set one participant configuration baseline.
+    async fn save_agent_instance_config(
+        &self,
+        config: &AgentInstanceConfig,
+        expected_revision: Option<u64>,
+    ) -> Result<(), SessionStoreError>;
 
     /// Atomically append one participant and replace topology at the next revisions.
     async fn add_session_participant(
@@ -98,6 +126,23 @@ impl AgentInstanceStore for SqliteSessionStore {
                 ));
             }
 
+            let retained_configs = {
+                let mut statement = transaction.prepare(
+                    "SELECT instance_id,config_revision,effective_config,updated_at \
+                     FROM session_agent_configs WHERE session_id=?1",
+                )?;
+                statement
+                    .query_map([&membership.session_id.0], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+
             transaction.execute(
                 "DELETE FROM session_governance WHERE session_id=?1",
                 [&membership.session_id.0],
@@ -119,6 +164,52 @@ impl AgentInstanceStore for SqliteSessionStore {
             for (ordinal, participant) in membership.participants.iter().enumerate() {
                 insert_agent_instance(&transaction, participant, ordinal)?;
                 definitions.insert(participant.definition.agent_id.clone());
+            }
+            let mut restored_instances = std::collections::HashSet::new();
+            for (instance_id, revision, effective, updated_at) in retained_configs {
+                if membership
+                    .participants
+                    .iter()
+                    .any(|participant| participant.instance_id.0 == instance_id)
+                {
+                    insert_agent_instance_config(
+                        &transaction,
+                        &AgentInstanceConfig {
+                            session_id: membership.session_id.clone(),
+                            instance_id: AgentInstanceId::new(instance_id.clone()),
+                            config_revision: checked_u64(revision, "Agent config revision")?,
+                            effective: decode_json(&effective, "Agent effective configuration")?,
+                            updated_at,
+                        },
+                    )?;
+                    restored_instances.insert(instance_id);
+                }
+            }
+            let moderator_id = &membership.governance.moderator_instance_id;
+            if !restored_instances.contains(&moderator_id.0) {
+                let session_config = transaction.query_row(
+                    "SELECT config_revision,effective_config,updated_at FROM sessions WHERE id=?1",
+                    [&membership.session_id.0],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )?;
+                if let (revision, Some(effective), updated_at) = session_config {
+                    insert_agent_instance_config(
+                        &transaction,
+                        &AgentInstanceConfig {
+                            session_id: membership.session_id.clone(),
+                            instance_id: moderator_id.clone(),
+                            config_revision: checked_u64(revision, "Agent config revision")?,
+                            effective: decode_json(&effective, "Agent effective configuration")?,
+                            updated_at,
+                        },
+                    )?;
+                }
             }
             for definition in definitions {
                 transaction.execute(
@@ -166,6 +257,60 @@ impl AgentInstanceStore for SqliteSessionStore {
                     ],
                 )?;
             }
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn agent_instance_config(
+        &self,
+        session_id: &SessionId,
+        instance_id: &AgentInstanceId,
+    ) -> Result<Option<AgentInstanceConfig>, SessionStoreError> {
+        let session_id = session_id.clone();
+        let instance_id = instance_id.clone();
+        self.run(move |connection| {
+            load_agent_instance_config(connection, &session_id, &instance_id)
+        })
+        .await
+    }
+
+    async fn save_agent_instance_config(
+        &self,
+        config: &AgentInstanceConfig,
+        expected_revision: Option<u64>,
+    ) -> Result<(), SessionStoreError> {
+        let required_revision = match expected_revision {
+            None => 0,
+            Some(revision) => revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("Agent config revision overflow".into())
+            })?,
+        };
+        if config.config_revision != required_revision {
+            return Err(SessionStoreError::Invalid(
+                "next Agent config revision is not sequential".into(),
+            ));
+        }
+        let config = config.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction()?;
+            let actual =
+                load_agent_instance_config(&transaction, &config.session_id, &config.instance_id)?
+                    .map(|stored| stored.config_revision);
+            if actual != expected_revision {
+                return Err(SessionStoreError::ConfigConflict {
+                    expected: expected_revision.unwrap_or(0),
+                    actual: actual.unwrap_or(0),
+                });
+            }
+            if actual.is_some() {
+                transaction.execute(
+                    "DELETE FROM session_agent_configs WHERE session_id=?1 AND instance_id=?2",
+                    params![config.session_id.0, config.instance_id.0],
+                )?;
+            }
+            insert_agent_instance_config(&transaction, &config)?;
             transaction.commit()?;
             Ok(())
         })
@@ -296,6 +441,21 @@ impl AgentInstanceStore for SqliteSessionStore {
                 }
                 _ => None,
             };
+            let fork_config = fork_parent
+                .as_ref()
+                .map(|parent_instance_id| {
+                    load_agent_instance_config(
+                        &transaction,
+                        &participant.session_id,
+                        parent_instance_id,
+                    )?
+                    .ok_or_else(|| {
+                        SessionStoreError::Invalid(
+                            "fork parent has no durable Agent configuration".into(),
+                        )
+                    })
+                })
+                .transpose()?;
             if let Some(parent_instance_id) = &fork_parent {
                 let cursor = transaction.query_row(
                     "SELECT COALESCE(MAX(seq) + 1, 0) FROM session_messages \
@@ -387,6 +547,18 @@ impl AgentInstanceStore for SqliteSessionStore {
                 &participant,
                 membership.participants.len().saturating_sub(1),
             )?;
+            if let Some(parent_config) = fork_config {
+                insert_agent_instance_config(
+                    &transaction,
+                    &AgentInstanceConfig {
+                        session_id: participant.session_id.clone(),
+                        instance_id: participant.instance_id.clone(),
+                        config_revision: parent_config.config_revision,
+                        effective: parent_config.effective,
+                        updated_at: participant.created_at,
+                    },
+                )?;
+            }
             transaction.execute(
                 "INSERT OR IGNORE INTO session_agents(session_id,agent_id,joined_at) VALUES (?1,?2,?3)",
                 params![membership.session_id.0, participant.definition.agent_id.0, participant.created_at],
@@ -559,6 +731,67 @@ fn insert_agent_instance(
         ],
     )?;
     Ok(())
+}
+
+fn insert_agent_instance_config(
+    transaction: &rusqlite::Transaction<'_>,
+    config: &AgentInstanceConfig,
+) -> Result<(), SessionStoreError> {
+    let participant = load_agent_instance(transaction, &config.session_id, &config.instance_id)?
+        .ok_or_else(|| {
+            SessionStoreError::Invalid("Agent configuration has no participant".into())
+        })?;
+    if participant.definition.agent_id != config.effective.agent_id
+        || participant.definition.revision != config.effective.agent_revision
+    {
+        return Err(SessionStoreError::Invalid(
+            "Agent configuration does not match its definition revision".into(),
+        ));
+    }
+    transaction.execute(
+        "INSERT INTO session_agent_configs \
+         (session_id,instance_id,config_revision,effective_config,updated_at) \
+         VALUES (?1,?2,?3,?4,?5)",
+        params![
+            config.session_id.0,
+            config.instance_id.0,
+            checked_i64(config.config_revision, "Agent config revision")?,
+            encode_json(&config.effective)?,
+            config.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_agent_instance_config(
+    connection: &rusqlite::Connection,
+    session_id: &SessionId,
+    instance_id: &AgentInstanceId,
+) -> Result<Option<AgentInstanceConfig>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT config_revision,effective_config,updated_at FROM session_agent_configs \
+             WHERE session_id=?1 AND instance_id=?2",
+            params![session_id.0, instance_id.0],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|(revision, effective, updated_at)| {
+            Ok(AgentInstanceConfig {
+                session_id: session_id.clone(),
+                instance_id: instance_id.clone(),
+                config_revision: checked_u64(revision, "Agent config revision")?,
+                effective: decode_json(&effective, "Agent effective configuration")?,
+                updated_at,
+            })
+        })
+        .transpose()
 }
 
 fn load_agent_instance(

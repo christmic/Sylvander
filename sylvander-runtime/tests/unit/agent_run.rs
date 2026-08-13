@@ -898,6 +898,29 @@ impl crate::storage::agent_instance::AgentInstanceStore for FailingSessionStore 
         self.inner.session_membership(session_id).await
     }
 
+    async fn agent_instance_config(
+        &self,
+        session_id: &SessionId,
+        instance_id: &AgentInstanceId,
+    ) -> Result<
+        Option<crate::storage::agent_instance::AgentInstanceConfig>,
+        crate::storage::session::SessionStoreError,
+    > {
+        self.inner
+            .agent_instance_config(session_id, instance_id)
+            .await
+    }
+
+    async fn save_agent_instance_config(
+        &self,
+        config: &crate::storage::agent_instance::AgentInstanceConfig,
+        expected_revision: Option<u64>,
+    ) -> Result<(), crate::storage::session::SessionStoreError> {
+        self.inner
+            .save_agent_instance_config(config, expected_revision)
+            .await
+    }
+
     async fn add_session_participant(
         &self,
         participant: &crate::agent::instance::AgentInstance,
