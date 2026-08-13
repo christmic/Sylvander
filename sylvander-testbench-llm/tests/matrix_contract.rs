@@ -113,7 +113,11 @@ fn rejects_duplicate_provider_protocol_model_coordinates() {
 #[test]
 fn repository_templates_are_valid_multimodel_matrices() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for name in ["live.example.json", "fault.example.json"] {
+    for name in [
+        "live.example.json",
+        "fault.example.json",
+        "minimax.live.json",
+    ] {
         let matrix: BenchMatrix =
             serde_json::from_reader(File::open(root.join("matrices").join(name)).unwrap()).unwrap();
         let cells = matrix.expand().unwrap();

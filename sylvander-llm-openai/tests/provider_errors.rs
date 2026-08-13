@@ -69,6 +69,42 @@ async fn rate_limit_preserves_request_id_and_retry_delay() {
 }
 
 #[tokio::test]
+async fn payment_required_is_non_retryable_quota_exhaustion() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(402).set_body_json(serde_json::json!({
+            "error": {"type": "insufficient_balance_error", "message": "empty"}
+        })))
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new(OpenAiProviderConfig {
+        provider_id: "openai".into(),
+        base_url: Url::parse(&server.uri()).expect("mock URL"),
+        api_key: "key".into(),
+        protocol: OpenAiProtocol::Responses,
+        features: ProviderFeatures::default(),
+    })
+    .expect("provider");
+    let error = provider
+        .complete_stream(ModelRequest {
+            request_id: "quota".into(),
+            model: ModelRef::new("openai", "gpt-5.6"),
+            system: Vec::new(),
+            messages: vec![sylvander_llm_core::ChatMessage::user("hello")],
+            tools: Vec::new(),
+            max_output_tokens: 16,
+            reasoning: None,
+            output_schema: None,
+        })
+        .await
+        .err()
+        .expect("quota error");
+    assert_eq!(error.kind, ProviderErrorKind::QuotaExceeded);
+    assert_eq!(error.status, Some(402));
+    assert!(!error.is_retryable());
+}
+
+#[tokio::test]
 async fn configured_deadline_is_a_retryable_open_timeout() {
     let server = MockServer::start().await;
     Mock::given(wiremock::matchers::method("POST"))

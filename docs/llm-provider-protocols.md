@@ -92,6 +92,8 @@ All HTTP adapters enforce a bounded two-minute default request deadline and
 offer an explicit constructor deadline for Runtime and conformance tests.
 Deadline failures normalize to a retryable `Timeout` during the exact open or
 stream phase; provider adapters do not retry internally.
+HTTP 402 billing or exhausted-balance responses normalize to the non-retryable
+`QuotaExceeded` kind and remain distinct from malformed requests.
 
 OpenAI Chat Completions always requests the official streaming usage tail with
 `stream_options.include_usage=true`; a completed stream without that requested

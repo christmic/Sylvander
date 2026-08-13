@@ -73,6 +73,25 @@ async fn sse_error_preserves_status_and_request_id() {
 }
 
 #[tokio::test]
+async fn payment_required_is_non_retryable_quota_exhaustion() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(402).set_body_json(serde_json::json!({
+            "code": "Arrearage", "message": "empty"
+        })))
+        .mount(&server)
+        .await;
+    let error = provider(&server)
+        .complete_stream(request())
+        .await
+        .err()
+        .expect("quota error");
+    assert_eq!(error.kind, ProviderErrorKind::QuotaExceeded);
+    assert_eq!(error.status, Some(402));
+    assert!(!error.is_retryable());
+}
+
+#[tokio::test]
 async fn eof_without_finish_reason_fails_closed() {
     let server = MockServer::start().await;
     Mock::given(wiremock::matchers::method("POST"))

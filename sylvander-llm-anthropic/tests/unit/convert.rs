@@ -87,6 +87,19 @@ fn errors_are_neutral_and_status_aware() {
     assert!(!mapped.to_string().contains(SENSITIVE));
     assert!(!format!("{mapped:?}").contains(SENSITIVE));
 
+    let quota = error(
+        AnthropicError::Api {
+            status: 402,
+            error_type: "insufficient_balance_error".into(),
+            error_message: SENSITIVE.into(),
+            request_id: None,
+        },
+        core::ProviderErrorPhase::Open,
+    );
+    assert_eq!(quota.kind, core::ProviderErrorKind::QuotaExceeded);
+    assert!(!quota.is_retryable());
+    assert!(!quota.message.contains(SENSITIVE));
+
     let protocol = error(
         AnthropicError::SseParse {
             message: "bad event".into(),

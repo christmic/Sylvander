@@ -284,6 +284,7 @@ pub(crate) fn error(error: DashScopeError, phase: ProviderErrorPhase) -> Provide
         DashScopeError::Http(source) if source.is_timeout() => ProviderErrorKind::Timeout,
         DashScopeError::Http(_) => ProviderErrorKind::Transport,
         DashScopeError::Api { status: 401, .. } => ProviderErrorKind::Authentication,
+        DashScopeError::Api { status: 402, .. } => ProviderErrorKind::QuotaExceeded,
         DashScopeError::Api { status: 403, .. } => ProviderErrorKind::PermissionDenied,
         DashScopeError::Api { status: 404, .. } => ProviderErrorKind::ModelNotFound,
         DashScopeError::Api { status: 429, .. } => ProviderErrorKind::RateLimited,
