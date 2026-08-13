@@ -636,7 +636,9 @@ fn initialize_or_validate_registry_schema(
     let has_registry_objects = objects
         .iter()
         .any(|object| REGISTRY_SCHEMA_OBJECT_NAMES.contains(&object.1.as_str()));
-    if !has_registry_objects {
+    if has_registry_objects {
+        migrate_registry_schema_v3(connection)?;
+    } else {
         let transaction = connection
             .transaction()
             .map_err(AgentRegistryError::sqlite)?;
@@ -645,6 +647,7 @@ fn initialize_or_validate_registry_schema(
             MIGRATION_SCHEMA,
             REGISTRY_CATALOG_SCHEMA,
             REGISTRY_SCHEMA_V3,
+            COGNITION_ACTIVATION_SCHEMA,
         ] {
             transaction
                 .execute_batch(schema)
@@ -659,6 +662,46 @@ fn initialize_or_validate_registry_schema(
         transaction.commit().map_err(AgentRegistryError::sqlite)?;
     }
     ensure_current_registry_schema(connection)
+}
+
+fn migrate_registry_schema_v3(connection: &mut Connection) -> Result<(), AgentRegistryError> {
+    let ledger = connection
+        .query_row(
+            "SELECT version,applied_at FROM schema_migrations WHERE component=?1",
+            [REGISTRY_COMPONENT],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(AgentRegistryError::sqlite)?;
+    if !matches!(ledger, Some((3, applied_at)) if applied_at > 0) {
+        return Ok(());
+    }
+    let expected = canonical_registry_schema_v3()?;
+    let actual = owned_registry_schema_objects(registry_schema_objects(connection)?);
+    if actual != expected {
+        return Err(AgentRegistryError::Integrity(
+            "registry v3 schema does not exactly match its migration source".into(),
+        ));
+    }
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(AgentRegistryError::sqlite)?;
+    transaction
+        .execute_batch(COGNITION_ACTIVATION_SCHEMA)
+        .map_err(AgentRegistryError::sqlite)?;
+    let changed = transaction
+        .execute(
+            "UPDATE schema_migrations SET version=?2,applied_at=?3 \
+             WHERE component=?1 AND version=3",
+            params![REGISTRY_COMPONENT, REGISTRY_SCHEMA_VERSION, now()],
+        )
+        .map_err(AgentRegistryError::sqlite)?;
+    if changed != 1 {
+        return Err(AgentRegistryError::Integrity(
+            "registry migration ledger changed concurrently".into(),
+        ));
+    }
+    transaction.commit().map_err(AgentRegistryError::sqlite)
 }
 
 pub(crate) fn ensure_current_registry_schema(
@@ -783,6 +826,25 @@ fn canonical_registry_schema() -> Result<Vec<RegistrySchemaObject>, AgentRegistr
         MIGRATION_SCHEMA,
         REGISTRY_CATALOG_SCHEMA,
         REGISTRY_SCHEMA_V3,
+        COGNITION_ACTIVATION_SCHEMA,
+    ] {
+        canonical
+            .execute_batch(schema)
+            .map_err(AgentRegistryError::sqlite)?;
+    }
+    registry_schema_objects(&canonical)
+}
+
+fn canonical_registry_schema_v3() -> Result<Vec<RegistrySchemaObject>, AgentRegistryError> {
+    let canonical = Connection::open_in_memory().map_err(AgentRegistryError::sqlite)?;
+    canonical
+        .execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(AgentRegistryError::sqlite)?;
+    for schema in [
+        SCHEMA,
+        MIGRATION_SCHEMA,
+        REGISTRY_CATALOG_SCHEMA,
+        REGISTRY_SCHEMA_V3,
     ] {
         canonical
             .execute_batch(schema)
@@ -818,7 +880,7 @@ fn registry_schema_objects(
 }
 
 const REGISTRY_COMPONENT: &str = "runtime_registry";
-const REGISTRY_SCHEMA_VERSION: i64 = 3;
+const REGISTRY_SCHEMA_VERSION: i64 = 4;
 
 /// `SQLite` objects owned and exact-match validated by the current registry.
 pub const REGISTRY_SCHEMA_OBJECT_NAMES: &[&str] = &[
@@ -835,6 +897,9 @@ pub const REGISTRY_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "agent_registry_snapshot_providers_v3",
     "agent_registry_snapshot_models_v3",
     "one_default_model_per_agent_snapshot_v3",
+    "cognition_activation_proposals",
+    "cognition_activation_events",
+    "one_approved_cognition_role",
 ];
 
 const MIGRATION_SCHEMA: &str = r"
@@ -977,6 +1042,47 @@ CREATE TABLE IF NOT EXISTS agent_registry_heads (
     FOREIGN KEY(agent_id, active_revision)
         REFERENCES agent_definitions(agent_id, revision)
 );
+";
+
+const COGNITION_ACTIVATION_SCHEMA: &str = r"
+CREATE TABLE cognition_activation_proposals (
+    proposal_id TEXT PRIMARY KEY CHECK(length(proposal_id) = 36),
+    agent_id TEXT NOT NULL,
+    agent_revision INTEGER NOT NULL CHECK(agent_revision > 0),
+    agent_digest TEXT NOT NULL CHECK(length(agent_digest) = 64),
+    role TEXT NOT NULL CHECK(role IN ('fast_draft','deliberation','critic','vision','audio','document')),
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL CHECK(length(evidence_digest) = 64),
+    state TEXT NOT NULL CHECK(state IN ('proposed','approved','revoked')),
+    state_revision INTEGER NOT NULL CHECK(state_revision > 0),
+    proposed_by TEXT NOT NULL CHECK(length(trim(proposed_by)) > 0),
+    proposed_at INTEGER NOT NULL,
+    approved_by TEXT,
+    approved_at INTEGER,
+    revoked_by TEXT,
+    revoked_at INTEGER,
+    CHECK((approved_by IS NULL) = (approved_at IS NULL)),
+    CHECK((revoked_by IS NULL) = (revoked_at IS NULL)),
+    FOREIGN KEY(agent_id, agent_revision)
+        REFERENCES agent_definitions(agent_id, revision),
+    FOREIGN KEY(agent_id, agent_revision, provider_id, model_id)
+        REFERENCES agent_registry_snapshot_models_v3(
+            agent_id, agent_revision, provider_id, model_id
+        )
+);
+CREATE TABLE cognition_activation_events (
+    proposal_id TEXT NOT NULL REFERENCES cognition_activation_proposals(proposal_id),
+    state_revision INTEGER NOT NULL CHECK(state_revision > 0),
+    event TEXT NOT NULL CHECK(event IN ('proposed','approved','revoked')),
+    actor TEXT NOT NULL CHECK(length(trim(actor)) > 0),
+    occurred_at INTEGER NOT NULL,
+    PRIMARY KEY(proposal_id, state_revision)
+);
+CREATE UNIQUE INDEX one_approved_cognition_role
+    ON cognition_activation_proposals(agent_id, agent_revision, role)
+    WHERE state = 'approved';
 ";
 
 #[cfg(test)]

@@ -3,13 +3,41 @@ use tempfile::tempdir;
 use crate::storage::session::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 
 use super::{
-    AgentRegistry, AgentRegistryError, REGISTRY_COMPONENT, REGISTRY_SCHEMA_OBJECT_NAMES,
-    REGISTRY_SCHEMA_VERSION, hex_digest,
+    AgentRegistry, AgentRegistryError, MIGRATION_SCHEMA, REGISTRY_CATALOG_SCHEMA,
+    REGISTRY_COMPONENT, REGISTRY_SCHEMA_OBJECT_NAMES, REGISTRY_SCHEMA_V3, REGISTRY_SCHEMA_VERSION,
+    SCHEMA, hex_digest,
 };
 use crate::config::ServerConfig;
 
 fn catalog() -> ServerConfig {
     ServerConfig::from_toml(include_str!("../../../config/sylvander.example.toml")).unwrap()
+}
+
+#[tokio::test]
+async fn exact_v3_registry_migrates_once_and_reopens_as_v4() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("registry-v3.db");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    for schema in [
+        SCHEMA,
+        MIGRATION_SCHEMA,
+        REGISTRY_CATALOG_SCHEMA,
+        REGISTRY_SCHEMA_V3,
+    ] {
+        connection.execute_batch(schema).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO schema_migrations(component,version,applied_at) VALUES (?1,3,1)",
+            [REGISTRY_COMPONENT],
+        )
+        .unwrap();
+    drop(connection);
+
+    drop(AgentRegistry::open(&path).await.unwrap());
+    let reopened = AgentRegistry::open(path).await.unwrap();
+    reopened.verify_health().await.unwrap();
 }
 
 #[tokio::test]
@@ -248,7 +276,7 @@ async fn non_current_missing_future_dual_and_damaged_schemas_fail_closed() {
         ),
         (
             "future-ledger",
-            "UPDATE schema_migrations SET version=4 WHERE component='runtime_registry';",
+            "UPDATE schema_migrations SET version=5 WHERE component='runtime_registry';",
         ),
         (
             "damaged-ledger-time",
