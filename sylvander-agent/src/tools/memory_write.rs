@@ -10,15 +10,14 @@ use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_core::InputSchema;
 
-use crate::curated_memory::{CuratedMemoryScope, MemoryCandidateSink, MemoryCandidateSubmission};
 use crate::execution::tool_context::{Cap, ToolContext};
+use crate::memory::curated::{CuratedMemoryScope, MemoryCandidateSink, MemoryCandidateSubmission};
+use crate::memory::store::{MemoryAppend, MemoryStore};
 #[cfg(test)]
 use crate::tool::ToolTestExt as _;
 use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
-
-use super::memory::{MemoryAppend, MemoryStore};
 
 /// Tool that lets the model propose information for long-term memory.
 ///

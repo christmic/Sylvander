@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::execution::workspace::{
     WorkspaceExecutor, WorkspaceQueryLimits, WorkspaceSearchRequest, WorkspaceTarget,
 };
-use crate::tools::memory::{
+use crate::memory::store::{
     Importance, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
 };
 

@@ -75,7 +75,7 @@ pub struct ToolContext {
 
     /// Runtime-derived identity used by every memory-store operation. It is
     /// intentionally not replaceable through a public builder or model input.
-    memory_context: crate::tools::memory::MemoryExecutionContext,
+    memory_context: crate::memory::store::MemoryExecutionContext,
 }
 
 impl ToolContext {
@@ -87,7 +87,7 @@ impl ToolContext {
     /// has no executable workspace adapter until Runtime injects one.
     #[must_use]
     pub fn new(execution: AgentExecutionContext) -> Self {
-        let memory_context = crate::tools::memory::MemoryExecutionContext::untrusted(&execution);
+        let memory_context = crate::memory::store::MemoryExecutionContext::untrusted(&execution);
         Self {
             execution: Arc::new(execution),
             budget: ExecutionBudget::default(),
@@ -106,7 +106,7 @@ impl ToolContext {
     #[must_use]
     pub fn for_runtime(execution: AgentExecutionContext) -> Self {
         let memory_context =
-            crate::tools::memory::MemoryExecutionContext::for_runtime_worker(&execution);
+            crate::memory::store::MemoryExecutionContext::for_runtime_worker(&execution);
         Self {
             execution: Arc::new(execution),
             budget: ExecutionBudget::default(),
@@ -212,7 +212,7 @@ impl ToolContext {
 
     /// Runtime-derived memory identity for this invocation.
     #[must_use]
-    pub fn memory_context(&self) -> &crate::tools::memory::MemoryExecutionContext {
+    pub fn memory_context(&self) -> &crate::memory::store::MemoryExecutionContext {
         &self.memory_context
     }
 

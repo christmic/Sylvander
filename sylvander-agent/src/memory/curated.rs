@@ -88,5 +88,5 @@ pub trait CuratedContextProvider: Send + Sync {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/curated_memory.rs"]
+#[path = "../../tests/unit/curated_memory.rs"]
 mod tests;

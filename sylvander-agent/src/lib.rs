@@ -88,14 +88,14 @@
 
 /// Context-window compaction contracts and pipeline implementations.
 pub mod compress;
-/// Runtime-owned Guardian candidate and curated-context contracts.
-pub mod curated_memory;
 /// Runtime-injected execution capabilities for one bounded Agent turn.
 pub mod execution;
 /// User decisions and bounded background-work boundaries for one turn.
 pub mod interaction;
 /// Provider-compatible iterative model/tool execution loop.
 pub mod loop_;
+/// Relationship-memory domain, retention rules, and Runtime-owned ports.
+pub mod memory;
 /// Deterministic system-prompt composition.
 pub mod prompt;
 /// Immutable input, authority, progress, and result vocabulary for one turn.
@@ -110,6 +110,7 @@ pub use execution::{
 pub use interaction::{
     approval, ask_user as ask_user_gate, background_task as task_gate, plan as plan_gate,
 };
+pub use memory::curated as curated_memory;
 pub use turn::{conversation, error, event, execution_context, identity, outcome, request, time};
 /// Tool registration, schemas, invocation, and normalized output.
 pub mod tool;
@@ -147,14 +148,19 @@ pub mod prelude {
         },
         pipeline::CompressionPipeline,
     };
-    pub use crate::curated_memory::{
+    pub use crate::execution_ports::AgentExecutionPorts;
+    pub use crate::interaction::plan::PlanDecision;
+    pub use crate::loop_::{AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events};
+    pub use crate::memory::curated::{
         CuratedContextEntry, CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope,
         MemoryCandidateError, MemoryCandidateReceipt, MemoryCandidateSink,
         MemoryCandidateSubmission,
     };
-    pub use crate::execution_ports::AgentExecutionPorts;
-    pub use crate::interaction::plan::PlanDecision;
-    pub use crate::loop_::{AgentLoop, AgentLoopBuilder, run, run_stream, run_with_events};
+    pub use crate::memory::store::{
+        InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryEntry, MemoryExecutionContext,
+        MemoryExpiryPatch, MemoryOwner, MemoryPatch, MemoryProvenance, MemoryProvenanceSource,
+        MemoryScope, MemoryStore, MemoryStoreError, RelationshipMemoryRetentionPolicy,
+    };
     pub use crate::tool::{
         AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
         ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutionPolicy, ToolExecutor,
@@ -164,10 +170,7 @@ pub mod prelude {
     };
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
-        EditTool, InMemoryMemoryStore, ListTool, MemoryActorKind, MemoryAppend, MemoryEntry,
-        MemoryExecutionContext, MemoryExpiryPatch, MemoryOwner, MemoryPatch, MemoryProvenance,
-        MemoryProvenanceSource, MemoryReadTool, MemoryScope, MemoryStore, MemoryStoreError,
-        MemoryWriteTool, PresentPlanTool, ReadTool, RelationshipMemoryRetentionPolicy, SearchTool,
+        EditTool, ListTool, MemoryReadTool, MemoryWriteTool, PresentPlanTool, ReadTool, SearchTool,
         StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
     };
     pub use crate::turn::conversation::ConversationSnapshot;

@@ -9,7 +9,6 @@ pub mod command;
 pub mod edit;
 pub mod git;
 pub mod list;
-pub mod memory;
 pub mod memory_read;
 pub mod memory_write;
 pub mod plan;
@@ -17,6 +16,9 @@ pub mod read;
 pub mod search;
 pub mod update_plan;
 pub mod write;
+
+// Public tool facade while workspace callers migrate to `memory::store`.
+pub use crate::memory::store as memory;
 
 pub use ask_user::AskUserTool;
 pub use background_task::StartBackgroundTaskTool;

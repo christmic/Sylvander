@@ -17,7 +17,7 @@ use crate::tool::{
     PreparedToolCall, ToolDefinition, ToolError, ToolExecutor, ToolOutput, ToolSpec,
 };
 
-use super::memory::MemoryStore;
+use crate::memory::store::{Importance, MemoryFilter, MemoryKind, MemoryStore};
 
 /// Tool that lets the model query its long-term memory.
 ///
@@ -108,7 +108,7 @@ impl ToolExecutor for MemoryReadTool {
             .search_relationship(
                 ctx.memory_context(),
                 query,
-                super::memory::MemoryFilter {
+                MemoryFilter {
                     kind: kind_filter,
                     min_importance: importance_filter,
                     limit: Some(limit),
@@ -151,24 +151,24 @@ fn reject_unknown_fields(input: &JsonValue, allowed: &[&str]) -> Result<(), Tool
     Ok(())
 }
 
-fn parse_kind(s: Option<&str>) -> Result<Option<super::memory::MemoryKind>, ToolError> {
+fn parse_kind(s: Option<&str>) -> Result<Option<MemoryKind>, ToolError> {
     let Some(s) = s else { return Ok(None) };
     Ok(Some(match s {
-        "preference" => super::memory::MemoryKind::Preference,
-        "project_fact" => super::memory::MemoryKind::ProjectFact,
-        "decision" => super::memory::MemoryKind::Decision,
-        "agent_note" => super::memory::MemoryKind::AgentNote,
+        "preference" => MemoryKind::Preference,
+        "project_fact" => MemoryKind::ProjectFact,
+        "decision" => MemoryKind::Decision,
+        "agent_note" => MemoryKind::AgentNote,
         _ => return Err(ToolError::Other("unknown memory kind".into())),
     }))
 }
 
-fn parse_importance(s: Option<&str>) -> Result<Option<super::memory::Importance>, ToolError> {
+fn parse_importance(s: Option<&str>) -> Result<Option<Importance>, ToolError> {
     let Some(s) = s else { return Ok(None) };
     Ok(Some(match s {
-        "low" => super::memory::Importance::Low,
-        "medium" => super::memory::Importance::Medium,
-        "high" => super::memory::Importance::High,
-        "critical" => super::memory::Importance::Critical,
+        "low" => Importance::Low,
+        "medium" => Importance::Medium,
+        "high" => Importance::High,
+        "critical" => Importance::Critical,
         _ => return Err(ToolError::Other("unknown memory importance".into())),
     }))
 }
