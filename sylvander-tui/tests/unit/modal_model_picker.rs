@@ -2,7 +2,10 @@ use super::*;
 
 fn state() -> AppState {
     let mut state = AppState::new();
-    state.metadata.model = "plain".into();
+    state.metadata.model = sylvander_api::ModelSelection {
+        provider_id: "test".into(),
+        model_id: "plain".into(),
+    };
     state.metadata.models = vec![
         sylvander_api::ModelDescriptor {
             id: "plain".into(),

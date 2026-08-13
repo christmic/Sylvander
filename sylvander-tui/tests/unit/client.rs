@@ -145,25 +145,28 @@ fn memory_confirmation_wire_rejects_non_current_versions_without_decision_state(
 #[test]
 fn runtime_wire_event_preserves_server_capabilities() {
     let event = parse_server_msg(ServerMsg::RuntimeInfo {
-        model: sylvander_api::ModelSelection {
-            provider_id: "test".into(),
-            model_id: "claude-test".into(),
-        },
-        reasoning_effort: sylvander_api::ReasoningEffort::Medium,
-        models: vec![sylvander_api::ModelDescriptor {
-            id: "claude-test".into(),
-            provider: "test".into(),
+        snapshot: sylvander_api::RuntimeUiSnapshot {
+            agent_id: sylvander_api::AgentId::new("assistant"),
+            model: sylvander_api::ModelSelection {
+                provider_id: "test".into(),
+                model_id: "claude-test".into(),
+            },
+            reasoning_effort: sylvander_api::ReasoningEffort::Medium,
+            models: vec![sylvander_api::ModelDescriptor {
+                id: "claude-test".into(),
+                provider: "test".into(),
+                capabilities: 0b10001,
+                capability_names: Vec::new(),
+                reasoning_efforts: vec![sylvander_api::ReasoningEffort::Medium],
+                lifecycle: sylvander_api::ModelLifecycle::Active,
+                pricing: None,
+            }],
+            permissions: sylvander_api::PermissionProfile::default(),
             capabilities: 0b10001,
-            capability_names: Vec::new(),
-            reasoning_efforts: vec![sylvander_api::ReasoningEffort::Medium],
-            lifecycle: sylvander_api::ModelLifecycle::Active,
-            pricing: None,
-        }],
-        permissions: sylvander_api::PermissionProfile::default(),
-        capabilities: 0b10001,
-        approval_enabled: true,
-        max_attachment_bytes: 4096,
-        platform: sylvander_api::PlatformSnapshot::default(),
+            approval_enabled: true,
+            max_request_bytes: 4096,
+            platform: sylvander_api::PlatformSnapshot::default(),
+        },
     });
     assert!(matches!(
         event,
@@ -173,9 +176,9 @@ fn runtime_wire_event_preserves_server_capabilities() {
             models,
             capabilities: 0b10001,
             approval_enabled: true,
-            max_attachment_bytes: 4096,
+            max_request_bytes: 4096,
             ..
-        }) if model == "claude-test" && models.len() == 1
+        }) if model.provider_id == "test" && model.model_id == "claude-test" && models.len() == 1
     ));
 }
 
@@ -577,6 +580,7 @@ fn persisted_history_maps_to_protocol_neutral_roles() {
             label: "Auth work".into(),
             workspace: "/workspace".into(),
             last_seen_secs: 3,
+            archived: false,
         },
         messages: vec![
             HistoryMessageMsg {

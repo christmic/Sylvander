@@ -72,7 +72,7 @@ fn spawn_server(
                         r#"{"type":"agents_discovered","agents":[{"id":"pty-agent","revision":1,"name":"PTY Agent","provider_id":"test","default_model_id":"test-model","models":[],"default_prompt_profile":null,"agent_workspace":null}]}"#,
                     ],
                     Some("get_runtime_info") => &[
-                        r#"{"type":"runtime_info","model":"test-model","reasoning_effort":"medium","models":[],"permissions":{"file_access":"workspace_write","network_access":"denied","approval_policy":"ask"},"capabilities":0,"approval_enabled":true,"max_attachment_bytes":1048576,"platform":{}}"#,
+                        r#"{"type":"runtime_info","snapshot":{"agent_id":"pty-agent","model":{"provider_id":"test","model_id":"test-model"},"reasoning_effort":"medium","models":[],"permissions":{"file_access":"workspace_write","network_access":"denied","approval_policy":"ask"},"capabilities":0,"approval_enabled":true,"max_request_bytes":1048576,"platform":{}}}"#,
                     ],
                     Some("create_session") => {
                         &[r#"{"type":"session_created","session_id":"pty-session"}"#]
@@ -86,7 +86,7 @@ fn spawn_server(
                         r#"{"type":"ask_user","session_id":"pty-session","call_id":"pty-question","question":"Which safe direction?","options":[],"multi_select":false}"#,
                     ],
                     Some("reattach_session") => &[
-                        r#"{"type":"session_history","session":{"id":"pty-session","label":"PTY recovered","workspace":"/workspace/pty","last_seen_secs":0},"messages":[{"role":"user","text":"hello from PTY"},{"role":"assistant","text":"PTY response rendered"}],"iterations":1,"input_tokens":3,"output_tokens":3,"recovery":true,"replay_truncated":false,"notice":"PTY session recovered"}"#,
+                        r#"{"type":"session_history","session":{"id":"pty-session","label":"PTY recovered","workspace":"/workspace/pty","last_seen_secs":0,"archived":false},"messages":[{"role":"user","text":"hello from PTY"},{"role":"assistant","text":"PTY response rendered"}],"iterations":1,"input_tokens":3,"output_tokens":3,"recovery":true,"replay_truncated":false,"notice":"PTY session recovered"}"#,
                     ],
                     Some("chat") if message["text"] == "interrupt me" => &[
                         r#"{"type":"text_delta","session_id":"pty-session","delta":"still working"}"#,
