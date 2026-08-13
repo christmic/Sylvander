@@ -68,6 +68,27 @@ pub enum CognitionProfile {
     PerceptionSpecialist,
 }
 
+/// Responsibility of one model route inside a single Agent. Reusing the same
+/// exact model for multiple roles is valid; roles, not model strings, are the
+/// unique benchmark dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BenchmarkModelRole {
+    Primary,
+    FastDraft,
+    Deliberation,
+    Critic,
+    Vision,
+    Audio,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkModelBinding {
+    pub role: BenchmarkModelRole,
+    pub model: String,
+}
+
 /// One immutable benchmark coordinate. Model identities are opaque strings so
 /// the harness can compare one- and multi-model cognition without importing a
 /// production registry implementation.
@@ -82,7 +103,7 @@ pub struct RuntimeBenchCoordinate {
     pub workspace: WorkspaceProfile,
     pub failure_point: FailurePoint,
     pub cognition: CognitionProfile,
-    pub models: Vec<String>,
+    pub models: Vec<BenchmarkModelBinding>,
     pub run_ordinal: u32,
 }
 
@@ -96,12 +117,28 @@ impl RuntimeBenchCoordinate {
         {
             return Err(RuntimeBenchError::IncompleteCoordinate);
         }
-        if self.models.iter().any(|model| model.trim().is_empty())
-            || self.models.iter().collect::<HashSet<_>>().len() != self.models.len()
+        if self
+            .models
+            .iter()
+            .any(|binding| binding.model.trim().is_empty())
+            || self
+                .models
+                .iter()
+                .map(|binding| binding.role)
+                .collect::<HashSet<_>>()
+                .len()
+                != self.models.len()
         {
             return Err(RuntimeBenchError::InvalidModels);
         }
-        if self.cognition == CognitionProfile::PrimaryOnly && self.models.len() != 1 {
+        let roles = self
+            .models
+            .iter()
+            .map(|binding| binding.role)
+            .collect::<HashSet<_>>();
+        if !roles.contains(&BenchmarkModelRole::Primary)
+            || !profile_accepts_roles(self.cognition, &roles)
+        {
             return Err(RuntimeBenchError::CognitionModelMismatch);
         }
         if self.family != ScenarioFamily::CrashRecovery && self.failure_point != FailurePoint::None
@@ -109,6 +146,43 @@ impl RuntimeBenchCoordinate {
             return Err(RuntimeBenchError::UnexpectedFailurePoint);
         }
         Ok(())
+    }
+}
+
+fn profile_accepts_roles(profile: CognitionProfile, roles: &HashSet<BenchmarkModelRole>) -> bool {
+    let only = |allowed: &[BenchmarkModelRole]| roles.iter().all(|role| allowed.contains(role));
+    match profile {
+        CognitionProfile::PrimaryOnly => {
+            roles.len() == 1 && roles.contains(&BenchmarkModelRole::Primary)
+        }
+        CognitionProfile::FastSlow => {
+            roles.len() >= 2
+                && only(&[
+                    BenchmarkModelRole::Primary,
+                    BenchmarkModelRole::FastDraft,
+                    BenchmarkModelRole::Deliberation,
+                ])
+                && roles.iter().any(|role| {
+                    matches!(
+                        role,
+                        BenchmarkModelRole::FastDraft | BenchmarkModelRole::Deliberation
+                    )
+                })
+        }
+        CognitionProfile::PrimaryCritic => {
+            roles.len() == 2 && roles.contains(&BenchmarkModelRole::Critic)
+        }
+        CognitionProfile::PerceptionSpecialist => {
+            roles.len() >= 2
+                && only(&[
+                    BenchmarkModelRole::Primary,
+                    BenchmarkModelRole::Vision,
+                    BenchmarkModelRole::Audio,
+                ])
+                && roles.iter().any(|role| {
+                    matches!(role, BenchmarkModelRole::Vision | BenchmarkModelRole::Audio)
+                })
+        }
     }
 }
 
@@ -128,11 +202,19 @@ pub struct RuntimeBenchResult {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub model_calls: u32,
+    pub primary_model_calls: u32,
+    pub auxiliary_model_calls: u32,
+    pub perception_calls: u32,
+    pub cognitive_fallbacks: u32,
     pub tool_calls: u32,
     pub messages: u32,
     pub handoffs: u32,
     pub moderator_interventions: u32,
     pub workspace_conflicts: u32,
+    pub doctor_findings: u32,
+    pub doctor_false_positives: u32,
+    pub doctor_proposals: u32,
+    pub doctor_auto_applied: u32,
 }
 
 impl RuntimeBenchResult {
@@ -147,6 +229,16 @@ impl RuntimeBenchResult {
         if self.recovered && self.coordinate.failure_point == FailurePoint::None {
             return Err(RuntimeBenchError::SpuriousRecovery);
         }
+        if self.primary_model_calls == 0
+            || self
+                .primary_model_calls
+                .checked_add(self.auxiliary_model_calls)
+                != Some(self.model_calls)
+            || (self.coordinate.cognition == CognitionProfile::PrimaryOnly
+                && self.auxiliary_model_calls != 0)
+        {
+            return Err(RuntimeBenchError::InvalidCognitionMetrics);
+        }
         Ok(())
     }
 
@@ -158,6 +250,7 @@ impl RuntimeBenchResult {
             && self.invariant_violations == 0
             && self.duplicate_effects == 0
             && self.user_visible_failures == 0
+            && self.doctor_auto_applied == 0
     }
 }
 
@@ -197,7 +290,7 @@ pub struct RuntimeBenchPlan {
 
 impl RuntimeBenchPlan {
     pub fn validate(&self) -> Result<(), RuntimeBenchError> {
-        if self.schema_version != 1 || self.coordinates.is_empty() {
+        if self.schema_version != 2 || self.coordinates.is_empty() {
             return Err(RuntimeBenchError::InvalidPlan);
         }
         let mut identities = HashSet::with_capacity(self.coordinates.len());
@@ -226,7 +319,15 @@ pub struct RuntimeBenchSummary {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub model_calls: u64,
+    pub primary_model_calls: u64,
+    pub auxiliary_model_calls: u64,
+    pub perception_calls: u64,
+    pub cognitive_fallbacks: u64,
     pub tool_calls: u64,
+    pub doctor_findings: u64,
+    pub doctor_false_positives: u64,
+    pub doctor_proposals: u64,
+    pub doctor_auto_applied: u64,
     pub p50_duration_millis: u64,
     pub p95_duration_millis: u64,
 }
@@ -270,7 +371,15 @@ pub fn summarize(results: &[RuntimeBenchResult]) -> Result<RuntimeBenchSummary, 
         input_tokens: sum_u64(results, |result| result.input_tokens)?,
         output_tokens: sum_u64(results, |result| result.output_tokens)?,
         model_calls: sum_u32(results, |result| result.model_calls)?,
+        primary_model_calls: sum_u32(results, |result| result.primary_model_calls)?,
+        auxiliary_model_calls: sum_u32(results, |result| result.auxiliary_model_calls)?,
+        perception_calls: sum_u32(results, |result| result.perception_calls)?,
+        cognitive_fallbacks: sum_u32(results, |result| result.cognitive_fallbacks)?,
         tool_calls: sum_u32(results, |result| result.tool_calls)?,
+        doctor_findings: sum_u32(results, |result| result.doctor_findings)?,
+        doctor_false_positives: sum_u32(results, |result| result.doctor_false_positives)?,
+        doctor_proposals: sum_u32(results, |result| result.doctor_proposals)?,
+        doctor_auto_applied: sum_u32(results, |result| result.doctor_auto_applied)?,
         p50_duration_millis: percentile(&durations, 50),
         p95_duration_millis: percentile(&durations, 95),
     })
@@ -323,6 +432,8 @@ pub enum RuntimeBenchError {
     InvalidModels,
     #[error("cognition profile and model identities do not match")]
     CognitionModelMismatch,
+    #[error("cognition call metrics do not match the declared profile")]
+    InvalidCognitionMetrics,
     #[error("fault injection belongs only to crash-recovery scenarios")]
     UnexpectedFailurePoint,
     #[error("verifier reward must be finite")]

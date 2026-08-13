@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::{RuntimeBenchCoordinate, RuntimeBenchPlan, RuntimeBenchResult};
 
 const APPLICATION_ID: i64 = 0x5359_4252;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppendOutcome {

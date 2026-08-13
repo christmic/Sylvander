@@ -10,7 +10,10 @@ fn coordinate() -> RuntimeBenchCoordinate {
         workspace: WorkspaceProfile::IsolatedWorktrees,
         failure_point: FailurePoint::ToolStarted,
         cognition: CognitionProfile::PrimaryOnly,
-        models: vec!["provider/model".into()],
+        models: vec![BenchmarkModelBinding {
+            role: BenchmarkModelRole::Primary,
+            model: "provider/model".into(),
+        }],
         run_ordinal: 1,
     }
 }
@@ -46,7 +49,7 @@ fn coverage_exposes_missing_and_unexpected_cells() {
 
     let coverage = ledger
         .coverage(&RuntimeBenchPlan {
-            schema_version: 1,
+            schema_version: 2,
             coordinates: vec![expected, missing],
         })
         .unwrap();
@@ -85,10 +88,18 @@ fn benchmark_result(coordinate: RuntimeBenchCoordinate) -> RuntimeBenchResult {
         input_tokens: 20,
         output_tokens: 5,
         model_calls: 1,
+        primary_model_calls: 1,
+        auxiliary_model_calls: 0,
+        perception_calls: 0,
+        cognitive_fallbacks: 0,
         tool_calls: 1,
         messages: 1,
         handoffs: 0,
         moderator_interventions: 0,
         workspace_conflicts: 0,
+        doctor_findings: 0,
+        doctor_false_positives: 0,
+        doctor_proposals: 0,
+        doctor_auto_applied: 0,
     }
 }

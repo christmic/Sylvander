@@ -40,7 +40,10 @@ fn controller_rejects_non_fault_coordinates() {
         workspace: WorkspaceProfile::ReadOnlyShared,
         failure_point: FailurePoint::None,
         cognition: CognitionProfile::PrimaryOnly,
-        models: vec!["provider/model".into()],
+        models: vec![BenchmarkModelBinding {
+            role: BenchmarkModelRole::Primary,
+            model: "provider/model".into(),
+        }],
         run_ordinal: 1,
     };
     assert_eq!(
