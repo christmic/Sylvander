@@ -628,16 +628,28 @@ impl AgentRunInner {
                 "session identity verification failed".into(),
             ));
         }
-        let mut effective_config = stored_session
-            .as_ref()
-            .map(|session| {
-                session.effective_config.clone().ok_or_else(|| {
+        let agent_config = if let (Some(store), Some(_)) = (&self.session_store, &stored_session) {
+            let binding = store
+                .agent_instance_config(&session_id, &agent_instance_id)
+                .await
+                .map_err(|source| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::InspectSession,
+                        source,
+                    )
+                })?
+                .ok_or_else(|| {
                     AgentRunError::Configuration(format!(
-                        "durable session {session_id} has no effective configuration"
+                        "Agent instance {agent_instance_id} has no durable configuration"
                     ))
-                })
-            })
-            .transpose()?;
+                })?;
+            Some(binding)
+        } else {
+            None
+        };
+        let mut effective_config = agent_config
+            .as_ref()
+            .map(|binding| binding.effective.clone());
         if let Some(effective) = &effective_config
             && effective.agent_id != self.id
         {
@@ -897,9 +909,12 @@ impl AgentRunInner {
         } else {
             self.runtime_permissions.read().await.clone()
         };
-        if let (Some(store), Some(stored), Some(effective)) =
-            (&self.session_store, &stored_session, &effective_config)
-        {
+        if let (Some(store), Some(_), Some(binding), Some(effective)) = (
+            &self.session_store,
+            &stored_session,
+            &agent_config,
+            &effective_config,
+        ) {
             let user_id = match &msg.sender {
                 Sender::User(user_id) => user_id.as_str(),
                 _ => "unix-client",
@@ -920,7 +935,7 @@ impl AgentRunInner {
                         session_id: session_id.clone(),
                         turn_id: turn_id.into(),
                         agent_instance_id: agent_instance_id.clone(),
-                        config_revision: stored.config_revision,
+                        config_revision: binding.config_revision,
                         effective_config: effective.clone(),
                         user_content,
                         model_id: selected_model.shadow.reference.model.clone(),

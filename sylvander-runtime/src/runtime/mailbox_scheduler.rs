@@ -145,14 +145,14 @@ async fn drain_recipient(
                     .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
             }
             None => {
-                if let Some(moderator) = execute_or_escalate(
+                if let Some(moderator) = Box::pin(execute_or_escalate(
                     store,
                     revisions,
                     observability,
                     &service,
                     &message,
                     &receipt,
-                )
+                ))
                 .await?
                 {
                     return Ok(Some(moderator));
@@ -181,14 +181,14 @@ async fn drain_recipient(
             .prepare_message_turn(&claim, &turn_id, crate::session::now_secs())
             .await
             .map_err(|error| RuntimeError::Coordination(error.to_string()))?;
-        if let Some(moderator) = execute_or_escalate(
+        if let Some(moderator) = Box::pin(execute_or_escalate(
             store,
             revisions,
             observability,
             &service,
             &message,
             &receipt,
-        )
+        ))
         .await?
         {
             return Ok(Some(moderator));

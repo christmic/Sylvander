@@ -906,6 +906,18 @@ async fn governed_fork_is_idempotent_and_reconciles_task_membership_revision() {
         panic!("bounded fork should not require arbitration");
     };
     assert_eq!(child.state, AgentInstanceState::Created);
+    let parent_config = store
+        .agent_instance_config(&child.session_id, &AgentInstanceId::new("worker-1"))
+        .await
+        .unwrap()
+        .unwrap();
+    let child_config = store
+        .agent_instance_config(&child.session_id, &child.instance_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(child_config.effective, parent_config.effective);
+    assert_eq!(child_config.config_revision, parent_config.config_revision);
     let ready = service.mark_agent_ready(&child, 21).await.unwrap();
     assert_eq!(ready.state, AgentInstanceState::Ready);
     assert_eq!(
