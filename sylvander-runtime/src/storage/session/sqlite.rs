@@ -261,7 +261,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 11;
+const SESSION_SCHEMA_VERSION: i64 = 12;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -279,6 +279,8 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "task_dependencies",
     "task_handoffs",
     "coordination_messages",
+    "coordination_waits",
+    "coordination_progress",
     "governance_cases",
     "moderator_decisions",
     "agent_workspace_views",
@@ -298,6 +300,8 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_tasks_assignee_state",
     "idx_handoffs_arbitrator_state",
     "idx_messages_recipient_state",
+    "idx_coordination_waits_current",
+    "idx_coordination_progress_task",
     "idx_governance_cases_moderator_state",
     "idx_one_active_agent_workspace",
     "idx_one_active_workspace_integration",
@@ -481,6 +485,46 @@ CREATE INDEX idx_handoffs_arbitrator_state
     ON task_handoffs(session_id, arbitrator_instance_id, state);
 CREATE INDEX idx_messages_recipient_state
     ON coordination_messages(session_id, recipient_instance_id, state, created_at);
+
+-- Current wait-for graph. Revision fences prevent stale edges from surviving
+-- task progress or topology replacement after a crash.
+CREATE TABLE coordination_waits (
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    task_id             TEXT NOT NULL REFERENCES coordination_tasks(task_id) ON DELETE CASCADE,
+    waiter_instance_id  TEXT NOT NULL,
+    awaited_instance_id TEXT NOT NULL,
+    task_revision       INTEGER NOT NULL CHECK(task_revision >= 0),
+    topology_revision   INTEGER NOT NULL CHECK(topology_revision >= 0),
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    PRIMARY KEY(session_id, task_id, waiter_instance_id, awaited_instance_id),
+    FOREIGN KEY(session_id, waiter_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id, awaited_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE,
+    CHECK(waiter_instance_id != awaited_instance_id)
+);
+
+CREATE INDEX idx_coordination_waits_current
+    ON coordination_waits(session_id, task_id, task_revision, topology_revision);
+
+-- Append-only evidence of useful progress. The stable observation id makes
+-- producer retry idempotent across process failure.
+CREATE TABLE coordination_progress (
+    observation_id      TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    task_id             TEXT NOT NULL REFERENCES coordination_tasks(task_id) ON DELETE CASCADE,
+    agent_instance_id   TEXT NOT NULL,
+    task_revision       INTEGER NOT NULL CHECK(task_revision >= 0),
+    consumed_tokens     INTEGER NOT NULL CHECK(consumed_tokens >= 0),
+    evidence_digest     TEXT,
+    observed_at         INTEGER NOT NULL,
+    FOREIGN KEY(session_id, agent_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_coordination_progress_task
+    ON coordination_progress(session_id, task_id, observed_at, observation_id);
 
 CREATE TABLE governance_cases (
     case_id             TEXT PRIMARY KEY,
@@ -713,7 +757,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=11;
+PRAGMA user_version=12;
 COMMIT;
 ";
 

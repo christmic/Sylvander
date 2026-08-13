@@ -43,6 +43,8 @@ pub struct WaitDependency {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgressObservation {
+    /// Stable dedupe key chosen before the observation is persisted.
+    pub observation_id: String,
     pub task_id: TaskId,
     pub agent_instance_id: AgentInstanceId,
     pub task_revision: u64,

@@ -36,6 +36,7 @@ fn unchanged_evidence_with_token_growth_requires_moderator_review() {
     let task_id = TaskId::new("task");
     let progress = (0..3)
         .map(|index| ProgressObservation {
+            observation_id: format!("observation-{index}"),
             task_id: task_id.clone(),
             agent_instance_id: AgentInstanceId::new("worker"),
             task_revision: 2,
