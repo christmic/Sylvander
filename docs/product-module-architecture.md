@@ -67,6 +67,11 @@ The Agent owns policy declarations and ports, not infrastructure:
 
 ## Runtime application layer
 
+Runtime is the sole producer of redacted UI snapshots. See
+[`runtime-ui-snapshots.md`](runtime-ui-snapshots.md) for model/platform/request
+limits and archive-aware Session discovery. Channels serialize those values;
+they do not assemble parallel Runtime truth.
+
 Runtime owns four cohesive internal services.
 
 ### Session service
