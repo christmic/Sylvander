@@ -4,9 +4,11 @@ use crate::agent::instance::{
     AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, ApprovalRoute,
     HistoryView, SessionAgentRole,
 };
+use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
 use crate::session::SessionMetadata;
 use crate::session::membership::{SessionGovernance, SessionMembership};
 use crate::storage::agent_instance::AgentInstanceStore;
+use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{SessionLifetime, SessionStore, StoredSession};
 use sylvander_api::AgentId;
 
@@ -94,6 +96,24 @@ async fn workspace_view_is_durable_unique_and_fenced() {
         .save_session_membership(&membership, None)
         .await
         .unwrap();
+    let topology = SessionTopology::new(
+        membership.session_id.clone(),
+        0,
+        0,
+        vec![AgentRelation {
+            source: AgentInstanceId::new("moderator"),
+            target: AgentInstanceId::new("worker"),
+            kind: AgentRelationKind::ParentOf,
+            created_at: 1,
+        }],
+        1,
+        &membership,
+    )
+    .unwrap();
+    store
+        .save_topology(&topology, &membership, None)
+        .await
+        .unwrap();
     let view = workspace_view("view-1");
     store
         .create_workspace_view(&view, &membership)
@@ -123,6 +143,42 @@ async fn workspace_view_is_durable_unique_and_fenced() {
             .unwrap(),
         std::slice::from_ref(&active)
     );
+    let approval = WorkspaceIntegrationApproval {
+        integration_id: WorkspaceIntegrationId::new("integration-1"),
+        view_id: active.view_id.clone(),
+        session_id: active.session_id.clone(),
+        agent_instance_id: active.agent_instance_id.clone(),
+        approved_by: AgentInstanceId::new("moderator"),
+        membership_revision: 0,
+        topology_revision: 0,
+        view_revision: 1,
+        lease_epoch: 2,
+        fencing_token: 3,
+        review_digest: "sha256:review".into(),
+        approved_at: 4,
+    };
+    let integration = WorkspaceIntegration::new(approval, &active, &membership, 0).unwrap();
+    store
+        .create_workspace_integration(&integration, &active, &membership, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .workspace_integration(&integration.approval.integration_id)
+            .await
+            .unwrap(),
+        Some(integration.clone())
+    );
+    let applying = store
+        .transition_workspace_integration(
+            &integration.approval.integration_id,
+            0,
+            WorkspaceIntegrationState::Applying,
+            5,
+        )
+        .await
+        .unwrap();
+    assert_eq!(applying.state, WorkspaceIntegrationState::Applying);
     assert!(matches!(
         store
             .transition_workspace_view(

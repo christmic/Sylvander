@@ -261,7 +261,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 9;
+const SESSION_SCHEMA_VERSION: i64 = 10;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -282,6 +282,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "governance_cases",
     "moderator_decisions",
     "agent_workspace_views",
+    "workspace_integrations",
     "session_messages",
     "session_usage",
     "session_turns",
@@ -298,6 +299,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_messages_recipient_state",
     "idx_governance_cases_moderator_state",
     "idx_one_active_agent_workspace",
+    "idx_one_active_workspace_integration",
     "idx_session_agents_agent",
     "idx_agent_instances_definition",
     "idx_agent_instances_state",
@@ -537,6 +539,28 @@ CREATE UNIQUE INDEX idx_one_active_agent_workspace
     ON agent_workspace_views(session_id, agent_instance_id)
     WHERE state IN ('provisioning','active','integrating','conflicted','manual_reconciliation');
 
+CREATE TABLE workspace_integrations (
+    integration_id      TEXT PRIMARY KEY,
+    view_id             TEXT NOT NULL REFERENCES agent_workspace_views(view_id) ON DELETE CASCADE,
+    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    agent_instance_id   TEXT NOT NULL,
+    approved_by_instance_id TEXT NOT NULL,
+    membership_revision INTEGER NOT NULL CHECK(membership_revision >= 0),
+    topology_revision   INTEGER NOT NULL CHECK(topology_revision >= 0),
+    view_revision       INTEGER NOT NULL CHECK(view_revision >= 0),
+    lease_epoch         INTEGER NOT NULL CHECK(lease_epoch > 0),
+    fencing_token       INTEGER NOT NULL CHECK(fencing_token > 0),
+    review_digest       TEXT NOT NULL CHECK(length(trim(review_digest)) > 0),
+    approved_at         INTEGER NOT NULL,
+    state               TEXT NOT NULL CHECK(state IN ('approved','applying','applied','conflicted','manual_reconciliation')),
+    revision            INTEGER NOT NULL CHECK(revision >= 0),
+    updated_at          INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_one_active_workspace_integration
+    ON workspace_integrations(view_id)
+    WHERE state IN ('approved','applying','conflicted','manual_reconciliation');
+
 -- Messages (one row per user/assistant/tool message)
 --
 -- Identity / trace / priority are denormalized into real columns
@@ -681,7 +705,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_session
     ON session_turns(session_id) WHERE state = 'running';
-PRAGMA user_version=9;
+PRAGMA user_version=10;
 COMMIT;
 ";
 
