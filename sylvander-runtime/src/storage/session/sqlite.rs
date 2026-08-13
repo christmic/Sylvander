@@ -20,6 +20,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::agent::cognition::CognitiveRole;
+use crate::agent::perception::PerceptionModality;
 use async_trait::async_trait;
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -30,6 +32,7 @@ use sylvander_api::AgentInstanceId;
 use sylvander_api::session_context::Priority;
 use tokio::sync::Mutex;
 use tokio::task;
+use uuid::Uuid;
 
 use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
@@ -39,7 +42,11 @@ use super::{
     ExecutionRecoveryActionTarget, ExecutionRecoveryActionWrite, MessageRole,
     ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance, ModelIterationSnapshot,
     ModelIterationStart, ModelRecoveryDecision, ModelRecoveryReason, ModelRecoveryWrite,
-    ModelResponseCommit, ModelResponsePersistence, PersistedTurnCompletion, ReplacementMessage,
+    ModelResponseCommit, ModelResponsePersistence, PerceptionAdvance,
+    PerceptionArtifactPersistence, PerceptionExecutionPosition, PerceptionInvocationId,
+    PerceptionInvocationSnapshot, PerceptionInvocationStart, PerceptionMediaPersistence,
+    PerceptionReceiptPersistence, PerceptionRecoveryDecision, PerceptionRecoveryPolicy,
+    PerceptionRecoveryReason, PerceptionRecoveryWrite, PersistedTurnCompletion, ReplacementMessage,
     SessionFilter, SessionLifetime, SessionMetadataPatch, SessionStore, SessionStoreError,
     SessionUsage, StoredMessage, StoredSession, ToolCallAdvance, ToolCallCompletion,
     ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState, ToolExecutionPosition,
@@ -262,7 +269,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 18;
+const SESSION_SCHEMA_VERSION: i64 = 19;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -295,6 +302,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_turns",
     "session_turn_iterations",
     "session_tool_calls",
+    "session_perception_invocations",
     "execution_recovery_actions",
     "idx_messages_user",
     "idx_messages_agent",
@@ -321,6 +329,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "idx_tool_calls_turn",
     "idx_tool_calls_recovery",
     "idx_turn_iterations_recovery",
+    "idx_perception_recovery",
     "idx_running_turn_per_agent_instance",
 ];
 
@@ -791,6 +800,43 @@ CREATE TABLE session_tool_calls (
         REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE
 );
 
+CREATE TABLE session_perception_invocations (
+    session_id      TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    agent_instance_id TEXT NOT NULL,
+    invocation_id   TEXT NOT NULL UNIQUE,
+    modality        TEXT NOT NULL CHECK(modality IN ('image','audio','document')),
+    cognitive_role  TEXT NOT NULL CHECK(cognitive_role IN ('vision','audio','document')),
+    provider_id     TEXT NOT NULL,
+    model_id        TEXT NOT NULL,
+    recovery_policy TEXT NOT NULL CHECK(recovery_policy IN ('never_replay','retry_with_same_invocation','recover_from_receipt')),
+    capability_revision TEXT NOT NULL,
+    input_digest    TEXT NOT NULL,
+    input_bytes     INTEGER NOT NULL CHECK(input_bytes > 0),
+    position        TEXT NOT NULL CHECK(position IN ('prepared','media_persisted','inference_started','inference_completed','artifact_persisted','result_persisted')),
+    ledger_revision INTEGER NOT NULL DEFAULT 0,
+    media_artifact_locator TEXT,
+    receipt_locator TEXT,
+    output_artifact_locator TEXT,
+    output_digest TEXT,
+    recovery_decision TEXT,
+    recovery_reason TEXT,
+    operator_action_required INTEGER NOT NULL DEFAULT 0,
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    recovery_owner TEXT,
+    recovery_lease_expires_at INTEGER,
+    first_interrupted_at INTEGER,
+    started_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    CHECK((position='prepared' AND media_artifact_locator IS NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
+       OR (position IN ('media_persisted','inference_started') AND media_artifact_locator IS NOT NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
+       OR (position='inference_completed' AND media_artifact_locator IS NOT NULL AND receipt_locator IS NOT NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
+       OR (position IN ('artifact_persisted','result_persisted') AND media_artifact_locator IS NOT NULL AND receipt_locator IS NOT NULL AND output_artifact_locator IS NOT NULL AND output_digest IS NOT NULL)),
+    PRIMARY KEY(session_id, turn_id, invocation_id),
+    FOREIGN KEY(session_id, turn_id) REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id, agent_instance_id) REFERENCES session_agent_instances(session_id, instance_id) ON DELETE CASCADE
+);
+
 CREATE TABLE execution_recovery_actions (
     action_id        TEXT PRIMARY KEY,
     session_id       TEXT NOT NULL,
@@ -844,9 +890,11 @@ CREATE INDEX idx_tool_calls_recovery
     ON session_tool_calls(state, position, updated_at, invocation_id);
 CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
+CREATE INDEX idx_perception_recovery
+    ON session_perception_invocations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=18;
+PRAGMA user_version=19;
 COMMIT;
 ";
 
