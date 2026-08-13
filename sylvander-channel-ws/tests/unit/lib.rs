@@ -814,6 +814,151 @@ async fn session_lifecycle_dispatches_and_returns_protocol_events() {
     );
 }
 
+#[tokio::test]
+async fn reattach_returns_durable_history_then_buffered_live_events() {
+    let host = Arc::new(ControlHost {
+        received: Mutex::new(Vec::new()),
+        lifecycle: Mutex::new(Vec::new()),
+        history: session_history(),
+    });
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(host),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let relay = Arc::new(Mutex::new(RelayHub::default()));
+    let clients = Arc::new(Mutex::new(HashMap::new()));
+    let session_id = SessionId::new("session-2");
+    relay.lock().await.replay.insert(
+        session_id.clone(),
+        SessionReplay {
+            active: true,
+            ..SessionReplay::default()
+        },
+    );
+    relay_event(
+        &relay,
+        &clients,
+        &session_id,
+        ServerMsg::TextDelta {
+            session_id: session_id.0.clone(),
+            delta: "live".into(),
+        },
+    )
+    .await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    clients.lock().await.insert(2, tx.clone());
+
+    handle_client_msg_for_client(
+        ClientMsg::ReattachSession {
+            session_id: session_id.0.clone(),
+        },
+        ClientHandler {
+            ctx: &context,
+            agent_id: &AgentId::new("agent-1"),
+            tx: &tx,
+            principal: &principal,
+            instance_id: "websocket-test",
+            relay: Some(ClientRelay {
+                hub: &relay,
+                client_id: 2,
+                clients: &clients,
+            }),
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::SessionHistory {
+            recovery: true,
+            replay_truncated: false,
+            ..
+        })
+    ));
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::TextDelta { delta, .. }) if delta == "live"
+    ));
+}
+
+#[tokio::test]
+async fn reattach_reports_when_one_live_event_exceeds_the_replay_bound() {
+    let host = Arc::new(ControlHost {
+        received: Mutex::new(Vec::new()),
+        lifecycle: Mutex::new(Vec::new()),
+        history: session_history(),
+    });
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(host),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let relay = Arc::new(Mutex::new(RelayHub::default()));
+    let clients = Arc::new(Mutex::new(HashMap::new()));
+    let session_id = SessionId::new("session-2");
+    relay.lock().await.replay.insert(
+        session_id.clone(),
+        SessionReplay {
+            active: true,
+            ..SessionReplay::default()
+        },
+    );
+    relay_event(
+        &relay,
+        &clients,
+        &session_id,
+        ServerMsg::TextDelta {
+            session_id: session_id.0.clone(),
+            delta: "x".repeat(4 * 1024 * 1024 + 1),
+        },
+    )
+    .await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    handle_client_msg_for_client(
+        ClientMsg::ReattachSession {
+            session_id: session_id.0,
+        },
+        ClientHandler {
+            ctx: &context,
+            agent_id: &AgentId::new("agent-1"),
+            tx: &tx,
+            principal: &principal,
+            instance_id: "websocket-test",
+            relay: Some(ClientRelay {
+                hub: &relay,
+                client_id: 2,
+                clients: &clients,
+            }),
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::SessionHistory {
+            recovery: true,
+            replay_truncated: true,
+            ..
+        })
+    ));
+    assert!(
+        rx.try_recv().is_err(),
+        "oversized event must not be replayed"
+    );
+}
+
 fn hello(version: u16) -> ClientMsg {
     ClientMsg::Hello {
         protocol: sylvander_api::UiProtocolHello {
@@ -1439,6 +1584,7 @@ async fn websocket_upgrade_uses_live_rotating_bearer_lease() {
         )),
         agent_id: AgentId::new("agent"),
         clients: Arc::new(Mutex::new(HashMap::new())),
+        relay: Arc::new(Mutex::new(RelayHub::default())),
         next_id: Arc::new(Mutex::new(0)),
         instance_id: "ws-primary".into(),
         auth: Some(WsAuth {
@@ -1530,6 +1676,7 @@ async fn authentication_rejection_uses_runtime_status() {
         )),
         agent_id: AgentId::new("private-agent"),
         clients: Arc::new(Mutex::new(HashMap::new())),
+        relay: Arc::new(Mutex::new(RelayHub::default())),
         next_id: Arc::new(Mutex::new(0)),
         instance_id: "ws-private".into(),
         auth: None,

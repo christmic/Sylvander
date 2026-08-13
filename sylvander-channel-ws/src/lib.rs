@@ -29,6 +29,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -134,12 +135,14 @@ impl Channel for WsChannel {
         let clients: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<ServerMsg>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let next_id: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
+        let relay = Arc::new(Mutex::new(RelayHub::default()));
 
         // HTTP server
         let state = Arc::new(AppState {
             ctx,
             agent_id: self.agent_id.clone(),
             clients: clients.clone(),
+            relay,
             next_id: next_id.clone(),
             instance_id: self.instance_id.clone(),
             auth: self.auth.clone(),
@@ -177,10 +180,50 @@ struct AppState {
     ctx: Arc<ChannelContext>,
     agent_id: AgentId,
     clients: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<ServerMsg>>>>,
+    relay: Arc<Mutex<RelayHub>>,
     next_id: Arc<Mutex<u64>>,
     instance_id: String,
     auth: Option<WsAuth>,
     max_request_bytes: usize,
+}
+
+#[derive(Default)]
+struct SessionReplay {
+    active: bool,
+    events: Vec<ServerMsg>,
+    bytes: usize,
+    truncated: bool,
+}
+
+#[derive(Default)]
+struct RelayHub {
+    session_clients: HashMap<SessionId, HashSet<u64>>,
+    replay: HashMap<SessionId, SessionReplay>,
+}
+
+type ClientSenders = HashMap<u64, mpsc::UnboundedSender<ServerMsg>>;
+
+#[derive(Clone, Copy)]
+struct ClientRelay<'a> {
+    hub: &'a Arc<Mutex<RelayHub>>,
+    client_id: u64,
+    clients: &'a Arc<Mutex<ClientSenders>>,
+}
+
+#[derive(Clone, Copy)]
+struct ClientHandler<'a> {
+    ctx: &'a ChannelContext,
+    agent_id: &'a AgentId,
+    tx: &'a mpsc::UnboundedSender<ServerMsg>,
+    principal: &'a sylvander_api::AuthenticatedPrincipal,
+    instance_id: &'a str,
+    relay: Option<ClientRelay<'a>>,
+}
+
+#[derive(Clone)]
+struct RelayTargets {
+    hub: Arc<Mutex<RelayHub>>,
+    clients: Arc<Mutex<ClientSenders>>,
 }
 
 // ===========================================================================
@@ -317,14 +360,21 @@ async fn handle_socket(
                 continue;
             }
         };
-        if !handle_protocol_message(
+        if !handle_protocol_message_for_client(
             parsed,
             &mut selected_protocol,
-            &ctx,
-            &agent_id,
-            &tx,
-            &principal,
-            &state.instance_id,
+            ClientHandler {
+                ctx: &ctx,
+                agent_id: &agent_id,
+                tx: &tx,
+                principal: &principal,
+                instance_id: &state.instance_id,
+                relay: Some(ClientRelay {
+                    hub: &state.relay,
+                    client_id,
+                    clients: &state.clients,
+                }),
+            },
         )
         .await
         {
@@ -335,9 +385,11 @@ async fn handle_socket(
     // Cleanup
     write_task.abort();
     clients.lock().await.remove(&client_id_for_cleanup);
+    detach_client(&state.relay, client_id_for_cleanup).await;
     info!(client_id = client_id_for_cleanup, "ws client disconnected");
 }
 
+#[cfg(test)]
 async fn handle_protocol_message(
     msg: ClientMsg,
     selected: &mut Option<u16>,
@@ -347,6 +399,27 @@ async fn handle_protocol_message(
     principal: &sylvander_api::AuthenticatedPrincipal,
     instance_id: &str,
 ) -> bool {
+    handle_protocol_message_for_client(
+        msg,
+        selected,
+        ClientHandler {
+            ctx,
+            agent_id,
+            tx,
+            principal,
+            instance_id,
+            relay: None,
+        },
+    )
+    .await
+}
+
+async fn handle_protocol_message_for_client(
+    msg: ClientMsg,
+    selected: &mut Option<u16>,
+    handler: ClientHandler<'_>,
+) -> bool {
+    let tx = handler.tx;
     match (&msg, *selected) {
         (ClientMsg::Hello { protocol }, None) => {
             match sylvander_api::negotiate_ui_protocol(protocol) {
@@ -388,7 +461,7 @@ async fn handle_protocol_message(
             true
         }
         (_, Some(_)) => {
-            handle_client_msg(msg, ctx, agent_id, tx, principal, instance_id).await;
+            handle_client_msg_for_client(msg, handler).await;
             true
         }
     }
@@ -434,6 +507,7 @@ fn send_protocol_error(tx: &mpsc::UnboundedSender<ServerMsg>, code: &str, messag
     });
 }
 
+#[cfg(test)]
 async fn handle_client_msg(
     msg: ClientMsg,
     ctx: &ChannelContext,
@@ -442,6 +516,29 @@ async fn handle_client_msg(
     principal: &sylvander_api::AuthenticatedPrincipal,
     instance_id: &str,
 ) {
+    handle_client_msg_for_client(
+        msg,
+        ClientHandler {
+            ctx,
+            agent_id,
+            tx,
+            principal,
+            instance_id,
+            relay: None,
+        },
+    )
+    .await;
+}
+
+async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>) {
+    let ClientHandler {
+        ctx,
+        agent_id,
+        tx,
+        principal,
+        instance_id,
+        relay,
+    } = handler;
     let boundary = sylvander_api::BoundaryContext::authenticated(
         principal.clone(),
         instance_id,
@@ -502,6 +599,16 @@ async fn handle_client_msg(
             } = submitted;
             let mut rx = events;
 
+            if let Some(client_relay) = relay {
+                let mut hub = client_relay.hub.lock().await;
+                attach_client(&mut hub, client_relay.client_id, &sid);
+                let session_replay = hub.replay.entry(sid.clone()).or_default();
+                session_replay.active = true;
+                session_replay.events.clear();
+                session_replay.bytes = 0;
+                session_replay.truncated = false;
+            }
+
             // Notify client of session
             let _ = tx.send(ServerMsg::SessionCreated {
                 session_id: sid.0.clone(),
@@ -510,6 +617,10 @@ async fn handle_client_msg(
 
             // Stream events back to client until Done
             let tx_clone = tx.clone();
+            let relay = relay.map(|relay| RelayTargets {
+                hub: relay.hub.clone(),
+                clients: relay.clients.clone(),
+            });
             tokio::spawn(async move {
                 while let Some(msg) = rx.recv().await {
                     if let MessageKind::Stream(ev) = msg.kind {
@@ -588,33 +699,40 @@ async fn handle_client_msg(
                                 multi_select,
                             }),
                             StreamEvent::TurnInterrupted { reason } => {
-                                let _ = tx_clone.send(ServerMsg::TurnInterrupted {
+                                let event = ServerMsg::TurnInterrupted {
                                     session_id: s.0.clone(),
                                     reason,
                                     feedback_target: feedback_target.clone(),
-                                });
+                                };
+                                send_relayed_event(relay.as_ref(), &tx_clone, s, event).await;
                                 break;
                             }
                             StreamEvent::Done { text } => {
-                                let _ = tx_clone.send(ServerMsg::Done {
+                                let event = ServerMsg::Done {
                                     session_id: s.0.clone(),
                                     text,
                                     feedback_target: feedback_target.clone(),
-                                });
+                                };
+                                send_relayed_event(relay.as_ref(), &tx_clone, s, event).await;
                                 break;
                             }
                             StreamEvent::Error { message } => {
-                                let _ = tx_clone.send(ServerMsg::Error {
+                                let event = ServerMsg::Error {
                                     session_id: s.0.clone(),
                                     message,
                                     feedback_target: feedback_target.clone(),
-                                });
+                                };
+                                send_relayed_event(relay.as_ref(), &tx_clone, s, event).await;
                                 break;
                             }
                             _ => None,
                         };
                         if let Some(m) = out {
-                            let _ = tx_clone.send(m);
+                            if let Some(relay) = &relay {
+                                relay_event(&relay.hub, &relay.clients, s, m).await;
+                            } else {
+                                let _ = tx_clone.send(m);
+                            }
                         }
                     }
                 }
@@ -941,7 +1059,13 @@ async fn handle_client_msg(
                 operation_error(tx, "list_sessions", "UI service is unavailable");
             }
         }
-        ClientMsg::LoadSession { session_id } => {
+        request @ (ClientMsg::LoadSession { .. } | ClientMsg::ReattachSession { .. }) => {
+            let recovery = matches!(&request, ClientMsg::ReattachSession { .. });
+            let (ClientMsg::LoadSession { session_id } | ClientMsg::ReattachSession { session_id }) =
+                request
+            else {
+                unreachable!()
+            };
             let Some(host) = &ctx.host else {
                 operation_error(tx, "load_session", "Runtime channel host is unavailable");
                 return;
@@ -950,7 +1074,23 @@ async fn handle_client_msg(
                 .load_session(&boundary, &SessionId::new(session_id))
                 .await
             {
-                Ok(snapshot) => send_session_history(tx, snapshot, None, None, false),
+                Ok(snapshot) => {
+                    let mut replay_events = Vec::new();
+                    let mut replay_truncated = false;
+                    if let Some(client_relay) = relay {
+                        let mut hub = client_relay.hub.lock().await;
+                        let session_id = SessionId::new(snapshot.session.id.clone());
+                        attach_client(&mut hub, client_relay.client_id, &session_id);
+                        if recovery && let Some(replay) = hub.replay.get(&session_id) {
+                            replay_events.clone_from(&replay.events);
+                            replay_truncated = replay.truncated;
+                        }
+                    }
+                    send_session_history(tx, snapshot, None, None, recovery, replay_truncated);
+                    for event in replay_events {
+                        let _ = tx.send(event);
+                    }
+                }
                 Err(error) => boundary_denied(tx, error),
             }
         }
@@ -1055,7 +1195,7 @@ async fn handle_client_msg(
                                 "Conversation checkpoint branch created · source session and workspace files unchanged".into()
                             })
                         });
-                    send_session_history(tx, snapshot, notice, Some(source_id.0), false);
+                    send_session_history(tx, snapshot, notice, Some(source_id.0), false, false);
                 }
                 Err(error) => boundary_denied(tx, error),
             }
@@ -1078,6 +1218,7 @@ fn send_session_history(
     notice: Option<String>,
     source_session_id: Option<String>,
     recovery: bool,
+    replay_truncated: bool,
 ) {
     let _ = tx.send(ServerMsg::SessionHistory {
         session: snapshot.session,
@@ -1089,8 +1230,91 @@ fn send_session_history(
         notice,
         source_session_id,
         recovery,
-        replay_truncated: false,
+        replay_truncated,
     });
+}
+
+fn attach_client(hub: &mut RelayHub, client_id: u64, session_id: &SessionId) {
+    for clients in hub.session_clients.values_mut() {
+        clients.remove(&client_id);
+    }
+    hub.session_clients
+        .entry(session_id.clone())
+        .or_default()
+        .insert(client_id);
+}
+
+async fn detach_client(hub: &Arc<Mutex<RelayHub>>, client_id: u64) {
+    let mut hub = hub.lock().await;
+    for clients in hub.session_clients.values_mut() {
+        clients.remove(&client_id);
+    }
+}
+
+async fn send_relayed_event(
+    relay: Option<&RelayTargets>,
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    session_id: &SessionId,
+    event: ServerMsg,
+) {
+    if let Some(relay) = relay {
+        relay_event(&relay.hub, &relay.clients, session_id, event).await;
+    } else {
+        let _ = tx.send(event);
+    }
+}
+
+async fn relay_event(
+    hub: &Arc<Mutex<RelayHub>>,
+    clients: &Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<ServerMsg>>>>,
+    session_id: &SessionId,
+    message: ServerMsg,
+) {
+    const MAX_REPLAY_BYTES: usize = 4 * 1024 * 1024;
+    let terminal = matches!(
+        &message,
+        ServerMsg::Done { .. } | ServerMsg::Error { .. } | ServerMsg::TurnInterrupted { .. }
+    );
+    let recipient_ids = {
+        let mut hub = hub.lock().await;
+        let replay = hub.replay.entry(session_id.clone()).or_default();
+        if replay.active {
+            let bytes = serde_json::to_vec(&message).map_or(0, |value| value.len());
+            if bytes > MAX_REPLAY_BYTES {
+                replay.events.clear();
+                replay.bytes = 0;
+                replay.truncated = true;
+            } else {
+                replay.bytes = replay.bytes.saturating_add(bytes);
+                replay.events.push(message.clone());
+                while replay.bytes > MAX_REPLAY_BYTES && replay.events.len() > 1 {
+                    let removed = replay.events.remove(0);
+                    replay.bytes = replay.bytes.saturating_sub(
+                        serde_json::to_vec(&removed).map_or(0, |value| value.len()),
+                    );
+                    replay.truncated = true;
+                }
+            }
+        }
+        if terminal {
+            replay.active = false;
+            replay.events.clear();
+            replay.bytes = 0;
+            replay.truncated = false;
+        }
+        hub.session_clients
+            .get(session_id)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let clients = clients.lock().await;
+    for client_id in recipient_ids {
+        if let Some(recipient) = clients.get(&client_id) {
+            let _ = recipient.send(message.clone());
+        }
+    }
 }
 
 fn visible_model_catalog(
