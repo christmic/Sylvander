@@ -407,6 +407,14 @@ TypeScript `6.0.3`, and Vitest `4.1.10`. Dependency updates are deliberate
 maintenance changes with build, protocol, visual, and accessibility evidence;
 "latest" is not resolved dynamically during release builds.
 
+On macOS, the normal interactive `npm run build` lets Tauri's bundled
+`create-dmg` ask Finder to position the volume contents. Non-interactive
+release verification must set the standard `CI` environment variable (for a
+local POSIX shell: `CI=true npm run build`); the official bundler then skips
+Finder cosmetics and still produces both the `.app` and installable `.dmg`.
+An Apple Events timeout in the optional interactive layout step is not accepted
+as bundle evidence, and the CI-mode command must independently pass.
+
 ## Performance and quality gates
 
 These are acceptance targets, not current claims:
