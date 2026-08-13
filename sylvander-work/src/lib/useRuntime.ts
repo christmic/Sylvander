@@ -58,6 +58,12 @@ export interface RuntimeViewState {
     outcome?: "accepted" | "failed";
     detail?: string;
   };
+  rollback?: {
+    turnId?: string;
+    files: string[];
+    status: "preview" | "completed" | "failed";
+    detail?: string;
+  };
   diagnostic?: string;
 }
 
@@ -249,6 +255,9 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           ...current,
           selectedId: current.selectedId === message.session_id ? undefined : current.selectedId,
           sessions: current.sessions.filter((session) => session.id !== message.session_id),
+          interruptingSessionIds: current.interruptingSessionIds.filter(
+            (sessionId) => sessionId !== message.session_id,
+          ),
           transcript: current.selectedId === message.session_id ? [] : current.transcript,
           plan: current.selectedId === message.session_id ? [] : current.plan,
           activePlan: current.selectedId === message.session_id ? undefined : current.activePlan,
@@ -260,6 +269,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             : current.contextRequestPending,
           compaction: current.selectedId === message.session_id ? undefined : current.compaction,
           codingReview: current.selectedId === message.session_id ? undefined : current.codingReview,
+          rollback: current.selectedId === message.session_id ? undefined : current.rollback,
           approval: current.selectedId === message.session_id ? undefined : current.approval,
           question: current.selectedId === message.session_id ? undefined : current.question,
         }));
@@ -273,6 +283,43 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
               patch: current.codingReview?.patch ?? "",
               outcome: "failed",
               detail: `${message.operation}: ${message.reason}`,
+            },
+          }));
+        }
+        break;
+      case "workspace_rollback_preview":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            rollback: {
+              turnId: message.preview.turn_id,
+              files: message.preview.files,
+              status: "preview",
+            },
+          }));
+        }
+        break;
+      case "workspace_rollback_completed":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            rollback: {
+              turnId: message.report.turn_id,
+              files: message.report.restored,
+              status: "completed",
+            },
+          }));
+        }
+        break;
+      case "workspace_rollback_failed":
+        if (message.session_id === selectedRef.current) {
+          setState((current) => ({
+            ...current,
+            rollback: {
+              ...current.rollback,
+              files: current.rollback?.files ?? [],
+              status: "failed",
+              detail: message.reason,
             },
           }));
         }
@@ -334,6 +381,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
           contextRequestPending: false,
           compaction: undefined,
           codingReview: undefined,
+          rollback: undefined,
         }));
         void submit({ type: "list_sessions" });
         void submit({ type: "load_session", session_id: message.session_id });
@@ -358,6 +406,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
               : current.contextRequestPending,
             compaction: current.selectedId === message.session_id ? undefined : current.compaction,
             codingReview: current.selectedId === message.session_id ? undefined : current.codingReview,
+            rollback: current.selectedId === message.session_id ? undefined : current.rollback,
           }));
         } else {
           setState((current) => ({
@@ -387,6 +436,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
             : current.contextRequestPending,
           compaction: current.selectedId === message.session_id ? undefined : current.compaction,
           codingReview: current.selectedId === message.session_id ? undefined : current.codingReview,
+          rollback: current.selectedId === message.session_id ? undefined : current.rollback,
         }));
         break;
       case "operation_error":
@@ -735,6 +785,7 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
       contextRequestPending: false,
       compaction: undefined,
       codingReview: undefined,
+      rollback: undefined,
       approval: undefined,
       question: undefined,
     }));

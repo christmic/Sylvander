@@ -35,7 +35,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `ReattachSession` | complete | selected Session reattaches only after a successful reconnect |
 | `RestoreSession`, `ForkSession` | missing | archived/fork workflows |
 | `GetContext`, `Compact` | complete | Runtime-owned report and compaction lifecycle |
-| `PreviewWorkspaceRollback`, `RollbackWorkspace` | missing | reviewed rollback flow |
+| `PreviewWorkspaceRollback`, `RollbackWorkspace` | complete | two-phase confirmation bound to Runtime turn identity |
 | `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | complete | Runtime diff review and fact-driven accept/discard |
 | `SelectModel`, `SelectPermissions` | complete | provider-qualified catalog and typed permission profile |
 | `Ping` | missing | explicit liveness journey |
@@ -61,7 +61,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `SessionConfig` | missing | settings revision/provenance |
 | feedback, memory, admin, profile, identity responses | missing | matching command surfaces |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |
-| workspace rollback lifecycle | missing | reviewed rollback result |
+| workspace rollback lifecycle | complete | preview, restored files, and failure |
 | coding Session lifecycle | complete | diff, accepted, discarded, and operation failure |
 | `OperationError`, `BoundaryDenied` | complete | safe operation-specific notice and bounded retry timing |
 | `Pong` | missing | liveness state |

@@ -27,7 +27,9 @@ export type RuntimeCommand =
   | { type: "select_permissions"; session_id?: string; profile: RuntimePermissionProfile }
   | { type: "inspect_coding_session"; session_id: string }
   | { type: "accept_coding_session"; session_id: string }
-  | { type: "discard_coding_session"; session_id: string };
+  | { type: "discard_coding_session"; session_id: string }
+  | { type: "preview_workspace_rollback"; session_id: string }
+  | { type: "rollback_workspace"; session_id: string; expected_turn_id: string };
 
 export type PlanDecision =
   | { decision: "approved" }
@@ -161,6 +163,9 @@ export type RuntimeMessage =
   | { type: "coding_session_accepted"; session_id: string }
   | { type: "coding_session_discarded"; session_id: string }
   | { type: "coding_session_operation_failed"; session_id: string; operation: string; reason: string }
+  | { type: "workspace_rollback_preview"; session_id: string; preview: { turn_id: string; files: string[] } }
+  | { type: "workspace_rollback_completed"; session_id: string; report: { turn_id: string; restored: string[] } }
+  | { type: "workspace_rollback_failed"; session_id: string; reason: string }
   | { type: "approval_request"; session_id: string; batch_id: string; tools: Array<{ call_id: string; tool_name: string; input: unknown }>; allowed_scopes?: ApprovalScope[] }
   | { type: "tool_rejected"; session_id: string; tool_name: string; reason: string }
   | { type: "ask_user"; session_id: string; call_id: string; question: string; options: string[]; multi_select: boolean }

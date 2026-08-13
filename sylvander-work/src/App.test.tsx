@@ -498,6 +498,50 @@ describe("Sylvander Work", () => {
     expect(await screen.findByRole("heading", { name: "No Session selected" })).toBeTruthy();
   });
 
+  it("requires a Runtime rollback preview and preserves its turn identity", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Rollback", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    act(() => screen.getByRole("button", { name: /^Plan / }).click());
+    act(() => screen.getByRole("tab", { name: "changes" }).click());
+    expect(screen.queryByRole("button", { name: "Confirm rollback" })).toBeNull();
+    act(() => screen.getByRole("button", { name: "Preview rollback" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "preview_workspace_rollback", session_id: "session-1",
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "workspace_rollback_preview",
+      session_id: "session-1",
+      preview: { turn_id: "turn-authoritative", files: ["src/lib.rs", "Cargo.toml"] },
+    } }));
+    expect(await screen.findByText("src/lib.rs")).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Confirm rollback" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "rollback_workspace",
+      session_id: "session-1",
+      expected_turn_id: "turn-authoritative",
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "workspace_rollback_completed",
+      session_id: "session-1",
+      report: { turn_id: "turn-authoritative", restored: ["src/lib.rs", "Cargo.toml"] },
+    } }));
+    expect(await screen.findByText("2 files restored · conversation history unchanged.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Confirm rollback" })).toBeNull();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "workspace_rollback_failed", session_id: "session-1", reason: "checkpoint changed",
+    } }));
+    expect(await screen.findByText("Workspace rollback failed · checkpoint changed")).toBeTruthy();
+  });
+
   it("rolls back the local turn lock when native chat submission fails", async () => {
     const gateway = new TestGateway();
     gateway.rejectChat = true;

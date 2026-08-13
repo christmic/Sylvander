@@ -250,6 +250,12 @@ Session diff, keeps failure alongside the still-reviewable patch, and waits for
 accepted/discarded facts. Discard removes the Session projection because the
 Runtime operation deletes the isolated worktree and durable Session.
 
+Workspace rollback is a two-phase Runtime operation. Desktop cannot show a
+confirmation before `WorkspaceRollbackPreview`, and confirmation echoes the
+preview's opaque `turn_id` as `expected_turn_id`. Completion reports restored
+files while explicitly leaving conversation history unchanged; failure never
+claims a local mutation.
+
 Production builds contain no fixture or demo gateway. Unit and component tests
 may inject an in-memory implementation of the gateway interface; it is never
 included in the application bootstrap. The compiled

@@ -184,6 +184,7 @@ kbd, code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .context-actions { display: flex; gap: 8px; margin-top: 4px; }
 .changes-panel { display: grid; gap: 12px; min-height: 0; padding: 16px; }
 .changes-panel pre { max-height: 52vh; margin: 0; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #09080a; color: var(--text); white-space: pre-wrap; }
+.changes-panel h3, .changes-panel p { margin: 0; }.changes-panel hr { width: 100%; border: 0; border-top: 1px solid var(--line); }
 .plan-list { flex: 1; margin: 24px 0 0; padding: 0; list-style: none; }
 .plan-list li { position: relative; display: grid; grid-template-columns: 24px 1fr; gap: 9px; min-height: 53px; color: var(--muted-2); }
 .plan-list li:not(:last-child)::after { position: absolute; top: 24px; bottom: 0; left: 11px; width: 1px; content: ""; background: var(--line); }
