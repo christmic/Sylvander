@@ -31,11 +31,11 @@ use sylvander_llm_core::{
     ModelRequest, ModelResponse, ProviderErrorKind, StopReason, TokenUsage,
 };
 
-use super::tool::{AgentHookPhase, ToolRegistry};
 use crate::execution::ports::AgentExecutionPorts;
 use crate::execution::tool_context::ToolContext;
 use crate::interaction::approval::{ApprovalDecision, ToolUseRequest};
 use crate::interaction::plan::PlanDecision;
+use crate::tool::{AgentHookPhase, ToolRegistry};
 use crate::turn::conversation::ConversationSnapshot;
 use crate::turn::error::AgentLoopError;
 use crate::turn::event::{AgentEvent, ModelRetryCause};
@@ -1358,5 +1358,5 @@ fn assistant_message_from_response(msg: &ModelResponse) -> ChatMessage {
 // =====================================================================
 
 #[cfg(test)]
-#[path = "../tests/unit/loop_.rs"]
+#[path = "../../tests/unit/loop_.rs"]
 mod tests;

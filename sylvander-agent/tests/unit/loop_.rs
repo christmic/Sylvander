@@ -537,7 +537,7 @@ fn retry_cause_distinguishes_rate_limit_server_and_stream_failures() {
 
 #[test]
 fn turn_request_owns_the_executable_tool_snapshot() {
-    let tool = MockTool::new("echo", "echoes", super::super::tool::ToolOutput::ok("hi"));
+    let tool = MockTool::new("echo", "echoes", crate::tool::ToolOutput::ok("hi"));
     let request = turn_request(
         provider_model(),
         crate::tool::ToolRegistry::new().register(tool),

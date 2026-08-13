@@ -15,11 +15,12 @@ use sylvander_llm_core::{CacheHint, InputSchema, ToolDefinition as LlmToolDefini
 use crate::execution::tool_context::ToolContext;
 use crate::execution::workspace::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 use crate::tool::contract::{
-    AgentHookPhase, PreparedToolCall, RegisteredTool, SandboxRequirement, ToolDefinition,
-    ToolEnvironmentError, ToolError, ToolExecutionMode, ToolExecutor, ToolExposure, ToolOutput,
-    ToolPreparation, ToolPrepareError, ToolProgressSink, ToolSourceFeature, ToolSourceKind,
-    ToolSourceStatus, ToolSpec,
+    AgentHookPhase, PreparedToolCall, RegisteredTool, ToolDefinition, ToolError, ToolExecutor,
+    ToolExposure, ToolOutput, ToolPreparation, ToolPrepareError, ToolProgressSink,
+    ToolSourceFeature, ToolSourceKind, ToolSourceStatus, ToolSpec,
 };
+#[cfg(test)]
+use crate::tool::contract::{SandboxRequirement, ToolEnvironmentError, ToolExecutionMode};
 use crate::tool::invocation::{ToolInvocationClass, ToolInvocationDescriptor};
 
 const TOOL_SEARCH_NAME: &str = "tool_search";

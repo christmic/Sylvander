@@ -92,8 +92,8 @@ pub mod context;
 pub mod execution;
 /// User decisions and bounded background-work boundaries for one turn.
 pub mod interaction;
-/// Provider-compatible iterative model/tool execution loop.
-pub mod loop_;
+/// Provider-neutral execution policy and model/tool iteration state machine.
+pub mod kernel;
 /// Relationship-memory domain, retention rules, and Runtime-owned ports.
 pub mod memory;
 /// Immutable input, authority, progress, and result vocabulary for one turn.
@@ -112,6 +112,7 @@ pub use execution::{
 pub use interaction::{
     approval, ask_user as ask_user_gate, background_task as task_gate, plan as plan_gate,
 };
+pub use kernel::agent_loop as loop_;
 pub use memory::curated as curated_memory;
 pub use turn::{conversation, error, event, execution_context, identity, outcome, request, time};
 /// Tool contracts, authorization, registration, and built-in implementations.

@@ -13,7 +13,7 @@ const KERNEL_MODULES: &[&str] = &[
     "turn/event.rs",
     "turn/execution_context.rs",
     "execution/ports.rs",
-    "loop_.rs",
+    "kernel/agent_loop.rs",
     "turn/outcome.rs",
     "interaction/plan.rs",
     "turn/request.rs",
