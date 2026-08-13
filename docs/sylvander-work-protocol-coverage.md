@@ -2,7 +2,7 @@
 
 > Status: active implementation ledger
 >
-> Verified against `sylvander-api/src/ui.rs` and Desktop commit `8a4a9707c`
+> Verified against `sylvander-api/src/ui.rs` and Desktop commit `05d3803ed`
 > on 2026-08-13.
 
 ## Purpose
@@ -33,7 +33,8 @@ execution, persistence, or policy ownership moved into Desktop.
 | `MemoryConfirmation` | missing | governed memory decision surface |
 | `AgentAdmin`, `RegistryAdmin`, `UserProfile`, `IdentityBinding` | missing | administration/settings surfaces |
 | `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
-| `RestoreSession`, `ForkSession` | WebSocket complete, UI missing | archived/fork workflows |
+| `ForkSession` | complete end-to-end for checkpoints | completed-turn rewind editor |
+| `RestoreSession` | WebSocket complete, discovery missing | public Session list cannot expose archived rows yet |
 | `GetContext`, `Compact` | UI complete, WebSocket missing | transport dispatch to Runtime-owned lifecycle |
 | `PreviewWorkspaceRollback`, `RollbackWorkspace` | UI complete, WebSocket missing | transport dispatch for two-phase rollback |
 | `InspectCodingSession`, `AcceptCodingSession`, `DiscardCodingSession` | UI complete, WebSocket missing | transport dispatch for review and decision |

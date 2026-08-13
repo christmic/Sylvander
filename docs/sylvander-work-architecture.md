@@ -230,6 +230,14 @@ change/removal, and never recomputes provider usage or price locally.
 completed iteration count and replaces token/cost fields with Runtime's
 persisted cumulative values.
 
+Checkpoint branching sends the public `ForkSession` command with
+`checkpoint=true`. Desktop keeps the source selected until Runtime returns a
+`SessionHistory` whose `source_session_id` matches it; only that fact selects
+and renders the new Session. Restore remains intentionally unavailable in the
+surface because the current public Session-list response excludes archived
+rows and carries no archive state. A client-side cache is not an ownership-safe
+substitute for Runtime discovery.
+
 An active or locally admitted turn replaces Send with Stop. Stop emits the
 public `Interrupt` command exactly once and remains pending until Runtime emits
 a terminal event. Desktop never treats command delivery as proof that execution
