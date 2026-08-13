@@ -23,6 +23,7 @@ use super::{
     RuntimeModels, SessionAuthorityMarker,
 };
 use crate::agent::approval::ApprovalMemory;
+use crate::agent::cognition::CognitiveRole;
 use crate::agent_definition::AgentSpec;
 use crate::execution::RuntimeExecutionService;
 use crate::observability::RuntimeObservability;
@@ -58,6 +59,7 @@ pub struct AgentRunBuilder {
     execution_service: Option<RuntimeExecutionService>,
     artifact_service: Option<RuntimeArtifactService>,
     invocation_gateway: Option<Arc<dyn ToolInvocationGateway>>,
+    approved_cognition_roles: HashSet<CognitiveRole>,
 }
 
 impl AgentRunBuilder {
@@ -91,6 +93,7 @@ impl AgentRunBuilder {
             execution_service: Some(RuntimeExecutionService::standalone_local()),
             artifact_service: None,
             invocation_gateway: None,
+            approved_cognition_roles: HashSet::new(),
         }
     }
 
@@ -104,6 +107,14 @@ impl AgentRunBuilder {
     #[must_use]
     pub(crate) fn observability(mut self, observability: RuntimeObservability) -> Self {
         self.observability = observability;
+        self
+    }
+
+    /// Admit exact cognition roles for automatic participation. Merely
+    /// configuring a role does not grant this capability.
+    #[must_use]
+    pub(crate) fn approved_cognition_roles(mut self, roles: HashSet<CognitiveRole>) -> Self {
+        self.approved_cognition_roles = roles;
         self
     }
 
@@ -360,6 +371,7 @@ impl AgentRunBuilder {
             inner: Arc::new(AgentRunInner {
                 id,
                 spec: self.spec,
+                approved_cognition_roles: self.approved_cognition_roles,
                 loop_config,
                 model_provider: self.router,
                 system_prompt,

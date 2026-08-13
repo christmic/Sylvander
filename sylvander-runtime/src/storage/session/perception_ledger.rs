@@ -20,6 +20,11 @@ impl PerceptionInvocationId {
     }
 
     #[must_use]
+    pub fn from_uuid(value: Uuid) -> Self {
+        Self(value.to_string())
+    }
+
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

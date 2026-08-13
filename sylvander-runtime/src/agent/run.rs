@@ -99,6 +99,7 @@ use sylvander_channel::{MessageBus, SubscriptionFilter};
 
 mod background;
 mod builder;
+mod cognition;
 mod error;
 mod interaction;
 mod orchestration;
@@ -165,14 +166,13 @@ fn turn_system_instructions(
 // ---------------------------------------------------------------------------
 // AgentRun (Arc-based, cheap clone)
 // ---------------------------------------------------------------------------
-
 /// Shared state for a running agent.
 pub(crate) struct AgentRunInner {
-    /// Unique agent identifier.
     id: AgentId,
-    /// The spec this agent was built from.
     #[allow(dead_code)]
     spec: AgentSpec,
+    /// Exact Registry-approved automatic roles; configuration alone is evaluative.
+    approved_cognition_roles: HashSet<crate::agent::cognition::CognitiveRole>,
     /// The pre-built loop configuration.
     loop_config: AgentLoop,
     /// Provider-neutral exact-model router injected by Runtime.

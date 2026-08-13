@@ -336,9 +336,6 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         .iter()
         .map(|activation| activation.draft.role)
         .collect::<HashSet<_>>();
-    spec.cognition
-        .roles
-        .retain(|binding| approved_roles.contains(&binding.role));
     apply_default_prompt(&prompt_resolver, &definition, &default_model, &mut spec)?;
     let candidate_sink = tool_gateway_factory
         .as_ref()
@@ -384,6 +381,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     let mut builder = AgentRun::qualified_router_builder(spec.clone(), Arc::new(router), primary)
         .bus(bus)
         .observability(observability)
+        .approved_cognition_roles(approved_roles)
         .execution_service(execution_service.clone())
         .session_store(sessions.clone())
         .workflow_store(sessions)

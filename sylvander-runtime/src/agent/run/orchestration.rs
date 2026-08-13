@@ -58,8 +58,8 @@ use super::projection::{
 use super::workflow::RuntimeWorkflowGate;
 use super::workspace_context;
 use super::{
-    AgentRunError, AgentRunInner, ContextUsage, RuntimeTurnSnapshot, SessionPersistenceOperation,
-    turn_system_instructions, validate_tool_gateway_surface,
+    AgentRunError, AgentRunInner, AuthenticatedSession, ContextUsage, RuntimeTurnSnapshot,
+    SessionPersistenceOperation, turn_system_instructions, validate_tool_gateway_surface,
 };
 use crate::agent::approval::{ApprovalGrantContext, approval_policy_revision};
 use crate::agent_definition::{AgentId, SessionId};
@@ -615,7 +615,7 @@ impl AgentRunInner {
     {
         let session_id = msg.session_id.clone();
         let agent_instance_id = turn_agent_instance_id(&msg, &session_id)?;
-        let user_message = Self::message_to_param(&msg)?;
+        let mut user_message = Self::message_to_param(&msg)?;
         let stored_session = if let Some(store) = &self.session_store {
             store.get(&session_id).await.map_err(|source| {
                 AgentRunError::session_persistence(
@@ -961,6 +961,18 @@ impl AgentRunInner {
                     succeeded: true,
                 });
         }
+        let authenticated_session = AuthenticatedSession {
+            authority: self.session_authority.clone(),
+            session_id: session_id.clone(),
+            agent_instance_id: agent_instance_id.clone(),
+        };
+        user_message = Box::pin(self.apply_approved_perception(
+            &authenticated_session,
+            turn_id,
+            &selected_exact_model,
+            user_message,
+        ))
+        .await;
         self.turn_context_manifests.write().await.insert(
             AgentSessionKey::new(session_id.clone(), agent_instance_id.clone()),
             context_manifest,

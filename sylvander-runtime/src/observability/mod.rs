@@ -341,13 +341,14 @@ pub(crate) enum RuntimeEvent {
         decision: PerceptionRecoveryDecision,
         operator_action_required: bool,
     },
-    /// One explicitly requested perception evaluation reached a terminal.
+    /// One perception specialist invocation reached a terminal.
     PerceptionEvaluationFinished {
         turn_id: String,
         session_id: SessionId,
         invocation_id: String,
         succeeded: bool,
         recovered_from_receipt: bool,
+        automatic: bool,
     },
     PersistenceFinished {
         turn_id: String,
@@ -481,6 +482,12 @@ pub struct RuntimeObservabilitySnapshot {
     pub perception_evaluations_succeeded: u64,
     /// Perception evaluations that ended content-safely without a result.
     pub perception_evaluations_failed: u64,
+    /// Approved perception routes attempted automatically inside admitted turns.
+    pub perception_automatic_routes: u64,
+    /// Automatic perception routes that produced a model-visible observation.
+    pub perception_automatic_routes_succeeded: u64,
+    /// Automatic routes that degraded to the content-safe unavailable marker.
+    pub perception_automatic_routes_soft_failed: u64,
     /// Successful evaluations reconstructed from a durable provider receipt.
     pub perception_receipts_recovered: u64,
     /// Explicit filesystem-boundary policy denials reported by an adapter.
@@ -563,6 +570,9 @@ struct RuntimeObservabilityInner {
     perception_evaluations: AtomicU64,
     perception_evaluations_succeeded: AtomicU64,
     perception_evaluations_failed: AtomicU64,
+    perception_automatic_routes: AtomicU64,
+    perception_automatic_routes_succeeded: AtomicU64,
+    perception_automatic_routes_soft_failed: AtomicU64,
     perception_receipts_recovered: AtomicU64,
     filesystem_policy_violations: AtomicU64,
     persistence_succeeded: AtomicU64,
@@ -629,6 +639,9 @@ impl RuntimeObservability {
                 perception_evaluations: AtomicU64::new(0),
                 perception_evaluations_succeeded: AtomicU64::new(0),
                 perception_evaluations_failed: AtomicU64::new(0),
+                perception_automatic_routes: AtomicU64::new(0),
+                perception_automatic_routes_succeeded: AtomicU64::new(0),
+                perception_automatic_routes_soft_failed: AtomicU64::new(0),
                 perception_receipts_recovered: AtomicU64::new(0),
                 filesystem_policy_violations: AtomicU64::new(0),
                 persistence_succeeded: AtomicU64::new(0),
@@ -964,18 +977,34 @@ impl RuntimeObservability {
                 invocation_id,
                 succeeded,
                 recovered_from_receipt,
+                automatic,
             } => {
-                self.inner
-                    .perception_evaluations
-                    .fetch_add(1, Ordering::Relaxed);
-                if succeeded {
+                if automatic {
                     self.inner
-                        .perception_evaluations_succeeded
+                        .perception_automatic_routes
                         .fetch_add(1, Ordering::Relaxed);
+                    if succeeded {
+                        self.inner
+                            .perception_automatic_routes_succeeded
+                            .fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        self.inner
+                            .perception_automatic_routes_soft_failed
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                 } else {
                     self.inner
-                        .perception_evaluations_failed
+                        .perception_evaluations
                         .fetch_add(1, Ordering::Relaxed);
+                    if succeeded {
+                        self.inner
+                            .perception_evaluations_succeeded
+                            .fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        self.inner
+                            .perception_evaluations_failed
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 if recovered_from_receipt && succeeded {
                     self.inner
@@ -989,6 +1018,7 @@ impl RuntimeObservability {
                     %invocation_id,
                     succeeded,
                     recovered_from_receipt,
+                    automatic,
                     "runtime lifecycle fact"
                 );
             }
@@ -1216,6 +1246,18 @@ impl RuntimeObservability {
             perception_evaluations_failed: self
                 .inner
                 .perception_evaluations_failed
+                .load(Ordering::Relaxed),
+            perception_automatic_routes: self
+                .inner
+                .perception_automatic_routes
+                .load(Ordering::Relaxed),
+            perception_automatic_routes_succeeded: self
+                .inner
+                .perception_automatic_routes_succeeded
+                .load(Ordering::Relaxed),
+            perception_automatic_routes_soft_failed: self
+                .inner
+                .perception_automatic_routes_soft_failed
                 .load(Ordering::Relaxed),
             perception_receipts_recovered: self
                 .inner

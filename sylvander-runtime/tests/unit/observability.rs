@@ -436,6 +436,7 @@ fn perception_evaluation_outcomes_are_counted_without_media_or_model_output() {
         invocation_id: "invocation-1".into(),
         succeeded: true,
         recovered_from_receipt: true,
+        automatic: false,
     });
     recorder.record(RuntimeEvent::PerceptionEvaluationFinished {
         turn_id: "turn-2".into(),
@@ -443,11 +444,15 @@ fn perception_evaluation_outcomes_are_counted_without_media_or_model_output() {
         invocation_id: "invocation-2".into(),
         succeeded: false,
         recovered_from_receipt: false,
+        automatic: true,
     });
 
     let snapshot = recorder.snapshot();
-    assert_eq!(snapshot.perception_evaluations, 2);
+    assert_eq!(snapshot.perception_evaluations, 1);
     assert_eq!(snapshot.perception_evaluations_succeeded, 1);
-    assert_eq!(snapshot.perception_evaluations_failed, 1);
+    assert_eq!(snapshot.perception_evaluations_failed, 0);
+    assert_eq!(snapshot.perception_automatic_routes, 1);
+    assert_eq!(snapshot.perception_automatic_routes_succeeded, 0);
+    assert_eq!(snapshot.perception_automatic_routes_soft_failed, 1);
     assert_eq!(snapshot.perception_receipts_recovered, 1);
 }

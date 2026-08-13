@@ -1,8 +1,8 @@
-//! Authenticated evaluation and recovery entry points for same-Agent perception.
+//! Authenticated execution and recovery for same-Agent perception.
 
 use std::sync::Arc;
 
-use super::{AgentRun, AuthenticatedSession};
+use super::{AgentRun, AgentRunInner, AuthenticatedSession};
 use crate::agent::perception_execution::{
     PerceptionEvaluationInput, PerceptionExecutionError, PerceptionExecutionRequest,
     PerceptionExecutionResult, PerceptionInvocationId, execute_perception,
@@ -13,8 +13,7 @@ use crate::session::{AgentSessionKey, now_secs};
 use crate::storage::artifact::ArtifactTurnBinding;
 
 impl AgentRun {
-    /// Execute one explicitly requested perception specialist for paired
-    /// evaluation. This does not enable automatic auxiliary routing.
+    /// Execute one explicitly requested specialist for paired evaluation.
     pub async fn evaluate_perception_specialist(
         &self,
         session: &AuthenticatedSession,
@@ -23,51 +22,9 @@ impl AgentRun {
         if !Arc::ptr_eq(&self.inner.session_authority, &session.authority) {
             return Err(PerceptionExecutionError::Unauthorized);
         }
-        let binding = self
-            .inner
-            .spec
-            .cognition
-            .binding(input.role)
-            .ok_or(PerceptionExecutionError::SpecialistNotConfigured)?;
-        let model = self
-            .inner
-            .runtime_models
-            .read()
+        self.inner
+            .execute_perception_specialist(session, input, false)
             .await
-            .available
-            .get(&binding.model)
-            .and_then(|model| model.exact.clone())
-            .ok_or(PerceptionExecutionError::SpecialistNotConfigured)?;
-        let metadata = self.session_metadata(session).await?;
-        let store = self
-            .inner
-            .session_store
-            .clone()
-            .ok_or(PerceptionExecutionError::Unavailable)?;
-        let artifacts = self.bind_perception_artifacts(session, &metadata, &input.turn_id)?;
-        let turn_id = input.turn_id.clone();
-        let invocation_id = input.invocation_id.clone();
-        let result = execute_perception(
-            store,
-            artifacts,
-            self.inner.model_provider.clone(),
-            PerceptionExecutionRequest {
-                session_id: session.session_id.clone(),
-                turn_id: input.turn_id,
-                agent_instance_id: session.agent_instance_id.clone(),
-                invocation_id: input.invocation_id,
-                modality: input.modality,
-                role: input.role,
-                model,
-                recovery_policy: input.recovery_policy,
-                media_type: input.media_type,
-                media_bytes: input.media_bytes,
-                media_block: input.media_block,
-            },
-        )
-        .await;
-        self.record_perception_terminal(session, turn_id, &invocation_id, &result, false);
-        result
     }
 
     /// Resume a configured specialist from durable post-inference artifacts.
@@ -107,10 +64,78 @@ impl AgentRun {
         {
             return Err(PerceptionExecutionError::SpecialistNotConfigured);
         }
-        let metadata = self.session_metadata(session).await?;
-        let artifacts = self.bind_perception_artifacts(session, &metadata, turn_id)?;
+        let metadata = self.inner.session_metadata(session).await?;
+        let artifacts = self
+            .inner
+            .bind_perception_artifacts(session, &metadata, turn_id)?;
         let result = recover_perception_receipt(store, artifacts, snapshot).await;
-        self.record_perception_terminal(session, turn_id.to_owned(), invocation_id, &result, true);
+        self.inner.record_perception_terminal(
+            session,
+            turn_id.to_owned(),
+            invocation_id,
+            &result,
+            true,
+            false,
+        );
+        result
+    }
+}
+
+impl AgentRunInner {
+    pub(super) async fn execute_perception_specialist(
+        &self,
+        session: &AuthenticatedSession,
+        input: PerceptionEvaluationInput,
+        automatic: bool,
+    ) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
+        let binding = self
+            .spec
+            .cognition
+            .binding(input.role)
+            .ok_or(PerceptionExecutionError::SpecialistNotConfigured)?;
+        let model = self
+            .runtime_models
+            .read()
+            .await
+            .available
+            .get(&binding.model)
+            .and_then(|model| model.exact.clone())
+            .ok_or(PerceptionExecutionError::SpecialistNotConfigured)?;
+        let metadata = self.session_metadata(session).await?;
+        let store = self
+            .session_store
+            .clone()
+            .ok_or(PerceptionExecutionError::Unavailable)?;
+        let artifacts = self.bind_perception_artifacts(session, &metadata, &input.turn_id)?;
+        let turn_id = input.turn_id.clone();
+        let invocation_id = input.invocation_id.clone();
+        let result = execute_perception(
+            store,
+            artifacts,
+            self.model_provider.clone(),
+            PerceptionExecutionRequest {
+                session_id: session.session_id.clone(),
+                turn_id: input.turn_id,
+                agent_instance_id: session.agent_instance_id.clone(),
+                invocation_id: input.invocation_id,
+                modality: input.modality,
+                role: input.role,
+                model,
+                recovery_policy: input.recovery_policy,
+                media_type: input.media_type,
+                media_bytes: input.media_bytes,
+                media_block: input.media_block,
+            },
+        )
+        .await;
+        self.record_perception_terminal(
+            session,
+            turn_id,
+            &invocation_id,
+            &result,
+            false,
+            automatic,
+        );
         result
     }
 
@@ -118,8 +143,7 @@ impl AgentRun {
         &self,
         session: &AuthenticatedSession,
     ) -> Result<crate::session::SessionMetadata, PerceptionExecutionError> {
-        self.inner
-            .sessions
+        self.sessions
             .read()
             .await
             .get(&AgentSessionKey::new(
@@ -137,13 +161,12 @@ impl AgentRun {
         turn_id: &str,
     ) -> Result<Arc<dyn crate::agent::perception::PerceptionArtifactStore>, PerceptionExecutionError>
     {
-        self.inner
-            .artifact_service
+        self.artifact_service
             .as_ref()
             .ok_or(PerceptionExecutionError::Unavailable)?
             .bind_perception(ArtifactTurnBinding {
                 user_id: metadata.user_id.clone(),
-                agent_id: self.inner.id.0.clone(),
+                agent_id: self.id.0.clone(),
                 session_id: session.session_id.0.clone(),
                 turn_id: turn_id.to_owned(),
                 created_at: now_secs(),
@@ -158,15 +181,16 @@ impl AgentRun {
         invocation_id: &PerceptionInvocationId,
         result: &Result<PerceptionExecutionResult, PerceptionExecutionError>,
         recovered_from_receipt: bool,
+        automatic: bool,
     ) {
-        self.inner
-            .observability
+        self.observability
             .record(RuntimeEvent::PerceptionEvaluationFinished {
                 turn_id,
                 session_id: session.session_id.clone(),
                 invocation_id: invocation_id.as_str().to_owned(),
                 succeeded: result.is_ok(),
                 recovered_from_receipt,
+                automatic,
             });
     }
 }

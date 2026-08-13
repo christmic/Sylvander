@@ -300,10 +300,12 @@ fn event_json(event: &RuntimeEvent) -> Value {
             invocation_id,
             succeeded,
             recovered_from_receipt,
+            automatic,
         } => json!({
             "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
             "invocation_id": invocation_id, "succeeded": succeeded,
             "recovered_from_receipt": recovered_from_receipt,
+            "automatic": automatic,
         }),
         RuntimeEvent::PersistenceFinished {
             turn_id,
