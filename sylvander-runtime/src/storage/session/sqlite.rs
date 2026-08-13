@@ -2880,89 +2880,112 @@ impl SessionStore for SqliteSessionStore {
         let child = child_instance_id.clone();
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction()?;
-            let existing = transaction
-                .query_row(
-                    "SELECT session_id,parent_instance_id,base_sequence,copied_messages \
-                     FROM agent_history_fork_receipts WHERE child_instance_id=?1",
-                    [&child.0],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)?,
-                            row.get::<_, i64>(3)?,
-                        ))
-                    },
-                )
-                .optional()?;
-            if let Some(existing) = existing {
-                if existing.0 == session_id.0
-                    && existing.1 == parent.0
-                    && session_u64(existing.2, "fork base sequence")? == base_sequence
-                {
-                    return session_u64(existing.3, "fork copied message count");
-                }
-                return Err(SessionStoreError::Invalid(
-                    "fork history receipt conflicts with requested intent".into(),
-                ));
-            }
-            let child_message_count = transaction.query_row(
-                "SELECT COUNT(*) FROM session_messages WHERE session_id=?1 \
+            let copied = materialize_fork_history(
+                &transaction,
+                &session_id,
+                &parent,
+                &child,
+                base_sequence,
+                now,
+            )?;
+            transaction.commit()?;
+            Ok(copied)
+        })
+        .await
+    }
+}
+
+pub(crate) fn materialize_fork_history(
+    transaction: &rusqlite::Transaction<'_>,
+    session_id: &SessionId,
+    parent: &AgentInstanceId,
+    child: &AgentInstanceId,
+    base_sequence: u64,
+    now: i64,
+) -> Result<u64, SessionStoreError> {
+    let existing = transaction
+        .query_row(
+            "SELECT session_id,parent_instance_id,base_sequence,copied_messages \
+             FROM agent_history_fork_receipts WHERE child_instance_id=?1",
+            [&child.0],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if existing.0 == session_id.0
+            && existing.1 == parent.0
+            && session_u64(existing.2, "fork base sequence")? == base_sequence
+        {
+            return session_u64(existing.3, "fork copied message count");
+        }
+        return Err(SessionStoreError::Invalid(
+            "fork history receipt conflicts with requested intent".into(),
+        ));
+    }
+    let child_message_count = transaction.query_row(
+        "SELECT COUNT(*) FROM session_messages WHERE session_id=?1 \
                  AND agent_instance_id=?2",
-                params![session_id.0, child.0],
-                |row| row.get::<_, i64>(0),
-            )?;
-            if child_message_count != 0 {
-                return Err(SessionStoreError::Invalid(
-                    "fork child history exists without a durable receipt".into(),
-                ));
-            }
-            let parent_exists = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM session_agent_instances WHERE session_id=?1 \
+        params![session_id.0, child.0],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if child_message_count != 0 {
+        return Err(SessionStoreError::Invalid(
+            "fork child history exists without a durable receipt".into(),
+        ));
+    }
+    let parent_exists = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_agent_instances WHERE session_id=?1 \
                  AND instance_id=?2)",
-                params![session_id.0, parent.0],
-                |row| row.get::<_, bool>(0),
-            )?;
-            if !parent_exists {
-                return Err(SessionStoreError::Invalid(
-                    "fork history parent does not exist".into(),
-                ));
-            }
-            let base = session_i64(base_sequence, "fork base sequence")?;
-            let source_rows = transaction.query_row(
-                "SELECT COUNT(*) FROM session_messages WHERE session_id=?1 \
-                 AND agent_instance_id=?2 AND seq<=?3 AND is_summarized=0",
-                params![session_id.0, parent.0, base],
-                |row| row.get::<_, i64>(0),
-            )?;
-            let mut next_seq = transaction.query_row(
-                "SELECT COALESCE(MAX(seq),-1)+1 FROM session_messages WHERE session_id=?1",
-                [&session_id.0],
-                |row| row.get::<_, i64>(0),
-            )?;
-            let mut statement = transaction.prepare(
-                "SELECT role,content_json,user_id,agent_id,trace_id,priority,model_id,tool_name,
+        params![session_id.0, parent.0],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !parent_exists {
+        return Err(SessionStoreError::Invalid(
+            "fork history parent does not exist".into(),
+        ));
+    }
+    let base = session_i64(base_sequence, "fork base sequence")?;
+    let source_rows = transaction.query_row(
+        "SELECT COUNT(*) FROM session_messages WHERE session_id=?1 \
+                 AND agent_instance_id=?2 AND seq<?3 AND is_summarized=0",
+        params![session_id.0, parent.0, base],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let mut next_seq = transaction.query_row(
+        "SELECT COALESCE(MAX(seq),-1)+1 FROM session_messages WHERE session_id=?1",
+        [&session_id.0],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let mut statement = transaction.prepare(
+        "SELECT role,content_json,user_id,agent_id,trace_id,priority,model_id,tool_name,
                         created_at FROM session_messages WHERE session_id=?1 \
-                 AND agent_instance_id=?2 AND seq<=?3 AND is_summarized=0 ORDER BY seq",
-            )?;
-            let rows = statement
-                .query_map(params![session_id.0, parent.0, base], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                        row.get::<_, i64>(8)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(statement);
-            for row in rows {
-                transaction.execute(
+                 AND agent_instance_id=?2 AND seq<?3 AND is_summarized=0 ORDER BY seq",
+    )?;
+    let rows = statement
+        .query_map(params![session_id.0, parent.0, base], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for row in rows {
+        transaction.execute(
                     "INSERT INTO session_messages(session_id,seq,role,content_json,user_id,agent_id,
                      agent_instance_id,trace_id,priority,model_id,tool_name,parent_msg_id,
                      is_summarized,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,0,?12)",
@@ -2981,21 +3004,17 @@ impl SessionStore for SqliteSessionStore {
                         row.8,
                     ],
                 )?;
-                next_seq = next_seq.checked_add(1).ok_or_else(|| {
-                    SessionStoreError::Invalid("message sequence overflow".into())
-                })?;
-            }
-            transaction.execute(
-                "INSERT INTO agent_history_fork_receipts(child_instance_id,session_id,
+        next_seq = next_seq
+            .checked_add(1)
+            .ok_or_else(|| SessionStoreError::Invalid("message sequence overflow".into()))?;
+    }
+    transaction.execute(
+        "INSERT INTO agent_history_fork_receipts(child_instance_id,session_id,
                  parent_instance_id,base_sequence,copied_messages,materialized_at) \
                  VALUES (?1,?2,?3,?4,?5,?6)",
-                params![child.0, session_id.0, parent.0, base, source_rows, now],
-            )?;
-            transaction.commit()?;
-            session_u64(source_rows, "fork copied message count")
-        })
-        .await
-    }
+        params![child.0, session_id.0, parent.0, base, source_rows, now],
+    )?;
+    session_u64(source_rows, "fork copied message count")
 }
 
 fn read_usage(c: &Connection, id: &SessionId) -> Result<SessionUsage, SessionStoreError> {

@@ -57,7 +57,6 @@ pub struct ForkAgentRequest {
     pub instance_id: AgentInstanceId,
     pub session_id: SessionId,
     pub parent_instance_id: AgentInstanceId,
-    pub base_sequence: u64,
     pub branch_id: String,
 }
 
@@ -348,7 +347,7 @@ where
             },
             role: SessionAgentRole::Worker,
             history_view: HistoryView::ForkSnapshot {
-                base_sequence: request.base_sequence,
+                base_sequence: 0,
                 branch_id: request.branch_id.clone(),
             },
             approval_route: ApprovalRoute::Parent {
@@ -480,7 +479,8 @@ where
             .await?;
             return Ok(ForkAgentOutcome::RequiresArbitration { case, assessment });
         }
-        self.store
+        let participant = self
+            .store
             .add_session_participant(
                 &participant,
                 &next_membership,
@@ -873,11 +873,10 @@ fn same_fork_intent(
                 ..
             } if parent_instance_id == &request.parent_instance_id
         )
-        && existing.history_view
-            == (HistoryView::ForkSnapshot {
-                base_sequence: request.base_sequence,
-                branch_id: request.branch_id.clone(),
-            })
+        && matches!(
+            &existing.history_view,
+            HistoryView::ForkSnapshot { branch_id, .. } if branch_id == &request.branch_id
+        )
         && existing.approval_route
             == (ApprovalRoute::Parent {
                 instance_id: request.parent_instance_id.clone(),

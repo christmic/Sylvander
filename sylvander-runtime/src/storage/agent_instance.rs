@@ -5,7 +5,8 @@ use rusqlite::{OptionalExtension, params};
 use sylvander_api::{AgentId, AgentInstanceId, SessionId, SwarmId};
 
 use crate::agent::instance::{
-    AgentDefinitionKey, AgentInstance, AgentInstanceState, SessionAgentRole,
+    AgentDefinitionKey, AgentInstance, AgentInstanceOrigin, AgentInstanceState, HistoryView,
+    SessionAgentRole,
 };
 use crate::coordination::topology::{SessionTopology, encode_relation_kind};
 use crate::session::membership::{SessionGovernance, SessionMembership};
@@ -35,7 +36,7 @@ pub trait AgentInstanceStore: Send + Sync {
         next_topology: &SessionTopology,
         expected_membership_revision: u64,
         expected_topology_revision: u64,
-    ) -> Result<(), SessionStoreError>;
+    ) -> Result<AgentInstance, SessionStoreError>;
 
     async fn transition_agent_instance(
         &self,
@@ -237,7 +238,7 @@ impl AgentInstanceStore for SqliteSessionStore {
         next_topology: &SessionTopology,
         expected_membership_revision: u64,
         expected_topology_revision: u64,
-    ) -> Result<(), SessionStoreError> {
+    ) -> Result<AgentInstance, SessionStoreError> {
         next_membership
             .validate()
             .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
@@ -260,11 +261,45 @@ impl AgentInstanceStore for SqliteSessionStore {
                 "participant append does not contain sequential exact facts".into(),
             ));
         }
-        let participant = participant.clone();
-        let membership = next_membership.clone();
+        let mut participant = participant.clone();
+        let mut membership = next_membership.clone();
         let topology = next_topology.clone();
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction()?;
+            let fork_parent = match (&participant.origin, &participant.history_view) {
+                (
+                    AgentInstanceOrigin::Forked {
+                        parent_instance_id,
+                        ..
+                    },
+                    HistoryView::ForkSnapshot { .. },
+                ) => Some(parent_instance_id.clone()),
+                (AgentInstanceOrigin::Forked { .. }, _) => {
+                    return Err(SessionStoreError::Invalid(
+                        "forked Agent requires a fork snapshot history view".into(),
+                    ));
+                }
+                _ => None,
+            };
+            if let Some(parent_instance_id) = &fork_parent {
+                let cursor = transaction.query_row(
+                    "SELECT COALESCE(MAX(seq) + 1, 0) FROM session_messages \
+                     WHERE session_id=?1 AND agent_instance_id=?2 AND is_summarized=0",
+                    params![membership.session_id.0, parent_instance_id.0],
+                    |row| row.get::<_, i64>(0),
+                )?;
+                let cursor = checked_u64(cursor, "Agent history cursor")?;
+                let HistoryView::ForkSnapshot { base_sequence, .. } =
+                    &mut participant.history_view
+                else {
+                    unreachable!("fork history shape was checked above");
+                };
+                *base_sequence = cursor;
+                let last = membership.participants.last_mut().ok_or_else(|| {
+                    SessionStoreError::Invalid("fork membership has no participant".into())
+                })?;
+                *last = participant.clone();
+            }
             let current = transaction
                 .query_row(
                     "SELECT moderator_instance_id,governance_revision,membership_revision,
@@ -361,6 +396,17 @@ impl AgentInstanceStore for SqliteSessionStore {
                 ],
             )?;
             transaction.execute(
+                "UPDATE agent_workspace_views SET membership_revision=?1,updated_at=?2 \
+                 WHERE session_id=?3 AND membership_revision=?4 \
+                   AND state IN ('provisioning','active')",
+                params![
+                    checked_i64(membership.governance.membership_revision, "membership revision")?,
+                    membership.governance.updated_at,
+                    membership.session_id.0,
+                    checked_i64(expected_membership_revision, "membership revision")?,
+                ],
+            )?;
+            transaction.execute(
                 "DELETE FROM session_topology WHERE session_id=?1",
                 [&topology.session_id.0],
             )?;
@@ -390,8 +436,22 @@ impl AgentInstanceStore for SqliteSessionStore {
                     ],
                 )?;
             }
+            if let Some(parent_instance_id) = &fork_parent {
+                let HistoryView::ForkSnapshot { base_sequence, .. } = &participant.history_view
+                else {
+                    unreachable!("fork history shape was checked above");
+                };
+                crate::storage::session::materialize_fork_history(
+                    &transaction,
+                    &participant.session_id,
+                    parent_instance_id,
+                    &participant.instance_id,
+                    *base_sequence,
+                    participant.created_at,
+                )?;
+            }
             transaction.commit()?;
-            Ok(())
+            Ok(participant)
         })
         .await
     }

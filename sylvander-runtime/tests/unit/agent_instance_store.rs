@@ -20,11 +20,16 @@ use crate::coordination::service::{
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
+use crate::coordination::workspace::{
+    AgentWorkspaceView, WorkspaceAccess, WorkspaceIsolation, WorkspaceViewState,
+};
 use crate::session::SessionMetadata;
 use crate::storage::coordination::CoordinationStore;
 use crate::storage::session::{MessageRole, SessionLifetime, SessionStore, StoredSession};
+use crate::storage::workspace_coordination::AgentWorkspaceStore;
 use sylvander_api::{
     AgentId, AgentInstanceId, CoordinationMessageId, GovernanceCaseId, HandoffId, SwarmId, TaskId,
+    WorkspaceViewId,
 };
 
 use super::*;
@@ -573,12 +578,34 @@ async fn governed_fork_is_idempotent_and_reconciles_task_membership_revision() {
         })
         .await
         .unwrap();
+    let view = AgentWorkspaceView {
+        view_id: WorkspaceViewId::new("worker-view"),
+        session_id: membership.session_id.clone(),
+        agent_instance_id: AgentInstanceId::new("worker-1"),
+        membership_revision: 0,
+        access: WorkspaceAccess::ReadOnly,
+        isolation: WorkspaceIsolation::Shared,
+        source_workspace: PathBuf::from("/tmp/project"),
+        effective_workspace: PathBuf::from("/tmp/project"),
+        target_id: None,
+        branch: None,
+        base_revision: None,
+        state: WorkspaceViewState::Provisioning,
+        lease_epoch: 3,
+        fencing_token: 9,
+        revision: 0,
+        created_at: 10,
+        updated_at: 10,
+    };
+    store
+        .create_workspace_view(&view, &membership)
+        .await
+        .unwrap();
     let service = CoordinationService::new(store.clone(), GovernancePolicy::default(), 30);
     let request = ForkAgentRequest {
         instance_id: AgentInstanceId::new("fork-child"),
         session_id: SessionId::new("multi-session"),
         parent_instance_id: AgentInstanceId::new("worker-1"),
-        base_sequence: 7,
         branch_id: "branch-fork-child".into(),
     };
 
@@ -618,10 +645,19 @@ async fn governed_fork_is_idempotent_and_reconciles_task_membership_revision() {
             .membership_revision,
         1
     );
+    assert_eq!(
+        store
+            .workspace_view(&view.view_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .membership_revision,
+        1
+    );
 }
 
 #[tokio::test]
-async fn fork_history_prefix_materializes_atomically_with_empty_safe_receipt() {
+async fn fork_history_cursor_is_runtime_derived_and_stable() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     store.save(&stored_session()).await.unwrap();
     let membership = membership();
@@ -662,34 +698,38 @@ async fn fork_history_prefix_materializes_atomically_with_empty_safe_receipt() {
         .unwrap();
     let service =
         CoordinationService::new(Arc::new(store.clone()), GovernancePolicy::default(), 30);
-    let ForkAgentOutcome::Created(child) = service
-        .fork_agent(
-            ForkAgentRequest {
-                instance_id: AgentInstanceId::new("history-child"),
-                session_id: SessionId::new("multi-session"),
-                parent_instance_id: AgentInstanceId::new("worker-1"),
-                base_sequence: 0,
-                branch_id: "history-child".into(),
-            },
-            20,
-        )
-        .await
-        .unwrap()
+    let request = ForkAgentRequest {
+        instance_id: AgentInstanceId::new("history-child"),
+        session_id: SessionId::new("multi-session"),
+        parent_instance_id: AgentInstanceId::new("worker-1"),
+        branch_id: "history-child".into(),
+    };
+    let ForkAgentOutcome::Created(child) = service.fork_agent(request.clone(), 20).await.unwrap()
     else {
         panic!("history fork should be admitted");
     };
+    assert!(matches!(
+        &child.history_view,
+        HistoryView::ForkSnapshot {
+            base_sequence: 2,
+            ..
+        }
+    ));
+    store
+        .append_message(
+            &parent_context,
+            &SessionId::new("multi-session"),
+            MessageRole::Assistant,
+            serde_json::json!("after snapshot"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     assert_eq!(
-        store
-            .materialize_agent_fork_history(
-                &child.session_id,
-                &AgentInstanceId::new("worker-1"),
-                &child.instance_id,
-                0,
-                21,
-            )
-            .await
-            .unwrap(),
-        1
+        service.fork_agent(request, 21).await.unwrap(),
+        ForkAgentOutcome::Created(child.clone())
     );
     assert_eq!(
         store
@@ -697,12 +737,25 @@ async fn fork_history_prefix_materializes_atomically_with_empty_safe_receipt() {
                 &child.session_id,
                 &AgentInstanceId::new("worker-1"),
                 &child.instance_id,
-                0,
+                2,
                 22,
             )
             .await
             .unwrap(),
-        1
+        2
+    );
+    assert_eq!(
+        store
+            .materialize_agent_fork_history(
+                &child.session_id,
+                &AgentInstanceId::new("worker-1"),
+                &child.instance_id,
+                2,
+                23,
+            )
+            .await
+            .unwrap(),
+        2
     );
     let child_context = sylvander_api::SessionContext::new("user-1", "researcher", "multi-session")
         .with_agent_instance("history-child");
@@ -715,8 +768,77 @@ async fn fork_history_prefix_materializes_atomically_with_empty_safe_receipt() {
         )
         .await
         .unwrap();
-    assert_eq!(history.len(), 1);
+    assert_eq!(history.len(), 2);
     assert_eq!(history[0].content, serde_json::json!("first"));
+    assert_eq!(history[1].content, serde_json::json!("second"));
+}
+
+#[tokio::test]
+async fn empty_fork_cursor_excludes_messages_appended_after_snapshot() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service =
+        CoordinationService::new(Arc::new(store.clone()), GovernancePolicy::default(), 30);
+    let ForkAgentOutcome::Created(child) = service
+        .fork_agent(
+            ForkAgentRequest {
+                instance_id: AgentInstanceId::new("empty-history-child"),
+                session_id: SessionId::new("multi-session"),
+                parent_instance_id: AgentInstanceId::new("worker-1"),
+                branch_id: "empty-history-child".into(),
+            },
+            20,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("empty history fork should be admitted");
+    };
+    assert!(matches!(
+        &child.history_view,
+        HistoryView::ForkSnapshot {
+            base_sequence: 0,
+            ..
+        }
+    ));
+    let parent_context =
+        sylvander_api::SessionContext::new("user-1", "researcher", "multi-session")
+            .with_agent_instance("worker-1");
+    store
+        .append_message(
+            &parent_context,
+            &child.session_id,
+            MessageRole::User,
+            serde_json::json!("after empty snapshot"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .materialize_agent_fork_history(
+                &child.session_id,
+                &AgentInstanceId::new("worker-1"),
+                &child.instance_id,
+                0,
+                21,
+            )
+            .await
+            .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -899,7 +1021,7 @@ async fn participant_append_updates_membership_and_topology_in_one_transaction()
         fork_sequence: 1,
     };
     child.history_view = HistoryView::ForkSnapshot {
-        base_sequence: 12,
+        base_sequence: 0,
         branch_id: "fork-1".into(),
     };
     child.approval_route = ApprovalRoute::Parent {
@@ -935,10 +1057,11 @@ async fn participant_append_updates_membership_and_topology_in_one_transaction()
     )
     .unwrap();
 
-    store
+    let committed = store
         .add_session_participant(&child, &next_membership, &next_topology, 0, 0)
         .await
         .unwrap();
+    assert_eq!(committed, child);
     assert_eq!(
         store
             .session_membership(&membership.session_id)

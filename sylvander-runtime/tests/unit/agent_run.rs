@@ -905,7 +905,8 @@ impl crate::storage::agent_instance::AgentInstanceStore for FailingSessionStore 
         next_topology: &crate::coordination::topology::SessionTopology,
         expected_membership_revision: u64,
         expected_topology_revision: u64,
-    ) -> Result<(), crate::storage::session::SessionStoreError> {
+    ) -> Result<crate::agent::instance::AgentInstance, crate::storage::session::SessionStoreError>
+    {
         self.inner
             .add_session_participant(
                 participant,

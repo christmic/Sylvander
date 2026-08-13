@@ -11,6 +11,8 @@ mod execution_ledger;
 mod model_ledger;
 mod sqlite;
 
+pub(crate) use sqlite::materialize_fork_history;
+
 pub use execution_ledger::{
     RecoveryClassification, ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision,
     ToolRecoveryReason,
