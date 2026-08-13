@@ -7,8 +7,13 @@ use sylvander_agent::workspace_executor::WorkspaceExecutor;
 
 use super::{
     ContainerExecutor, ExecutionHealthTask, ExecutionServiceError, ExecutionTargetKind,
-    ExecutionTargetRegistration, ExecutionTargetStatus, LocalExecutor, RuntimeExecutionService,
+    ExecutionTargetRegistration, ExecutionTargetStatus, LocalExecutor,
+    PersistentProcessEnvironment, RuntimeExecutionService, UnavailablePersistentProcessEnvironment,
 };
+
+fn unavailable(name: &str) -> Arc<dyn PersistentProcessEnvironment> {
+    Arc::new(UnavailablePersistentProcessEnvironment::new(name))
+}
 
 #[test]
 fn target_registry_rejects_blank_and_duplicate_identifiers() {
@@ -19,6 +24,7 @@ fn target_registry_rejects_blank_and_duplicate_identifiers() {
             kind: ExecutionTargetKind::Local,
             status: ExecutionTargetStatus::Unverified,
             executor: local.clone(),
+            persistent_processes: unavailable("blank"),
             probe: None,
         }]),
         Err(ExecutionServiceError::InvalidTargetId)
@@ -30,6 +36,7 @@ fn target_registry_rejects_blank_and_duplicate_identifiers() {
                 kind: ExecutionTargetKind::Local,
                 status: ExecutionTargetStatus::Unverified,
                 executor: local.clone(),
+                persistent_processes: unavailable("local"),
                 probe: None,
             },
             ExecutionTargetRegistration {
@@ -37,6 +44,7 @@ fn target_registry_rejects_blank_and_duplicate_identifiers() {
                 kind: ExecutionTargetKind::Local,
                 status: ExecutionTargetStatus::Unverified,
                 executor: local,
+                persistent_processes: unavailable("local"),
                 probe: None,
             },
         ]),
@@ -52,6 +60,7 @@ fn health_is_sorted_and_never_calls_unconfined_targets_sandboxes() {
             kind: ExecutionTargetKind::Ssh,
             status: ExecutionTargetStatus::Unverified,
             executor: Arc::new(LocalExecutor),
+            persistent_processes: unavailable("ssh:build"),
             probe: None,
         },
         ExecutionTargetRegistration {
@@ -59,6 +68,7 @@ fn health_is_sorted_and_never_calls_unconfined_targets_sandboxes() {
             kind: ExecutionTargetKind::Container,
             status: ExecutionTargetStatus::Unverified,
             executor: Arc::new(ContainerExecutor::new("docker", "review:latest").unwrap()),
+            persistent_processes: unavailable("container:review"),
             probe: None,
         },
         ExecutionTargetRegistration {
@@ -66,6 +76,7 @@ fn health_is_sorted_and_never_calls_unconfined_targets_sandboxes() {
             kind: ExecutionTargetKind::Local,
             status: ExecutionTargetStatus::Ready,
             executor: Arc::new(LocalExecutor),
+            persistent_processes: unavailable("local"),
             probe: None,
         },
     ])
@@ -100,8 +111,16 @@ async fn probes_promote_success_and_retain_content_free_failure_counts() {
         ContainerExecutor::new(directory.path().join("missing-runtime"), "review:latest").unwrap(),
     );
     let service = RuntimeExecutionService::new([
-        ExecutionTargetRegistration::container("container:ok", available),
-        ExecutionTargetRegistration::container("container:missing", missing),
+        ExecutionTargetRegistration::container(
+            "container:ok",
+            available,
+            unavailable("container:ok"),
+        ),
+        ExecutionTargetRegistration::container(
+            "container:missing",
+            missing,
+            unavailable("container:missing"),
+        ),
     ])
     .unwrap();
 
@@ -134,6 +153,7 @@ async fn background_probe_is_owned_and_shutdown_is_joined() {
     let service = RuntimeExecutionService::new([ExecutionTargetRegistration::container(
         "container:missing",
         missing,
+        unavailable("container:missing"),
     )])
     .unwrap();
     let task = ExecutionHealthTask::start(service.clone());

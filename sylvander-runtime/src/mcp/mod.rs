@@ -8,3 +8,7 @@
 mod session;
 
 pub(crate) use session::{SessionMcpBinding, SessionMcpRuntimeService};
+
+/// Canonical envelope used to persist an MCP environment secret reference
+/// without persisting its value.
+pub(crate) const SECRET_REFERENCE_PREFIX: &str = "sylvander-secret-ref:v1:";

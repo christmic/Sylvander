@@ -25,6 +25,13 @@ pub mod ssh;
 
 pub use container::{ContainerExecutor, ContainerResourcePolicy};
 pub(crate) use local::LocalExecutor;
+pub(crate) use persistent::{
+    PersistentFilesystemAuthority, PersistentNetworkAuthority, PersistentProcess,
+    PersistentProcessAuthority, PersistentProcessEnvironment, PersistentProcessError,
+    PersistentProcessOwner, PersistentProcessSpec, PersistentResourceLimits,
+    UnavailablePersistentProcessEnvironment,
+};
+pub(crate) use persistent_container::ContainerPersistentProcessEnvironment;
 pub use ssh::SshExecutor;
 
 /// Concrete adapter family selected by trusted Runtime configuration.
@@ -78,13 +85,18 @@ pub(crate) struct ExecutionTargetRegistration {
     pub(crate) kind: ExecutionTargetKind,
     pub(crate) status: ExecutionTargetStatus,
     pub(crate) executor: Arc<dyn WorkspaceExecutor>,
+    persistent_processes: Arc<dyn PersistentProcessEnvironment>,
     probe: Option<ExecutionTargetProbe>,
 }
 
 impl ExecutionTargetRegistration {
     pub(crate) fn local(target_id: impl Into<String>) -> Self {
+        let target_id = target_id.into();
         Self {
-            target_id: target_id.into(),
+            persistent_processes: Arc::new(UnavailablePersistentProcessEnvironment::new(
+                target_id.clone(),
+            )),
+            target_id,
             kind: ExecutionTargetKind::Local,
             status: ExecutionTargetStatus::Ready,
             executor: Arc::new(LocalExecutor),
@@ -93,8 +105,12 @@ impl ExecutionTargetRegistration {
     }
 
     pub(crate) fn ssh(target_id: impl Into<String>, executor: Arc<SshExecutor>) -> Self {
+        let target_id = target_id.into();
         Self {
-            target_id: target_id.into(),
+            persistent_processes: Arc::new(UnavailablePersistentProcessEnvironment::new(
+                target_id.clone(),
+            )),
+            target_id,
             kind: ExecutionTargetKind::Ssh,
             status: ExecutionTargetStatus::Unverified,
             executor: executor.clone(),
@@ -105,12 +121,14 @@ impl ExecutionTargetRegistration {
     pub(crate) fn container(
         target_id: impl Into<String>,
         executor: Arc<ContainerExecutor>,
+        persistent_processes: Arc<dyn PersistentProcessEnvironment>,
     ) -> Self {
         Self {
             target_id: target_id.into(),
             kind: ExecutionTargetKind::Container,
             status: ExecutionTargetStatus::Unverified,
             executor: executor.clone(),
+            persistent_processes,
             probe: Some(ExecutionTargetProbe::Container(executor)),
         }
     }
@@ -118,6 +136,7 @@ impl ExecutionTargetRegistration {
 
 struct ExecutionTargetEntry {
     executor: Arc<dyn WorkspaceExecutor>,
+    persistent_processes: Arc<dyn PersistentProcessEnvironment>,
     probe: Option<ExecutionTargetProbe>,
     health: RwLock<ExecutionTargetHealth>,
 }
@@ -142,6 +161,7 @@ impl RuntimeExecutionService {
             let isolation = registration.executor.process_isolation();
             let entry = ExecutionTargetEntry {
                 executor: registration.executor,
+                persistent_processes: registration.persistent_processes,
                 probe: registration.probe,
                 health: RwLock::new(ExecutionTargetHealth {
                     target_id: target_id.clone(),
@@ -167,6 +187,16 @@ impl RuntimeExecutionService {
     /// Resolve one exact target without an implicit local fallback.
     pub(crate) fn resolve(&self, target_id: &str) -> Option<&Arc<dyn WorkspaceExecutor>> {
         self.targets.get(target_id).map(|entry| &entry.executor)
+    }
+
+    /// Resolve the persistent-process adapter for one exact target.
+    pub(crate) fn resolve_persistent(
+        &self,
+        target_id: &str,
+    ) -> Option<&Arc<dyn PersistentProcessEnvironment>> {
+        self.targets
+            .get(target_id)
+            .map(|entry| &entry.persistent_processes)
     }
 
     /// Produce Agent's explicit unavailable adapter for an unknown target.
@@ -238,6 +268,9 @@ impl RuntimeExecutionService {
             executors
                 .into_iter()
                 .map(|(target_id, executor)| ExecutionTargetRegistration {
+                    persistent_processes: Arc::new(UnavailablePersistentProcessEnvironment::new(
+                        target_id.clone(),
+                    )),
                     target_id,
                     kind: ExecutionTargetKind::Local,
                     status: ExecutionTargetStatus::Unverified,

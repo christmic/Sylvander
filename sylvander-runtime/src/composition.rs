@@ -8,10 +8,10 @@ use crate::mcp::{SessionMcpBinding, SessionMcpRuntimeService};
 use crate::mcp_stdio::McpResultArtifactSink;
 use crate::observability::RuntimeObservability;
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
-use sylvander_agent::curated_memory::MemoryCandidateSink;
+use sylvander_agent::memory::curated::MemoryCandidateSink;
+use sylvander_agent::memory::store::MemoryStore;
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::tool::ToolRegistry;
-use sylvander_agent::tools::memory::MemoryStore;
 use sylvander_agent::tools::{
     AskUserTool, CommandTool, EditTool, GitTool, ListTool, MemoryReadTool, PresentPlanTool,
     ReadTool, SearchTool, StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
@@ -39,8 +39,8 @@ use crate::config::{ModelDefinitionConfig, ModelProviderConfig, SecretResolver};
 use crate::credential_audit::CredentialOperationAuditLedger;
 use crate::credential_registry::CredentialSecretResolver;
 use crate::execution::{
-    ContainerExecutor, ContainerResourcePolicy, ExecutionTargetRegistration,
-    RuntimeExecutionService, SshExecutor,
+    ContainerExecutor, ContainerPersistentProcessEnvironment, ContainerResourcePolicy,
+    ExecutionTargetRegistration, RuntimeExecutionService, SshExecutor,
 };
 use crate::guardian_runtime::WorkerToolGatewayFactory;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
@@ -225,9 +225,10 @@ pub(crate) fn build_agent(
     if let Some(provider) = user_profiles {
         builder = builder.user_profile_provider(provider);
     }
-    builder = builder.execution_service(build_execution_service(config, |reference| {
+    let execution_service = build_execution_service(config, |reference| {
         secrets.resolve(reference).map_err(|_| ())
-    })?);
+    })?;
+    builder = builder.execution_service(execution_service.clone());
     let (run, session_issuer) = apply_server_run_settings(config, builder)
         .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
@@ -236,7 +237,7 @@ pub(crate) fn build_agent(
         spec,
         run,
         session_issuer,
-        mcp_sessions: SessionMcpRuntimeService::new(),
+        mcp_sessions: SessionMcpRuntimeService::new(execution_service, None, None),
         models,
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
@@ -264,7 +265,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     resolver: Arc<dyn CredentialSecretResolver>,
     external_secret_provider: Option<Arc<dyn RenewableExternalSecretProvider>>,
     credential_audit: Arc<CredentialOperationAuditLedger>,
-    _result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
+    result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
     artifact_service: Option<RuntimeArtifactService>,
     tool_gateway_factory: Option<WorkerToolGatewayFactory>,
 ) -> Result<ConfiguredAgent, CompositionError> {
@@ -368,7 +369,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     let mut builder = AgentRun::qualified_router_builder(spec.clone(), Arc::new(router), primary)
         .bus(bus)
         .observability(observability)
-        .execution_service(execution_service)
+        .execution_service(execution_service.clone())
         .session_store(sessions)
         .memory(memory.clone())
         .override_tools(tools)
@@ -396,7 +397,11 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         spec,
         run,
         session_issuer,
-        mcp_sessions: SessionMcpRuntimeService::new(),
+        mcp_sessions: SessionMcpRuntimeService::new(
+            execution_service,
+            Some(resolver),
+            result_artifacts,
+        ),
         models,
         approval_enabled: config.server.approval.enabled,
         definition,
@@ -420,6 +425,7 @@ impl ConfiguredAgent {
             session_id: session_id.clone(),
             policy_revision: self.definition.revision,
         };
+        let workspace_root = metadata.workspace.clone();
         let servers = self
             .definition
             .spec
@@ -432,7 +438,11 @@ impl ConfiguredAgent {
             .collect();
         let lease = self.session_issuer.issue(session_id.clone(), metadata)?;
         let session = self.run.attach_authenticated_session(lease).await?;
-        if let Err(error) = self.mcp_sessions.attach(binding, servers) {
+        if let Err(error) = self
+            .mcp_sessions
+            .attach(binding, servers, workspace_root)
+            .await
+        {
             self.run.leave_session(&session_id).await;
             return Err(AgentRunError::Configuration(error.to_string()));
         }
@@ -440,7 +450,7 @@ impl ConfiguredAgent {
     }
 
     pub(crate) async fn detach_authenticated_session(&self, session_id: &sylvander_api::SessionId) {
-        self.mcp_sessions.detach(session_id);
+        self.mcp_sessions.detach(session_id).await;
         self.run.leave_session(session_id).await;
     }
 
@@ -925,7 +935,15 @@ pub(crate) fn build_execution_service(
                         })
                         .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
                 );
-                ExecutionTargetRegistration::container(target.id.clone(), executor)
+                let persistent_processes = Arc::new(
+                    ContainerPersistentProcessEnvironment::new(target.id.clone(), runtime, image)
+                        .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
+                );
+                ExecutionTargetRegistration::container(
+                    target.id.clone(),
+                    executor,
+                    persistent_processes,
+                )
             }
             ExecutionTransportConfig::Local { .. } => {
                 ExecutionTargetRegistration::local(target.id.clone())
