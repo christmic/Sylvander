@@ -186,6 +186,85 @@ async fn perception_artifacts(
         .unwrap()
 }
 
+async fn prepare_completed_inference(
+    store: &SqliteSessionStore,
+    artifacts: &Arc<dyn PerceptionArtifactStore>,
+    session: &StoredSession,
+    turn_id: &str,
+    invocation_id: &PerceptionInvocationId,
+) -> (u64, ModelResponse) {
+    store
+        .begin_perception(PerceptionInvocationStart {
+            session_id: session.id.clone(),
+            turn_id: turn_id.into(),
+            agent_instance_id: turn_instance(),
+            invocation_id: invocation_id.clone(),
+            modality: PerceptionModality::Audio,
+            role: CognitiveRole::Audio,
+            provider_id: "test-provider".into(),
+            model_id: "audio-specialist".into(),
+            recovery_policy: PerceptionRecoveryPolicy::RecoverFromReceipt,
+            capability_revision: format!("sha256:{}", "a".repeat(64)),
+            input_digest: format!("sha256:{}", "b".repeat(64)),
+            input_bytes: 10,
+        })
+        .await
+        .unwrap();
+    let media = artifacts
+        .persist_exact(
+            invocation_id,
+            PerceptionArtifactKind::SourceMedia,
+            "audio/wav",
+            b"RIFF-audio".to_vec(),
+        )
+        .await
+        .unwrap();
+    let revision = store
+        .persist_perception_media(PerceptionMediaPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 0,
+            artifact_locator: media.locator,
+        })
+        .await
+        .unwrap();
+    let revision = store
+        .advance_perception(PerceptionAdvance {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            expected_position: PerceptionExecutionPosition::MediaPersisted,
+            next_position: PerceptionExecutionPosition::InferenceStarted,
+        })
+        .await
+        .unwrap();
+    let response = ModelResponse {
+        id: format!("receipt-{turn_id}"),
+        model: audio_model().reference,
+        content: vec![ContentBlock::Text {
+            text: "durable words".into(),
+        }],
+        stop_reason: StopReason::EndTurn,
+        usage: TokenUsage::default(),
+    };
+    let receipt = artifacts
+        .persist_exact(
+            invocation_id,
+            PerceptionArtifactKind::ProviderReceipt,
+            "application/json",
+            serde_json::to_vec(&response).unwrap(),
+        )
+        .await
+        .unwrap();
+    let revision = store
+        .persist_perception_receipt(PerceptionReceiptPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            receipt_locator: receipt.locator,
+        })
+        .await
+        .unwrap();
+    (revision, response)
+}
+
 #[tokio::test]
 async fn file_store_enforces_recovery_durability_controls() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -1726,6 +1805,115 @@ async fn receipt_written_before_ledger_advance_recovers_without_provider_replay(
     assert_eq!(
         store
             .perception_invocations(&session.id, "turn-receipt-recovery")
+            .await
+            .unwrap()[0]
+            .position,
+        PerceptionExecutionPosition::ResultPersisted
+    );
+}
+
+#[tokio::test]
+async fn post_receipt_and_post_artifact_positions_resume_without_provider_replay() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteSessionStore::open(directory.path().join("sessions.sqlite"))
+            .await
+            .unwrap(),
+    );
+
+    let session = running_perception_turn(&store, "turn-after-receipt").await;
+    let artifacts = perception_artifacts(
+        &directory.path().join("evidence.sqlite"),
+        "turn-after-receipt",
+    )
+    .await;
+    let invocation_id = PerceptionInvocationId::new();
+    prepare_completed_inference(
+        &store,
+        &artifacts,
+        &session,
+        "turn-after-receipt",
+        &invocation_id,
+    )
+    .await;
+    let snapshot = store
+        .perception_invocations(&session.id, "turn-after-receipt")
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        snapshot.position,
+        PerceptionExecutionPosition::InferenceCompleted
+    );
+    let recovered = recover_perception_receipt(store.clone(), artifacts.clone(), snapshot)
+        .await
+        .unwrap();
+    assert_eq!(recovered.text, "durable words");
+
+    let second = tempfile::tempdir().unwrap();
+    let second_store = Arc::new(
+        SqliteSessionStore::open(second.path().join("sessions.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let session = running_perception_turn(&second_store, "turn-after-artifact").await;
+    let second_artifacts = perception_artifacts(
+        &second.path().join("evidence.sqlite"),
+        "turn-after-artifact",
+    )
+    .await;
+    let invocation_id = PerceptionInvocationId::new();
+    let (revision, response) = prepare_completed_inference(
+        &second_store,
+        &second_artifacts,
+        &session,
+        "turn-after-artifact",
+        &invocation_id,
+    )
+    .await;
+    let normalized = serde_json::json!({
+        "schema_version": 1,
+        "invocation_id": invocation_id.as_str(),
+        "provider_response_id": response.id,
+        "text": "durable words"
+    });
+    let output = second_artifacts
+        .persist_exact(
+            &invocation_id,
+            PerceptionArtifactKind::NormalizedOutput,
+            "application/json",
+            serde_json::to_vec(&normalized).unwrap(),
+        )
+        .await
+        .unwrap();
+    second_store
+        .persist_perception_artifact(PerceptionArtifactPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            artifact_locator: output.locator,
+            output_digest: output.digest,
+        })
+        .await
+        .unwrap();
+    let snapshot = second_store
+        .perception_invocations(&session.id, "turn-after-artifact")
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        snapshot.position,
+        PerceptionExecutionPosition::ArtifactPersisted
+    );
+    let recovered = recover_perception_receipt(second_store.clone(), second_artifacts, snapshot)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.provider_response_id,
+        format!("receipt-{}", "turn-after-artifact")
+    );
+    assert_eq!(
+        second_store
+            .perception_invocations(&session.id, "turn-after-artifact")
             .await
             .unwrap()[0]
             .position,

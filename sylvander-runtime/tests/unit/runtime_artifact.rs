@@ -1,7 +1,9 @@
 use sylvander_agent::artifact::{ArtifactStoreError, ArtifactWrite};
 
 use super::*;
+use crate::agent::perception::{PerceptionArtifactError, PerceptionArtifactKind};
 use crate::evidence::{EvidenceEncryption, EvidenceGovernance, EvidenceScope};
+use crate::storage::session::PerceptionInvocationId;
 
 fn governance() -> EvidenceGovernance {
     let encryption = EvidenceEncryption::from_secret("test-key", &[7; 32]).unwrap();
@@ -94,4 +96,63 @@ async fn plaintext_backend_and_invalid_payload_fail_closed() {
         .await
         .unwrap_err();
     assert_eq!(error, ArtifactStoreError::InvalidRequest);
+}
+
+#[tokio::test]
+async fn exact_perception_artifact_is_idempotent_conflict_safe_and_restart_readable() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("perception.sqlite");
+    let invocation_id =
+        PerceptionInvocationId::parse("0198ae9d-7c42-7821-a924-201733a5a7cc").unwrap();
+    let payload = b"governed-media".to_vec();
+    let store = EvidenceStore::open_governed(&path, governance())
+        .await
+        .unwrap();
+    let service = RuntimeArtifactService::new(store).unwrap();
+    let port = service.bind_perception(binding("alice")).unwrap();
+
+    let first = port
+        .persist_exact(
+            &invocation_id,
+            PerceptionArtifactKind::SourceMedia,
+            "audio/wav",
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    let repeated = port
+        .persist_exact(
+            &invocation_id,
+            PerceptionArtifactKind::SourceMedia,
+            "audio/wav",
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first, repeated);
+    assert_eq!(
+        port.persist_exact(
+            &invocation_id,
+            PerceptionArtifactKind::SourceMedia,
+            "audio/wav",
+            b"different".to_vec(),
+        )
+        .await,
+        Err(PerceptionArtifactError::Conflict)
+    );
+    drop(port);
+    drop(service);
+
+    let reopened = EvidenceStore::open_governed(&path, governance())
+        .await
+        .unwrap();
+    let recovered = RuntimeArtifactService::new(reopened)
+        .unwrap()
+        .bind_perception(binding("alice"))
+        .unwrap()
+        .load_exact(&invocation_id, PerceptionArtifactKind::SourceMedia)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered, first);
 }
