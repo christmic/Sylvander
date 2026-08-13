@@ -123,3 +123,8 @@ Normalized records aggregate only within an exact benchmark, dataset version,
 Agent revision, provider, protocol, and model coordinate. Aggregation retains
 executed, failed, infrastructure, not-run, and not-applicable counts separately;
 it never turns missing runs into successful samples.
+
+```sh
+cargo run -p sylvander-benchmark-agent --bin sylvander-agent-bench -- \
+  aggregate results.jsonl
+```

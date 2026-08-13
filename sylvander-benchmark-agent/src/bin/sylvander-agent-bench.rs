@@ -2,15 +2,16 @@
 
 use std::env;
 use std::fs::File;
-use std::io::{BufReader, Write as _};
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::Path;
 
 use serde::de::DeserializeOwned;
 use sylvander_benchmark_agent::Trajectory;
+use sylvander_benchmark_agent::aggregate::aggregate_results;
 use sylvander_benchmark_agent::harbor_result::{HarborTrialResult, normalize_harbor_result};
 use sylvander_benchmark_agent::matrix::AgentBenchMatrix;
 use sylvander_benchmark_agent::matrix::AgentMatrixCoordinate;
-use sylvander_benchmark_agent::result::{AgentBenchStatus, RepositoryState};
+use sylvander_benchmark_agent::result::{AgentBenchResult, AgentBenchStatus, RepositoryState};
 
 fn main() {
     if let Err(error) = run(env::args().skip(1).collect()) {
@@ -22,6 +23,7 @@ fn main() {
 fn run(arguments: Vec<String>) -> Result<(), String> {
     match arguments.as_slice() {
         [command, matrix_path] if command == "plan" => plan(Path::new(matrix_path)),
+        [command, results_path] if command == "aggregate" => aggregate(Path::new(results_path)),
         [command, coordinate_path, trial_path, trajectory_path, harness_revision]
             if command == "ingest" =>
         {
@@ -33,9 +35,40 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
             )
         }
         _ => Err(
-            "usage: sylvander-agent-bench plan <matrix.json> | ingest <coordinate.json> <trial-result.json> <trajectory.json> <harness-revision>".into(),
+            "usage: sylvander-agent-bench plan <matrix.json> | ingest <coordinate.json> <trial-result.json> <trajectory.json> <harness-revision> | aggregate <results.jsonl>".into(),
         ),
     }
+}
+
+fn aggregate(results_path: &Path) -> Result<(), String> {
+    let file = File::open(results_path).map_err(|error| {
+        format!(
+            "cannot open Agent benchmark results {}: {error}",
+            results_path.display()
+        )
+    })?;
+    let mut results = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|error| format!("cannot read Agent benchmark result: {error}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        results.push(
+            serde_json::from_str::<AgentBenchResult>(&line)
+                .map_err(|error| format!("cannot parse Agent benchmark result: {error}"))?,
+        );
+    }
+    let aggregates = aggregate_results(results).map_err(|error| error.to_string())?;
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    for aggregate in aggregates {
+        serde_json::to_writer(&mut output, &aggregate)
+            .map_err(|error| format!("cannot serialize Agent aggregate: {error}"))?;
+        output
+            .write_all(b"\n")
+            .map_err(|error| format!("cannot write Agent aggregate: {error}"))?;
+    }
+    Ok(())
 }
 
 fn plan(matrix_path: &Path) -> Result<(), String> {
