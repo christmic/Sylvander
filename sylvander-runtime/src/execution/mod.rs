@@ -28,8 +28,8 @@ pub(crate) use local::LocalExecutor;
 pub(crate) use persistent::{
     PersistentFilesystemAuthority, PersistentNetworkAuthority, PersistentProcess,
     PersistentProcessAuthority, PersistentProcessEnvironment, PersistentProcessError,
-    PersistentProcessOwner, PersistentProcessSpec, PersistentResourceLimits,
-    UnavailablePersistentProcessEnvironment,
+    PersistentProcessIsolation, PersistentProcessOwner, PersistentProcessSpec,
+    PersistentResourceLimits, UnavailablePersistentProcessEnvironment,
 };
 pub(crate) use persistent_container::ContainerPersistentProcessEnvironment;
 pub use ssh::SshExecutor;
@@ -278,6 +278,21 @@ impl RuntimeExecutionService {
                     probe: None,
                 }),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn persistent_for_test(
+        target_id: impl Into<String>,
+        environment: Arc<dyn PersistentProcessEnvironment>,
+    ) -> ExecutionTargetRegistration {
+        ExecutionTargetRegistration {
+            target_id: target_id.into(),
+            kind: ExecutionTargetKind::Local,
+            status: ExecutionTargetStatus::Ready,
+            executor: Arc::new(LocalExecutor),
+            persistent_processes: environment,
+            probe: None,
+        }
     }
 }
 
