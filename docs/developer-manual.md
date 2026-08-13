@@ -407,12 +407,15 @@ dedicated docs that are authoritative:
   per-turn budget:
   [`sylvander-agent/docs/skills.md`](../sylvander-agent/docs/skills.md).
 
-When you wire a new MCP server, declare its required
-`execution_environment`, explicit `workspace_access`, `command`, and secret references in the Agent
+For a local stdio MCP server, declare its required `execution_environment`,
+explicit `workspace_access`, `command`, and secret references in the Agent
 definition. The target must resolve to a Runtime-owned persistent environment
 that proves filesystem, network, resource, and process-tree isolation. An
 unknown, local-unconfined, or unavailable target fails before process creation;
-there is no host fallback. When you ship a new Skill directive, place it under
+there is no host fallback. For a remote server, declare
+`type = "mcp_streamable_http"`, one HTTPS `url`, and an optional Runtime secret
+reference in `bearer_token`; the remote endpoint receives no local workspace
+or process authority. When you ship a new Skill directive, place it under
 `.agents/skills/` (Agent home trust) or `.sylvander/skills/` /
 `skills/` (task workspace trust), and keep the SKILL.md under 16 KiB
 to fit the shared `48 KiB / 24-document` budget.
