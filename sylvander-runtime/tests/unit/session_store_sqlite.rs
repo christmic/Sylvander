@@ -24,7 +24,8 @@ use crate::session::membership::{SessionGovernance, SessionMembership};
 use crate::storage::agent_instance::{AgentInstanceConfig, AgentInstanceStore};
 use crate::storage::artifact::{ArtifactTurnBinding, RuntimeArtifactService};
 use crate::storage::session::{
-    ModelRecoveryClassification, ModelRecoveryDecision, ModelRecoveryReason,
+    CognitionRecoveryClassification, ModelRecoveryClassification, ModelRecoveryDecision,
+    ModelRecoveryReason,
 };
 use crate::storage::workspace_journal::WorkspaceJournal;
 
@@ -1826,6 +1827,92 @@ async fn cognition_budget_and_terminal_failure_are_durable_across_restart() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn cognition_recovery_classification_and_lease_survive_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cognition-recovery.sqlite3");
+    let store = SqliteSessionStore::open(&path).await.unwrap();
+    let session = running_perception_turn(&store, "turn-cognition-recovery").await;
+    let invocation_id = CognitionInvocationId::from_uuid(uuid::Uuid::new_v4());
+    store
+        .begin_cognition(CognitionInvocationStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-cognition-recovery".into(),
+            agent_instance_id: turn_instance(),
+            invocation_id: invocation_id.clone(),
+            role: CognitiveRole::Critic,
+            provider_id: "test-provider".into(),
+            model_id: "critic-model".into(),
+            recovery_policy: CognitionRecoveryPolicy::RecoverFromReceipt,
+            capability_revision: format!("sha256:{}", "c".repeat(64)),
+            input_digest: format!("sha256:{}", "d".repeat(64)),
+            input_bytes: 8,
+            max_turn_calls: 2,
+        })
+        .await
+        .unwrap();
+    let artifacts = perception_artifacts(
+        &directory.path().join("cognition-recovery-evidence.sqlite"),
+        "turn-cognition-recovery",
+    )
+    .await;
+    let prompt = artifacts
+        .persist_exact(
+            invocation_id.as_str(),
+            CognitionArtifactKind::SourcePrompt,
+            "text/plain; charset=utf-8",
+            b"critique".to_vec(),
+        )
+        .await
+        .unwrap();
+    let revision = store
+        .persist_cognition_prompt(CognitionPromptPersistence {
+            invocation_id: invocation_id.clone(),
+            expected_revision: 0,
+            artifact_locator: prompt.locator,
+        })
+        .await
+        .unwrap();
+    let revision = store
+        .advance_cognition(CognitionAdvance {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            expected_position: CognitionExecutionPosition::PromptPersisted,
+            next_position: CognitionExecutionPosition::InferenceStarted,
+        })
+        .await
+        .unwrap();
+    let classification = CognitionRecoveryClassification::for_interrupted(
+        CognitionExecutionPosition::InferenceStarted,
+    );
+    store
+        .classify_cognition_recovery(CognitionRecoveryWrite {
+            invocation_id: invocation_id.clone(),
+            expected_revision: revision,
+            recovery_owner: "boot-1".into(),
+            observed_at: 100,
+            lease_expires_at: 130,
+            classification,
+        })
+        .await
+        .unwrap();
+    drop(store);
+
+    let reopened = SqliteSessionStore::open(path).await.unwrap();
+    let interrupted = reopened.interrupted_cognition_invocations().await.unwrap();
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(
+        interrupted[0].recovery_decision,
+        Some(CognitionRecoveryDecision::RecoverReceipt)
+    );
+    assert_eq!(
+        interrupted[0].recovery_reason,
+        Some(CognitionRecoveryReason::ReceiptRequired)
+    );
+    assert_eq!(interrupted[0].recovery_owner.as_deref(), Some("boot-1"));
+    assert_eq!(interrupted[0].recovery_lease_expires_at, Some(130));
 }
 
 #[tokio::test]

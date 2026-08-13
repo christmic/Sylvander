@@ -79,32 +79,60 @@ pub enum CognitionRecoveryDecision {
     ContinueTurn,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CognitionRecoveryReason {
+    EffectNotStarted,
+    ReceiptRequired,
+    ReceiptAlreadyPersisted,
+    ArtifactAlreadyPersisted,
+    ResultAlreadyPersisted,
+    TerminalFailurePersisted,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CognitionRecoveryClassification {
     pub decision: CognitionRecoveryDecision,
+    pub reason: CognitionRecoveryReason,
     pub operator_action_required: bool,
 }
 
 impl CognitionRecoveryClassification {
     #[must_use]
     pub const fn for_interrupted(position: CognitionExecutionPosition) -> Self {
-        let decision = match position {
-            CognitionExecutionPosition::Prepared => CognitionRecoveryDecision::PersistPrompt,
-            CognitionExecutionPosition::PromptPersisted => {
-                CognitionRecoveryDecision::StartInference
-            }
-            CognitionExecutionPosition::InferenceStarted => {
-                CognitionRecoveryDecision::RecoverReceipt
-            }
-            CognitionExecutionPosition::InferenceCompleted => {
-                CognitionRecoveryDecision::PersistArtifact
-            }
-            CognitionExecutionPosition::ArtifactPersisted
-            | CognitionExecutionPosition::ResultPersisted
-            | CognitionExecutionPosition::Failed => CognitionRecoveryDecision::ContinueTurn,
+        let (decision, reason) = match position {
+            CognitionExecutionPosition::Prepared => (
+                CognitionRecoveryDecision::PersistPrompt,
+                CognitionRecoveryReason::EffectNotStarted,
+            ),
+            CognitionExecutionPosition::PromptPersisted => (
+                CognitionRecoveryDecision::StartInference,
+                CognitionRecoveryReason::EffectNotStarted,
+            ),
+            CognitionExecutionPosition::InferenceStarted => (
+                CognitionRecoveryDecision::RecoverReceipt,
+                CognitionRecoveryReason::ReceiptRequired,
+            ),
+            CognitionExecutionPosition::InferenceCompleted => (
+                CognitionRecoveryDecision::PersistArtifact,
+                CognitionRecoveryReason::ReceiptAlreadyPersisted,
+            ),
+            CognitionExecutionPosition::ArtifactPersisted => (
+                CognitionRecoveryDecision::ContinueTurn,
+                CognitionRecoveryReason::ArtifactAlreadyPersisted,
+            ),
+            CognitionExecutionPosition::ResultPersisted => (
+                CognitionRecoveryDecision::ContinueTurn,
+                CognitionRecoveryReason::ResultAlreadyPersisted,
+            ),
+            CognitionExecutionPosition::Failed => (
+                CognitionRecoveryDecision::ContinueTurn,
+                CognitionRecoveryReason::TerminalFailurePersisted,
+            ),
         };
         Self {
             decision,
+            reason,
             operator_action_required: false,
         }
     }

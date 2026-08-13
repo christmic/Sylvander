@@ -125,8 +125,23 @@ pub struct CognitionInvocationSnapshot {
     pub output_artifact_locator: Option<String>,
     pub output_digest: Option<String>,
     pub failure_kind: Option<CognitionFailureKind>,
+    pub recovery_decision: Option<CognitionRecoveryDecision>,
+    pub recovery_reason: Option<CognitionRecoveryReason>,
+    pub operator_action_required: bool,
+    pub recovery_owner: Option<String>,
+    pub recovery_lease_expires_at: Option<i64>,
     pub started_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CognitionRecoveryWrite {
+    pub invocation_id: CognitionInvocationId,
+    pub expected_revision: u64,
+    pub recovery_owner: String,
+    pub observed_at: i64,
+    pub lease_expires_at: i64,
+    pub classification: CognitionRecoveryClassification,
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +898,15 @@ pub trait SessionStore: AgentInstanceStore + Send + Sync {
         ))
     }
 
+    async fn classify_cognition_recovery(
+        &self,
+        _write: CognitionRecoveryWrite,
+    ) -> Result<u64, SessionStoreError> {
+        Err(SessionStoreError::Invalid(
+            "durable cognition recovery is unavailable".into(),
+        ))
+    }
+
     /// Persist the exact perception route before retaining media or invoking
     /// a specialist model.
     async fn begin_perception(
@@ -1225,4 +1249,5 @@ impl From<rusqlite::Error> for SessionStoreError {
 pub use cognition_ledger::{
     CognitionExecutionPosition, CognitionFailureKind, CognitionInvocationId,
     CognitionRecoveryClassification, CognitionRecoveryDecision, CognitionRecoveryPolicy,
+    CognitionRecoveryReason,
 };

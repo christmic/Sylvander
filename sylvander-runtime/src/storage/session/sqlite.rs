@@ -41,7 +41,8 @@ use super::{
     CognitionAdvance, CognitionExecutionPosition, CognitionFailureKind,
     CognitionFailurePersistence, CognitionInvocationId, CognitionInvocationSnapshot,
     CognitionInvocationStart, CognitionOutputPersistence, CognitionPromptPersistence,
-    CognitionReceiptPersistence, CognitionRecoveryPolicy, ExecutionRecoveryAction,
+    CognitionReceiptPersistence, CognitionRecoveryDecision, CognitionRecoveryPolicy,
+    CognitionRecoveryReason, CognitionRecoveryWrite, ExecutionRecoveryAction,
     ExecutionRecoveryActionId, ExecutionRecoveryActionReceipt, ExecutionRecoveryActionTarget,
     ExecutionRecoveryActionWrite, MessageRole, ModelExecutionPosition, ModelInvocationId,
     ModelIterationAdvance, ModelIterationSnapshot, ModelIterationStart, ModelRecoveryDecision,
@@ -826,6 +827,13 @@ CREATE TABLE session_cognition_invocations (
     output_artifact_locator TEXT,
     output_digest TEXT,
     failure_kind TEXT CHECK(failure_kind IN ('provider','timed_out','invalid_response')),
+    recovery_decision TEXT CHECK(recovery_decision IN ('persist_prompt','start_inference','recover_receipt','persist_artifact','continue_turn')),
+    recovery_reason TEXT CHECK(recovery_reason IN ('effect_not_started','receipt_required','receipt_already_persisted','artifact_already_persisted','result_already_persisted','terminal_failure_persisted')),
+    operator_action_required INTEGER NOT NULL DEFAULT 0,
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    recovery_owner TEXT,
+    recovery_lease_expires_at INTEGER,
+    first_interrupted_at INTEGER,
     started_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     CHECK((position='prepared' AND prompt_artifact_locator IS NULL AND receipt_locator IS NULL AND output_artifact_locator IS NULL AND output_digest IS NULL)
@@ -2274,6 +2282,53 @@ impl SessionStore for SqliteSessionStore {
         &self,
     ) -> Result<Vec<CognitionInvocationSnapshot>, SessionStoreError> {
         query_cognition_invocations(self, None).await
+    }
+
+    async fn classify_cognition_recovery(
+        &self,
+        write: CognitionRecoveryWrite,
+    ) -> Result<u64, SessionStoreError> {
+        if write.recovery_owner.trim().is_empty() || write.lease_expires_at <= write.observed_at {
+            return Err(SessionStoreError::Invalid(
+                "cognition recovery lease is invalid".into(),
+            ));
+        }
+        let expected = session_i64(write.expected_revision, "cognition ledger revision")?;
+        let next = write.expected_revision.checked_add(1).ok_or_else(|| {
+            SessionStoreError::Invalid("cognition ledger revision overflow".into())
+        })?;
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE session_cognition_invocations SET ledger_revision=ledger_revision+1,
+                     recovery_decision=?1,recovery_reason=?2,operator_action_required=?3,
+                     recovery_attempts=recovery_attempts+1,recovery_owner=?4,
+                     recovery_lease_expires_at=?5,first_interrupted_at=COALESCE(first_interrupted_at,?6),
+                     updated_at=?6 WHERE invocation_id=?7 AND ledger_revision=?8
+                     AND position NOT IN ('result_persisted','failed')
+                     AND (recovery_lease_expires_at IS NULL OR recovery_lease_expires_at<=?6
+                          OR recovery_owner=?4)",
+                    params![
+                        cognition_decision_str(write.classification.decision),
+                        cognition_reason_str(write.classification.reason),
+                        write.classification.operator_action_required,
+                        write.recovery_owner,
+                        write.lease_expires_at,
+                        write.observed_at,
+                        write.invocation_id.as_str(),
+                        expected,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            if changed == 1 {
+                Ok(next)
+            } else {
+                Err(SessionStoreError::Invalid(
+                    "cognition recovery lease or ledger CAS conflict".into(),
+                ))
+            }
+        })
+        .await
     }
 
     async fn begin_perception(
@@ -4142,7 +4197,9 @@ async fn query_cognition_invocations(
                 c.cognitive_role,c.provider_id,c.model_id,c.recovery_policy,
                 c.capability_revision,c.input_digest,c.input_bytes,c.position,c.ledger_revision,
                 c.prompt_artifact_locator,c.receipt_locator,c.output_artifact_locator,
-                c.output_digest,c.failure_kind,c.started_at,c.updated_at";
+                c.output_digest,c.failure_kind,c.recovery_decision,c.recovery_reason,
+                c.operator_action_required,c.recovery_owner,c.recovery_lease_expires_at,
+                c.started_at,c.updated_at";
             let sql = if scope.is_some() {
                 format!(
                     "SELECT {columns} FROM session_cognition_invocations c
@@ -4182,8 +4239,19 @@ async fn query_cognition_invocations(
                         .get::<_, Option<String>>(17)?
                         .map(|value| decode_cognition_failure(&value))
                         .transpose()?,
-                    started_at: row.get(18)?,
-                    updated_at: row.get(19)?,
+                    recovery_decision: row
+                        .get::<_, Option<String>>(18)?
+                        .map(|value| decode_cognition_decision(&value))
+                        .transpose()?,
+                    recovery_reason: row
+                        .get::<_, Option<String>>(19)?
+                        .map(|value| decode_cognition_reason(&value))
+                        .transpose()?,
+                    operator_action_required: row.get(20)?,
+                    recovery_owner: row.get(21)?,
+                    recovery_lease_expires_at: row.get(22)?,
+                    started_at: row.get(23)?,
+                    updated_at: row.get(24)?,
                 })
             };
             match scope {
@@ -4842,6 +4910,50 @@ fn decode_cognition_failure(value: &str) -> rusqlite::Result<CognitionFailureKin
         "provider" => Ok(CognitionFailureKind::Provider),
         "timed_out" => Ok(CognitionFailureKind::TimedOut),
         "invalid_response" => Ok(CognitionFailureKind::InvalidResponse),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn cognition_decision_str(decision: CognitionRecoveryDecision) -> &'static str {
+    match decision {
+        CognitionRecoveryDecision::PersistPrompt => "persist_prompt",
+        CognitionRecoveryDecision::StartInference => "start_inference",
+        CognitionRecoveryDecision::RecoverReceipt => "recover_receipt",
+        CognitionRecoveryDecision::PersistArtifact => "persist_artifact",
+        CognitionRecoveryDecision::ContinueTurn => "continue_turn",
+    }
+}
+
+fn decode_cognition_decision(value: &str) -> rusqlite::Result<CognitionRecoveryDecision> {
+    match value {
+        "persist_prompt" => Ok(CognitionRecoveryDecision::PersistPrompt),
+        "start_inference" => Ok(CognitionRecoveryDecision::StartInference),
+        "recover_receipt" => Ok(CognitionRecoveryDecision::RecoverReceipt),
+        "persist_artifact" => Ok(CognitionRecoveryDecision::PersistArtifact),
+        "continue_turn" => Ok(CognitionRecoveryDecision::ContinueTurn),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+const fn cognition_reason_str(reason: CognitionRecoveryReason) -> &'static str {
+    match reason {
+        CognitionRecoveryReason::EffectNotStarted => "effect_not_started",
+        CognitionRecoveryReason::ReceiptRequired => "receipt_required",
+        CognitionRecoveryReason::ReceiptAlreadyPersisted => "receipt_already_persisted",
+        CognitionRecoveryReason::ArtifactAlreadyPersisted => "artifact_already_persisted",
+        CognitionRecoveryReason::ResultAlreadyPersisted => "result_already_persisted",
+        CognitionRecoveryReason::TerminalFailurePersisted => "terminal_failure_persisted",
+    }
+}
+
+fn decode_cognition_reason(value: &str) -> rusqlite::Result<CognitionRecoveryReason> {
+    match value {
+        "effect_not_started" => Ok(CognitionRecoveryReason::EffectNotStarted),
+        "receipt_required" => Ok(CognitionRecoveryReason::ReceiptRequired),
+        "receipt_already_persisted" => Ok(CognitionRecoveryReason::ReceiptAlreadyPersisted),
+        "artifact_already_persisted" => Ok(CognitionRecoveryReason::ArtifactAlreadyPersisted),
+        "result_already_persisted" => Ok(CognitionRecoveryReason::ResultAlreadyPersisted),
+        "terminal_failure_persisted" => Ok(CognitionRecoveryReason::TerminalFailurePersisted),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
