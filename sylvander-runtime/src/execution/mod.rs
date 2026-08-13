@@ -19,6 +19,7 @@ const EXECUTION_PROBE_INTERVAL: Duration = Duration::from_secs(30);
 
 pub mod container;
 mod local;
+mod persistent;
 pub mod ssh;
 
 pub use container::{ContainerExecutor, ContainerResourcePolicy};
