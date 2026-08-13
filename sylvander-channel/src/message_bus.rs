@@ -78,7 +78,12 @@ impl SubscriptionFilter {
                 Recipient::Broadcast => matches!(msg.recipient, Recipient::Broadcast),
                 Recipient::Agent(id) => {
                     matches!(&msg.recipient, Recipient::Agent(rid) if rid == id)
+                        || matches!(&msg.recipient, Recipient::AgentInstance { agent_id, .. } if agent_id == id)
                 }
+                Recipient::AgentInstance { instance_id, .. } => matches!(
+                    &msg.recipient,
+                    Recipient::AgentInstance { instance_id: recipient, .. } if recipient == instance_id
+                ),
             });
             if !ok {
                 return false;

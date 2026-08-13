@@ -204,7 +204,9 @@ async fn record_message_inner(
         (Sender::User(_), MessageKind::Chat) => {
             let id = format!("turn:{}", message.id.0);
             let agent_id = match &message.recipient {
-                Recipient::Agent(agent_id) => Some(agent_id.to_string()),
+                Recipient::Agent(agent_id) | Recipient::AgentInstance { agent_id, .. } => {
+                    Some(agent_id.to_string())
+                }
                 Recipient::Broadcast => None,
             };
             store
@@ -383,7 +385,7 @@ fn event_type(message: &BusMessage) -> String {
     match &message.kind {
         MessageKind::Chat => match message.sender {
             Sender::User(_) => "user_chat".into(),
-            Sender::Agent(_) => "agent_chat".into(),
+            Sender::Agent(_) | Sender::AgentInstance { .. } => "agent_chat".into(),
             Sender::System => "system_chat".into(),
         },
         MessageKind::System(event) => format!("system_{}", snake_name(event)),

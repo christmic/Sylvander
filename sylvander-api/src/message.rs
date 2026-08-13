@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    AgentId, ApprovalScope, CompactionReport, InteractionTimeoutKind, RetryCause, SessionId,
-    SessionMetadata, TimeoutRecovery,
+    AgentId, AgentInstanceId, ApprovalScope, CompactionReport, InteractionTimeoutKind, RetryCause,
+    SessionId, SessionMetadata, TimeoutRecovery,
 };
 
 // ===========================================================================
@@ -37,6 +37,10 @@ impl Default for MessageId {
 pub enum Sender {
     User(String),
     Agent(AgentId),
+    AgentInstance {
+        instance_id: AgentInstanceId,
+        agent_id: AgentId,
+    },
     System,
 }
 
@@ -44,6 +48,10 @@ pub enum Sender {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Recipient {
     Agent(AgentId),
+    AgentInstance {
+        instance_id: AgentInstanceId,
+        agent_id: AgentId,
+    },
     Broadcast,
 }
 

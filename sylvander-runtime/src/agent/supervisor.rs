@@ -585,7 +585,12 @@ async fn run_revision_router(
     workers.insert(initial_revision, spawn_revision_worker(initial_run));
 
     while let Some(message) = inbox.recv().await {
-        if !matches!(&message.recipient, Recipient::Agent(id) if id == &agent_id) {
+        if !matches!(&message.recipient, Recipient::Agent(id) if id == &agent_id)
+            && !matches!(
+                &message.recipient,
+                Recipient::AgentInstance { agent_id: id, .. } if id == &agent_id
+            )
+        {
             continue;
         }
         if matches!(

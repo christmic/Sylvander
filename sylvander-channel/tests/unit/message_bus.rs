@@ -1,5 +1,5 @@
 use super::*;
-use sylvander_api::{AgentId, BusMessage, Recipient, SessionId};
+use sylvander_api::{AgentId, AgentInstanceId, BusMessage, Recipient, SessionId};
 
 fn tm(s: &str) -> BusMessage {
     BusMessage::user_chat(SessionId::new(s), "u1", "hi")
@@ -39,6 +39,16 @@ async fn filter_recipient() {
         .unwrap();
     b.publish(BusMessage {
         recipient: Recipient::Agent(a.clone()),
+        ..tm("s1")
+    })
+    .await
+    .unwrap();
+    assert!(r.try_recv().is_ok());
+    b.publish(BusMessage {
+        recipient: Recipient::AgentInstance {
+            instance_id: AgentInstanceId::new("a-worker-1"),
+            agent_id: a.clone(),
+        },
         ..tm("s1")
     })
     .await
