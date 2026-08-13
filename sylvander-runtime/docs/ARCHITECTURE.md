@@ -81,11 +81,13 @@ crate without retaining a second production path.
   append content-safe create/acquire/renew/rotate/revoke/failure facts to it;
   no secret or secret reference enters the ledger.
 - `storage` is the closed persistence composition root. It owns the Session
-  commit authority and relationship-memory backend, retains concrete health
+  commit authority and relationship-memory backend, and aggregates Agent
+  Registry and User Profile health. It retains concrete health
   probes only inside Runtime, and exposes one content-free operational view.
   Production health revalidates each live schema plus SQLite integrity;
-  Session also checks owned foreign keys and protected memory also verifies
-  its independent authenticated anchor. A degraded component makes Runtime
+  Session and Registry also check owned foreign keys, Registry checks its
+  shared namespace and current ledger, and protected memory verifies its
+  independent authenticated anchor. A degraded component makes Runtime
   unready without disclosing paths, row data, database errors, or key/anchor
   material. The Agent receives only cloned provider-neutral ports and cannot
   select, inspect, or probe a backend.

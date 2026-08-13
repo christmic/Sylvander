@@ -209,19 +209,23 @@ and `running` state together; `complete_turn` commits the assistant message
 and `completed` terminal together. Failed and interrupted terminals are also
 persisted before their public event when a durable turn exists.
 
-The same facade now emits a unified, content-free health snapshot for these
-two repositories. Production composition retains concrete probe handles while
+The same facade now emits a unified, content-free health snapshot for Session,
+relationship memory, the Agent Registry, and User Profiles. Production
+composition retains concrete probe handles while
 Agent revisions receive only their provider-neutral ports. Session health
 rechecks the exact live schema, SQLite pages, and owned foreign keys;
 relationship-memory health rechecks its exact schema, SQLite pages, and, when
-configured, the independent authenticated anchor. `Ready` means that live
+configured, the independent authenticated anchor. Registry health rechecks its
+exact shared namespace, current schema ledger, owned foreign keys, and SQLite
+pages. User Profile health rechecks its exact schema and SQLite pages. `Ready`
+means that live
 probe succeeded, `Degraded` makes Runtime unready, and `Unverified` is reserved
 for isolated test composition without production probes. A failed Session
 count no longer makes the health endpoint fail before it can report Storage as
 degraded. Paths, database errors, row data, and anchor material never enter the
 snapshot.
 
-The other Runtime stores, cross-repository transactions, unified backup
+The remaining Runtime stores, cross-repository transactions, unified backup
 lifecycle, and full-store health coverage remain incomplete. Callers must not
 infer those target capabilities from this architecture contract.
 

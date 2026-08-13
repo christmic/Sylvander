@@ -21,12 +21,15 @@ An enabled HTTP channel exposes three unauthenticated, content-free operations:
 The snapshot never contains prompts, messages, tool inputs/results, external
 principal IDs, credentials, paths, or memory content.
 
-The `storage.components` entries currently cover `sessions` and
-`relationship_memory`. `ready` means the live database integrity probe passed;
+The `storage.components` entries currently cover `sessions`,
+`relationship_memory`, `agent_registry`, and `user_profiles`. `ready` means
+the live database integrity probe passed;
 `degraded` makes top-level readiness false. Production must never report
 `unverified`: that state exists only for isolated in-memory test composition.
 Session probing verifies the exact owned schema and foreign keys; relationship
 memory additionally verifies its authenticated anchor when one is configured.
+Registry probing verifies the declared shared namespace, current ledger, and
+owned foreign keys. User Profile probing verifies its exact current schema.
 Probe failures deliberately omit database paths, SQL errors, row content, and
 anchor details. Check protected storage availability and integrity services
 from the operator side before restarting; repeated restarts do not repair
