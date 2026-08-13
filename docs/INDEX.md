@@ -138,6 +138,8 @@ and this index in the same change.
   live LLM conformance, fault injection, and machine-readable evidence.
 - [module-sylvander-benchmark-agent.md](module-sylvander-benchmark-agent.md) —
   external Agent evaluation adapters, ATIF trajectories, and scoring ownership.
+- [module-sylvander-benchmark-runtime.md](module-sylvander-benchmark-runtime.md) —
+  Runtime scenario coordinates, fault injection, and safety evidence.
 - [agent-benchmark-program.md](agent-benchmark-program.md) — versioned Harbor,
   Terminal-Bench, SWE-bench, and τ³-bench evaluation strategy.
 - [agent-benchmark-runbook.md](agent-benchmark-runbook.md) — native arm64 image
@@ -146,6 +148,8 @@ and this index in the same change.
   tasks, their capability signals, and pass interpretation.
 - [module-sylvander-server.md](module-sylvander-server.md) —
   process composition root, configuration handoff, and shutdown ownership.
+- [module-sylvander-work.md](module-sylvander-work.md) — desktop application
+  shell and its dependency boundary around public Runtime APIs.
 - [module-sylvander-channel-dingtalk.md](module-sylvander-channel-dingtalk.md) —
   DingTalk ingress authentication, replay control, delivery, and supervision.
 - [module-sylvander-channel-http.md](module-sylvander-channel-http.md) —

@@ -37,7 +37,9 @@ boundaries = {
     "sylvander-runtime/Cargo.toml": "sylvander-runtime/docs/ARCHITECTURE.md",
     "sylvander-server/Cargo.toml": "docs/module-sylvander-server.md",
     "sylvander-benchmark-llm/Cargo.toml": "docs/module-sylvander-benchmark-llm.md",
+    "sylvander-benchmark-runtime/Cargo.toml": "docs/module-sylvander-benchmark-runtime.md",
     "sylvander-tui/Cargo.toml": "sylvander-tui/docs/ARCHITECTURE.md",
+    "sylvander-work/src-tauri/Cargo.toml": "docs/module-sylvander-work.md",
 }
 
 errors: list[str] = []
