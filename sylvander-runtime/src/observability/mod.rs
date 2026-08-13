@@ -149,6 +149,8 @@ pub(crate) enum RuntimeCoordinationOutcome {
     WorkspaceApplied,
     WorkspaceMergeRecovered,
     WorkspaceConflicted,
+    RecoveryAbandoned,
+    RecoveryRetryAuthorized,
 }
 
 impl RuntimeCoordinationOutcome {
@@ -173,6 +175,8 @@ impl RuntimeCoordinationOutcome {
             Self::WorkspaceApplied => "workspace_applied",
             Self::WorkspaceMergeRecovered => "workspace_merge_recovered",
             Self::WorkspaceConflicted => "workspace_conflicted",
+            Self::RecoveryAbandoned => "recovery_abandoned",
+            Self::RecoveryRetryAuthorized => "recovery_retry_authorized",
         }
     }
 }
@@ -470,6 +474,8 @@ pub struct RuntimeObservabilitySnapshot {
     pub workspace_integrations_applied: u64,
     pub workspace_merges_recovered: u64,
     pub workspace_integrations_conflicted: u64,
+    pub recovery_actions_abandoned: u64,
+    pub recovery_retries_authorized: u64,
     /// Chat envelopes admitted but not yet accepted by the message bus.
     pub active_dispatches: u64,
     /// Turns with a start fact and no terminal fact yet.
@@ -540,6 +546,8 @@ struct RuntimeObservabilityInner {
     workspace_integrations_applied: AtomicU64,
     workspace_merges_recovered: AtomicU64,
     workspace_integrations_conflicted: AtomicU64,
+    recovery_actions_abandoned: AtomicU64,
+    recovery_retries_authorized: AtomicU64,
 }
 
 /// Cloneable handle to the mandatory built-in Runtime recorder.
@@ -598,6 +606,8 @@ impl RuntimeObservability {
                 workspace_integrations_applied: AtomicU64::new(0),
                 workspace_merges_recovered: AtomicU64::new(0),
                 workspace_integrations_conflicted: AtomicU64::new(0),
+                recovery_actions_abandoned: AtomicU64::new(0),
+                recovery_retries_authorized: AtomicU64::new(0),
             }),
         }
     }
@@ -710,6 +720,12 @@ impl RuntimeObservability {
                     }
                     RuntimeCoordinationOutcome::WorkspaceConflicted => {
                         &self.inner.workspace_integrations_conflicted
+                    }
+                    RuntimeCoordinationOutcome::RecoveryAbandoned => {
+                        &self.inner.recovery_actions_abandoned
+                    }
+                    RuntimeCoordinationOutcome::RecoveryRetryAuthorized => {
+                        &self.inner.recovery_retries_authorized
                     }
                 }
                 .fetch_add(1, Ordering::Relaxed);
@@ -1153,6 +1169,14 @@ impl RuntimeObservability {
             workspace_integrations_conflicted: self
                 .inner
                 .workspace_integrations_conflicted
+                .load(Ordering::Relaxed),
+            recovery_actions_abandoned: self
+                .inner
+                .recovery_actions_abandoned
+                .load(Ordering::Relaxed),
+            recovery_retries_authorized: self
+                .inner
+                .recovery_retries_authorized
                 .load(Ordering::Relaxed),
             active_dispatches: timing.dispatch_started.len() as u64,
             active_turns: timing.turn_started.len() as u64,

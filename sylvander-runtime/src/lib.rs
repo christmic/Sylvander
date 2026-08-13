@@ -130,11 +130,12 @@ pub use observability::{
 pub(crate) use runtime::configure_test_memory_integrity;
 pub use runtime::{
     ApproveAgentWorkspaceRequest, ChannelHealth, ChannelRegistration, ChannelRestartPolicy,
-    ChannelStatus, DefinedAgentJoinRequest, ProviderCredentialSources, Runtime, RuntimeError,
+    ChannelStatus, DefinedAgentJoinRequest, ProviderCredentialSources,
+    ResolveSessionRecoveryOutcome, ResolveSessionRecoveryRequest, Runtime, RuntimeError,
     RuntimeHealthIssue, RuntimeOperationalSnapshot, SessionAgentSummary, SessionAttentionState,
-    SessionBindingError, SessionDoctorProjection, SessionGovernanceSummary, SessionRecoverySummary,
-    SessionTaskSummary, SessionWorkspaceSummary, SwarmCompositionOutcome, SwarmCompositionPlan,
-    SwarmCompositionReceipt, SwarmMemberPlan,
+    SessionBindingError, SessionDoctorProjection, SessionGovernanceSummary, SessionRecoveryCase,
+    SessionRecoverySummary, SessionTaskSummary, SessionWorkspaceSummary, SwarmCompositionOutcome,
+    SwarmCompositionPlan, SwarmCompositionReceipt, SwarmMemberPlan,
 };
 #[cfg(test)]
 #[path = "../tests/unit/support.rs"]

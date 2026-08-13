@@ -1,12 +1,16 @@
 //! Runtime lifecycle orchestration and protocol-channel hosting.
 mod doctor;
 mod mailbox_scheduler;
+mod recovery_operator;
 mod swarm;
 mod workspace_integration;
 
 pub use doctor::{
     SessionAgentSummary, SessionAttentionState, SessionDoctorProjection, SessionGovernanceSummary,
     SessionRecoverySummary, SessionTaskSummary, SessionWorkspaceSummary,
+};
+pub use recovery_operator::{
+    ResolveSessionRecoveryOutcome, ResolveSessionRecoveryRequest, SessionRecoveryCase,
 };
 pub use swarm::{
     SwarmCompositionOutcome, SwarmCompositionPlan, SwarmCompositionReceipt, SwarmMemberPlan,
