@@ -425,3 +425,29 @@ fn failed_turn_clears_unfinished_tool_timing_state() {
     assert_eq!(snapshot.active_turns, 0);
     assert_eq!(snapshot.active_tools, 0);
 }
+
+#[test]
+fn perception_evaluation_outcomes_are_counted_without_media_or_model_output() {
+    let recorder = RuntimeObservability::new();
+    let session_id = SessionId::new("session-perception");
+    recorder.record(RuntimeEvent::PerceptionEvaluationFinished {
+        turn_id: "turn-1".into(),
+        session_id: session_id.clone(),
+        invocation_id: "invocation-1".into(),
+        succeeded: true,
+        recovered_from_receipt: true,
+    });
+    recorder.record(RuntimeEvent::PerceptionEvaluationFinished {
+        turn_id: "turn-2".into(),
+        session_id,
+        invocation_id: "invocation-2".into(),
+        succeeded: false,
+        recovered_from_receipt: false,
+    });
+
+    let snapshot = recorder.snapshot();
+    assert_eq!(snapshot.perception_evaluations, 2);
+    assert_eq!(snapshot.perception_evaluations_succeeded, 1);
+    assert_eq!(snapshot.perception_evaluations_failed, 1);
+    assert_eq!(snapshot.perception_receipts_recovered, 1);
+}

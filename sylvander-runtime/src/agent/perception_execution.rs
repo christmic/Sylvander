@@ -19,10 +19,11 @@ use super::perception::{PerceptionArtifactKind, PerceptionArtifactStore, Percept
 use crate::agent_definition::SessionId;
 use crate::storage::session::{
     PerceptionAdvance, PerceptionArtifactPersistence, PerceptionExecutionPosition,
-    PerceptionInvocationId, PerceptionInvocationSnapshot, PerceptionInvocationStart,
-    PerceptionMediaPersistence, PerceptionReceiptPersistence, PerceptionRecoveryPolicy,
-    SessionStore,
+    PerceptionInvocationSnapshot, PerceptionInvocationStart, PerceptionMediaPersistence,
+    PerceptionReceiptPersistence, PerceptionRecoveryPolicy, SessionStore,
 };
+
+pub use crate::storage::session::PerceptionInvocationId;
 
 const PERCEPTION_TIMEOUT: Duration = Duration::from_mins(2);
 const MAX_SPECIALIST_OUTPUT_TOKENS: u32 = 4_096;

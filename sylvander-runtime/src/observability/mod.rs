@@ -341,6 +341,14 @@ pub(crate) enum RuntimeEvent {
         decision: PerceptionRecoveryDecision,
         operator_action_required: bool,
     },
+    /// One explicitly requested perception evaluation reached a terminal.
+    PerceptionEvaluationFinished {
+        turn_id: String,
+        session_id: SessionId,
+        invocation_id: String,
+        succeeded: bool,
+        recovered_from_receipt: bool,
+    },
     PersistenceFinished {
         turn_id: String,
         session_id: SessionId,
@@ -374,6 +382,7 @@ impl RuntimeEvent {
     const TOOL_RECOVERY_CLASSIFIED: &'static str = "tool_recovery_classified";
     const MODEL_RECOVERY_CLASSIFIED: &'static str = "model_recovery_classified";
     const PERCEPTION_RECOVERY_CLASSIFIED: &'static str = "perception_recovery_classified";
+    const PERCEPTION_EVALUATION_FINISHED: &'static str = "perception_evaluation_finished";
     const PERSISTENCE_FINISHED: &'static str = "persistence_finished";
     const TURN_COMPLETED: &'static str = "turn_completed";
     const TURN_INTERRUPTED: &'static str = "turn_interrupted";
@@ -392,6 +401,7 @@ impl RuntimeEvent {
             Self::ToolRecoveryClassified { .. } => Self::TOOL_RECOVERY_CLASSIFIED,
             Self::ModelRecoveryClassified { .. } => Self::MODEL_RECOVERY_CLASSIFIED,
             Self::PerceptionRecoveryClassified { .. } => Self::PERCEPTION_RECOVERY_CLASSIFIED,
+            Self::PerceptionEvaluationFinished { .. } => Self::PERCEPTION_EVALUATION_FINISHED,
             Self::PersistenceFinished { .. } => Self::PERSISTENCE_FINISHED,
             Self::TurnCompleted { .. } => Self::TURN_COMPLETED,
             Self::TurnInterrupted { .. } => Self::TURN_INTERRUPTED,
@@ -465,6 +475,14 @@ pub struct RuntimeObservabilitySnapshot {
     pub perception_recoveries_classified: u64,
     /// Perception invocations that require an explicit operator decision.
     pub perception_recoveries_manual: u64,
+    /// Explicit same-Agent perception evaluations attempted.
+    pub perception_evaluations: u64,
+    /// Perception evaluations that produced a durable model-visible result.
+    pub perception_evaluations_succeeded: u64,
+    /// Perception evaluations that ended content-safely without a result.
+    pub perception_evaluations_failed: u64,
+    /// Successful evaluations reconstructed from a durable provider receipt.
+    pub perception_receipts_recovered: u64,
     /// Explicit filesystem-boundary policy denials reported by an adapter.
     pub filesystem_policy_violations: u64,
     /// Required Session persistence operations that committed.
@@ -542,6 +560,10 @@ struct RuntimeObservabilityInner {
     model_recoveries_manual: AtomicU64,
     perception_recoveries_classified: AtomicU64,
     perception_recoveries_manual: AtomicU64,
+    perception_evaluations: AtomicU64,
+    perception_evaluations_succeeded: AtomicU64,
+    perception_evaluations_failed: AtomicU64,
+    perception_receipts_recovered: AtomicU64,
     filesystem_policy_violations: AtomicU64,
     persistence_succeeded: AtomicU64,
     persistence_failed: AtomicU64,
@@ -604,6 +626,10 @@ impl RuntimeObservability {
                 model_recoveries_manual: AtomicU64::new(0),
                 perception_recoveries_classified: AtomicU64::new(0),
                 perception_recoveries_manual: AtomicU64::new(0),
+                perception_evaluations: AtomicU64::new(0),
+                perception_evaluations_succeeded: AtomicU64::new(0),
+                perception_evaluations_failed: AtomicU64::new(0),
+                perception_receipts_recovered: AtomicU64::new(0),
                 filesystem_policy_violations: AtomicU64::new(0),
                 persistence_succeeded: AtomicU64::new(0),
                 persistence_failed: AtomicU64::new(0),
@@ -932,6 +958,40 @@ impl RuntimeObservability {
                     "runtime lifecycle fact"
                 );
             }
+            RuntimeEvent::PerceptionEvaluationFinished {
+                turn_id,
+                session_id,
+                invocation_id,
+                succeeded,
+                recovered_from_receipt,
+            } => {
+                self.inner
+                    .perception_evaluations
+                    .fetch_add(1, Ordering::Relaxed);
+                if succeeded {
+                    self.inner
+                        .perception_evaluations_succeeded
+                        .fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.inner
+                        .perception_evaluations_failed
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                if recovered_from_receipt && succeeded {
+                    self.inner
+                        .perception_receipts_recovered
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                tracing::info!(
+                    event = event_name,
+                    %turn_id,
+                    %session_id,
+                    %invocation_id,
+                    succeeded,
+                    recovered_from_receipt,
+                    "runtime lifecycle fact"
+                );
+            }
             RuntimeEvent::PersistenceFinished {
                 turn_id,
                 session_id,
@@ -1093,7 +1153,8 @@ impl RuntimeObservability {
             | RuntimeEvent::PersistenceFinished { .. }
             | RuntimeEvent::ToolRecoveryClassified { .. }
             | RuntimeEvent::ModelRecoveryClassified { .. }
-            | RuntimeEvent::PerceptionRecoveryClassified { .. } => {}
+            | RuntimeEvent::PerceptionRecoveryClassified { .. }
+            | RuntimeEvent::PerceptionEvaluationFinished { .. } => {}
         }
     }
 
@@ -1146,6 +1207,19 @@ impl RuntimeObservability {
             perception_recoveries_manual: self
                 .inner
                 .perception_recoveries_manual
+                .load(Ordering::Relaxed),
+            perception_evaluations: self.inner.perception_evaluations.load(Ordering::Relaxed),
+            perception_evaluations_succeeded: self
+                .inner
+                .perception_evaluations_succeeded
+                .load(Ordering::Relaxed),
+            perception_evaluations_failed: self
+                .inner
+                .perception_evaluations_failed
+                .load(Ordering::Relaxed),
+            perception_receipts_recovered: self
+                .inner
+                .perception_receipts_recovered
                 .load(Ordering::Relaxed),
             filesystem_policy_violations: self
                 .inner

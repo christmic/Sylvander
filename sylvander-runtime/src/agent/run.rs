@@ -50,11 +50,12 @@ use crate::agent::approval::ApprovalGrantContext;
 use crate::agent::approval::ApprovalMemory;
 use crate::agent::perception_execution::{
     PerceptionEvaluationInput, PerceptionExecutionError, PerceptionExecutionRequest,
-    PerceptionExecutionResult, execute_perception,
+    PerceptionExecutionResult, PerceptionInvocationId, execute_perception,
+    recover_perception_receipt,
 };
 use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::execution::RuntimeExecutionService;
-use crate::observability::RuntimeObservability;
+use crate::observability::{RuntimeEvent, RuntimeObservability};
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{AgentSessionKey, SessionContext, SessionMetadata, now_secs};
 use crate::storage::artifact::RuntimeArtifactService;
@@ -600,7 +601,9 @@ impl AgentRun {
                 created_at: now_secs(),
             })
             .map_err(|_| PerceptionExecutionError::Unavailable)?;
-        execute_perception(
+        let turn_id = input.turn_id.clone();
+        let invocation_id = input.invocation_id.clone();
+        let result = execute_perception(
             store,
             artifacts,
             self.inner.model_provider.clone(),
@@ -618,7 +621,91 @@ impl AgentRun {
                 media_block: input.media_block,
             },
         )
-        .await
+        .await;
+        self.inner
+            .observability
+            .record(RuntimeEvent::PerceptionEvaluationFinished {
+                turn_id,
+                session_id: session.session_id.clone(),
+                invocation_id: invocation_id.as_str().to_owned(),
+                succeeded: result.is_ok(),
+                recovered_from_receipt: false,
+            });
+        result
+    }
+
+    /// Resume a configured specialist from durable post-inference artifacts.
+    /// This path never invokes a model.
+    pub async fn recover_perception_specialist(
+        &self,
+        session: &AuthenticatedSession,
+        turn_id: &str,
+        invocation_id: &PerceptionInvocationId,
+    ) -> Result<PerceptionExecutionResult, PerceptionExecutionError> {
+        if !Arc::ptr_eq(&self.inner.session_authority, &session.authority) {
+            return Err(PerceptionExecutionError::Unauthorized);
+        }
+        let store = self
+            .inner
+            .session_store
+            .clone()
+            .ok_or(PerceptionExecutionError::Unavailable)?;
+        let snapshot = store
+            .perception_invocations(&session.session_id, turn_id)
+            .await
+            .map_err(|_| PerceptionExecutionError::Persistence)?
+            .into_iter()
+            .find(|snapshot| {
+                snapshot.invocation_id == *invocation_id
+                    && snapshot.agent_instance_id == session.agent_instance_id
+            })
+            .ok_or(PerceptionExecutionError::Unauthorized)?;
+        let binding = self
+            .inner
+            .spec
+            .cognition
+            .binding(snapshot.role)
+            .ok_or(PerceptionExecutionError::SpecialistNotConfigured)?;
+        if binding.model.provider_id != snapshot.provider_id
+            || binding.model.model_id != snapshot.model_id
+        {
+            return Err(PerceptionExecutionError::SpecialistNotConfigured);
+        }
+        let metadata = self
+            .inner
+            .sessions
+            .read()
+            .await
+            .get(&AgentSessionKey::new(
+                session.session_id.clone(),
+                session.agent_instance_id.clone(),
+            ))
+            .map(|context| context.metadata.clone())
+            .ok_or(PerceptionExecutionError::Unauthorized)?;
+        let artifacts = self
+            .inner
+            .artifact_service
+            .as_ref()
+            .ok_or(PerceptionExecutionError::Unavailable)?
+            .bind_perception(crate::storage::artifact::ArtifactTurnBinding {
+                user_id: metadata.user_id,
+                agent_id: self.inner.id.0.clone(),
+                session_id: session.session_id.0.clone(),
+                turn_id: turn_id.to_owned(),
+                created_at: now_secs(),
+            })
+            .map_err(|_| PerceptionExecutionError::Unavailable)?;
+        let result = recover_perception_receipt(store, artifacts, snapshot).await;
+        self.inner
+            .observability
+            .record(RuntimeEvent::PerceptionEvaluationFinished {
+                turn_id: turn_id.to_owned(),
+                session_id: session.session_id.clone(),
+                invocation_id: invocation_id.as_str().to_owned(),
+                succeeded: result.is_ok(),
+                recovered_from_receipt: true,
+            });
+        result
     }
 
     /// Build a run around an immutable provider-qualified router.

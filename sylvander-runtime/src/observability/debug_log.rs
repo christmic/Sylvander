@@ -294,6 +294,17 @@ fn event_json(event: &RuntimeEvent) -> Value {
             "invocation_id": invocation_id, "position": position, "decision": decision,
             "operator_action_required": operator_action_required,
         }),
+        RuntimeEvent::PerceptionEvaluationFinished {
+            turn_id,
+            session_id,
+            invocation_id,
+            succeeded,
+            recovered_from_receipt,
+        } => json!({
+            "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
+            "invocation_id": invocation_id, "succeeded": succeeded,
+            "recovered_from_receipt": recovered_from_receipt,
+        }),
         RuntimeEvent::PersistenceFinished {
             turn_id,
             session_id,
