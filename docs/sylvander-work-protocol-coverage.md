@@ -31,7 +31,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `GetSessionConfig`, `UpdateSessionConfig` | complete | revision-bound field patch preserves omitted write-only state |
 | `SubmitFeedback` | complete | private rating and optional note preserve Runtime's opaque target |
 | `MemoryConfirmation` | complete | capability-gated latest-only list and explicit revision-bound decision |
-| `UserProfile` | designed | owner-scoped typed CRUD, privacy controls, export, and conflict reload |
+| `UserProfile` | complete | owner-scoped typed CRUD, privacy controls, export, and conflict reload |
 | `IdentityBinding` | designed | one-time challenge handling, confirm/resolve, and revision-bound unlink |
 | `AgentAdmin`, `RegistryAdmin` | designed | redacted inspection plus explicit revisioned mutation surfaces |
 | `ReattachSession` | complete end-to-end | 4 MiB bounded live-event replay; truncation is failed-visible |
@@ -65,7 +65,7 @@ execution, persistence, or policy ownership moved into Desktop.
 | `SessionConfig` | complete | sparse overrides, effective values, revision, and provenance |
 | feedback responses | complete | acknowledgement settles only an in-flight feedback submission |
 | memory responses | complete | pending replaces selected-Session queue; recorded settles matching candidate; conflict preserves and refreshes it |
-| profile responses | designed | owner-visible ephemeral projection; no transcript, diagnostics, or local persistence |
+| profile responses | complete | owner-visible ephemeral projection; no transcript, diagnostics, or local persistence |
 | identity responses | designed | one-time secret lifecycle and binding revision projection |
 | admin responses | designed | redacted views, typed conflicts, and no optimistic activation/rollback |
 | `ContextReport`, compaction lifecycle | complete | provider usage, sources, cache, completion/failure |

@@ -78,6 +78,23 @@ describe("useRuntime user profile", () => {
     act(() => gateway.emit({ type: "message", message: {
       type: "user_profile",
       response: {
+        result: "read",
+        version: 1,
+        profile: {
+          revision: 99,
+          profile,
+          do_not_learn: false,
+          created_at_unix_secs: 10,
+          updated_at_unix_secs: 99,
+        },
+      },
+    } }));
+    expect(view.result.current.state.userProfile.status).toBe("submitting");
+    expect(view.result.current.state.userProfile.profile?.revision).toBe(4);
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "user_profile",
+      response: {
         result: "error",
         version: 1,
         error: { code: "conflict", operation: "update", current_revision: 5 },

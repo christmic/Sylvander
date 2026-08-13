@@ -534,6 +534,153 @@ describe("Sylvander Work", () => {
     }));
   });
 
+  it("edits the authenticated owner's typed profile without raw JSON", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 6, capabilities: ["user_profile_v1"] },
+    }));
+
+    act(() => screen.getByRole("button", { name: "Account settings" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "user_profile",
+      request: { version: 1, action: { operation: "read" } },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "user_profile",
+      response: { result: "not_found", version: 1 },
+    } }));
+
+    const language = await screen.findByRole("textbox", { name: "Preferred language" });
+    fireEvent.change(language, { target: { value: "zh-CN" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Language privacy" }), {
+      target: { value: "restricted" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Response detail" }), {
+      target: { value: "concise" },
+    });
+    act(() => screen.getByRole("button", { name: "Add constraint" }).click());
+    fireEvent.change(screen.getByRole("textbox", { name: "Constraint 1" }), {
+      target: { value: "Never expose secrets" },
+    });
+    act(() => screen.getByRole("button", { name: "Create profile" }).click());
+    const createdData = {
+      preferred_language: { value: "zh-CN", privacy_class: "restricted" as const },
+      response_detail: { value: "concise" as const, privacy_class: "personal" as const },
+      constraints: [{ value: "Never expose secrets", privacy_class: "sensitive" as const }],
+    };
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "user_profile",
+      request: { version: 1, action: { operation: "create", profile: createdData } },
+    }));
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "user_profile",
+      response: {
+        result: "created",
+        version: 1,
+        profile: {
+          revision: 1,
+          profile: createdData,
+          do_not_learn: false,
+          created_at_unix_secs: 10,
+          updated_at_unix_secs: 10,
+        },
+      },
+    } }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Preferred language" }), {
+      target: { value: "zh-TW" },
+    });
+    act(() => screen.getByRole("button", { name: "Save profile" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toMatchObject({
+      type: "user_profile",
+      request: {
+        action: {
+          operation: "update",
+          expected_revision: 1,
+          profile: { preferred_language: { value: "zh-TW", privacy_class: "restricted" } },
+        },
+      },
+    }));
+
+    const updatedData = {
+      ...createdData,
+      preferred_language: { value: "zh-TW", privacy_class: "restricted" as const },
+    };
+    act(() => gateway.emit({ type: "message", message: {
+      type: "user_profile",
+      response: {
+        result: "updated",
+        version: 1,
+        profile: {
+          revision: 2,
+          profile: updatedData,
+          do_not_learn: false,
+          created_at_unix_secs: 10,
+          updated_at_unix_secs: 20,
+        },
+      },
+    } }));
+    act(() => screen.getByRole("button", { name: "Do not learn" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "user_profile",
+      request: {
+        version: 1,
+        action: { operation: "set_do_not_learn", expected_revision: 2, enabled: true },
+      },
+    }));
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "user_profile",
+      response: {
+        result: "do_not_learn_updated",
+        version: 1,
+        profile: {
+          revision: 3,
+          profile: updatedData,
+          do_not_learn: true,
+          created_at_unix_secs: 10,
+          updated_at_unix_secs: 30,
+        },
+      },
+    } }));
+    expect(await screen.findByRole("button", { name: "Allow learning" })).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Prepare JSON export" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "user_profile",
+      request: { version: 1, action: { operation: "export", format: "json" } },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "user_profile",
+      response: {
+        result: "exported",
+        version: 1,
+        export: {
+          schema_version: 1,
+          format: "json",
+          profile: {
+            revision: 3,
+            profile: updatedData,
+            do_not_learn: true,
+            created_at_unix_secs: 10,
+            updated_at_unix_secs: 30,
+          },
+          exported_at_unix_secs: 40,
+        },
+      },
+    } }));
+    expect(await screen.findByRole("button", { name: "Download JSON export" })).toBeTruthy();
+
+    act(() => screen.getByRole("button", { name: "Delete profile…" }).click());
+    act(() => screen.getByRole("button", { name: "Confirm profile deletion" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "user_profile",
+      request: { version: 1, action: { operation: "delete", expected_revision: 3 } },
+    }));
+  });
+
   it("requests interruption once and waits for the Runtime terminal", async () => {
     const gateway = new TestGateway();
     render(<App gateway={gateway} />);

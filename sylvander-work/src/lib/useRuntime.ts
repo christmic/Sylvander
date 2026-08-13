@@ -471,8 +471,11 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         break;
       }
       case "user_profile": {
-        if (!userProfileRequestRef.current) break;
         const response = message.response;
+        const pendingOperation = userProfileRequestRef.current;
+        if (!pendingOperation) break;
+        const responseOperation = profileResponseOperation(response);
+        if (responseOperation && responseOperation !== pendingOperation) break;
         userProfileRequestRef.current = undefined;
         if (response.result === "not_found") {
           setState((current) => ({
@@ -1311,6 +1314,20 @@ function profileSuccessNotice(result: "created" | "read" | "updated" | "correcte
 function profileErrorNotice(code: string, retryAfterMs?: number) {
   const retry = retryAfterMs === undefined ? "" : `; retry in ${retryAfterMs} ms`;
   return `User profile operation failed (${code})${retry}`;
+}
+
+function profileResponseOperation(response: Extract<RuntimeMessage, { type: "user_profile" }>["response"]): RuntimeUserProfileOperation | undefined {
+  switch (response.result) {
+    case "created": return "create";
+    case "read": return "read";
+    case "updated": return "update";
+    case "exported": return "export";
+    case "corrected": return "correct";
+    case "deleted": return "delete";
+    case "do_not_learn_updated": return "set_do_not_learn";
+    case "error": return response.error.operation;
+    case "not_found": return undefined;
+  }
 }
 
 function sameDeltaTarget(left: PendingDelta, right: PendingDelta): boolean {
