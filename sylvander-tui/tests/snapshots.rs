@@ -169,6 +169,9 @@ fn unknown_tool_degrades_to_a_visible_redacted_step() {
     let mut state = AppState::new();
     state.connected = true;
     state.tool_details_expanded = true;
+    state.apply(DomainEvent::TurnStarted {
+        turn_id: "turn-future-tool".into(),
+    });
     state.apply(DomainEvent::ToolStarted {
         call_id: "future-call".into(),
         tool_name: "future_extension_tool".into(),
@@ -622,6 +625,9 @@ fn file_mention_picker_is_a_focused_workspace_surface() {
 fn seed_state() -> AppState {
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
+    s.apply(DomainEvent::TurnStarted {
+        turn_id: "turn-full-panel".into(),
+    });
     s.messages.push(ChatMessage::User("Add JWT auth.".into()));
     s.apply(DomainEvent::TextChunk {
         delta: "Inspecting router.".into(),
@@ -772,6 +778,9 @@ fn full_panel_at_user_terminal_size_140x40() {
     // sylvander-tui-ux-design.md §5 (Canonical Conversation Screen).
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
+    s.apply(DomainEvent::TurnStarted {
+        turn_id: "turn-canonical-tools".into(),
+    });
     s.messages
         .push(ChatMessage::User("Add JWT auth middleware".into()));
     s.apply(DomainEvent::TextChunk {
@@ -858,10 +867,12 @@ fn design_disconnected_state_120x36() {
 #[test]
 fn design_working_state_120x36() {
     // Status row shows the Working glyph (`◐` in blue) when the agent
-    // is iterating — observational: any pending ToolStep child or
-    // non-empty streaming buffer triggers this.
+    // is iterating, based on Runtime's authoritative turn-start fact.
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
+    s.apply(DomainEvent::TurnStarted {
+        turn_id: "turn-working".into(),
+    });
     s.apply(DomainEvent::ToolStarted {
         call_id: "call-1".into(),
         tool_name: "bash".into(),
@@ -894,6 +905,9 @@ fn expanded_tool_details_show_structured_input_and_output() {
     let mut state = AppState::new();
     state.apply(DomainEvent::Connected);
     state.tool_details_expanded = true;
+    state.apply(DomainEvent::TurnStarted {
+        turn_id: "turn-expanded-tool".into(),
+    });
     state
         .messages
         .push(ChatMessage::User("run the tests".into()));
