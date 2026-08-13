@@ -38,6 +38,7 @@ src/
 │   └── run/               # cohesive services used by turn orchestration
 │       ├── interaction.rs # approval, question, and plan decision gates
 │       ├── background.rs  # isolated background Agent task lifecycle
+│       ├── projection.rs  # Agent/storage facts mapped to public Runtime APIs
 │       └── error.rs       # run failures and persistence operation context
 ├── session/               # context, authenticated boundary, identity binding
 ├── registry/              # Agent/model/provider revision governance
@@ -65,6 +66,8 @@ responsibility and state boundary. `agent/run/interaction.rs` owns pending
 approval, question, and plan state together with their timeout and
 bus-publication rules. `agent/run/background.rs` owns cancellation, timeout,
 progress, and terminal publication for isolated background Agent work.
+`agent/run/projection.rs` is the type boundary from internal Agent and storage
+facts to public Runtime and governance DTOs; it contains no orchestration.
 `agent/run.rs` composes these services but does not implement their protocols.
 A directory containing only a renamed former file does not satisfy this
 physical-layout rule.

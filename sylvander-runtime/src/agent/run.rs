@@ -49,8 +49,7 @@ use crate::agent::approval::{ApprovalGrantContext, ApprovalMemory, approval_poli
 use crate::agent_definition::{AgentId, AgentSpec, SessionId};
 use crate::execution::RuntimeExecutionService;
 use crate::observability::{
-    RuntimeEvent, RuntimeFailureKind, RuntimeObservability, RuntimePersistenceOperation,
-    RuntimeToolFailureKind,
+    RuntimeEvent, RuntimeObservability, RuntimePersistenceOperation, RuntimeToolFailureKind,
 };
 use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionContext, SessionMetadata, now_secs};
@@ -59,7 +58,7 @@ use crate::storage::session::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
     SessionStoreError, StoredSession, ToolCallCompletion,
     ToolCallFailureKind as StoredToolCallFailureKind, ToolCallStart, ToolCallState, TurnCompletion,
-    TurnFailureKind, TurnStart, TurnState,
+    TurnStart, TurnState,
 };
 use crate::storage::workspace_journal::{RollbackPreview, RollbackReport, WorkspaceJournal};
 use sylvander_agent::approval::{ApprovalDecision, ApprovalGate};
@@ -81,14 +80,12 @@ use sylvander_agent::tool::invocation::{
     CapabilityFeatureKind, ToolInvocationDescriptor, ToolInvocationGateway,
 };
 use sylvander_agent::tool::{
-    RegisteredTool, ToolFailureKind as AgentToolFailureKind, ToolRegistry, ToolSourceFeature,
-    ToolSourceKind, ToolSourceStatus,
+    RegisteredTool, ToolFailureKind as AgentToolFailureKind, ToolRegistry,
 };
 use sylvander_agent::tool_context::{Cap, NetworkPolicy, ToolContext};
 use sylvander_agent::tools::{MemoryReadTool, ReadTool};
 use sylvander_agent::turn::conversation::ConversationSnapshot;
 use sylvander_agent::turn::error::AgentLoopError;
-use sylvander_agent::turn::event::ModelRetryCause;
 use sylvander_agent::turn::execution_context::{AgentExecutionContext, ExecutionWorkspace};
 use sylvander_agent::turn::identity::{
     AgentId as KernelAgentId, SessionId as KernelSessionId, UserId as KernelUserId,
@@ -115,6 +112,7 @@ use sylvander_channel::{MessageBus, SubscriptionFilter};
 mod background;
 mod error;
 mod interaction;
+mod projection;
 #[path = "workspace_context.rs"]
 mod workspace_context;
 
@@ -125,64 +123,11 @@ use interaction::{
     BusApprovalGate, BusAskUserGate, BusPlanGate, DenyAllApprovalGate, PendingAnswer,
     PendingApproval, PendingPlan, normalize_rejection_reason, publish_interaction_timeout,
 };
-
-/// Translate an authenticated API decision into the Agent kernel decision.
-///
-/// Protocol types terminate at this Runtime boundary; the Agent kernel only
-/// receives its provider-neutral domain decision.
-fn agent_plan_decision(decision: &sylvander_api::PlanDecision) -> PlanDecision {
-    match decision {
-        sylvander_api::PlanDecision::Approved => PlanDecision::Approved,
-        sylvander_api::PlanDecision::Revised { steps } => PlanDecision::Revised {
-            steps: steps.clone(),
-        },
-        sylvander_api::PlanDecision::Rejected { reason } => PlanDecision::Rejected {
-            reason: reason.clone(),
-        },
-    }
-}
-
-/// Translate an internal retry classification into the versioned public API.
-fn public_retry_cause(cause: ModelRetryCause) -> sylvander_api::RetryCause {
-    match cause {
-        ModelRetryCause::RateLimit => sylvander_api::RetryCause::RateLimit,
-        ModelRetryCause::Server => sylvander_api::RetryCause::Server,
-        ModelRetryCause::Network => sylvander_api::RetryCause::Network,
-        ModelRetryCause::Stream => sylvander_api::RetryCause::Stream,
-        ModelRetryCause::Other => sylvander_api::RetryCause::Other,
-    }
-}
-
-/// Translate Agent execution facts to Runtime's current public inspection DTO.
-fn public_tool_feature(feature: ToolSourceFeature) -> PlatformFeature {
-    PlatformFeature {
-        kind: match feature.kind {
-            ToolSourceKind::Mcp => PlatformFeatureKind::Mcp,
-            ToolSourceKind::Hook => PlatformFeatureKind::Hook,
-            ToolSourceKind::Extension => PlatformFeatureKind::Extension,
-        },
-        name: feature.name,
-        status: match feature.status {
-            ToolSourceStatus::Active => PlatformFeatureStatus::Active,
-            ToolSourceStatus::Configured => PlatformFeatureStatus::Configured,
-            ToolSourceStatus::Degraded => PlatformFeatureStatus::Degraded,
-            ToolSourceStatus::Unavailable => PlatformFeatureStatus::Unavailable,
-        },
-        summary: feature.summary,
-        source: feature.source,
-        trust: Some(match feature.kind {
-            ToolSourceKind::Hook => PlatformTrust::User,
-            ToolSourceKind::Mcp | ToolSourceKind::Extension => PlatformTrust::External,
-        }),
-        auth: if feature.requires_authentication {
-            PlatformAuthStatus::Configured
-        } else {
-            PlatformAuthStatus::NotRequired
-        },
-        capabilities: feature.capabilities,
-        reloadable: feature.reloadable,
-    }
-}
+use projection::{
+    agent_plan_decision, compaction_summary, public_capability_names, public_compaction_report,
+    public_retry_cause, public_tool_feature, runtime_failure_kind, runtime_persistence_operation,
+    turn_failure_kind, usage_cost_nano_usd,
+};
 
 fn turn_system_instructions(
     system_prompt: &str,
@@ -401,57 +346,6 @@ impl RuntimeModels {
             models,
         }
     }
-}
-
-fn public_capability_names(capabilities: ModelCapabilities) -> Vec<sylvander_api::ModelCapability> {
-    [
-        (
-            ModelCapabilities::REASONING,
-            sylvander_api::ModelCapability::ExtendedThinking,
-        ),
-        (
-            ModelCapabilities::PROMPT_CACHING,
-            sylvander_api::ModelCapability::PromptCaching,
-        ),
-        (
-            ModelCapabilities::STRUCTURED_OUTPUT,
-            sylvander_api::ModelCapability::StructuredOutput,
-        ),
-        (
-            ModelCapabilities::TOOL_USE,
-            sylvander_api::ModelCapability::ToolUse,
-        ),
-        (
-            ModelCapabilities::VISION,
-            sylvander_api::ModelCapability::Vision,
-        ),
-        (
-            ModelCapabilities::DOCUMENT_INPUT,
-            sylvander_api::ModelCapability::DocumentInput,
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(flag, name)| capabilities.contains(flag).then_some(name))
-    .collect()
-}
-
-fn usage_cost_nano_usd(pricing: sylvander_api::ModelPricing, usage: &TokenUsage) -> Option<u64> {
-    fn component(tokens: u64, rate: u64) -> u128 {
-        // rate is micro-USD / 1M tokens; nano-USD therefore divides by 1,000.
-        (u128::from(tokens) * u128::from(rate) + 500) / 1_000
-    }
-
-    let cache_write = usage.cache_write_tokens.unwrap_or(0);
-    let cache_read = usage.cache_read_tokens.unwrap_or(0);
-    let mut total = component(usage.input_tokens, pricing.input_usd_micros_per_million)
-        + component(usage.output_tokens, pricing.output_usd_micros_per_million);
-    if cache_write > 0 {
-        total += component(cache_write, pricing.cache_write_usd_micros_per_million?);
-    }
-    if cache_read > 0 {
-        total += component(cache_read, pricing.cache_read_usd_micros_per_million?);
-    }
-    total.try_into().ok()
 }
 
 /// A running agent instance — cheap `Clone` handle.
@@ -1519,30 +1413,6 @@ impl AgentRun {
         Arc::ptr_eq(&self.inner.session_authority, &session.authority)
             .then_some(&session.session_id)
             .ok_or(MemoryStoreError::AccessDenied)
-    }
-}
-
-fn compaction_summary(layers: &[sylvander_agent::compress::layer::LayerReport]) -> Option<String> {
-    layers.iter().find_map(|layer| {
-        layer
-            .details
-            .as_ref()?
-            .get("summary")?
-            .as_str()
-            .map(str::to_owned)
-    })
-}
-
-fn public_compaction_report(
-    automatic: bool,
-    layers: &[sylvander_agent::compress::layer::LayerReport],
-) -> sylvander_api::CompactionReport {
-    sylvander_api::CompactionReport {
-        automatic,
-        removed_messages: sylvander_agent::compress::layer::total_removed(layers),
-        condensed_blocks: sylvander_agent::compress::layer::total_condensed(layers),
-        freed_tokens: sylvander_agent::compress::layer::total_freed(layers),
-        summary: compaction_summary(layers),
     }
 }
 
@@ -3262,45 +3132,6 @@ struct TurnCorrelation {
     turn: String,
     request: String,
     trace: String,
-}
-
-fn runtime_failure_kind(error: &AgentRunError) -> RuntimeFailureKind {
-    match error {
-        AgentRunError::UnknownSession(_) => RuntimeFailureKind::UnknownSession,
-        AgentRunError::Authentication(_) => RuntimeFailureKind::Authentication,
-        AgentRunError::Loop(_) => RuntimeFailureKind::AgentLoop,
-        AgentRunError::Build(_) | AgentRunError::Configuration(_) => {
-            RuntimeFailureKind::Configuration
-        }
-        AgentRunError::SessionPersistence { .. } => RuntimeFailureKind::Persistence,
-    }
-}
-
-fn turn_failure_kind(error: &AgentRunError) -> TurnFailureKind {
-    match error {
-        AgentRunError::UnknownSession(_) => TurnFailureKind::UnknownSession,
-        AgentRunError::Authentication(_) => TurnFailureKind::Authentication,
-        AgentRunError::Loop(_) => TurnFailureKind::AgentLoop,
-        AgentRunError::Build(_) | AgentRunError::Configuration(_) => TurnFailureKind::Configuration,
-        AgentRunError::SessionPersistence { .. } => TurnFailureKind::Persistence,
-    }
-}
-
-fn runtime_persistence_operation(
-    operation: SessionPersistenceOperation,
-) -> RuntimePersistenceOperation {
-    match operation {
-        SessionPersistenceOperation::InspectSession => RuntimePersistenceOperation::InspectSession,
-        SessionPersistenceOperation::CreateSession => RuntimePersistenceOperation::CreateSession,
-        SessionPersistenceOperation::RestoreHistory => RuntimePersistenceOperation::RestoreHistory,
-        SessionPersistenceOperation::BeginTurn => RuntimePersistenceOperation::BeginTurn,
-        SessionPersistenceOperation::BeginToolCall => RuntimePersistenceOperation::BeginToolCall,
-        SessionPersistenceOperation::FinishToolCall => RuntimePersistenceOperation::FinishToolCall,
-        SessionPersistenceOperation::RecordUsage => RuntimePersistenceOperation::RecordUsage,
-        SessionPersistenceOperation::CompleteTurn => RuntimePersistenceOperation::CompleteTurn,
-        SessionPersistenceOperation::FinishTurn => RuntimePersistenceOperation::FinishTurn,
-        SessionPersistenceOperation::ReplaceHistory => RuntimePersistenceOperation::ReplaceHistory,
-    }
 }
 
 impl TurnCorrelation {
