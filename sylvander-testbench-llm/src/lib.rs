@@ -4,9 +4,11 @@
 //! journeys. Provider crates retain their deterministic protocol tests and do
 //! not depend on this crate.
 
+mod live;
 mod matrix;
 mod result;
 
+pub use live::{LiveLimits, run_live_cell};
 pub use matrix::{
     Applicability, BenchMatrix, BenchScenario, MatrixCell, MatrixCoordinate, ModelBinding,
     ProtocolBinding,
