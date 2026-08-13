@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sylvander Work",
+  "version": "0.1.0",
+  "identifier": "dev.sylvander.work",
+  "build": {
+    "beforeDevCommand": "npm run dev:web",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build:web",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self'"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Sylvander Work",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 680,
+        "minHeight": 560,
+        "center": true,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "../../docs/design/final-brand/sylvander-seed-crab-character-square.png"
+    ],
+    "targets": "all"
+  }
+}

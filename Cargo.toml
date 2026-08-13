@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "sylvander-work/src-tauri",
     "sylvander-api",
     "sylvander-channel",
     "sylvander-channel-dingtalk",
