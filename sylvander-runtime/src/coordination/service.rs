@@ -4,6 +4,7 @@ mod arbitration;
 mod define;
 mod handoff;
 mod message;
+mod relation;
 mod spawn;
 
 use std::sync::Arc;
@@ -111,6 +112,32 @@ pub enum DefineAgentOutcome {
     Created(AgentInstance),
     CreatedByModerator {
         participant: AgentInstance,
+        decision: ModeratorDecision,
+    },
+    RequiresArbitration {
+        case: ArbitrationCase,
+        assessment: GovernanceAssessment,
+    },
+    RejectedByModerator {
+        case: ArbitrationCase,
+        decision: ModeratorDecision,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RelateAgentsRequest {
+    pub session_id: SessionId,
+    pub requested_by: AgentInstanceId,
+    pub source: AgentInstanceId,
+    pub target: AgentInstanceId,
+    pub kind: AgentRelationKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelateAgentsOutcome {
+    Applied(SessionTopology),
+    AppliedByModerator {
+        topology: SessionTopology,
         decision: ModeratorDecision,
     },
     RequiresArbitration {
@@ -379,6 +406,8 @@ pub enum CoordinationServiceError {
     UnknownArbitration,
     #[error("handoff decision was not issued by its governed arbitrator")]
     UnauthorizedArbitrator,
+    #[error("Agent actor is not authorized for this coordination intent")]
+    UnauthorizedActor,
     #[error("recipient is not reachable in the governed topology")]
     Unroutable,
     #[error("coordination durable facts are invalid: {0}")]

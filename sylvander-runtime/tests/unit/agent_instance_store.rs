@@ -17,7 +17,7 @@ use crate::coordination::mailbox::{
 use crate::coordination::service::{
     CoordinationService, DefineAgentOutcome, DefineAgentRequest, DispatchMessageOutcome,
     DispatchMessageRequest, ForkAgentOutcome, ForkAgentRequest, ProposeHandoffRequest,
-    ReportWaitRequest,
+    RelateAgentsOutcome, RelateAgentsRequest, ReportWaitRequest,
 };
 use crate::coordination::task::{CoordinationTask, CoordinationTaskState, TaskDependency};
 use crate::coordination::topology::{AgentRelation, AgentRelationKind, SessionTopology};
@@ -233,6 +233,57 @@ async fn defined_agent_joins_with_exact_configuration_atomically() {
         service.define_agent(request, 21).await.unwrap(),
         DefineAgentOutcome::Created(created)
     );
+}
+
+#[tokio::test]
+async fn peer_and_review_relations_evolve_without_rewriting_ownership() {
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    store.save(&stored_session()).await.unwrap();
+    let membership = membership();
+    store
+        .save_session_membership(&membership, None)
+        .await
+        .unwrap();
+    store
+        .save_topology(&topology(&membership), &membership, None)
+        .await
+        .unwrap();
+    let service = CoordinationService::new(store, GovernancePolicy::default(), 30);
+    let peer = RelateAgentsRequest {
+        session_id: membership.session_id.clone(),
+        requested_by: AgentInstanceId::new("worker-1"),
+        source: AgentInstanceId::new("worker-1"),
+        target: AgentInstanceId::new("coordinator-1"),
+        kind: AgentRelationKind::Peer,
+    };
+    let RelateAgentsOutcome::Applied(topology) =
+        service.relate_agents(peer.clone(), 20).await.unwrap()
+    else {
+        panic!("peer relation should be admitted");
+    };
+    assert_eq!(topology.topology_revision, 1);
+    let RelateAgentsOutcome::Applied(unchanged) = service.relate_agents(peer, 21).await.unwrap()
+    else {
+        panic!("duplicate peer relation should be idempotent");
+    };
+    assert_eq!(unchanged.topology_revision, 1);
+    let RelateAgentsOutcome::Applied(reviewed) = service
+        .relate_agents(
+            RelateAgentsRequest {
+                session_id: membership.session_id,
+                requested_by: AgentInstanceId::new("coordinator-1"),
+                source: AgentInstanceId::new("coordinator-1"),
+                target: AgentInstanceId::new("worker-1"),
+                kind: AgentRelationKind::Reviews,
+            },
+            22,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("review relation should be admitted");
+    };
+    assert_eq!(reviewed.topology_revision, 2);
 }
 
 #[tokio::test]
