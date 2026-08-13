@@ -9,6 +9,9 @@ export type RuntimeCommand =
   | { type: "discover_agents" }
   | { type: "list_sessions" }
   | { type: "load_session"; session_id: string }
+  | { type: "rename_session"; session_id: string; label: string }
+  | { type: "archive_session"; session_id: string }
+  | { type: "delete_session"; session_id: string }
   | { type: "chat"; text: string; attachments: []; session_id?: string }
   | { type: "approve"; session_id: string; call_id: string; approved: boolean; scope: "once"; reason?: string }
   | { type: "interrupt"; session_id: string }

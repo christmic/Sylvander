@@ -118,6 +118,61 @@ describe("Sylvander Work", () => {
     ]));
   });
 
+  it("waits for Runtime facts before renaming, archiving, or deleting Sessions", async () => {
+    const gateway = new TestGateway();
+    render(<App gateway={gateway} />);
+    await waitFor(() => expect(gateway.listener).toBeTypeOf("function"));
+    act(() => gateway.emit({
+      type: "connected",
+      protocol: { server_name: "test-runtime", version: 5, capabilities: [] },
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-1", label: "Original", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    await screen.findByRole("heading", { name: "Original" });
+
+    act(() => screen.getByRole("button", { name: "Session actions" }).click());
+    fireEvent.change(screen.getByRole("textbox", { name: "Session label" }), {
+      target: { value: "Renamed" },
+    });
+    act(() => screen.getByRole("button", { name: "Rename" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "rename_session", session_id: "session-1", label: "Renamed",
+    }));
+    expect(screen.getByRole("heading", { name: "Original" })).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_updated", session_id: "session-1", label: "Renamed", archived: false,
+    } }));
+    await screen.findByRole("heading", { name: "Renamed" });
+
+    act(() => screen.getByRole("button", { name: "Session actions" }).click());
+    act(() => screen.getByRole("button", { name: "Archive" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "archive_session", session_id: "session-1",
+    }));
+    expect(screen.getByRole("heading", { name: "Renamed" })).toBeTruthy();
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_updated", session_id: "session-1", archived: true,
+    } }));
+    await screen.findByRole("heading", { name: "No Session selected" });
+
+    act(() => gateway.emit({ type: "message", message: {
+      type: "sessions_list",
+      sessions: [{ id: "session-2", label: "Delete me", workspace: "/workspace", last_seen_secs: 1 }],
+    } }));
+    await screen.findByRole("heading", { name: "Delete me" });
+    act(() => screen.getByRole("button", { name: "Session actions" }).click());
+    act(() => screen.getByRole("button", { name: "Delete permanently" }).click());
+    await waitFor(() => expect(gateway.commands.at(-1)).toEqual({
+      type: "delete_session", session_id: "session-2",
+    }));
+    act(() => gateway.emit({ type: "message", message: {
+      type: "session_deleted", session_id: "session-2",
+    } }));
+    await screen.findByRole("heading", { name: "No Session selected" });
+  });
+
   it("reconnects with the native gateway after an established link drops", async () => {
     vi.useFakeTimers();
     try {

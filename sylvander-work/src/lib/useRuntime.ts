@@ -120,6 +120,37 @@ export function useRuntime(injectedGateway?: RuntimeGatewayPort) {
         void submit({ type: "list_sessions" });
         void submit({ type: "load_session", session_id: message.session_id });
         break;
+      case "session_updated":
+        if (message.archived) {
+          if (selectedRef.current === message.session_id) selectedRef.current = undefined;
+          setState((current) => ({
+            ...current,
+            selectedId: current.selectedId === message.session_id ? undefined : current.selectedId,
+            sessions: current.sessions.filter((session) => session.id !== message.session_id),
+            transcript: current.selectedId === message.session_id ? [] : current.transcript,
+            plan: current.selectedId === message.session_id ? [] : current.plan,
+            tasks: current.selectedId === message.session_id ? [] : current.tasks,
+          }));
+        } else {
+          setState((current) => ({
+            ...current,
+            sessions: current.sessions.map((session) => session.id === message.session_id
+              ? { ...session, label: message.label ?? session.label }
+              : session),
+          }));
+        }
+        break;
+      case "session_deleted":
+        if (selectedRef.current === message.session_id) selectedRef.current = undefined;
+        setState((current) => ({
+          ...current,
+          selectedId: current.selectedId === message.session_id ? undefined : current.selectedId,
+          sessions: current.sessions.filter((session) => session.id !== message.session_id),
+          transcript: current.selectedId === message.session_id ? [] : current.transcript,
+          plan: current.selectedId === message.session_id ? [] : current.plan,
+          tasks: current.selectedId === message.session_id ? [] : current.tasks,
+        }));
+        break;
       case "text_delta":
         enqueueDelta(message.session_id, message.delta);
         break;

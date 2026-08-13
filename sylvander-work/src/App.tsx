@@ -21,6 +21,8 @@ export default function App({ gateway }: AppProps) {
   const [createOpen, setCreateOpen] = useState(false);
   const [newSessionLabel, setNewSessionLabel] = useState("New session");
   const [newSessionAgentId, setNewSessionAgentId] = useState("");
+  const [sessionActionsOpen, setSessionActionsOpen] = useState(false);
+  const [sessionLabel, setSessionLabel] = useState("");
   const [compactLayout, setCompactLayout] = useState(() =>
     typeof matchMedia === "function" && matchMedia("(max-width: 860px)").matches);
   const selected = state.sessions.find((session) => session.id === state.selectedId);
@@ -46,6 +48,11 @@ export default function App({ gateway }: AppProps) {
   useEffect(() => {
     if (!newSessionAgentId && state.agents[0]) setNewSessionAgentId(state.agents[0].id);
   }, [newSessionAgentId, state.agents]);
+
+  useEffect(() => {
+    setSessionLabel(selected?.label ?? "");
+    setSessionActionsOpen(false);
+  }, [selected?.id, selected?.label]);
 
   function updateDraft(value: string) {
     if (state.selectedId) setDrafts((current) => ({ ...current, [state.selectedId!]: value }));
@@ -125,6 +132,26 @@ export default function App({ gateway }: AppProps) {
     setCreateOpen(false);
   }
 
+  async function renameSession(event: FormEvent) {
+    event.preventDefault();
+    const label = sessionLabel.trim();
+    if (!selected || !label) return;
+    await submit({ type: "rename_session", session_id: selected.id, label });
+    setSessionActionsOpen(false);
+  }
+
+  async function archiveSession() {
+    if (!selected) return;
+    await submit({ type: "archive_session", session_id: selected.id });
+    setSessionActionsOpen(false);
+  }
+
+  async function deleteSession() {
+    if (!selected) return;
+    await submit({ type: "delete_session", session_id: selected.id });
+    setSessionActionsOpen(false);
+  }
+
   return <div className="app-shell">
     <nav className="product-rail" aria-label="Product">
       <div className="brand-mark"><img src={crabMark} alt="Sylvander Seed-Crab" /></div>
@@ -180,7 +207,7 @@ export default function App({ gateway }: AppProps) {
         </div>
         <div className="header-actions">
           <button className="quiet-button" onClick={() => setInspectorOpen(!inspectorOpen)} aria-pressed={inspectorOpen}>Plan <span>{state.plan.filter((step) => step.state === "complete").length}/{state.plan.length}</span></button>
-          <button className="icon-button" aria-label="Session actions">···</button>
+          <button className="icon-button" aria-label="Session actions" disabled={!selected} onClick={() => setSessionActionsOpen(!sessionActionsOpen)}>···</button>
         </div>
       </header>
 
@@ -207,6 +234,7 @@ export default function App({ gateway }: AppProps) {
       </section>
 
       <div className="interaction-zone">
+        {sessionActionsOpen && selected && <form className="decision-dock" aria-labelledby="session-actions-title" onSubmit={(event) => void renameSession(event)}><div className="decision-icon" aria-hidden="true">···</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="session-actions-title">Manage {selected.label}</h3><label>Name<input aria-label="Session label" value={sessionLabel} onChange={(event) => setSessionLabel(event.target.value)} /></label><p>Archive hides the Session from active work. Delete permanently removes it through Runtime policy.</p></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => void archiveSession()}>Archive</button><button type="button" className="secondary-button" onClick={() => void deleteSession()}>Delete permanently</button><button className="primary-button" disabled={!sessionLabel.trim()}>Rename</button></div></form>}
         {createOpen && <form className="decision-dock" aria-labelledby="create-session-title" onSubmit={(event) => void createSession(event)}><div className="decision-icon" aria-hidden="true">＋</div><div className="decision-copy"><span className="eyebrow">Runtime Session</span><h3 id="create-session-title">Create Session</h3><label>Name<input aria-label="Session name" value={newSessionLabel} onChange={(event) => setNewSessionLabel(event.target.value)} /></label><label>Agent<select aria-label="Session Agent" value={newSessionAgentId} onChange={(event) => setNewSessionAgentId(event.target.value)}>{state.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.providerId}/{agent.modelId}</option>)}</select></label></div><div className="decision-actions"><button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-button" disabled={!newSessionLabel.trim() || !newSessionAgentId}>Create</button></div></form>}
         {state.question && <form className="decision-dock" aria-labelledby="question-title" onSubmit={(event) => void submitQuestion(event)}>
           <div className="decision-icon" aria-hidden="true">?</div>

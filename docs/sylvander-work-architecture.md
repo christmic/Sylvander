@@ -135,6 +135,12 @@ defaults. Desktop never allocates a Session identifier or inserts an optimistic
 Session row. It selects and loads the Session only after `SessionCreated`, then
 refreshes Runtime's authoritative Session list.
 
+Rename, archive, and permanent delete send only their public Session commands.
+The desktop does not mutate its Session list on button submission: label and
+membership change only on `SessionUpdated` or `SessionDeleted`. Removing the
+selected Session also clears its ephemeral transcript, plan, and task
+projection so stale work is never displayed under an empty selection.
+
 The Tauri shell is restricted to window lifecycle, bounded Runtime transport,
 native dialogs, notifications, and future signed updates. Every capability is
 deny-by-default and scoped to the main window. Shell commands and filesystem
