@@ -184,19 +184,40 @@ impl AgentRegistry {
     ) -> Result<Option<CognitionActivationRecord>, CognitionActivationError> {
         let agent_id = agent_id.0.clone();
         let revision = sql_u64(revision)?;
-        self.run_with(move |connection| {
-            let id = connection
-                .query_row(
-                    "SELECT proposal_id FROM cognition_activation_proposals \
+        let record = self
+            .run_with(move |connection| {
+                let id = connection
+                    .query_row(
+                        "SELECT proposal_id FROM cognition_activation_proposals \
                  WHERE agent_id=?1 AND agent_revision=?2 AND role=?3 AND state='approved'",
-                    params![agent_id, revision, role_str(role)],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(AgentRegistryError::sqlite)?;
-            id.map_or(Ok(None), |id| load_record(connection, &id).map(Some))
-        })
-        .await
+                        params![agent_id, revision, role_str(role)],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(AgentRegistryError::sqlite)?;
+                id.map_or(Ok(None), |id| load_record(connection, &id).map(Some))
+            })
+            .await?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let stored = self
+            .load(&record.draft.agent_id, record.draft.agent_revision)
+            .await?
+            .ok_or(CognitionActivationError::UnknownAgentRevision)?;
+        let binding = stored
+            .definition
+            .spec
+            .cognition
+            .binding(record.draft.role)
+            .ok_or(CognitionActivationError::RoleNotConfigured)?;
+        if stored.digest != record.draft.agent_definition_sha256 {
+            return Err(CognitionActivationError::AgentDigestMismatch);
+        }
+        if binding.model != record.draft.model {
+            return Err(CognitionActivationError::ModelBindingMismatch);
+        }
+        Ok(Some(record))
     }
 }
 
@@ -278,6 +299,10 @@ fn load_record(
     if hex_digest(row.6.as_bytes()) != row.7 {
         return Err(CognitionActivationError::Integrity);
     }
+    let state = parse_state(&row.8)?;
+    if !valid_state_fact(state, row.9, row.11.as_deref(), row.12.as_deref()) {
+        return Err(CognitionActivationError::Integrity);
+    }
     Ok(CognitionActivationRecord {
         proposal_id: id.to_owned(),
         draft: CognitionActivationDraft {
@@ -292,12 +317,31 @@ fn load_record(
             evidence,
         },
         evidence_sha256: row.7,
-        state: parse_state(&row.8)?,
+        state,
         state_revision: decode_u64(row.9)?,
         proposed_by: row.10,
         approved_by: row.11,
         revoked_by: row.12,
     })
+}
+
+const fn valid_state_fact(
+    state: CognitionActivationState,
+    revision: i64,
+    approved_by: Option<&str>,
+    revoked_by: Option<&str>,
+) -> bool {
+    match state {
+        CognitionActivationState::Proposed => {
+            revision == 1 && approved_by.is_none() && revoked_by.is_none()
+        }
+        CognitionActivationState::Approved => {
+            revision == 2 && approved_by.is_some() && revoked_by.is_none()
+        }
+        CognitionActivationState::Revoked => {
+            revision == 3 && approved_by.is_some() && revoked_by.is_some()
+        }
+    }
 }
 
 fn map_transition_storage(error: rusqlite::Error) -> CognitionActivationError {
@@ -384,3 +428,7 @@ pub enum CognitionActivationError {
     #[error(transparent)]
     Registry(#[from] AgentRegistryError),
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/cognition_activation.rs"]
+mod tests;
