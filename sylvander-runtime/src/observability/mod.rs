@@ -149,6 +149,8 @@ pub(crate) enum RuntimePersistenceOperation {
     BeginTurn,
     /// Persist tool identity before approval or execution.
     BeginToolCall,
+    /// Advance a write-ahead tool effect boundary.
+    AdvanceToolCall,
     /// Persist the tool's unique terminal state.
     FinishToolCall,
     /// Accumulate one provider iteration's usage.
@@ -167,6 +169,7 @@ impl RuntimePersistenceOperation {
     const RESTORE_HISTORY: &'static str = "restore_history";
     const BEGIN_TURN: &'static str = "begin_turn";
     const BEGIN_TOOL_CALL: &'static str = "begin_tool_call";
+    const ADVANCE_TOOL_CALL: &'static str = "advance_tool_call";
     const FINISH_TOOL_CALL: &'static str = "finish_tool_call";
     const RECORD_USAGE: &'static str = "record_usage";
     const COMPLETE_TURN: &'static str = "complete_turn";
@@ -180,6 +183,7 @@ impl RuntimePersistenceOperation {
             Self::RestoreHistory => Self::RESTORE_HISTORY,
             Self::BeginTurn => Self::BEGIN_TURN,
             Self::BeginToolCall => Self::BEGIN_TOOL_CALL,
+            Self::AdvanceToolCall => Self::ADVANCE_TOOL_CALL,
             Self::FinishToolCall => Self::FINISH_TOOL_CALL,
             Self::RecordUsage => Self::RECORD_USAGE,
             Self::CompleteTurn => Self::COMPLETE_TURN,

@@ -807,6 +807,7 @@ enum SessionStoreFailPoint {
     ReadHistory,
     BeginTurn,
     BeginToolCall,
+    AdvanceToolCall,
     FinishToolCall,
     RecordUsage,
     AppendMessage,
@@ -937,6 +938,9 @@ impl SessionStore for FailingSessionStore {
         &self,
         advance: crate::storage::session::ToolCallAdvance,
     ) -> Result<u64, crate::storage::session::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::AdvanceToolCall {
+            return Err(Self::injected());
+        }
         self.inner.advance_tool_call(advance).await
     }
 
@@ -1237,7 +1241,7 @@ async fn persistent_agent_run_closes_executed_and_rejected_tool_lifecycles() {
         assert_eq!(snapshot.tools_started, 1);
         assert_eq!(snapshot.tools_succeeded, succeeded);
         assert_eq!(snapshot.tools_failed, failed);
-        assert_eq!(snapshot.persistence_succeeded, 6);
+        assert_eq!(snapshot.persistence_succeeded, 6 + succeeded);
         assert_eq!(snapshot.persistence_failed, 0);
         assert_eq!(snapshot.active_tools, 0);
     }
@@ -1250,6 +1254,11 @@ async fn durable_tool_persistence_failures_fail_the_turn_and_clear_active_work()
             SessionStoreFailPoint::BeginToolCall,
             SessionPersistenceOperation::BeginToolCall,
             0,
+        ),
+        (
+            SessionStoreFailPoint::AdvanceToolCall,
+            SessionPersistenceOperation::AdvanceToolCall,
+            1,
         ),
         (
             SessionStoreFailPoint::FinishToolCall,

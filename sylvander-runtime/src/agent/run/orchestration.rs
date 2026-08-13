@@ -64,8 +64,9 @@ use crate::prompt_contract::{agent_model_selection, public_prompt_manifest};
 use crate::session::{SessionMetadata, now_secs};
 use crate::storage::artifact::ArtifactTurnBinding;
 use crate::storage::session::{
-    SessionStoreError, ToolCallCompletion, ToolCallFailureKind as StoredToolCallFailureKind,
-    ToolCallStart, ToolCallState, ToolInvocationId, TurnCompletion, TurnStart, TurnState,
+    SessionStoreError, ToolCallAdvance, ToolCallCompletion,
+    ToolCallFailureKind as StoredToolCallFailureKind, ToolCallStart, ToolCallState,
+    ToolExecutionPosition, ToolInvocationId, TurnCompletion, TurnStart, TurnState,
 };
 use crate::storage::workspace_journal::WorkspaceJournal;
 
@@ -912,6 +913,66 @@ impl AgentRunInner {
                     });
                 }
                 sylvander_agent::turn::event::AgentEvent::ToolCallStart { id, name, input } => {
+                    if let Some(store) = &self.session_store {
+                        let durable = store
+                            .tool_calls(&session_id, turn_id)
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::AdvanceToolCall,
+                                    source,
+                                )
+                            })?
+                            .into_iter()
+                            .find(|call| call.call_id == id)
+                            .ok_or_else(|| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::AdvanceToolCall,
+                                    SessionStoreError::Invalid(
+                                        "prepared durable tool call is missing".into(),
+                                    ),
+                                )
+                            })?;
+                        let revision = store
+                            .advance_tool_call(ToolCallAdvance {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.to_owned(),
+                                call_id: id.clone(),
+                                expected_revision: durable.ledger_revision,
+                                expected_position: ToolExecutionPosition::Prepared,
+                                next_position: ToolExecutionPosition::Authorized,
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::AdvanceToolCall,
+                                    source,
+                                )
+                            })?;
+                        store
+                            .advance_tool_call(ToolCallAdvance {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.to_owned(),
+                                call_id: id.clone(),
+                                expected_revision: revision,
+                                expected_position: ToolExecutionPosition::Authorized,
+                                next_position: ToolExecutionPosition::EffectStarted,
+                            })
+                            .await
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::AdvanceToolCall,
+                                    source,
+                                )
+                            })?;
+                        self.observability
+                            .record(RuntimeEvent::PersistenceFinished {
+                                turn_id: turn_id.to_owned(),
+                                session_id: session_id.clone(),
+                                operation: RuntimePersistenceOperation::AdvanceToolCall,
+                                succeeded: true,
+                            });
+                    }
                     if matches!(
                         name.as_str(),
                         "present_plan" | "update_plan" | "start_background_task"
