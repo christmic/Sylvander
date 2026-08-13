@@ -53,6 +53,13 @@ than in Agent scheduling because two product Sessions can mount the same
 physical workspace. It is process-local and does not claim to govern writers
 that bypass Runtime.
 
+Local, OCI, and SSH file writes stage bytes in a uniquely named file in the
+destination directory and rename only after the full input is written. Existing
+ordinary permission bits are preserved. Failure and signal paths remove the
+staging file. This gives readers atomic replacement visibility on conforming
+filesystems; it does not claim cross-device behavior or durable directory
+metadata after host power loss.
+
 Runtime now owns one bounded health worker for that service. Every 30 seconds
 it probes SSH targets with the executor's exact BatchMode, strict known-host,
 identity, and control-socket arguments and a fixed remote `true`; OCI targets

@@ -35,9 +35,24 @@ case $resolved in "$root"/*) ;; *) exit 126;; esac
 total=$(wc -c < "$resolved") || exit 125
 printf '%s\0' "$total"
 exec head -c "$2" "$resolved""#;
-const WRITE_SCRIPT: &str = r#"target=$1
-case $target in */*) mkdir -p -- "${target%/*}" || exit 125;; esac
-exec cat > "$target""#;
+const WRITE_SCRIPT: &str = r#"root=$(pwd -P) || exit 125
+target=$1
+operation=$2
+case $operation in ""|*[!a-f0-9]*) exit 125;; esac
+case $target in */*) parent=${target%/*};; *) parent=.;; esac
+mkdir -p -- "$parent" || exit 125
+resolved_parent=$(cd -P -- "$parent" && pwd -P) || exit 125
+case $resolved_parent in "$root"|"$root"/*) ;; *) exit 126;; esac
+final=$resolved_parent/${target##*/}
+temporary=$resolved_parent/.sylvander-write-$operation
+trap 'rm -f -- "$temporary"' EXIT HUP INT TERM
+umask 077
+if [ -f "$final" ] && [ ! -L "$final" ]; then
+  cp -p -- "$final" "$temporary" || exit 125
+fi
+cat > "$temporary" || exit 125
+mv -f -- "$temporary" "$final" || exit 125
+trap - EXIT HUP INT TERM"#;
 const COMMAND_SCRIPT: &str = "exec sh -s";
 const LIST_SCRIPT: &str = r#"root=$(pwd -P) || exit 125
 start=./$1
@@ -505,7 +520,7 @@ impl WorkspaceExecutor for ContainerExecutor {
             CheckedInvocation {
                 operation: "write",
                 script: WRITE_SCRIPT,
-                arguments: &[relative_path.into()],
+                arguments: &[relative_path.into(), Uuid::new_v4().simple().to_string()],
                 stdin: content,
                 timeout: self.file_operation_timeout,
                 read_only_mount: false,

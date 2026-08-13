@@ -43,6 +43,10 @@ The coordinator is process-local. Deployment policy must not let an unrelated
 writer bypass Runtime when exclusive ownership is required. Atomic replacement
 and crash durability of the final write remain properties of each concrete
 filesystem adapter; the revision contract does not invent those guarantees.
+Runtime's current local, OCI, and SSH adapters stage in the destination
+directory and rename after a complete write, preserving existing ordinary
+permission bits. They do not claim durable directory metadata after host power
+loss.
 
 Command environment overrides are limited to 64 entries. Names must use shell
 identifier syntax, names are at most 128 bytes, values are at most 8 KiB, and

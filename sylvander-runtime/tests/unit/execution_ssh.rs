@@ -125,6 +125,8 @@ async fn write_sends_content_only_on_stdin() {
     assert_eq!(fs::read(&fake.stdin_log).expect("stdin log"), content);
     let argv = fs::read_to_string(&fake.argv_log).expect("argv log");
     assert!(!argv.contains("touch should-not-run"));
+    assert!(argv.contains(".sylvander-write-$operation"));
+    assert!(argv.contains("mv -f -- \"$temporary\" \"$final\""));
 }
 
 #[tokio::test]

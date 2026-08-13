@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -62,6 +63,40 @@ async fn local_executor_contract_covers_bounded_files_queries_and_commands() {
         .unwrap();
     assert_eq!(command.stdout, b"ready");
     assert!(!executor.process_isolation().enforces_sandbox());
+}
+
+#[tokio::test]
+async fn local_write_atomically_replaces_content_and_preserves_mode() {
+    let workspace = tempfile::tempdir().unwrap();
+    let path = workspace.path().join("script.sh");
+    tokio::fs::write(&path, b"before").await.unwrap();
+    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750))
+        .await
+        .unwrap();
+    let target = WorkspaceTarget::local(workspace.path(), false);
+
+    LocalExecutor
+        .write_file(&target, "script.sh", b"after")
+        .await
+        .unwrap();
+
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), b"after");
+    assert_eq!(
+        tokio::fs::metadata(&path)
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o750
+    );
+    assert!(std::fs::read_dir(workspace.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".sylvander-write-")
+    }));
 }
 
 #[tokio::test]

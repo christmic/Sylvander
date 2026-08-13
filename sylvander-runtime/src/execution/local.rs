@@ -23,7 +23,9 @@ use sylvander_agent::workspace_executor::{
     WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
     validate_command_environment,
 };
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
 
 /// Executor for a workspace available on the Sylvander server's filesystem.
 #[derive(Debug, Clone, Copy, Default)]
@@ -75,8 +77,7 @@ impl WorkspaceExecutor for LocalExecutor {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(path, content).await?;
-        Ok(())
+        write_file_atomically(&path, content).await
     }
 
     async fn run_command(
@@ -160,6 +161,32 @@ impl WorkspaceExecutor for LocalExecutor {
             .await
             .map_err(|_| WorkspaceExecutorError::Timeout(limits.timeout))?
     }
+}
+
+async fn write_file_atomically(path: &Path, content: &[u8]) -> Result<(), WorkspaceExecutorError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| WorkspaceExecutorError::InvalidPath(path.display().to_string()))?;
+    let temporary = parent.join(format!(".sylvander-write-{}", Uuid::new_v4().simple()));
+    let result = async {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .await?;
+        if let Ok(metadata) = tokio::fs::metadata(path).await {
+            file.set_permissions(metadata.permissions()).await?;
+        }
+        file.write_all(content).await?;
+        file.sync_all().await?;
+        drop(file);
+        tokio::fs::rename(&temporary, path).await
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result.map_err(WorkspaceExecutorError::from)
 }
 
 async fn list_local(

@@ -41,7 +41,27 @@ fi
 total=$(wc -c < "$resolved") || exit 125
 printf '%s\0' "$total"
 exec head -c "$3" "$resolved""#;
-const WRITE_SCRIPT: &str = "cd -P \"$1\" || exit 125\ntarget=$2\ncase $target in */*) mkdir -p -- \"${target%/*}\" || exit 125;; esac\nexec cat > \"$target\"";
+const WRITE_SCRIPT: &str = r#"cd -P "$1" || exit 125
+root=$(pwd -P) || exit 125
+target=$2
+operation=$3
+case $operation in ""|*[!a-f0-9]*) exit 125;; esac
+case $target in */*) parent=${target%/*};; *) parent=.;; esac
+mkdir -p -- "$parent" || exit 125
+resolved_parent=$(cd -P -- "$parent" && pwd -P) || exit 125
+if [ "$root" != / ]; then
+  case $resolved_parent in "$root"|"$root"/*) ;; *) exit 126;; esac
+fi
+final=$resolved_parent/${target##*/}
+temporary=$resolved_parent/.sylvander-write-$operation
+trap 'rm -f -- "$temporary"' EXIT HUP INT TERM
+umask 077
+if [ -f "$final" ] && [ ! -L "$final" ]; then
+  cp -p -- "$final" "$temporary" || exit 125
+fi
+cat > "$temporary" || exit 125
+mv -f -- "$temporary" "$final" || exit 125
+trap - EXIT HUP INT TERM"#;
 const COMMAND_SCRIPT: &str = r#"cd -P "$1" || exit 125
 operation=$2
 case $operation in ""|*[!a-zA-Z0-9-]*) exit 125;; esac
@@ -602,8 +622,21 @@ impl WorkspaceExecutor for SshExecutor {
         content: &[u8],
     ) -> Result<(), WorkspaceExecutorError> {
         ensure_writable(target)?;
-        self.file_operation(target, relative_path, WRITE_SCRIPT, content)
+        validate_relative(relative_path)?;
+        let remote = Self::remote_query_command(
+            WRITE_SCRIPT,
+            target,
+            &[
+                relative_path.to_owned(),
+                uuid::Uuid::new_v4().simple().to_string(),
+            ],
+        )?;
+        let output = self
+            .invoke(remote, content, Some(self.file_operation_timeout))
             .await?;
+        if !output.status.success() {
+            return Err(remote_failure("file write", &output));
+        }
         Ok(())
     }
 

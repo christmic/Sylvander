@@ -112,6 +112,17 @@ async fn file_query_and_command_contract_runs_in_disposable_container() {
         fs::read(workspace.join("generated/value.txt")).unwrap(),
         b"written"
     );
+    assert!(
+        fs::read_dir(workspace.join("generated"))
+            .unwrap()
+            .all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".sylvander-write-")
+            })
+    );
 
     let listed = executor
         .list(
