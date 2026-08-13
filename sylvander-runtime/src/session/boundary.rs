@@ -1,4 +1,4 @@
-//! Shared ingress limits applied before any UI operation is dispatched.
+//! Shared authenticated-ingress limits applied before UI dispatch.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -140,5 +140,5 @@ impl BoundaryGuard {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/boundary.rs"]
+#[path = "../../tests/unit/boundary.rs"]
 mod tests;

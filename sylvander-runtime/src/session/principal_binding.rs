@@ -1,4 +1,4 @@
-//! Stable user identities and external-channel principal bindings.
+//! Stable user identities and transport-scoped principal bindings.
 //!
 //! External identities are scoped by transport and channel instance. Their
 //! raw identifiers are never persisted: the store retains only a

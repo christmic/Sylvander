@@ -50,7 +50,7 @@ pub mod agent_run;
 /// Runtime-owned lifecycle supervisor for Agents and Sessions.
 pub mod agent_supervisor;
 mod approval_store;
-mod boundary;
+use session::boundary;
 mod capability_runtime;
 /// Target-aware local and remote coding-session isolation.
 pub mod coding_worktree;
@@ -75,7 +75,7 @@ mod guardian;
 use guardian::curation as guardian_curation;
 use guardian::runtime as guardian_runtime;
 #[allow(dead_code)] // runtime ownership/config wiring follows this isolated policy adapter
-mod identity_binding_service;
+use session::identity_binding as identity_binding_service;
 #[cfg(test)]
 #[path = "../tests/unit/identity_binding_service.rs"]
 mod identity_binding_service_tests;
@@ -94,7 +94,7 @@ mod observability;
 #[path = "../tests/unit/observability.rs"]
 mod observability_tests;
 /// Stable user mapping for authenticated transport principals.
-pub mod principal_binding;
+pub use session::principal_binding;
 #[cfg(test)]
 #[path = "../tests/unit/principal_binding.rs"]
 mod principal_binding_tests;

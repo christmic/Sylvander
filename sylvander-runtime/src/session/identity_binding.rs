@@ -1,4 +1,4 @@
-//! Runtime policy and protocol adapter for stable identity binding.
+//! Runtime application policy for stable identity binding.
 
 use std::collections::HashMap;
 use std::time::Duration;

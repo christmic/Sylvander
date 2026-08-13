@@ -1,4 +1,4 @@
-//! Runtime-owned Session context and in-memory conversation state.
+//! Runtime-owned Session context, authenticated ingress, and principal binding.
 //!
 //! Each [`SessionContext`](crate::session::SessionContext) holds the full message history for one agent
 //! in one session. Multiple agents in the same session each have their
@@ -8,6 +8,10 @@
 //! This value is the in-memory turn view. Durable ownership belongs to the
 //! injected [`crate::storage::session::SessionStore`]; production Runtime uses
 //! the SQLite implementation and rebuilds this view from persisted messages.
+
+pub(crate) mod boundary;
+pub(crate) mod identity_binding;
+pub mod principal_binding;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -114,5 +118,5 @@ impl SessionContext {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../tests/unit/session.rs"]
+#[path = "../../tests/unit/session.rs"]
 mod tests;
