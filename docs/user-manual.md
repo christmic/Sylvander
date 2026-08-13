@@ -441,8 +441,8 @@ ws.on("open", () => ws.send(JSON.stringify({
   type: "hello",
   protocol: {
     client_name: "example",
-    min_version: 5,
-    max_version: 5,
+    min_version: 6,
+    max_version: 6,
     capabilities: []
   }
 })));
