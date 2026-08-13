@@ -587,16 +587,51 @@ impl sylvander_llm_core::ModelProvider for CognitionRoutingProvider {
                     "specialist unavailable",
                 ));
             }
-            let text = if request.model.model == "audio-specialist" {
-                "spoken words"
+            let has_cognition_tool = request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "consult_cognition");
+            let has_tool_result = request.messages.iter().any(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+            });
+            let (content, stop_reason) = if request.model.model == "text-specialist" {
+                (
+                    vec![ContentBlock::Text {
+                        text: "bounded specialist advice".into(),
+                    }],
+                    sylvander_llm_core::StopReason::EndTurn,
+                )
+            } else if has_cognition_tool && !has_tool_result {
+                (
+                    vec![ContentBlock::ToolCall {
+                        id: "consult-1".into(),
+                        name: "consult_cognition".into(),
+                        arguments: serde_json::json!({
+                            "role": "deliberation",
+                            "prompt": "analyze the hard part"
+                        }),
+                    }],
+                    sylvander_llm_core::StopReason::ToolUse,
+                )
             } else {
-                "primary answer"
+                let text = if request.model.model == "audio-specialist" {
+                    "spoken words"
+                } else {
+                    "primary answer"
+                };
+                (
+                    vec![ContentBlock::Text { text: text.into() }],
+                    sylvander_llm_core::StopReason::EndTurn,
+                )
             };
             let response = sylvander_llm_core::ModelResponse {
                 id: request.request_id,
                 model: request.model,
-                content: vec![sylvander_llm_core::ContentBlock::Text { text: text.into() }],
-                stop_reason: sylvander_llm_core::StopReason::EndTurn,
+                content,
+                stop_reason,
                 usage: sylvander_llm_core::TokenUsage::default(),
             };
             Ok(Box::pin(futures_util::stream::iter([Ok(
@@ -604,6 +639,124 @@ impl sylvander_llm_core::ModelProvider for CognitionRoutingProvider {
             )])) as sylvander_llm_core::ModelEventStream)
         })
     }
+}
+
+#[tokio::test]
+async fn approved_text_cognition_is_durable_advisory_and_primary_remains_final() {
+    let mut spec = AgentSpec::builder()
+        .id("text-cognition-agent")
+        .name("Text cognition")
+        .model_name("primary")
+        .build()
+        .unwrap();
+    spec.model.provider = "local".into();
+    spec.cognition.roles.push(CognitiveRoleBinding {
+        role: CognitiveRole::Deliberation,
+        model: sylvander_api::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "text-specialist".into(),
+        },
+    });
+    let primary = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("local", "primary"),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE,
+    };
+    let specialist = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("local", "text-specialist"),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+    };
+    let provider = Arc::new(CognitionRoutingProvider {
+        requests: std::sync::Mutex::new(Vec::new()),
+        fail_specialist: false,
+    });
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    let encryption = EvidenceEncryption::from_secret("text-cognition-test", &[23; 32]).unwrap();
+    let governance = EvidenceGovernance::new("test-tenant", 30, encryption).unwrap();
+    let artifacts = RuntimeArtifactService::new(
+        EvidenceStore::open_governed_in_memory(governance)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let resolver = Arc::new(
+        sylvander_agent::prompt::PromptResolver::new(
+            "agent:text-cognition-agent@1".into(),
+            spec.persona.system_prompt.clone(),
+            Vec::new(),
+            None,
+            false,
+        )
+        .unwrap(),
+    );
+    let tools = ToolRegistry::new().register(sylvander_agent::tools::ConsultCognitionTool::new());
+    let (run, issuer) = AgentRun::qualified_router_builder(spec, provider.clone(), primary)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .session_store(store.clone())
+        .artifact_service(artifacts)
+        .prompt_resolver(resolver)
+        .override_tools(tools)
+        .available_provider_models(vec![specialist])
+        .approved_cognition_roles(HashSet::from([CognitiveRole::Deliberation]))
+        .build_with_session_issuer()
+        .unwrap();
+    let session_id = SessionId::new("approved-text-cognition");
+    let metadata = test_metadata();
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![run.id().clone()],
+    );
+    stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+    store.save(&stored).await.unwrap();
+    run.attach_authenticated_session(issuer.issue(session_id.clone(), metadata).unwrap())
+        .await
+        .unwrap();
+    run.inner
+        .handle_message_with_turn_id(
+            BusMessage::user_chat(session_id.clone(), "user-1", "solve carefully"),
+            "turn-text-cognition".into(),
+        )
+        .await
+        .unwrap();
+
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.model.model.as_str())
+            .collect::<Vec<_>>(),
+        ["primary", "text-specialist", "primary"]
+    );
+    assert!(requests[1].tools.is_empty());
+    assert!(requests[2].messages.iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolResult { content, .. }
+                    if content.iter().any(|item| matches!(
+                        item,
+                        sylvander_llm_core::ToolResultContent::Text { text }
+                            if text.contains("bounded specialist advice")
+                    ))
+            )
+        })
+    }));
+    drop(requests);
+    let durable = store
+        .cognition_invocations(&session_id, "turn-text-cognition")
+        .await
+        .unwrap();
+    assert_eq!(durable.len(), 1);
+    assert_eq!(
+        durable[0].position,
+        crate::storage::session::CognitionExecutionPosition::ResultPersisted
+    );
 }
 
 #[derive(Clone)]

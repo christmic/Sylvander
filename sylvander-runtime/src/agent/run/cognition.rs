@@ -1,15 +1,31 @@
 //! Approved same-Agent cognition routes applied before the primary loop.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use base64::Engine as _;
+use sylvander_agent::cognition_gate::{
+    CognitionGate, CognitionObservation, CognitionRequest, CognitionRole as AgentCognitionRole,
+};
 use sylvander_llm_core::{AudioFormat, ChatMessage, ContentBlock, MediaSource, ModelInfo};
 use uuid::Uuid;
 
 use super::{AgentRunInner, AuthenticatedSession};
+use crate::agent::cognition::CognitiveRole;
+use crate::agent::cognition_artifact::CognitionArtifactStore;
+use crate::agent::cognition_execution::{CognitionExecutionRequest, execute_cognition};
 use crate::agent::perception::{
     PerceptionModality, PerceptionPlan, PerceptionSignals, plan_perception,
 };
 use crate::agent::perception_execution::{PerceptionEvaluationInput, PerceptionInvocationId};
+use crate::agent_definition::SessionId;
 use crate::storage::session::PerceptionRecoveryPolicy;
+use crate::storage::session::{CognitionInvocationId, SessionStore};
+use sylvander_api::AgentInstanceId;
+
+const AUTOMATIC_COGNITION_NAMESPACE: Uuid =
+    Uuid::from_u128(0xc067_1710_9f90_44e7_8738_a3cc_eb23_e19c);
 
 const AUTOMATIC_PERCEPTION_NAMESPACE: Uuid =
     Uuid::from_u128(0xa70e_13a7_bca1_49f4_9f9b_a462_a3b1_c887);
@@ -39,6 +55,23 @@ pub(super) fn persistence_safe_message(message: &ChatMessage) -> ChatMessage {
 }
 
 impl AgentRunInner {
+    pub(super) async fn approved_text_cognition_models(
+        &self,
+    ) -> HashMap<AgentCognitionRole, ModelInfo> {
+        let catalog = self.runtime_models.read().await;
+        self.spec
+            .cognition
+            .roles
+            .iter()
+            .filter(|binding| self.approved_cognition_roles.contains(&binding.role))
+            .filter_map(|binding| {
+                let role = agent_cognition_role(binding.role)?;
+                let model = catalog.available.get(&binding.model)?.exact.clone()?;
+                Some((role, model))
+            })
+            .collect()
+    }
+
     /// Replace media that the primary cannot consume with a bounded specialist
     /// observation. Configuration makes a role evaluable; only an exact
     /// Registry activation fact makes it eligible for automatic participation.
@@ -117,6 +150,87 @@ impl AgentRunInner {
             content,
         }
     }
+}
+
+pub(super) struct RuntimeCognitionGate {
+    pub store: Arc<dyn SessionStore>,
+    pub artifacts: Arc<dyn CognitionArtifactStore>,
+    pub provider: Arc<dyn sylvander_llm_core::ModelProvider>,
+    pub session_id: SessionId,
+    pub agent_instance_id: AgentInstanceId,
+    pub turn_id: String,
+    pub models: HashMap<AgentCognitionRole, ModelInfo>,
+    pub max_turn_calls: u8,
+}
+
+#[async_trait]
+impl CognitionGate for RuntimeCognitionGate {
+    async fn consult(&self, request: CognitionRequest) -> Result<CognitionObservation, String> {
+        let model =
+            self.models.get(&request.role).cloned().ok_or_else(|| {
+                "requested cognition role is not approved for this Agent".to_owned()
+            })?;
+        let invocation_id = cognition_invocation_id(
+            &self.session_id,
+            &self.agent_instance_id,
+            &self.turn_id,
+            &request.invocation_id,
+        );
+        execute_cognition(
+            self.store.clone(),
+            self.artifacts.clone(),
+            self.provider.clone(),
+            CognitionExecutionRequest {
+                session_id: self.session_id.clone(),
+                turn_id: self.turn_id.clone(),
+                agent_instance_id: self.agent_instance_id.clone(),
+                invocation_id,
+                role: runtime_cognition_role(request.role),
+                model,
+                prompt: request.prompt,
+                max_turn_calls: self.max_turn_calls,
+            },
+        )
+        .await
+        .map(|result| CognitionObservation {
+            role: request.role,
+            text: result.text,
+        })
+        .map_err(|error| error.to_string())
+    }
+}
+
+const fn agent_cognition_role(role: CognitiveRole) -> Option<AgentCognitionRole> {
+    match role {
+        CognitiveRole::FastDraft => Some(AgentCognitionRole::FastDraft),
+        CognitiveRole::Deliberation => Some(AgentCognitionRole::Deliberation),
+        CognitiveRole::Critic => Some(AgentCognitionRole::Critic),
+        CognitiveRole::Vision | CognitiveRole::Audio | CognitiveRole::Document => None,
+    }
+}
+
+const fn runtime_cognition_role(role: AgentCognitionRole) -> CognitiveRole {
+    match role {
+        AgentCognitionRole::FastDraft => CognitiveRole::FastDraft,
+        AgentCognitionRole::Deliberation => CognitiveRole::Deliberation,
+        AgentCognitionRole::Critic => CognitiveRole::Critic,
+    }
+}
+
+fn cognition_invocation_id(
+    session_id: &SessionId,
+    agent_instance_id: &AgentInstanceId,
+    turn_id: &str,
+    tool_call_id: &str,
+) -> CognitionInvocationId {
+    let identity = format!(
+        "{}\0{}\0{turn_id}\0{tool_call_id}",
+        session_id.0, agent_instance_id.0
+    );
+    CognitionInvocationId::from_uuid(Uuid::new_v5(
+        &AUTOMATIC_COGNITION_NAMESPACE,
+        identity.as_bytes(),
+    ))
 }
 
 struct MediaInput {

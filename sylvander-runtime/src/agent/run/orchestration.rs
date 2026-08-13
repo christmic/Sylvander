@@ -47,7 +47,7 @@ use sylvander_llm_core::{
 #[cfg(test)]
 use super::AgentRun;
 use super::background::BusTaskGate;
-use super::cognition::persistence_safe_message;
+use super::cognition::{RuntimeCognitionGate, persistence_safe_message};
 use super::error::prompt_integrity_error;
 use super::interaction::{
     BusApprovalGate, BusAskUserGate, BusPlanGate, DenyAllApprovalGate, publish_interaction_timeout,
@@ -1089,6 +1089,28 @@ impl AgentRunInner {
             })
             .transpose()
             .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+        let cognition_models = self.approved_text_cognition_models().await;
+        let cognition_gate = if cognition_models.is_empty() {
+            None
+        } else {
+            let store = self.session_store.clone().ok_or_else(|| {
+                AgentRunError::Configuration("approved cognition requires Session storage".into())
+            })?;
+            let artifacts = self
+                .bind_cognition_artifacts(&authenticated_session, &session_metadata, turn_id)
+                .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+            Some(Arc::new(RuntimeCognitionGate {
+                store,
+                artifacts,
+                provider: self.model_provider.clone(),
+                session_id: session_id.clone(),
+                agent_instance_id: agent_instance_id.clone(),
+                turn_id: turn_id.to_owned(),
+                models: cognition_models,
+                max_turn_calls: self.spec.cognition.max_auxiliary_calls,
+            })
+                as Arc<dyn sylvander_agent::cognition_gate::CognitionGate>)
+        };
         let ask_user_gate: Arc<dyn AskUserGate> = Arc::new(BusAskUserGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
@@ -1166,6 +1188,9 @@ impl AgentRunInner {
         }
         if let Some(store) = artifact_store {
             ports = ports.with_artifact_store(store);
+        }
+        if let Some(gate) = cognition_gate {
+            ports = ports.with_cognition_gate(gate);
         }
 
         self.publish_stream(

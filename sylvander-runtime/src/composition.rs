@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::agent::cognition::CognitiveRole;
 use crate::agent_definition::{AgentSpec, McpServerConfig, McpStreamableHttpConfig, ToolRef};
 use crate::mcp::stdio::McpResultArtifactSink;
 use crate::mcp::{SessionMcpBinding, SessionMcpRuntimeService};
@@ -343,7 +344,15 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     let curated_context = tool_gateway_factory
         .as_ref()
         .map(WorkerToolGatewayFactory::curated_context_provider);
-    let tools = configured_tools(&spec, memory.clone(), candidate_sink);
+    let mut tools = configured_tools(&spec, memory.clone(), candidate_sink);
+    if approved_roles.iter().any(|role| {
+        matches!(
+            role,
+            CognitiveRole::FastDraft | CognitiveRole::Deliberation | CognitiveRole::Critic
+        )
+    }) {
+        tools = tools.register(sylvander_agent::tools::ConsultCognitionTool::new());
+    }
     let invocation_gateway = match &tool_gateway_factory {
         Some(factory) => Some(
             factory
