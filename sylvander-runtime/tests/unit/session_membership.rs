@@ -18,6 +18,7 @@ fn participant(id: &str, role: SessionAgentRole) -> AgentInstance {
         history_view: HistoryView::SharedLane { cursor: 0 },
         approval_route: ApprovalRoute::User,
         state: AgentInstanceState::Ready,
+        lifecycle_revision: 0,
         capability_revision: "sha256:capabilities".into(),
         created_at: 1,
         updated_at: 1,

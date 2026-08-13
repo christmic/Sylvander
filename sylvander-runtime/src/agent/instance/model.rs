@@ -133,6 +133,8 @@ pub struct AgentInstance {
     pub history_view: HistoryView,
     pub approval_route: ApprovalRoute,
     pub state: AgentInstanceState,
+    /// Monotonic CAS revision for lifecycle, role, lease, and recovery writes.
+    pub lifecycle_revision: u64,
     pub capability_revision: String,
     pub created_at: i64,
     pub updated_at: i64,

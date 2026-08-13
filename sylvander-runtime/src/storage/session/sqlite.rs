@@ -184,7 +184,7 @@ impl SqliteSessionStore {
     /// The closure returns `Result<T, SessionStoreError>` directly
     /// (not `rusqlite::Result`) so it can return our own error type
     /// for things like `NotFound` without a lossy conversion.
-    async fn run<F, T>(&self, f: F) -> Result<T, SessionStoreError>
+    pub(crate) async fn run<F, T>(&self, f: F) -> Result<T, SessionStoreError>
     where
         F: FnOnce(&Connection) -> Result<T, SessionStoreError> + Send + 'static,
         T: Send + 'static,

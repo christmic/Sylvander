@@ -293,6 +293,8 @@ impl RuntimeStorage {
     }
 }
 
+/// First-class Agent instance membership and Session governance persistence.
+pub mod agent_instance;
 /// Durable relationship-memory backend, integrity, backup, and maintenance.
 ///
 /// This is a closed Runtime implementation, not a storage plugin boundary.
