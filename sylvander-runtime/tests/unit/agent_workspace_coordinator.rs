@@ -177,6 +177,7 @@ async fn provisioning_commits_exact_worktree_receipt_before_activation() {
                 lease_epoch: active.lease_epoch,
                 fencing_token: active.fencing_token,
                 review_digest: "sha256:reviewed".into(),
+                target_revision: active.base_revision.clone().unwrap(),
                 approved_at: 11,
             },
             &membership(),
@@ -240,5 +241,90 @@ async fn durable_provisioning_position_recovers_from_matching_receipt() {
     assert_eq!(
         store.workspace_view(&view.view_id).await.unwrap(),
         Some(recovered)
+    );
+}
+
+#[tokio::test]
+async fn target_advance_after_review_is_fenced_as_conflict_without_merge() {
+    let repository = repository();
+    let state = tempfile::tempdir().unwrap();
+    let store = store(repository.path()).await;
+    let coordinator = AgentWorkspaceCoordinator::new(worktrees(state.path()), store.clone());
+    let active = coordinator
+        .provision(
+            WorkspaceViewId::new("view-conflict"),
+            &membership(),
+            AgentInstanceId::new("worker"),
+            WorkspaceAccess::ReadWrite,
+            "local",
+            repository.path(),
+            2,
+            3,
+            10,
+        )
+        .await
+        .unwrap();
+    fs::write(active.effective_workspace.join("tracked.txt"), "agent\n").unwrap();
+    let integration = coordinator
+        .approve_integration(
+            WorkspaceIntegrationApproval {
+                integration_id: WorkspaceIntegrationId::new("integration-conflict"),
+                view_id: active.view_id.clone(),
+                session_id: active.session_id.clone(),
+                agent_instance_id: active.agent_instance_id.clone(),
+                approved_by: AgentInstanceId::new("moderator"),
+                membership_revision: 0,
+                topology_revision: 0,
+                view_revision: active.revision,
+                lease_epoch: active.lease_epoch,
+                fencing_token: active.fencing_token,
+                review_digest: "sha256:reviewed-before-target-change".into(),
+                target_revision: active.base_revision.clone().unwrap(),
+                approved_at: 11,
+            },
+            &membership(),
+            0,
+        )
+        .await
+        .unwrap();
+    fs::write(repository.path().join("tracked.txt"), "other\n").unwrap();
+    git(repository.path(), &["add", "."]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "advance target",
+        ],
+    );
+
+    let outcome = coordinator
+        .apply_integration(&integration.approval.integration_id, 12)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        outcome,
+        WorkspaceIntegrationOutcome::Conflicted { integration, reason }
+            if integration.state == WorkspaceIntegrationState::Conflicted
+                && reason.contains("target advanced")
+    ));
+    assert_eq!(
+        fs::read_to_string(repository.path().join("tracked.txt")).unwrap(),
+        "other\n"
+    );
+    assert!(git(repository.path(), &["status", "--porcelain"]).is_empty());
+    assert_eq!(
+        store
+            .workspace_view(&active.view_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorkspaceViewState::Conflicted
     );
 }

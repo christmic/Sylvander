@@ -306,10 +306,13 @@ impl GitWorktreeManager {
         if !git_text(&lease.worktree_root, &["status", "--porcelain"])?.is_empty() {
             return Err("worktree changed after candidate evaluation".into());
         }
-        git_ok(
+        if let Err(error) = git_ok(
             &lease.source_root,
             &["merge", "--no-ff", "--no-edit", &lease.branch],
-        )?;
+        ) {
+            let _ = git_ok(&lease.source_root, &["merge", "--abort"]);
+            return Err(error);
+        }
         let merge_commit = git_text(&lease.source_root, &["rev-parse", "HEAD"])?;
         Ok(ReviewedMerge {
             previous_commit: prepared.previous_commit.clone(),

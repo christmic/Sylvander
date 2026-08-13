@@ -203,6 +203,7 @@ pub struct WorkspaceIntegrationApproval {
     pub lease_epoch: u64,
     pub fencing_token: u64,
     pub review_digest: String,
+    pub target_revision: String,
     pub approved_at: i64,
 }
 
@@ -235,6 +236,7 @@ impl WorkspaceIntegrationApproval {
             view.state,
             WorkspaceViewState::Active | WorkspaceViewState::Conflicted
         ) || self.review_digest.trim().is_empty()
+            || self.target_revision.trim().is_empty()
         {
             return Err(WorkspaceViewError::InvalidIntegrationApproval);
         }

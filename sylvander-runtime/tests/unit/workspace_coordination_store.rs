@@ -169,6 +169,7 @@ async fn workspace_view_is_durable_unique_and_fenced() {
         lease_epoch: 2,
         fencing_token: 3,
         review_digest: "sha256:review".into(),
+        target_revision: "abc123".into(),
         approved_at: 4,
     };
     let integration = WorkspaceIntegration::new(approval, &active, &membership, 0).unwrap();

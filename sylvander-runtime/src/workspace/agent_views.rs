@@ -112,6 +112,14 @@ impl AgentWorkspaceCoordinator {
             .await
             .map_err(AgentWorkspaceCoordinatorError::Store)?
             .ok_or(AgentWorkspaceCoordinatorError::MissingWorkspaceView)?;
+        let receipt = self
+            .worktrees
+            .open(&view.view_id.0, view.target_id.as_deref())
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Worktree)?;
+        if approval.target_revision != receipt.base_revision {
+            return Err(AgentWorkspaceCoordinatorError::StaleTargetRevision);
+        }
         let integration = WorkspaceIntegration::new(approval, &view, membership, topology_revision)
             .map_err(|error| AgentWorkspaceCoordinatorError::Approval(error.to_string()))?;
         self.store
@@ -162,10 +170,18 @@ impl AgentWorkspaceCoordinator {
             (WorkspaceIntegrationState::Applying, WorkspaceViewState::Integrating) => {}
             _ => return Err(AgentWorkspaceCoordinatorError::InvalidIntegrationPosition),
         }
-        let merge = self
+        let target = self
             .worktrees
-            .accept(&view.view_id.0, view.target_id.as_deref())
-            .await;
+            .open(&view.view_id.0, view.target_id.as_deref())
+            .await
+            .map_err(AgentWorkspaceCoordinatorError::Worktree)?;
+        let merge = if target.base_revision == integration.approval.target_revision {
+            self.worktrees
+                .accept(&view.view_id.0, view.target_id.as_deref())
+                .await
+        } else {
+            Err("workspace integration target advanced after approval".into())
+        };
         let finished_at = crate::session::now_secs().max(now);
         let (next_integration, next_view) = if merge.is_ok() {
             (
@@ -283,6 +299,8 @@ pub enum AgentWorkspaceCoordinatorError {
     MissingIntegration,
     #[error("workspace integration is not at a recoverable execution position")]
     InvalidIntegrationPosition,
+    #[error("workspace integration target revision changed before approval")]
+    StaleTargetRevision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

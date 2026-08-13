@@ -551,6 +551,7 @@ CREATE TABLE workspace_integrations (
     lease_epoch         INTEGER NOT NULL CHECK(lease_epoch > 0),
     fencing_token       INTEGER NOT NULL CHECK(fencing_token > 0),
     review_digest       TEXT NOT NULL CHECK(length(trim(review_digest)) > 0),
+    target_revision     TEXT NOT NULL CHECK(length(trim(target_revision)) > 0),
     approved_at         INTEGER NOT NULL,
     state               TEXT NOT NULL CHECK(state IN ('approved','applying','applied','conflicted','manual_reconciliation')),
     revision            INTEGER NOT NULL CHECK(revision >= 0),

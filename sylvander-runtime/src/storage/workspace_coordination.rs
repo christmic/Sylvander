@@ -303,8 +303,8 @@ impl AgentWorkspaceStore for SqliteSessionStore {
                 "INSERT INTO workspace_integrations \
                  (integration_id,view_id,session_id,agent_instance_id,approved_by_instance_id,
                   membership_revision,topology_revision,view_revision,lease_epoch,fencing_token,
-                  review_digest,approved_at,state,revision,updated_at) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'approved',0,?13)",
+                  review_digest,target_revision,approved_at,state,revision,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'approved',0,?14)",
                 params![
                     approval.integration_id.0,
                     approval.view_id.0,
@@ -317,6 +317,7 @@ impl AgentWorkspaceStore for SqliteSessionStore {
                     checked_i64(approval.lease_epoch, "workspace lease epoch")?,
                     checked_i64(approval.fencing_token, "workspace fencing token")?,
                     approval.review_digest,
+                    approval.target_revision,
                     approval.approved_at,
                     integration.updated_at,
                 ],
@@ -459,7 +460,7 @@ fn load_integration(
         .query_row(
             "SELECT view_id,session_id,agent_instance_id,approved_by_instance_id,
                     membership_revision,topology_revision,view_revision,lease_epoch,fencing_token,
-                    review_digest,approved_at,state,revision,updated_at
+                    review_digest,target_revision,approved_at,state,revision,updated_at
              FROM workspace_integrations WHERE integration_id=?1",
             [&integration_id.0],
             |row| {
@@ -474,10 +475,11 @@ fn load_integration(
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
                     row.get::<_, String>(9)?,
-                    row.get::<_, i64>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, i64>(12)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, String>(12)?,
                     row.get::<_, i64>(13)?,
+                    row.get::<_, i64>(14)?,
                 ))
             },
         )
@@ -496,11 +498,12 @@ fn load_integration(
                     lease_epoch: checked_u64(row.7, "workspace lease epoch")?,
                     fencing_token: checked_u64(row.8, "workspace fencing token")?,
                     review_digest: row.9,
-                    approved_at: row.10,
+                    target_revision: row.10,
+                    approved_at: row.11,
                 },
-                state: decode_integration_state(&row.11)?,
-                revision: checked_u64(row.12, "workspace integration revision")?,
-                updated_at: row.13,
+                state: decode_integration_state(&row.12)?,
+                revision: checked_u64(row.13, "workspace integration revision")?,
+                updated_at: row.14,
             })
         })
         .transpose()

@@ -117,6 +117,7 @@ fn only_moderator_can_approve_an_exact_reviewed_workspace_revision() {
         lease_epoch: 5,
         fencing_token: 9,
         review_digest: "sha256:reviewed-candidate".into(),
+        target_revision: "abc123".into(),
         approved_at: 3,
     };
 
