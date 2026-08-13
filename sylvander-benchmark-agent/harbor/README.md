@@ -86,6 +86,24 @@ The Sylvander custom Agent path does not use LiteLLM. A minimal Harbor install
 may omit it: provider requests are made by `sylvander-harbor-agent` through the
 same production protocol adapters exercised elsewhere in this repository.
 
+Use `run_native_benchmark.py` for local runs instead of assembling Harbor
+commands manually. It provides staged `smoke`, `small`, `medium`, and `large`
+levels; verifies Podman is native arm64 with Rosetta disabled; verifies the
+runner and task image architecture; refuses to reuse a job directory; and
+scans only that job's artifacts for the active credential. `smoke` is an
+install-only setup gate and does not require a key. Scored levels read the key
+from `SYLVANDER_BENCH_API_KEY`; the variable is removed from Harbor's process
+environment and the value is passed through a mode-0600 temporary config:
+
+```sh
+python3 sylvander-benchmark-agent/harbor/run_native_benchmark.py smoke
+SYLVANDER_BENCH_API_KEY='...' \
+  python3 sylvander-benchmark-agent/harbor/run_native_benchmark.py small
+```
+
+Advance one level only after the preceding level finishes cleanly. `large`
+contains the million-row stress case and is intentionally last.
+
 The effective 2026-08-13 install-only gate used a static x86-64 musl runner and
 completed the Terminal-Bench 2.0 `gpt2-codegolf` task with zero exceptions in
 18 seconds. It started the Podman container, uploaded the runner via Harbor's
