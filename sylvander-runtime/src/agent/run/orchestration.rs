@@ -124,6 +124,7 @@ impl AgentRunInner {
     pub(crate) async fn replay_classified_tool_calls(
         &self,
         session_id: &SessionId,
+        agent_instance_id: &AgentInstanceId,
         recovery_owner: &str,
         observed_at: i64,
     ) -> Result<u64, AgentRunError> {
@@ -157,6 +158,21 @@ impl AgentRunInner {
             .collect::<Vec<_>>();
         let mut recovered = 0_u64;
         for call in calls {
+            let turn = store
+                .turn(session_id, &call.turn_id)
+                .await
+                .map_err(|source| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::InspectSession,
+                        source,
+                    )
+                })?
+                .ok_or_else(|| {
+                    AgentRunError::Configuration("recovery turn is unavailable".into())
+                })?;
+            if &turn.agent_instance_id != agent_instance_id {
+                continue;
+            }
             let turn_id = call.turn_id.clone();
             self.replay_tool_call(store, call).await?;
             recovered = recovered.saturating_add(1);

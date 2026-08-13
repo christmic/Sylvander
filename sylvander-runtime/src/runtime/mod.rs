@@ -4643,7 +4643,7 @@ impl Runtime {
                 .session_membership(&session.id)
                 .await
                 .map_err(|error| RuntimeError::Store(error.to_string()))?;
-            if let Some(membership) = existing_membership {
+            let membership = if let Some(membership) = existing_membership {
                 membership
                     .validate()
                     .map_err(|error| RuntimeError::Config(error.to_string()))?;
@@ -4661,6 +4661,7 @@ impl Runtime {
                         session.id
                     )));
                 }
+                membership
             } else {
                 let membership = initial_session_membership(
                     &session,
@@ -4673,25 +4674,52 @@ impl Runtime {
                     .save_session_membership(&membership, None)
                     .await
                     .map_err(|error| RuntimeError::Store(error.to_string()))?;
-            }
-            agent
-                .attach_authenticated_session(session.id.clone(), session.metadata.clone())
-                .await
-                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
-            let replayed = agent
-                .run
-                .replay_classified_tool_calls(
-                    &session.id,
-                    recovery.recovery_owner.as_deref().ok_or_else(|| {
-                        RuntimeError::Store("recovery owner is unavailable".into())
-                    })?,
-                    recovery_observed_at,
-                )
-                .await
-                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
-            if replayed != 0 {
-                info!(session_id = %session.id, replayed, "replayed durable tool invocations");
-            }
+                membership
+            };
+            Box::pin(async {
+                for participant in membership
+                    .participants
+                    .iter()
+                    .filter(|participant| !participant.state.is_terminal())
+                {
+                    let configured = revision_provider
+                        .configured_revision(
+                            &participant.definition.agent_id,
+                            participant.definition.revision,
+                        )
+                        .await?;
+                    configured
+                        .attach_agent_instance(
+                            session.id.clone(),
+                            participant.instance_id.clone(),
+                            session.metadata.clone(),
+                        )
+                        .await
+                        .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+                    let replayed = configured
+                        .run
+                        .replay_classified_tool_calls(
+                            &session.id,
+                            &participant.instance_id,
+                            recovery.recovery_owner.as_deref().ok_or_else(|| {
+                                RuntimeError::Store("recovery owner is unavailable".into())
+                            })?,
+                            recovery_observed_at,
+                        )
+                        .await
+                        .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+                    if replayed != 0 {
+                        info!(
+                            session_id = %session.id,
+                            agent_instance_id = %participant.instance_id,
+                            replayed,
+                            "replayed durable Agent tool invocations"
+                        );
+                    }
+                }
+                Ok::<(), RuntimeError>(())
+            })
+            .await?;
             engine
                 .attach_session(
                     session.id.clone(),

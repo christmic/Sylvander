@@ -1449,7 +1449,7 @@ async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
             TurnStart {
                 session_id: session_id.clone(),
                 turn_id: "turn-replay".into(),
-                agent_instance_id: membership.governance.moderator_instance_id,
+                agent_instance_id: membership.governance.moderator_instance_id.clone(),
                 config_revision: 0,
                 effective_config: session.effective_config.unwrap(),
                 user_content: serde_json::json!({"role":"user","content":"read"}),
@@ -1556,9 +1556,14 @@ async fn classified_same_identity_tool_is_replayed_once_and_persisted() {
         .unwrap();
 
     assert_eq!(
-        run.replay_classified_tool_calls(&session_id, "test-owner", 100)
-            .await
-            .unwrap(),
+        run.replay_classified_tool_calls(
+            &session_id,
+            &membership.governance.moderator_instance_id,
+            "test-owner",
+            100,
+        )
+        .await
+        .unwrap(),
         1
     );
     assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);

@@ -527,11 +527,17 @@ impl AgentRun {
     pub(crate) async fn replay_classified_tool_calls(
         &self,
         session_id: &SessionId,
+        agent_instance_id: &AgentInstanceId,
         recovery_owner: &str,
         observed_at: i64,
     ) -> Result<u64, AgentRunError> {
         self.inner
-            .replay_classified_tool_calls(session_id, recovery_owner, observed_at)
+            .replay_classified_tool_calls(
+                session_id,
+                agent_instance_id,
+                recovery_owner,
+                observed_at,
+            )
             .await
     }
 
