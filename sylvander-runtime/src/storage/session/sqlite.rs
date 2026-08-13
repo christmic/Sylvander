@@ -35,15 +35,16 @@ use crate::agent_definition::{AgentId, SessionId};
 use crate::session::SessionMetadata;
 
 use super::{
-    MessageRole, ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance,
-    ModelIterationSnapshot, ModelIterationStart, ModelRecoveryDecision, ModelRecoveryReason,
-    ModelRecoveryWrite, ModelResponseCommit, ModelResponsePersistence, PersistedTurnCompletion,
-    ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch, SessionStore,
-    SessionStoreError, SessionUsage, StoredMessage, StoredSession, ToolCallAdvance,
-    ToolCallCompletion, ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState,
-    ToolExecutionPosition, ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason,
-    ToolRecoveryWrite, ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot,
-    TurnStart, TurnState,
+    ExecutionRecoveryAction, ExecutionRecoveryActionId, ExecutionRecoveryActionReceipt,
+    ExecutionRecoveryActionTarget, ExecutionRecoveryActionWrite, MessageRole,
+    ModelExecutionPosition, ModelInvocationId, ModelIterationAdvance, ModelIterationSnapshot,
+    ModelIterationStart, ModelRecoveryDecision, ModelRecoveryReason, ModelRecoveryWrite,
+    ModelResponseCommit, ModelResponsePersistence, PersistedTurnCompletion, ReplacementMessage,
+    SessionFilter, SessionLifetime, SessionMetadataPatch, SessionStore, SessionStoreError,
+    SessionUsage, StoredMessage, StoredSession, ToolCallAdvance, ToolCallCompletion,
+    ToolCallFailureKind, ToolCallSnapshot, ToolCallStart, ToolCallState, ToolExecutionPosition,
+    ToolInvocationId, ToolRecoveryDecision, ToolRecoveryReason, ToolRecoveryWrite,
+    ToolResultPersistence, TurnCompletion, TurnFailureKind, TurnSnapshot, TurnStart, TurnState,
 };
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -261,7 +262,7 @@ fn configure_durable_connection(conn: &Connection) -> Result<(), SessionStoreErr
 // Schema
 // ---------------------------------------------------------------------------
 
-const SESSION_SCHEMA_VERSION: i64 = 17;
+const SESSION_SCHEMA_VERSION: i64 = 18;
 const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
 
 /// `SQLite` objects owned and exact-match validated by the session store.
@@ -294,6 +295,7 @@ pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
     "session_turns",
     "session_turn_iterations",
     "session_tool_calls",
+    "execution_recovery_actions",
     "idx_messages_user",
     "idx_messages_agent",
     "idx_messages_agent_instance",
@@ -789,6 +791,25 @@ CREATE TABLE session_tool_calls (
         REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE
 );
 
+CREATE TABLE execution_recovery_actions (
+    action_id        TEXT PRIMARY KEY,
+    session_id       TEXT NOT NULL,
+    turn_id          TEXT NOT NULL,
+    target_kind      TEXT NOT NULL CHECK(target_kind IN ('model','tool')),
+    invocation_id    TEXT NOT NULL,
+    expected_ledger_revision INTEGER NOT NULL,
+    action           TEXT NOT NULL CHECK(action IN ('abandon_turn','confirm_no_effect_and_retry')),
+    resolved_by_instance_id TEXT NOT NULL,
+    rationale_digest TEXT NOT NULL,
+    outcome_ledger_revision INTEGER NOT NULL,
+    recorded_at      INTEGER NOT NULL,
+    UNIQUE(target_kind, invocation_id),
+    FOREIGN KEY (session_id, turn_id)
+        REFERENCES session_turns(session_id, turn_id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id, resolved_by_instance_id)
+        REFERENCES session_agent_instances(session_id, instance_id) ON DELETE RESTRICT
+);
+
 CREATE INDEX idx_messages_user
     ON session_messages(user_id, session_id);
 CREATE INDEX idx_messages_agent
@@ -825,7 +846,7 @@ CREATE INDEX idx_turn_iterations_recovery
     ON session_turn_iterations(position, updated_at, invocation_id);
 CREATE UNIQUE INDEX idx_running_turn_per_agent_instance
     ON session_turns(session_id, agent_instance_id) WHERE state = 'running';
-PRAGMA user_version=17;
+PRAGMA user_version=18;
 COMMIT;
 ";
 
@@ -1953,6 +1974,187 @@ impl SessionStore for SqliteSessionStore {
                     "model recovery lease or ledger CAS conflict".into(),
                 ))
             }
+        })
+        .await
+    }
+
+    async fn resolve_execution_recovery(
+        &self,
+        write: ExecutionRecoveryActionWrite,
+    ) -> Result<ExecutionRecoveryActionReceipt, SessionStoreError> {
+        if write.turn_id.trim().is_empty()
+            || !write.rationale_digest.starts_with("sha256:")
+            || write.rationale_digest.len() != 71
+            || write.lease_expires_at <= write.observed_at
+        {
+            return Err(SessionStoreError::Invalid(
+                "execution recovery action facts are invalid".into(),
+            ));
+        }
+        let expected = session_i64(write.expected_ledger_revision, "ledger revision")?;
+        let write = write.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            if let Some(existing) = load_execution_recovery_action(&transaction, &write.action_id)? {
+                if existing.session_id == write.session_id
+                    && existing.turn_id == write.turn_id
+                    && existing.target == write.target
+                    && existing.action == write.action
+                    && existing.resolved_by == write.resolved_by
+                {
+                    return Ok(existing);
+                }
+                return Err(SessionStoreError::Invalid(
+                    "execution recovery action idempotency conflict".into(),
+                ));
+            }
+            let moderator: Option<String> = transaction
+                .query_row(
+                    "SELECT moderator_instance_id FROM session_governance WHERE session_id=?1",
+                    [&write.session_id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            if moderator.as_deref() != Some(write.resolved_by.0.as_str()) {
+                return Err(SessionStoreError::Invalid(
+                    "execution recovery requires the current Session moderator".into(),
+                ));
+            }
+            let next = write.expected_ledger_revision.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("execution recovery ledger revision overflow".into())
+            })?;
+            let next_i64 = session_i64(next, "ledger revision")?;
+            let changed = match (&write.target, write.action) {
+                (
+                    ExecutionRecoveryActionTarget::Model { invocation_id },
+                    ExecutionRecoveryAction::AbandonTurn,
+                ) => transaction
+                    .execute(
+                        "UPDATE session_turn_iterations SET ledger_revision=?1,
+                         recovery_decision='operator_abandoned',recovery_reason='operator_abandoned',
+                         operator_action_required=0,recovery_owner=?2,recovery_lease_expires_at=NULL,
+                         updated_at=?3 WHERE invocation_id=?4 AND session_id=?5 AND turn_id=?6
+                         AND ledger_revision=?7 AND operator_action_required=1
+                         AND recovery_decision='manual_reconciliation'",
+                        params![
+                            next_i64,
+                            write.action_id.as_str(),
+                            write.observed_at,
+                            invocation_id.as_str(),
+                            write.session_id.0,
+                            write.turn_id,
+                            expected,
+                        ],
+                    )
+                    .map_err(sqlite_err)?,
+                (
+                    ExecutionRecoveryActionTarget::Tool { invocation_id },
+                    ExecutionRecoveryAction::AbandonTurn,
+                ) => transaction
+                    .execute(
+                        "UPDATE session_tool_calls SET ledger_revision=?1,state='abandoned',ended_at=?2,
+                         recovery_decision='operator_abandoned',recovery_reason='operator_abandoned',
+                         operator_action_required=0,recovery_owner=?3,recovery_lease_expires_at=NULL,
+                         updated_at=?2 WHERE invocation_id=?4 AND session_id=?5 AND turn_id=?6
+                         AND ledger_revision=?7 AND state='running' AND operator_action_required=1
+                         AND recovery_decision='manual_reconciliation'",
+                        params![
+                            next_i64,
+                            write.observed_at,
+                            write.action_id.as_str(),
+                            invocation_id.as_str(),
+                            write.session_id.0,
+                            write.turn_id,
+                            expected,
+                        ],
+                    )
+                    .map_err(sqlite_err)?,
+                (
+                    ExecutionRecoveryActionTarget::Tool { invocation_id },
+                    ExecutionRecoveryAction::ConfirmNoEffectAndRetry,
+                ) => transaction
+                    .execute(
+                        "UPDATE session_tool_calls SET ledger_revision=?1,
+                         recovery_decision='operator_confirmed_no_effect',
+                         recovery_reason='operator_confirmed_no_effect',operator_action_required=0,
+                         recovery_owner=?2,recovery_lease_expires_at=?3,recovery_attempts=recovery_attempts+1,
+                         updated_at=?4 WHERE invocation_id=?5 AND session_id=?6 AND turn_id=?7
+                         AND ledger_revision=?8 AND state='running' AND position='effect_started'
+                         AND operator_action_required=1 AND recovery_decision='manual_reconciliation'",
+                        params![
+                            next_i64,
+                            write.action_id.as_str(),
+                            write.lease_expires_at,
+                            write.observed_at,
+                            invocation_id.as_str(),
+                            write.session_id.0,
+                            write.turn_id,
+                            expected,
+                        ],
+                    )
+                    .map_err(sqlite_err)?,
+                (ExecutionRecoveryActionTarget::Model { .. }, _) => {
+                    return Err(SessionStoreError::Invalid(
+                        "model recovery action is not valid".into(),
+                    ));
+                }
+            };
+            if changed != 1 {
+                return Err(SessionStoreError::Invalid(
+                    "execution recovery action CAS conflict".into(),
+                ));
+            }
+            if write.action == ExecutionRecoveryAction::AbandonTurn {
+                transaction
+                    .execute(
+                        "UPDATE session_turns SET state='interrupted',ended_at=?1,failure_kind=NULL
+                         WHERE session_id=?2 AND turn_id=?3 AND state='running'",
+                        params![write.observed_at, write.session_id.0, write.turn_id],
+                    )
+                    .map_err(sqlite_err)?;
+                transaction
+                    .execute(
+                        "UPDATE session_tool_calls SET state='abandoned',ended_at=?1,
+                         operator_action_required=0,updated_at=?1
+                         WHERE session_id=?2 AND turn_id=?3 AND state='running'",
+                        params![write.observed_at, write.session_id.0, write.turn_id],
+                    )
+                    .map_err(sqlite_err)?;
+            }
+            transaction
+                .execute(
+                    "INSERT INTO execution_recovery_actions
+                     (action_id,session_id,turn_id,target_kind,invocation_id,
+                      expected_ledger_revision,action,resolved_by_instance_id,rationale_digest,
+                      outcome_ledger_revision,recorded_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                    params![
+                        write.action_id.as_str(),
+                        write.session_id.0,
+                        write.turn_id,
+                        write.target.kind(),
+                        write.target.invocation_id(),
+                        expected,
+                        recovery_action_str(write.action),
+                        write.resolved_by.0,
+                        write.rationale_digest,
+                        next_i64,
+                        write.observed_at,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)?;
+            Ok(ExecutionRecoveryActionReceipt {
+                action_id: write.action_id,
+                session_id: write.session_id,
+                turn_id: write.turn_id,
+                target: write.target,
+                action: write.action,
+                resolved_by: write.resolved_by,
+                outcome_ledger_revision: next,
+                recorded_at: write.observed_at,
+            })
         })
         .await
     }
@@ -3468,6 +3670,74 @@ fn decode_turn_failure_kind(value: &str) -> rusqlite::Result<TurnFailureKind> {
     }
 }
 
+fn recovery_action_str(action: ExecutionRecoveryAction) -> &'static str {
+    match action {
+        ExecutionRecoveryAction::AbandonTurn => "abandon_turn",
+        ExecutionRecoveryAction::ConfirmNoEffectAndRetry => "confirm_no_effect_and_retry",
+    }
+}
+
+fn decode_recovery_action(value: &str) -> rusqlite::Result<ExecutionRecoveryAction> {
+    match value {
+        "abandon_turn" => Ok(ExecutionRecoveryAction::AbandonTurn),
+        "confirm_no_effect_and_retry" => Ok(ExecutionRecoveryAction::ConfirmNoEffectAndRetry),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn load_execution_recovery_action(
+    connection: &Connection,
+    action_id: &ExecutionRecoveryActionId,
+) -> Result<Option<ExecutionRecoveryActionReceipt>, SessionStoreError> {
+    connection
+        .query_row(
+            "SELECT session_id,turn_id,target_kind,invocation_id,action,
+                    resolved_by_instance_id,outcome_ledger_revision,recorded_at
+             FROM execution_recovery_actions WHERE action_id=?1",
+            [action_id.as_str()],
+            |row| {
+                let target_kind = row.get::<_, String>(2)?;
+                let invocation_id = row.get::<_, String>(3)?;
+                let target = match target_kind.as_str() {
+                    "model" => ExecutionRecoveryActionTarget::Model {
+                        invocation_id: ModelInvocationId::parse(invocation_id).map_err(
+                            |error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    3,
+                                    Type::Text,
+                                    Box::new(error),
+                                )
+                            },
+                        )?,
+                    },
+                    "tool" => ExecutionRecoveryActionTarget::Tool {
+                        invocation_id: ToolInvocationId::parse(invocation_id).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                3,
+                                Type::Text,
+                                Box::new(error),
+                            )
+                        })?,
+                    },
+                    _ => return Err(rusqlite::Error::InvalidQuery),
+                };
+                Ok(ExecutionRecoveryActionReceipt {
+                    action_id: action_id.clone(),
+                    session_id: SessionId::new(row.get::<_, String>(0)?),
+                    turn_id: row.get(1)?,
+                    target,
+                    action: decode_recovery_action(&row.get::<_, String>(4)?)?,
+                    resolved_by: AgentInstanceId::new(row.get::<_, String>(5)?),
+                    outcome_ledger_revision: session_u64(row.get(6)?, "ledger revision")
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    recorded_at: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(sqlite_err)
+}
+
 fn model_position_str(position: ModelExecutionPosition) -> &'static str {
     match position {
         ModelExecutionPosition::ModelStarted => "model_started",
@@ -3491,6 +3761,7 @@ fn model_recovery_decision_str(decision: ModelRecoveryDecision) -> &'static str 
         ModelRecoveryDecision::RecoverTools => "recover_tools",
         ModelRecoveryDecision::CompleteTurn => "complete_turn",
         ModelRecoveryDecision::ContinueTurn => "continue_turn",
+        ModelRecoveryDecision::OperatorAbandoned => "operator_abandoned",
     }
 }
 
@@ -3500,6 +3771,7 @@ fn decode_model_recovery_decision(value: &str) -> rusqlite::Result<ModelRecovery
         "recover_tools" => Ok(ModelRecoveryDecision::RecoverTools),
         "complete_turn" => Ok(ModelRecoveryDecision::CompleteTurn),
         "continue_turn" => Ok(ModelRecoveryDecision::ContinueTurn),
+        "operator_abandoned" => Ok(ModelRecoveryDecision::OperatorAbandoned),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
@@ -3511,6 +3783,7 @@ fn model_recovery_reason_str(reason: ModelRecoveryReason) -> &'static str {
         ModelRecoveryReason::DurableTerminalResponse => "durable_terminal_response",
         ModelRecoveryReason::ToolsAlreadyResolved => "tools_already_resolved",
         ModelRecoveryReason::IncompleteDurableFacts => "incomplete_durable_facts",
+        ModelRecoveryReason::OperatorAbandoned => "operator_abandoned",
     }
 }
 
@@ -3521,6 +3794,7 @@ fn decode_model_recovery_reason(value: &str) -> rusqlite::Result<ModelRecoveryRe
         "durable_terminal_response" => Ok(ModelRecoveryReason::DurableTerminalResponse),
         "tools_already_resolved" => Ok(ModelRecoveryReason::ToolsAlreadyResolved),
         "incomplete_durable_facts" => Ok(ModelRecoveryReason::IncompleteDurableFacts),
+        "operator_abandoned" => Ok(ModelRecoveryReason::OperatorAbandoned),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
@@ -3648,6 +3922,8 @@ const fn tool_recovery_decision_str(decision: ToolRecoveryDecision) -> &'static 
         ToolRecoveryDecision::RecoverResult => "recover_result",
         ToolRecoveryDecision::ContinueTurn => "continue_turn",
         ToolRecoveryDecision::ManualReconciliation => "manual_reconciliation",
+        ToolRecoveryDecision::OperatorConfirmedNoEffect => "operator_confirmed_no_effect",
+        ToolRecoveryDecision::OperatorAbandoned => "operator_abandoned",
     }
 }
 
@@ -3660,6 +3936,8 @@ fn decode_tool_recovery_decision(value: &str) -> rusqlite::Result<ToolRecoveryDe
         "recover_result" => Ok(ToolRecoveryDecision::RecoverResult),
         "continue_turn" => Ok(ToolRecoveryDecision::ContinueTurn),
         "manual_reconciliation" => Ok(ToolRecoveryDecision::ManualReconciliation),
+        "operator_confirmed_no_effect" => Ok(ToolRecoveryDecision::OperatorConfirmedNoEffect),
+        "operator_abandoned" => Ok(ToolRecoveryDecision::OperatorAbandoned),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
@@ -3677,6 +3955,8 @@ const fn tool_recovery_reason_str(reason: ToolRecoveryReason) -> &'static str {
         }
         ToolRecoveryReason::EffectAlreadyCommitted => "effect_already_committed",
         ToolRecoveryReason::ResultAlreadyPersisted => "result_already_persisted",
+        ToolRecoveryReason::OperatorConfirmedNoEffect => "operator_confirmed_no_effect",
+        ToolRecoveryReason::OperatorAbandoned => "operator_abandoned",
     }
 }
 
@@ -3697,6 +3977,8 @@ fn decode_tool_recovery_reason(value: &str) -> rusqlite::Result<ToolRecoveryReas
         }
         "effect_already_committed" => Ok(ToolRecoveryReason::EffectAlreadyCommitted),
         "result_already_persisted" => Ok(ToolRecoveryReason::ResultAlreadyPersisted),
+        "operator_confirmed_no_effect" => Ok(ToolRecoveryReason::OperatorConfirmedNoEffect),
+        "operator_abandoned" => Ok(ToolRecoveryReason::OperatorAbandoned),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }

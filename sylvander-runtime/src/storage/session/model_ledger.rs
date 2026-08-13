@@ -67,6 +67,7 @@ pub enum ModelRecoveryDecision {
     RecoverTools,
     CompleteTurn,
     ContinueTurn,
+    OperatorAbandoned,
 }
 
 /// Stable reason exposed to operators without leaking prompts or responses.
@@ -78,6 +79,7 @@ pub enum ModelRecoveryReason {
     DurableTerminalResponse,
     ToolsAlreadyResolved,
     IncompleteDurableFacts,
+    OperatorAbandoned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

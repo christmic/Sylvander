@@ -81,6 +81,8 @@ pub enum ToolRecoveryDecision {
     RecoverResult,
     ContinueTurn,
     ManualReconciliation,
+    OperatorConfirmedNoEffect,
+    OperatorAbandoned,
 }
 
 /// Stable reason for a recovery decision.
@@ -96,6 +98,8 @@ pub enum ToolRecoveryReason {
     ReplayForbiddenAfterEffectStart,
     EffectAlreadyCommitted,
     ResultAlreadyPersisted,
+    OperatorConfirmedNoEffect,
+    OperatorAbandoned,
 }
 
 /// Deterministic content-free result of classifying a durable position.

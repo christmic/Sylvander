@@ -183,6 +183,54 @@ async fn unknown_model_outcome_survives_restart_and_persists_manual_decision() {
         Some(ModelRecoveryReason::ProviderOutcomeUnknown)
     );
     assert!(persisted[0].operator_action_required);
+    let action = ExecutionRecoveryActionWrite {
+        action_id: ExecutionRecoveryActionId::new(),
+        session_id: SessionId::new("model-crash"),
+        turn_id: "turn-crash".into(),
+        target: ExecutionRecoveryActionTarget::Model {
+            invocation_id: invocation_id.clone(),
+        },
+        expected_ledger_revision: persisted[0].ledger_revision,
+        action: ExecutionRecoveryAction::AbandonTurn,
+        resolved_by: turn_instance(),
+        rationale_digest: format!("sha256:{}", "c".repeat(64)),
+        observed_at: 200,
+        lease_expires_at: 230,
+    };
+    let receipt = reopened
+        .resolve_execution_recovery(action.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.resolve_execution_recovery(action).await.unwrap(),
+        receipt,
+        "an exact operator retry must return the original durable receipt"
+    );
+    assert_eq!(
+        reopened
+            .turn(&SessionId::new("model-crash"), "turn-crash")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        TurnState::Interrupted
+    );
+    assert!(
+        reopened
+            .interrupted_model_iterations()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let resolved = reopened
+        .model_iterations(&SessionId::new("model-crash"), "turn-crash")
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved[0].recovery_decision,
+        Some(ModelRecoveryDecision::OperatorAbandoned)
+    );
+    assert!(!resolved[0].operator_action_required);
 }
 
 fn effective_config() -> sylvander_api::SessionEffectiveConfig {
@@ -1121,6 +1169,38 @@ async fn boot_recovery_persists_manual_decision_and_observes_it() {
         Some(ToolRecoveryDecision::ManualReconciliation),
     );
     assert!(calls[0].operator_action_required);
+    let action = ExecutionRecoveryActionWrite {
+        action_id: ExecutionRecoveryActionId::new(),
+        session_id: session.id.clone(),
+        turn_id: "turn-crashed".into(),
+        target: ExecutionRecoveryActionTarget::Tool {
+            invocation_id: calls[0].invocation_id.clone(),
+        },
+        expected_ledger_revision: calls[0].ledger_revision,
+        action: ExecutionRecoveryAction::ConfirmNoEffectAndRetry,
+        resolved_by: turn_instance(),
+        rationale_digest: format!("sha256:{}", "d".repeat(64)),
+        observed_at: 1_001,
+        lease_expires_at: 1_031,
+    };
+    let receipt = store
+        .resolve_execution_recovery(action.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.resolve_execution_recovery(action).await.unwrap(),
+        receipt
+    );
+    let resolved = store.tool_calls(&session.id, "turn-crashed").await.unwrap();
+    assert_eq!(
+        resolved[0].recovery_decision,
+        Some(ToolRecoveryDecision::OperatorConfirmedNoEffect)
+    );
+    assert_eq!(
+        resolved[0].recovery_reason,
+        Some(ToolRecoveryReason::OperatorConfirmedNoEffect)
+    );
+    assert!(!resolved[0].operator_action_required);
     let observed = observability.snapshot();
     assert_eq!(observed.tool_recoveries_classified, 1);
     assert_eq!(observed.tool_recoveries_manual, 1);
