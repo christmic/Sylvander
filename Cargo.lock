@@ -3101,6 +3101,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sylvander-testbench-agent"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sylvander-agent",
+ "sylvander-llm-core",
+]
+
+[[package]]
 name = "sylvander-testbench-llm"
 version = "0.1.0"
 dependencies = [
