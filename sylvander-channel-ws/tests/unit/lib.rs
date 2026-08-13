@@ -326,6 +326,7 @@ fn session_history() -> sylvander_api::UiSessionHistory {
             label: "Branched".into(),
             workspace: "/workspace".into(),
             last_seen_secs: 7,
+            archived: false,
         },
         messages: vec![sylvander_api::UiHistoryMessage {
             role: "user".into(),
@@ -524,6 +525,7 @@ impl ChannelHost for SessionConfigHost {
     async fn list_sessions(
         &self,
         _: &sylvander_api::BoundaryContext,
+        include_archived: bool,
     ) -> Result<Vec<sylvander_api::UiSessionInfo>, sylvander_api::BoundaryError> {
         let mut sessions = self
             .states
@@ -535,6 +537,7 @@ impl ChannelHost for SessionConfigHost {
                 label: format!("Session {id}"),
                 workspace: "/workspace".into(),
                 last_seen_secs: 7,
+                archived: include_archived && id == "session-b",
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| left.id.cmp(&right.id));
@@ -569,6 +572,34 @@ impl ChannelHost for SessionConfigHost {
             default_prompt_profile: None,
             agent_workspace: None,
         }])
+    }
+
+    async fn runtime_snapshot(
+        &self,
+        _: &sylvander_api::BoundaryContext,
+        agent_id: &AgentId,
+        _: Option<&SessionId>,
+    ) -> Result<sylvander_api::RuntimeUiSnapshot, sylvander_api::BoundaryError> {
+        Ok(sylvander_api::RuntimeUiSnapshot {
+            agent_id: agent_id.clone(),
+            model: sylvander_api::ModelSelection {
+                provider_id: "test".into(),
+                model_id: "default-model".into(),
+            },
+            reasoning_effort: sylvander_api::ReasoningEffort::Off,
+            models: self
+                .discover_agents(&sylvander_api::BoundaryContext::unauthenticated(
+                    "test", "test", "test",
+                ))
+                .await?
+                .remove(0)
+                .models,
+            permissions: sylvander_api::PermissionProfile::default(),
+            capabilities: 0,
+            approval_enabled: true,
+            max_request_bytes: 4096,
+            platform: sylvander_api::PlatformSnapshot::default(),
+        })
     }
 
     async fn create_session(
@@ -754,7 +785,9 @@ async fn list_sessions_dispatches_to_runtime_channel_host_and_returns_typed_rows
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     handle_client_msg(
-        ClientMsg::ListSessions,
+        ClientMsg::ListSessions {
+            include_archived: false,
+        },
         &context,
         &AgentId::new("agent-1"),
         &tx,
@@ -765,9 +798,46 @@ async fn list_sessions_dispatches_to_runtime_channel_host_and_returns_typed_rows
 
     assert!(matches!(
         rx.recv().await,
-        Some(ServerMsg::SessionsList { sessions })
+        Some(ServerMsg::SessionsList { include_archived: false, sessions })
             if sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>()
                 == ["session-a", "session-b"]
+    ));
+}
+
+#[tokio::test]
+async fn runtime_info_dispatches_to_the_runtime_owned_snapshot() {
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Some("test".into()),
+        Some(Arc::new(SessionConfigHost {
+            states: Mutex::new(HashMap::new()),
+        })),
+        None,
+    );
+    let principal = sylvander_api::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_api::AuthenticationMethod::BearerToken,
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    handle_client_msg(
+        ClientMsg::GetRuntimeInfo {
+            agent_id: AgentId::new("agent-1"),
+        },
+        &context,
+        &AgentId::new("agent-1"),
+        &tx,
+        &principal,
+        "websocket-test",
+    )
+    .await;
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::RuntimeInfo { snapshot })
+            if snapshot.agent_id == AgentId::new("agent-1")
+                && snapshot.model.provider_id == "test"
+                && snapshot.max_request_bytes == 4096
     ));
 }
 

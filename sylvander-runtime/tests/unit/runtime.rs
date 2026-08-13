@@ -1319,6 +1319,7 @@ async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions()
         runtime.channel_host.as_ref(),
         &boundary,
         &AgentId::new("assistant"),
+        None,
     )
     .await
     .expect("visible Agent has one Runtime-owned snapshot");

@@ -205,6 +205,7 @@ pub trait ChannelHost: Send + Sync {
         &self,
         boundary: &BoundaryContext,
         _agent_id: &AgentId,
+        _session_id: Option<&SessionId>,
     ) -> Result<RuntimeUiSnapshot, BoundaryError> {
         Err(unavailable_ui_control(boundary, "runtime_snapshot"))
     }

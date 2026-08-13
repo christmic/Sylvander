@@ -6,10 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use sylvander_api::AgentId;
-use sylvander_api::{
-    ApprovalPolicy, FileAccess, ModelCapability, ModelDescriptor, ModelLifecycle, NetworkAccess,
-    PermissionProfile, ReasoningEffort, SessionConfigOverrides, SessionWorkspaceBinding,
-};
+use sylvander_api::{SessionConfigOverrides, SessionWorkspaceBinding};
 use sylvander_channel::Channel;
 use sylvander_channel::credential::CredentialLeaseSource;
 use sylvander_runtime::config::{
@@ -145,66 +142,15 @@ fn build_channels(
         .filter(|channel| channel.enabled)
         .map(|channel| {
             let agent_id = AgentId::new(&channel.default_agent);
-            let agent = runtime
+            runtime
                 .agent_descriptor(&agent_id)
                 .ok_or_else(|| ServerError::UnknownAgent(channel.default_agent.clone()))?;
             let result: Arc<dyn Channel> = match &channel.transport {
-                ChannelTransportConfig::Unix { path } => {
-                    let primary = agent
-                        .models
-                        .iter()
-                        .find(|(selection, _)| *selection == &agent.default_model)
-                        .ok_or_else(|| {
-                            ServerError::UnknownModel(agent.default_model.model_id.clone())
-                        })?;
-                    let models = agent
-                        .models
-                        .iter()
-                        .map(|(selection, model)| ModelDescriptor {
-                            id: selection.model_id.clone(),
-                            provider: selection.provider_id.clone(),
-                            capabilities: model.capabilities.bits(),
-                            capability_names: model_capability_names(model.capabilities),
-                            reasoning_efforts: if model
-                                .capabilities
-                                .contains(sylvander_llm_anthropic::api::model::ModelCapabilities::EXTENDED_THINKING)
-                            {
-                                vec![ReasoningEffort::Off, ReasoningEffort::Low, ReasoningEffort::Medium, ReasoningEffort::High]
-                            } else {
-                                vec![ReasoningEffort::Off]
-                            },
-                            lifecycle: ModelLifecycle::Active,
-                            pricing: None,
-                        })
-                        .collect();
-                    let platform_agent = agent.clone();
-                    Arc::new(
-                        sylvander_channel_unix::UnixChannel::new(path, agent_id)
-                            .with_instance_id(&channel.id)
-                            .with_request_limit(config.server.boundary.max_request_bytes)
-                            .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
-                                model: primary.0.clone(),
-                                reasoning_effort: ReasoningEffort::Off,
-                                models,
-                                permissions: PermissionProfile {
-                                    file_access: FileAccess::WorkspaceWrite,
-                                    network_access: NetworkAccess::Denied,
-                                    approval_policy: if agent.approval_enabled {
-                                        ApprovalPolicy::Ask
-                                    } else {
-                                        ApprovalPolicy::Allow
-                                    },
-                                },
-                                capabilities: primary.1.capabilities.bits(),
-                                approval_enabled: agent.approval_enabled,
-                                max_attachment_bytes: 512 * 1024,
-                                platform: agent.platform.clone(),
-                                platform_provider: Some(Arc::new(move || {
-                                    platform_agent.platform_snapshot()
-                                })),
-                            }),
-                    )
-                }
+                ChannelTransportConfig::Unix { path } => Arc::new(
+                    sylvander_channel_unix::UnixChannel::new(path, agent_id)
+                        .with_instance_id(&channel.id)
+                        .with_request_limit(config.server.boundary.max_request_bytes),
+                ),
                 ChannelTransportConfig::Http {
                     bind,
                     principal_id,
@@ -213,46 +159,48 @@ fn build_channels(
                     let health_runtime = Arc::clone(runtime);
                     Arc::new(
                         sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id)
-                        .with_request_limit(config.server.boundary.max_request_bytes)
-                        .with_bearer_lease(
-                            &channel.id,
-                            principal_id,
-                            channel_credential_source(
+                            .with_request_limit(config.server.boundary.max_request_bytes)
+                            .with_bearer_lease(
                                 &channel.id,
-                                [("bearer_token", bearer_token)],
-                                credential_audit.clone(),
-                            )?,
-                        )
-                        .map_err(|error| ServerError::Channel {
-                            id: channel.id.clone(),
-                            message: error.to_string(),
-                        })?
-                        .with_operational_health(Arc::new(move || {
-                            let runtime = Arc::clone(&health_runtime);
-                            Box::pin(async move {
-                                let snapshot = runtime
-                                    .operational_snapshot()
-                                    .await
-                                    .map_err(|error| error.to_string())?;
-                                Ok(sylvander_channel_http::OperationalHealth {
-                                    ready: snapshot.ready,
-                                    agents: snapshot.agent_count,
-                                    persistent_sessions: snapshot.persistent_session_count,
-                                    ready_channels: snapshot
-                                        .channels
-                                        .iter()
-                                        .filter(|channel| channel.status == ChannelStatus::Ready)
-                                        .count(),
-                                    total_channels: snapshot.channels.len(),
-                                    bus_subscribers: snapshot.bus.subscriber_count,
-                                    bus_capacity: snapshot.bus.subscription_capacity,
-                                    published_messages: snapshot.bus.published_messages,
-                                    backpressure_rejections: snapshot
-                                        .bus
-                                        .backpressure_rejections,
+                                principal_id,
+                                channel_credential_source(
+                                    &channel.id,
+                                    [("bearer_token", bearer_token)],
+                                    credential_audit.clone(),
+                                )?,
+                            )
+                            .map_err(|error| ServerError::Channel {
+                                id: channel.id.clone(),
+                                message: error.to_string(),
+                            })?
+                            .with_operational_health(Arc::new(move || {
+                                let runtime = Arc::clone(&health_runtime);
+                                Box::pin(async move {
+                                    let snapshot = runtime
+                                        .operational_snapshot()
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                    Ok(sylvander_channel_http::OperationalHealth {
+                                        ready: snapshot.ready,
+                                        agents: snapshot.agent_count,
+                                        persistent_sessions: snapshot.persistent_session_count,
+                                        ready_channels: snapshot
+                                            .channels
+                                            .iter()
+                                            .filter(|channel| {
+                                                channel.status == ChannelStatus::Ready
+                                            })
+                                            .count(),
+                                        total_channels: snapshot.channels.len(),
+                                        bus_subscribers: snapshot.bus.subscriber_count,
+                                        bus_capacity: snapshot.bus.subscription_capacity,
+                                        published_messages: snapshot.bus.published_messages,
+                                        backpressure_rejections: snapshot
+                                            .bus
+                                            .backpressure_rejections,
+                                    })
                                 })
-                            })
-                        })),
+                            })),
                     )
                 }
                 ChannelTransportConfig::Websocket {
@@ -362,20 +310,17 @@ fn build_channels(
                 }),
                 ..SessionConfigOverrides::default()
             };
-            Ok(
-                ChannelRegistration::new(&channel.id, result)
-                    .with_session_defaults(defaults)
-                    .with_restart_policy(
-                    ChannelRestartPolicy {
-                        max_attempts: channel.supervision.max_restart_attempts,
-                        initial_backoff: std::time::Duration::from_millis(
-                            channel.supervision.initial_backoff_ms,
-                        ),
-                        max_backoff: std::time::Duration::from_millis(
-                            channel.supervision.max_backoff_ms,
-                        ),
-                    }),
-            )
+            Ok(ChannelRegistration::new(&channel.id, result)
+                .with_session_defaults(defaults)
+                .with_restart_policy(ChannelRestartPolicy {
+                    max_attempts: channel.supervision.max_restart_attempts,
+                    initial_backoff: std::time::Duration::from_millis(
+                        channel.supervision.initial_backoff_ms,
+                    ),
+                    max_backoff: std::time::Duration::from_millis(
+                        channel.supervision.max_backoff_ms,
+                    ),
+                }))
         })
         .collect()
 }
@@ -400,23 +345,6 @@ fn channel_credential_source<'a>(
     })
 }
 
-fn model_capability_names(
-    capabilities: sylvander_llm_anthropic::api::model::ModelCapabilities,
-) -> Vec<ModelCapability> {
-    use sylvander_llm_anthropic::api::model::ModelCapabilities as Flags;
-    [
-        (Flags::EXTENDED_THINKING, ModelCapability::ExtendedThinking),
-        (Flags::PROMPT_CACHING, ModelCapability::PromptCaching),
-        (Flags::STRUCTURED_OUTPUT, ModelCapability::StructuredOutput),
-        (Flags::TOOL_USE, ModelCapability::ToolUse),
-        (Flags::VISION, ModelCapability::Vision),
-        (Flags::DOCUMENT_INPUT, ModelCapability::DocumentInput),
-    ]
-    .into_iter()
-    .filter_map(|(flag, name)| capabilities.contains(flag).then_some(name))
-    .collect()
-}
-
 fn parse_addr(value: &str) -> Result<SocketAddr, ServerError> {
     value
         .parse()
@@ -438,8 +366,6 @@ enum ServerError {
     Runtime(#[from] sylvander_runtime::RuntimeError),
     #[error("configured channel references unavailable Agent `{0}`")]
     UnknownAgent(String),
-    #[error("configured Agent references unavailable model `{0}`")]
-    UnknownModel(String),
     #[error("channel `{id}` failed: {message}")]
     Channel { id: String, message: String },
     #[error("invalid socket address `{value}`: {message}")]
