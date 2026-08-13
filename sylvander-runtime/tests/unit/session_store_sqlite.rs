@@ -555,6 +555,88 @@ async fn interrupted_calls_are_classified_under_a_bounded_lease() {
 }
 
 #[tokio::test]
+async fn boot_recovery_persists_manual_decision_and_observes_it() {
+    let store = SqliteSessionStore::open_in_memory().await.unwrap();
+    let mut session = make_session("sess-1", SessionLifetime::Persistent);
+    session.effective_config = Some(effective_config());
+    store.save(&session).await.unwrap();
+    store
+        .begin_turn(
+            &ctx(),
+            TurnStart {
+                session_id: session.id.clone(),
+                turn_id: "turn-crashed".into(),
+                config_revision: 0,
+                effective_config: effective_config(),
+                user_content: serde_json::json!({"role": "user", "content": "send"}),
+                model_id: "model-a".into(),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .begin_tool_call(ToolCallStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-crashed".into(),
+            call_id: "call-send".into(),
+            invocation_id: ToolInvocationId::new(),
+            tool_name: "Send".into(),
+            invocation_class: Some(ToolInvocationClass::Extension),
+            declared_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            effective_recovery_policy: ToolRecoveryPolicy::NeverReplay,
+            capability_revision: "sha256:send-surface".into(),
+            input_digest: "sha256:send-input".into(),
+        })
+        .await
+        .unwrap();
+    for (revision, current, next) in [
+        (
+            0,
+            ToolExecutionPosition::Prepared,
+            ToolExecutionPosition::Authorized,
+        ),
+        (
+            1,
+            ToolExecutionPosition::Authorized,
+            ToolExecutionPosition::EffectStarted,
+        ),
+    ] {
+        store
+            .advance_tool_call(ToolCallAdvance {
+                session_id: session.id.clone(),
+                turn_id: "turn-crashed".into(),
+                call_id: "call-send".into(),
+                expected_revision: revision,
+                expected_position: current,
+                next_position: next,
+            })
+            .await
+            .unwrap();
+    }
+
+    let observability = crate::observability::RuntimeObservability::new();
+    let summary = crate::agent::run::recovery::classify_interrupted_tool_calls(
+        std::sync::Arc::new(store.clone()),
+        &observability,
+        1_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.discovered, 1);
+    assert_eq!(summary.classified, 1);
+    assert_eq!(summary.manual_reconciliation, 1);
+    let calls = store.tool_calls(&session.id, "turn-crashed").await.unwrap();
+    assert_eq!(
+        calls[0].recovery_decision,
+        Some(ToolRecoveryDecision::ManualReconciliation),
+    );
+    assert!(calls[0].operator_action_required);
+    let observed = observability.snapshot();
+    assert_eq!(observed.tool_recoveries_classified, 1);
+    assert_eq!(observed.tool_recoveries_manual, 1);
+}
+
+#[tokio::test]
 async fn save_is_upsert() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     store

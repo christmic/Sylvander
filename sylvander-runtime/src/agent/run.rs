@@ -100,6 +100,7 @@ mod error;
 mod interaction;
 mod orchestration;
 mod projection;
+pub(crate) mod recovery;
 #[path = "workspace_context.rs"]
 mod workspace_context;
 

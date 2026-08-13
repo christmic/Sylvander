@@ -41,6 +41,7 @@ src/
 │       ├── interaction.rs # approval, question, and plan decision gates
 │       ├── background.rs  # isolated background Agent task lifecycle
 │       ├── projection.rs  # Agent/storage facts mapped to public Runtime APIs
+│       ├── recovery.rs    # boot classification of interrupted tool effects
 │       └── error.rs       # run failures and persistence operation context
 ├── session/               # context, authenticated boundary, identity binding
 ├── registry/              # Agent/model/provider revision governance
@@ -75,6 +76,10 @@ bus-publication rules. `agent/run/background.rs` owns cancellation, timeout,
 progress, and terminal publication for isolated background Agent work.
 `agent/run/projection.rs` is the type boundary from internal Agent and storage
 facts to public Runtime and governance DTOs; it contains no orchestration.
+`agent/run/recovery.rs` scans the Session execution ledger before Session
+attachment, acquires bounded recovery leases, persists deterministic
+classifications, and records content-free facts. It does not execute or replay
+a tool; concrete reconciliation and continuation are separate gates.
 `agent/run.rs` retains the shared run/Session state and coordinates these
 services but does not implement their protocols or construction.
 A directory containing only a renamed former file does not satisfy this

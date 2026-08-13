@@ -86,6 +86,7 @@ fn agent_run_keeps_construction_and_turn_orchestration_out_of_shared_state() {
         "interaction.rs",
         "orchestration.rs",
         "projection.rs",
+        "recovery.rs",
     ] {
         assert!(
             run.join(responsibility).is_file(),

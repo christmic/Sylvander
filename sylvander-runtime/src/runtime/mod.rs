@@ -4273,6 +4273,19 @@ impl Runtime {
             .list_persistent()
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let recovery = crate::agent::run::recovery::classify_interrupted_tool_calls(
+            session_store.clone(),
+            &observability,
+            crate::session::now_secs(),
+        )
+        .await
+        .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        info!(
+            discovered = recovery.discovered,
+            classified = recovery.classified,
+            manual_reconciliation = recovery.manual_reconciliation,
+            "classified interrupted tool executions"
+        );
         let active_worktrees = persistent_sessions
             .iter()
             .filter(|session| session.external_meta.contains_key("git_worktree"))

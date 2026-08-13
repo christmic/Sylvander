@@ -23,6 +23,7 @@ use sylvander_api::MessageId;
 use tokio::sync::broadcast;
 
 use crate::agent_definition::{AgentId, SessionId};
+use crate::storage::session::{ToolExecutionPosition, ToolRecoveryDecision};
 
 /// Inclusive upper bounds for the first seven duration buckets. The eighth
 /// bucket contains observations above 30 seconds.
@@ -237,6 +238,15 @@ pub(crate) enum RuntimeEvent {
         succeeded: bool,
         failure_kind: Option<RuntimeToolFailureKind>,
     },
+    /// Boot recovery durably classified one interrupted tool invocation.
+    ToolRecoveryClassified {
+        turn_id: String,
+        session_id: SessionId,
+        tool_call_id: String,
+        position: ToolExecutionPosition,
+        decision: ToolRecoveryDecision,
+        operator_action_required: bool,
+    },
     PersistenceFinished {
         turn_id: String,
         session_id: SessionId,
@@ -266,6 +276,7 @@ impl RuntimeEvent {
     const MODEL_RETRIED: &'static str = "model_retried";
     const TOOL_STARTED: &'static str = "tool_started";
     const TOOL_FINISHED: &'static str = "tool_finished";
+    const TOOL_RECOVERY_CLASSIFIED: &'static str = "tool_recovery_classified";
     const PERSISTENCE_FINISHED: &'static str = "persistence_finished";
     const TURN_COMPLETED: &'static str = "turn_completed";
     const TURN_INTERRUPTED: &'static str = "turn_interrupted";
@@ -280,6 +291,7 @@ impl RuntimeEvent {
             Self::ModelRetried { .. } => Self::MODEL_RETRIED,
             Self::ToolStarted { .. } => Self::TOOL_STARTED,
             Self::ToolFinished { .. } => Self::TOOL_FINISHED,
+            Self::ToolRecoveryClassified { .. } => Self::TOOL_RECOVERY_CLASSIFIED,
             Self::PersistenceFinished { .. } => Self::PERSISTENCE_FINISHED,
             Self::TurnCompleted { .. } => Self::TURN_COMPLETED,
             Self::TurnInterrupted { .. } => Self::TURN_INTERRUPTED,
@@ -341,6 +353,10 @@ pub struct RuntimeObservabilitySnapshot {
     pub tools_succeeded: u64,
     /// Rejected, timed-out, fatal, or model-visible failed tool calls.
     pub tools_failed: u64,
+    /// Interrupted tool calls durably classified during boot recovery.
+    pub tool_recoveries_classified: u64,
+    /// Classified calls that require an explicit operator decision.
+    pub tool_recoveries_manual: u64,
     /// Explicit filesystem-boundary policy denials reported by an adapter.
     pub filesystem_policy_violations: u64,
     /// Required Session persistence operations that committed.
@@ -391,6 +407,8 @@ struct RuntimeObservabilityInner {
     tools_started: AtomicU64,
     tools_succeeded: AtomicU64,
     tools_failed: AtomicU64,
+    tool_recoveries_classified: AtomicU64,
+    tool_recoveries_manual: AtomicU64,
     filesystem_policy_violations: AtomicU64,
     persistence_succeeded: AtomicU64,
     persistence_failed: AtomicU64,
@@ -426,6 +444,8 @@ impl RuntimeObservability {
                 tools_started: AtomicU64::new(0),
                 tools_succeeded: AtomicU64::new(0),
                 tools_failed: AtomicU64::new(0),
+                tool_recoveries_classified: AtomicU64::new(0),
+                tool_recoveries_manual: AtomicU64::new(0),
                 filesystem_policy_violations: AtomicU64::new(0),
                 persistence_succeeded: AtomicU64::new(0),
                 persistence_failed: AtomicU64::new(0),
@@ -576,6 +596,33 @@ impl RuntimeObservability {
                     %tool_name,
                     succeeded,
                     ?failure_kind,
+                    "runtime lifecycle fact"
+                );
+            }
+            RuntimeEvent::ToolRecoveryClassified {
+                turn_id,
+                session_id,
+                tool_call_id,
+                position,
+                decision,
+                operator_action_required,
+            } => {
+                self.inner
+                    .tool_recoveries_classified
+                    .fetch_add(1, Ordering::Relaxed);
+                if operator_action_required {
+                    self.inner
+                        .tool_recoveries_manual
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                tracing::info!(
+                    event = event_name,
+                    %turn_id,
+                    %session_id,
+                    %tool_call_id,
+                    ?position,
+                    ?decision,
+                    operator_action_required,
                     "runtime lifecycle fact"
                 );
             }
@@ -736,7 +783,8 @@ impl RuntimeObservability {
             }
             RuntimeEvent::TurnTransitioned { .. }
             | RuntimeEvent::ModelRetried { .. }
-            | RuntimeEvent::PersistenceFinished { .. } => {}
+            | RuntimeEvent::PersistenceFinished { .. }
+            | RuntimeEvent::ToolRecoveryClassified { .. } => {}
         }
     }
 
@@ -772,6 +820,11 @@ impl RuntimeObservability {
             tools_started: self.inner.tools_started.load(Ordering::Relaxed),
             tools_succeeded: self.inner.tools_succeeded.load(Ordering::Relaxed),
             tools_failed: self.inner.tools_failed.load(Ordering::Relaxed),
+            tool_recoveries_classified: self
+                .inner
+                .tool_recoveries_classified
+                .load(Ordering::Relaxed),
+            tool_recoveries_manual: self.inner.tool_recoveries_manual.load(Ordering::Relaxed),
             filesystem_policy_violations: self
                 .inner
                 .filesystem_policy_violations
