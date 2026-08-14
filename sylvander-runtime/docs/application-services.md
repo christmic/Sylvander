@@ -257,8 +257,42 @@ terminal fact and public event. The optional bounded debug projection reports
 any post-start write failure as a sticky `ObservabilitySink` health
 issue and makes Runtime unready; later activity cannot reconstruct a missing
 fact. Reaching the configured file limit is a normal bounded terminal, not a
-sink failure. Cross-restart metric aggregation and CPU/memory/network resource
-histograms remain incomplete.
+sink failure. The Runtime process CPU/RSS monitor described below is now
+implemented. Cross-restart metric aggregation and adapter-attributed
+Provider/sandbox resource metrics remain incomplete.
+
+### Resource measurement authority
+
+Resource facts are split by what Runtime can actually observe:
+
+- the Runtime process monitor samples only its own PID, using accumulated CPU
+  milliseconds and current resident memory from a platform implementation;
+- the first sample establishes a CPU baseline, subsequent monotonic deltas
+  enter a fixed bounded histogram, and every valid RSS sample enters a byte
+  histogram plus current/maximum gauges;
+- the monitor is built in, starts and stops with Runtime, has no plugin or
+  Agent-facing registration surface, and exposes a sticky health failure if
+  sampling or its task terminates unexpectedly;
+- Provider network bytes belong to the Runtime-owned HTTP body boundary;
+  sandbox CPU, memory, and network belong to the concrete sandbox adapter and
+  its cgroup/job/container accounting handle;
+- machine-wide network-interface totals, command output sizes, token counts,
+  and Agent-reported numbers are not network-resource evidence.
+
+Every metric carries `observed`, `unavailable`, or `failed` semantics. An
+unsupported or not-yet-instrumented authority is `unavailable`, not a zero
+sample. This preserves an honest operational snapshot while adapters are
+completed independently. The in-process snapshot is not yet a durable metric
+store; cross-restart aggregation remains open.
+
+Implementation status: Runtime synchronously establishes the current PID and
+first RSS/CPU baseline before boot returns, then refreshes only that PID once
+per second on an owned task. CPU deltas and RSS values use fixed exported
+buckets; RSS also exposes current and maximum values. CPU counter regression,
+missing process data, refresh failure, or blocking-task failure stops sampling,
+preserves prior observations, emits a typed content-free failure fact, adds
+`ResourceSampler` to health, and makes Runtime unready. Shutdown cancels and
+joins the monitor. Network status remains explicitly `unavailable`.
 
 ### Design evidence
 
@@ -274,6 +308,12 @@ The lifecycle vocabulary was checked against pinned local implementations:
 - Claude Code `3da94d5e5f2b99c9d82b0d8f09448b04775cd41f`, especially
   `src/entrypoints/sdk/coreSchemas.ts`, distinguishes successful and failed
   post-tool/stop lifecycle hooks.
+- The official `sysinfo` 0.39.6 crate source and documentation define
+  `Process::accumulated_cpu_time()` as cumulative CPU milliseconds and
+  `Process::memory()` as current resident physical memory. Its CPU guidance
+  requires two samples for a meaningful delta. Its network API is
+  interface-wide, which is why Sylvander does not use it for Runtime or
+  operation attribution.
 
 Sylvander adopts explicit start/terminal pairing and typed success/failure,
 but does not reuse UI messages or extensible hooks as observability. Runtime

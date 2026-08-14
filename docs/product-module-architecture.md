@@ -281,8 +281,28 @@ then publishes the public terminal. Evidence recording remains a separate,
 asynchronous governance projection of bus traffic and is never used to decide
 whether a turn committed. The optional bounded debug projection makes a
 post-start write failure a sticky `ObservabilitySink` health issue;
-normal size-limit truncation is not a failure. Cross-restart metric aggregation
-and CPU/memory/network resource histograms remain incomplete.
+normal size-limit truncation is not a failure. Runtime process CPU/RSS
+sampling is implemented as described below. Cross-restart metric aggregation
+and adapter-attributed Provider/sandbox resource metrics remain incomplete.
+
+Resource observation has two non-interchangeable authorities. A closed
+Runtime process sampler owns periodic CPU and resident-memory facts for the
+server process. Runtime initializes the sampler before publishing readiness,
+uses cumulative CPU time only to derive interval deltas, records RSS as an
+instantaneous gauge/distribution, and owns cancellation plus join during
+shutdown. A missing process, failed refresh, or terminated sampler is a sticky,
+content-free health issue. The first CPU refresh is only a baseline and never
+enters a histogram.
+
+Per-operation network bytes and sandbox resource consumption must instead be
+reported by the Runtime-owned adapter that possesses the actual HTTP stream or
+sandbox accounting handle. Host network-interface totals are forbidden as a
+substitute because they include unrelated processes and cannot be attributed
+to a Runtime, Agent, Session, turn, or tool call. Agent-provided numbers are
+also untrusted. Until an adapter supplies an objective counter, the metric is
+explicitly `unavailable`, never zero. Process sampling therefore closes
+Runtime CPU/RSS visibility independently; Provider/sandbox attribution and
+cross-restart aggregation remain separate work.
 
 ## Service and presentation layers
 

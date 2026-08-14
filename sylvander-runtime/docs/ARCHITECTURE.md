@@ -225,8 +225,11 @@ crate without retaining a second production path.
   content-free counters and structured facts in the Runtime operational
   snapshot. One recorder is shared by initial and lazy Agent revisions. The
   durable Session turn is the product terminal authority; Evidence remains a
-  separate asynchronous governance projection. Metric durability and sink
-  health remain incomplete.
+  separate asynchronous governance projection. A closed process-resource
+  monitor owns Runtime PID CPU/RSS sampling and its task lifecycle; network and
+  sandbox attribution can enter only through their owning concrete adapters,
+  never through Agent self-report or host-wide interface totals. Metric
+  durability and adapter-attributed resource coverage remain incomplete.
 - `mcp` owns authenticated Session bindings, secret resolution, persistent
   sandbox selection, server lifecycles, and governed results. `mcp::stdio`
   implements JSON-RPC, discovery, cancellation, health, and reconnection over
