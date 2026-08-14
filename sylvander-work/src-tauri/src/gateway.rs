@@ -2,13 +2,17 @@
 
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
-use tauri::ipc::Channel;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tauri::{AppHandle, ipc::Channel};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, header};
 use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
 
 use sylvander_api::{UiClientMessage, UiProtocolHello, UiServerMessage};
+
+use crate::host;
 
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -30,12 +34,14 @@ pub(crate) enum DesktopEvent {
 }
 
 struct ActiveConnection {
+    generation: u64,
     outbound: mpsc::Sender<UiClientMessage>,
     shutdown: oneshot::Sender<()>,
 }
 
 pub(crate) struct DesktopGateway {
-    active: Mutex<Option<ActiveConnection>>,
+    active: Arc<Mutex<Option<ActiveConnection>>>,
+    next_generation: AtomicU64,
     config: RuntimeConnectionConfig,
 }
 
@@ -47,7 +53,8 @@ struct RuntimeConnectionConfig {
 impl Default for DesktopGateway {
     fn default() -> Self {
         Self {
-            active: Mutex::new(None),
+            active: Arc::new(Mutex::new(None)),
+            next_generation: AtomicU64::new(1),
             config: RuntimeConnectionConfig {
                 endpoint: std::env::var("SYLVANDER_DESKTOP_ENDPOINT").ok(),
                 bearer: std::env::var("SYLVANDER_DESKTOP_BEARER").ok(),
@@ -58,6 +65,7 @@ impl Default for DesktopGateway {
 
 #[tauri::command]
 pub(crate) async fn connect_runtime(
+    app: AppHandle,
     events: Channel<DesktopEvent>,
     gateway: tauri::State<'_, DesktopGateway>,
 ) -> Result<(), String> {
@@ -103,7 +111,13 @@ pub(crate) async fn connect_runtime(
 
     let (outbound, mut outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
     let (shutdown, mut shutdown_rx) = oneshot::channel();
-    *gateway.active.lock().await = Some(ActiveConnection { outbound, shutdown });
+    let generation = gateway.next_generation.fetch_add(1, Ordering::Relaxed);
+    *gateway.active.lock().await = Some(ActiveConnection {
+        generation,
+        outbound,
+        shutdown,
+    });
+    let active = gateway.active.clone();
 
     tauri::async_runtime::spawn(async move {
         let reason = loop {
@@ -117,8 +131,12 @@ pub(crate) async fn connect_runtime(
                     let Some(inbound) = inbound else { break "runtime_closed" };
                     match decode_message(inbound) {
                         Ok(Some(message)) => {
+                            let notification = host::terminal_notification_body(&message);
                             if events.send(DesktopEvent::Message { message: Box::new(message) }).is_err() {
                                 break "desktop_closed";
+                            }
+                            if let Some(body) = notification {
+                                host::notify_if_backgrounded(&app, body);
                             }
                         }
                         Ok(None) => {}
@@ -131,7 +149,9 @@ pub(crate) async fn connect_runtime(
                 }
             }
         };
-        let _ = events.send(DesktopEvent::Disconnected { reason });
+        if finish_current_connection(&active, generation).await {
+            let _ = events.send(DesktopEvent::Disconnected { reason });
+        }
     });
     Ok(())
 }
@@ -167,6 +187,22 @@ pub(crate) async fn disconnect_runtime(
 async fn disconnect_active(gateway: &DesktopGateway) {
     if let Some(active) = gateway.active.lock().await.take() {
         let _ = active.shutdown.send(());
+    }
+}
+
+async fn finish_current_connection(
+    active: &Mutex<Option<ActiveConnection>>,
+    generation: u64,
+) -> bool {
+    let mut current = active.lock().await;
+    if current
+        .as_ref()
+        .is_some_and(|connection| connection.generation == generation)
+    {
+        current.take();
+        true
+    } else {
+        false
     }
 }
 
@@ -232,11 +268,16 @@ where
         {
             Ok(protocol)
         }
-        Some(UiServerMessage::ProtocolError { .. }) => {
-            Err("Runtime rejected the UI protocol".into())
-        }
+        Some(UiServerMessage::ProtocolError { error }) => Err(protocol_error_message(&error)),
         _ => Err("Runtime did not acknowledge the UI protocol".into()),
     }
+}
+
+fn protocol_error_message(error: &sylvander_api::UiProtocolError) -> String {
+    format!(
+        "Runtime rejected UI protocol [{}]: {} (server supports {}..={})",
+        error.code, error.message, error.server_min_version, error.server_max_version
+    )
 }
 
 fn desktop_capabilities() -> Vec<String> {
@@ -260,5 +301,60 @@ fn desktop_capabilities() -> Vec<String> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/gateway.rs"]
-mod tests;
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::{Mutex, mpsc, oneshot};
+
+    use super::{
+        ActiveConnection, finish_current_connection, protocol_error_message, runtime_request,
+    };
+
+    #[test]
+    fn endpoint_requires_websocket_scheme() {
+        assert!(runtime_request("https://localhost/ws", None).is_err());
+        assert!(runtime_request("ws://127.0.0.1:9000/ws", None).is_ok());
+    }
+
+    #[test]
+    fn bearer_is_bounded_and_never_returned() {
+        assert!(runtime_request("wss://runtime.example/ws", Some("")).is_err());
+        let request =
+            runtime_request("wss://runtime.example/ws", Some("lease-secret")).expect("valid lease");
+        assert_eq!(request.uri().to_string(), "wss://runtime.example/ws");
+    }
+
+    #[tokio::test]
+    async fn only_the_current_generation_can_publish_disconnect() {
+        let (outbound, _) = mpsc::channel(1);
+        let (shutdown, _) = oneshot::channel();
+        let active = Arc::new(Mutex::new(Some(ActiveConnection {
+            generation: 2,
+            outbound,
+            shutdown,
+        })));
+
+        assert!(!finish_current_connection(&active, 1).await);
+        assert!(active.lock().await.is_some());
+        assert!(finish_current_connection(&active, 2).await);
+        assert!(active.lock().await.is_none());
+    }
+
+    #[test]
+    fn protocol_rejection_preserves_only_the_public_bounded_details() {
+        let message = protocol_error_message(&sylvander_api::UiProtocolError {
+            code: "incompatible_protocol".into(),
+            message: "client and server ranges do not overlap".into(),
+            server_min_version: 4,
+            server_max_version: sylvander_api::UI_PROTOCOL_VERSION,
+        });
+
+        assert_eq!(
+            message,
+            format!(
+                "Runtime rejected UI protocol [incompatible_protocol]: client and server ranges do not overlap (server supports 4..={})",
+                sylvander_api::UI_PROTOCOL_VERSION
+            )
+        );
+    }
+}

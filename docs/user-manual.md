@@ -370,7 +370,7 @@ messages include `{"type":"chat","text":"hi"}`,
 `{"type":"approve","call_id":"...","approved":true}`,
 `{"type":"list_sessions"}`, and `{"type":"ping"}`. Server → client
 pushed events include `text_delta`, `tool_call`, `tool_result`,
-`tool_rejected`, `approval_request`, `iteration_start`, `done`,
+`tool_rejected`, `approval_request`, `turn_started`, `iteration_start`, `done`,
 `error`, `session_created`, and `pong`.
 
 ## 11. HTTP quickstart

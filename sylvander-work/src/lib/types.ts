@@ -1,6 +1,6 @@
 export type ConnectionState = "starting" | "connecting" | "live" | "reconnecting" | "offline";
 export type SessionState = "active" | "waiting" | "idle" | "failed";
-export type TranscriptKind = "user" | "assistant" | "tool" | "notice";
+export type TranscriptKind = "user" | "assistant" | "thinking" | "tool" | "notice";
 
 export interface SessionSummary {
   id: string;
@@ -26,7 +26,9 @@ export interface PlanStep {
 }
 
 export interface TaskSummary {
+  id: string;
   owner: string;
   purpose: string;
-  state: "running" | "complete" | "pending";
+  detail?: string;
+  state: "running" | "complete" | "failed" | "cancelled";
 }

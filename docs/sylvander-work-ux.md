@@ -93,15 +93,31 @@ content region. It does not center itself within the entire application window.
 The Composer is visually stable at the bottom of the conversation. It includes:
 
 - a multiline text field that grows to eight lines;
-- attachment and context affordances only when advertised by Runtime;
+- explicitly selected UTF-8 files, with PNG/JPEG enabled only for the exact
+  provider-qualified model that advertises vision;
 - the selected model, reasoning effort, and permission profile as compact
   controls;
 - Send while idle and Interrupt while the selected Session is running;
 - a concise shortcut hint that disappears at narrow widths.
 
 `Enter` sends and `Shift+Enter` inserts a line break. Input remains responsive
-while streaming. Empty submit is ignored. Drafts are local presentation state
-and are never reported as persisted Session content.
+while streaming. A text-empty draft may send selected attachments; a fully
+empty draft is ignored. Drafts are local presentation state and are never
+reported as persisted Session content. Attachment errors name only the public
+file name and limit failure; they never expose file paths or content.
+
+Desktop settings offer an opt-in “Notify when background turns finish” switch.
+The switch changes only after the native host confirms persistence. When
+enabled, an unfocused window may produce a fixed completed, failed, or
+interrupted notification from the matching Runtime terminal; no conversation
+content or Session identity appears in the operating-system surface. Focused
+work never produces a duplicate notification.
+
+Preparing a User Profile export does not download through the WebView. “Save
+JSON export…” opens the operating system save panel with a revision-derived
+filename and JSON filter. Cancelling leaves a visible non-error status; success
+appears only after the native host flushes the file. The chosen path is never
+shown in the transcript, diagnostics, or React state.
 
 ## Decisions and questions
 

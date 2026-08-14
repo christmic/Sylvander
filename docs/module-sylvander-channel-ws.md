@@ -18,7 +18,7 @@ JSON-over-WebSocket. Each frame is a tagged enum value:
   `list_sessions`, `discover_agents`, `select_model`, `submit_feedback`,
   `ping`, ...
 - **Server → Client** examples: `session_created`, `text_delta`,
-  `thinking_delta`, `tool_call`, `tool_result`, `iteration_start`,
+  `turn_started`, `thinking_delta`, `tool_call`, `tool_result`, `iteration_start`,
   `iteration_end`, `done`, `approval_request`, `error`, `pong`, ...
 
 The complete enum list lives in `sylvander-api/src/ui.rs`
@@ -60,15 +60,25 @@ re-authenticating individual frames.
    the server replies with `Welcome` carrying the negotiated protocol version
    and capabilities. One socket may carry multiple explicitly tagged sessions.
 5. **Stream** — chat turns stream `text_delta`, `thinking_delta`,
-   `tool_call`, `tool_result`, and `iteration_start`, then finish with `done`
+   `turn_started`, `tool_call`, `tool_result`, and `iteration_start`, then finish with `done`
    or `error`.
 6. **Session discovery** — `list_sessions` dispatches through Runtime
    `ChannelHost`, preserving stable-user visibility rules, and returns one typed
    `sessions_list` response.
-7. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
+7. **Session lifecycle** — load, rename, archive, restore, delete, and fork
+   dispatch through Runtime ownership checks. The channel only projects the
+   returned public history or lifecycle event; it never mutates persistence.
+8. **Reconnect recovery** — reattach first loads Runtime's durable history,
+   then replays up to 4 MiB of public events emitted by the still-active turn.
+   Oversized or evicted events set `replay_truncated`; terminal events end and
+   clear the temporary replay because durable history is authoritative.
+9. **Runtime Session operations** — context reports, compaction, two-phase
+   workspace rollback, and coding-session inspect/accept/discard all dispatch
+   through `ChannelHost` and return public progress/result facts.
+10. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
    list/decide envelopes pass unchanged to Runtime under the authenticated
    WebSocket boundary. The adapter never derives or accepts owner identity.
-8. **Shutdown** — runtime closes idle connections gracefully and
+11. **Shutdown** — runtime closes idle connections gracefully and
    aborts stuck ones on supervisor shutdown.
 
 ## 6. Tests
@@ -76,8 +86,9 @@ re-authenticating individual frames.
 Unit tests in `sylvander-channel-ws/tests/unit/lib.rs` cover the mandatory
 handshake, capability negotiation, live bearer rotation and lease failure,
 Runtime-owned identity and administration dispatch, redaction, per-session
-model changes, Runtime-owned session listing, approval transport, and
-request-size limits. Governed-memory confirmation uses the same exhaustive
+model changes, Runtime-owned session lifecycle, runtime control forwarding,
+bounded normal/truncated reattach replay, approval transport, and request-size
+limits. Governed-memory confirmation uses the same exhaustive
 message dispatcher; its typed shapes, Runtime ownership, and real transport
 round trip are covered by the protocol, Runtime, and Unix suites. Add a
 WebSocket-specific round-trip case whenever WebSocket framing or dispatch
@@ -91,6 +102,8 @@ changes.
   envelopes.
 - Assuming one socket per session — the channel allows multi-session
   use; tag every outbound message with the `session_id`.
+- Treating `LoadSession` as reconnect recovery — only `ReattachSession`
+  combines durable history with bounded in-flight event replay.
 - Treating `auth` as transport-only — it scopes the
   `BoundaryContext.principal` for downstream authorization.
 

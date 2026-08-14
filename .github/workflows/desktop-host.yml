@@ -1,0 +1,67 @@
+name: Desktop host
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-host.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "sylvander-api/**"
+      - "sylvander-work/**"
+      - "docs/sylvander-work-*.md"
+  push:
+    branches: [master, "feature/**"]
+    paths:
+      - ".github/workflows/desktop-host.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "sylvander-api/**"
+      - "sylvander-work/**"
+      - "docs/sylvander-work-*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-host-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sylvander-work/package-lock.json
+      - name: Install Linux host dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libappindicator3-dev libdbus-1-dev librsvg2-dev libwebkit2gtk-4.1-dev patchelf
+      - name: Install locked Web dependencies
+        working-directory: sylvander-work
+        run: npm ci
+      - name: Check and test Web presentation
+        working-directory: sylvander-work
+        run: |
+          npm run check
+          npm test -- --run
+          npm run build:web
+      - name: Test native host
+        run: cargo test --manifest-path sylvander-work/src-tauri/Cargo.toml --locked
+      - name: Lint native host
+        run: cargo clippy --manifest-path sylvander-work/src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Verify maintained documentation
+        if: runner.os == 'Linux'
+        run: ./scripts/verify-docs.sh
