@@ -425,7 +425,7 @@ impl AgentRunInner {
         }
     }
 
-    async fn cancel_pending_decisions(
+    pub(super) async fn cancel_pending_decisions(
         &self,
         session_id: &SessionId,
         agent_instance_id: Option<&AgentInstanceId>,

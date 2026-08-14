@@ -4760,3 +4760,114 @@ async fn subscription_filter_matches_agent_and_broadcast() {
         ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi")
     }));
 }
+
+#[tokio::test]
+async fn cancel_pending_decisions_scopes_to_target_instance_only() {
+    let bus = Arc::new(InProcessMessageBus::new());
+    let (spec, client) = test_spec_and_client();
+    let run = qualified_anthropic_run_builder(spec, client)
+        .bus(bus.clone())
+        .build()
+        .expect("build");
+    let session = SessionId::new("instance-scoped-cancel");
+    let instance_a = AgentInstanceId::new("cancel-instance-a");
+    let instance_b = AgentInstanceId::new("cancel-instance-b");
+
+    let (approval_a_tx, approval_a_rx) = oneshot::channel::<ApprovalDecision>();
+    let (approval_b_tx, mut approval_b_rx) = oneshot::channel::<ApprovalDecision>();
+    let (answer_a_tx, answer_a_rx) = oneshot::channel::<Vec<String>>();
+    let (answer_b_tx, mut answer_b_rx) = oneshot::channel::<Vec<String>>();
+    let (plan_a_tx, plan_a_rx) = oneshot::channel::<PlanDecision>();
+    let (plan_b_tx, mut plan_b_rx) = oneshot::channel::<PlanDecision>();
+
+    for (instance, approval, answer, plan) in [
+        (&instance_a, approval_a_tx, answer_a_tx, plan_a_tx),
+        (&instance_b, approval_b_tx, answer_b_tx, plan_b_tx),
+    ] {
+        run.inner.pending_approvals.lock().await.insert(
+            InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
+            PendingApproval {
+                session_id: session.clone(),
+                agent_instance_id: instance.clone(),
+                grant: ApprovalGrantContext::new(
+                    String::from("u"),
+                    AgentId::new("scope-agent"),
+                    String::from("policy"),
+                    String::from("capability"),
+                )
+                .key_for(&ToolUseRequest {
+                    call_id: "shared-id".into(),
+                    tool_name: "noop".into(),
+                    input: serde_json::json!({}),
+                    facts: ToolApprovalFacts::new(
+                        ToolInvocationClass::FilesystemMutation,
+                        ToolExecutionMode::Exclusive,
+                        ToolExecutionPolicy::workspace_write(),
+                        sylvander_agent::risk::CommandRiskAssessment::routine(),
+                    ),
+                }),
+                persistent_identity_authorized: true,
+                allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
+                sender: approval,
+            },
+        );
+        run.inner.pending_answers.lock().await.insert(
+            InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
+            PendingAnswer {
+                session_id: session.clone(),
+                agent_instance_id: instance.clone(),
+                sender: answer,
+            },
+        );
+        run.inner.pending_plans.lock().await.insert(
+            InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
+            PendingPlan {
+                session_id: session.clone(),
+                agent_instance_id: instance.clone(),
+                sender: plan,
+            },
+        );
+    }
+
+    run.inner
+        .cancel_pending_decisions(&session, Some(&instance_a))
+        .await;
+
+    assert!(matches!(
+        approval_a_rx.await.unwrap(),
+        ApprovalDecision::Rejected { .. }
+    ));
+    assert!(answer_a_rx.await.unwrap().is_empty());
+    assert!(matches!(
+        plan_a_rx.await.unwrap(),
+        PlanDecision::Rejected { .. }
+    ));
+
+    assert!(matches!(
+        approval_b_rx.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        answer_b_rx.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        plan_b_rx.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn turn_agent_instance_id_falls_back_to_moderator_under_cfg_test() {
+    use super::orchestration::turn_agent_instance_id;
+    use sylvander_api::AgentStatus;
+
+    let session = SessionId::new("fallback-session");
+    let mut message = sylvander_api::BusMessage::system_status_update(
+        AgentId::new("fallback-agent"),
+        AgentStatus::Idle,
+    );
+    message.session_id = session.clone();
+    let resolved = turn_agent_instance_id(&message, &session).expect("cfg(test) fallback");
+    assert_eq!(resolved, AgentInstanceId::new("moderator:fallback-session"));
+}
