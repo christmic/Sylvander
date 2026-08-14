@@ -12,6 +12,7 @@ use crate::test_support::qualified_anthropic_run_builder;
 use std::path::PathBuf;
 use sylvander_agent::approval::ToolApprovalFacts;
 use sylvander_agent::approval::ToolUseRequest;
+use sylvander_agent::cognition_gate::CognitionRole as AgentCognitionRole;
 use sylvander_agent::compress::error::CompactionFailureCode;
 use sylvander_agent::memory::store::InMemoryMemoryStore;
 use sylvander_agent::tool::DynamicToolSource;
@@ -578,7 +579,9 @@ impl sylvander_llm_core::ModelProvider for CognitionRoutingProvider {
         request: sylvander_llm_core::ModelRequest,
     ) -> sylvander_llm_core::ProviderFuture<'_> {
         self.requests.lock().unwrap().push(request.clone());
-        let fail = self.fail_specialist && request.model.model == "audio-specialist";
+        let is_specialist = request.model.model != "primary"
+            && request.model.model != request.model.provider.as_str();
+        let fail = self.fail_specialist && is_specialist;
         Box::pin(async move {
             if fail {
                 return Err(sylvander_llm_core::ProviderError::new(
@@ -4870,4 +4873,210 @@ fn turn_agent_instance_id_falls_back_to_moderator_under_cfg_test() {
     message.session_id = session.clone();
     let resolved = turn_agent_instance_id(&message, &session).expect("cfg(test) fallback");
     assert_eq!(resolved, AgentInstanceId::new("moderator:fallback-session"));
+}
+
+#[tokio::test]
+async fn cognition_fallback_keeps_primary_in_control_when_specialist_unavailable() {
+    let mut spec = AgentSpec::builder()
+        .id("cognition-fallback-agent")
+        .name("Cognition fallback")
+        .model_name("primary")
+        .build()
+        .unwrap();
+    spec.model.provider = "local".into();
+    spec.cognition.roles.push(CognitiveRoleBinding {
+        role: CognitiveRole::Deliberation,
+        model: sylvander_api::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "text-specialist".into(),
+        },
+    });
+    let primary = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("local", "primary"),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE,
+    };
+    let specialist = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("local", "text-specialist"),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+    };
+    let provider = Arc::new(CognitionRoutingProvider {
+        requests: std::sync::Mutex::new(Vec::new()),
+        fail_specialist: true,
+    });
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    let encryption = EvidenceEncryption::from_secret("cognition-fallback-test", &[42; 32]).unwrap();
+    let governance = EvidenceGovernance::new("test-tenant", 30, encryption).unwrap();
+    let artifacts = RuntimeArtifactService::new(
+        EvidenceStore::open_governed_in_memory(governance)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let resolver = Arc::new(
+        sylvander_agent::prompt::PromptResolver::new(
+            "agent:cognition-fallback-agent@1".into(),
+            spec.persona.system_prompt.clone(),
+            Vec::new(),
+            None,
+            false,
+        )
+        .unwrap(),
+    );
+    let tools = ToolRegistry::new().register(sylvander_agent::tools::ConsultCognitionTool::new());
+    let (run, issuer) = AgentRun::qualified_router_builder(spec, provider.clone(), primary)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .session_store(store.clone())
+        .artifact_service(artifacts)
+        .prompt_resolver(resolver)
+        .override_tools(tools)
+        .available_provider_models(vec![specialist])
+        .approved_cognition_roles(HashSet::from([CognitiveRole::Deliberation]))
+        .build_with_session_issuer()
+        .unwrap();
+    let session_id = SessionId::new("cognition-fallback");
+    let metadata = test_metadata();
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![run.id().clone()],
+    );
+    stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+    store.save(&stored).await.unwrap();
+    run.attach_authenticated_session(issuer.issue(session_id.clone(), metadata).unwrap())
+        .await
+        .unwrap();
+    run.inner
+        .handle_message_with_turn_id(
+            BusMessage::user_chat(session_id.clone(), "user-1", "solve carefully"),
+            "turn-cognition-fallback".into(),
+        )
+        .await
+        .unwrap();
+
+    let observed = run.inner.observability.snapshot();
+    assert_eq!(
+        observed.cognition_consultations, 1,
+        "primary should still consult cognition even when specialist is bound to fail"
+    );
+    assert_eq!(
+        observed.cognition_consultations_succeeded, 0,
+        "cognition must record a soft failure, not a hidden success"
+    );
+    assert_eq!(
+        observed.cognition_consultations_failed, 1,
+        "cognition failure count must surface so operators see it"
+    );
+}
+
+#[tokio::test]
+async fn cognition_routing_rejects_role_that_was_not_approved_at_session_activation() {
+    let mut spec = AgentSpec::builder()
+        .id("cognition-unapproved-role-agent")
+        .name("Cognition unapproved role")
+        .model_name("primary")
+        .build()
+        .unwrap();
+    spec.model.provider = "local".into();
+    spec.cognition.roles.push(CognitiveRoleBinding {
+        role: CognitiveRole::FastDraft,
+        model: sylvander_api::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "text-specialist".into(),
+        },
+    });
+    spec.cognition.roles.push(CognitiveRoleBinding {
+        role: CognitiveRole::Critic,
+        model: sylvander_api::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "critic-specialist".into(),
+        },
+    });
+    spec.cognition.roles.push(CognitiveRoleBinding {
+        role: CognitiveRole::Deliberation,
+        model: sylvander_api::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "text-specialist".into(),
+        },
+    });
+    let primary = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("local", "primary"),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE,
+    };
+    let specialist = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("local", "text-specialist"),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+    };
+    let provider = Arc::new(CognitionRoutingProvider {
+        requests: std::sync::Mutex::new(Vec::new()),
+        fail_specialist: false,
+    });
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    let encryption =
+        EvidenceEncryption::from_secret("cognition-unapproved-test", &[7; 32]).unwrap();
+    let governance = EvidenceGovernance::new("test-tenant", 30, encryption).unwrap();
+    let artifacts = RuntimeArtifactService::new(
+        EvidenceStore::open_governed_in_memory(governance)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let resolver = Arc::new(
+        sylvander_agent::prompt::PromptResolver::new(
+            "agent:cognition-unapproved-role-agent@1".into(),
+            spec.persona.system_prompt.clone(),
+            Vec::new(),
+            None,
+            false,
+        )
+        .unwrap(),
+    );
+    let tools = ToolRegistry::new().register(sylvander_agent::tools::ConsultCognitionTool::new());
+    let (run, issuer) = AgentRun::qualified_router_builder(spec, provider.clone(), primary)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .session_store(store.clone())
+        .artifact_service(artifacts)
+        .prompt_resolver(resolver)
+        .override_tools(tools)
+        .available_provider_models(vec![specialist])
+        .approved_cognition_roles(HashSet::from([CognitiveRole::Deliberation]))
+        .build_with_session_issuer()
+        .unwrap();
+    let session_id = SessionId::new("cognition-unapproved");
+    let metadata = test_metadata();
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![run.id().clone()],
+    );
+    stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+    store.save(&stored).await.unwrap();
+    run.attach_authenticated_session(issuer.issue(session_id.clone(), metadata).unwrap())
+        .await
+        .unwrap();
+
+    let models = run.inner.approved_text_cognition_models().await;
+    assert!(
+        models.contains_key(&AgentCognitionRole::Deliberation),
+        "Deliberation was approved and must remain available"
+    );
+    assert!(
+        !models.contains_key(&AgentCognitionRole::FastDraft),
+        "FastDraft is configured but not approved; the Session must not see it"
+    );
+    assert!(
+        !models.contains_key(&AgentCognitionRole::Critic),
+        "Critic is configured but not approved; the Session must not see it"
+    );
 }
