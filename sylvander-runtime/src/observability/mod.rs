@@ -6,11 +6,19 @@
 //! inputs, model output, credentials, and user content have no field here.
 
 mod debug_log;
+mod resource;
 
 pub(crate) use debug_log::RuntimeObservationDebugLog;
 #[cfg(test)]
 pub(crate) use debug_log::{
     DEBUG_OBSERVATION_LOG_MAX_FILES, DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES,
+};
+pub(crate) use resource::RuntimeResourceMonitor;
+#[cfg(test)]
+pub(crate) use resource::sequence_sampler;
+pub use resource::{
+    RUNTIME_CPU_DELTA_BUCKET_UPPER_BOUNDS_MILLIS, RUNTIME_RSS_BUCKET_UPPER_BOUNDS_BYTES,
+    RuntimeResourceHistogramSnapshot, RuntimeResourceMetricStatus, RuntimeResourceSnapshot,
 };
 
 use std::collections::HashMap;
@@ -384,6 +392,14 @@ pub(crate) enum RuntimeEvent {
         session_id: SessionId,
         kind: RuntimeFailureKind,
     },
+    /// Periodic, content-free observation of the Runtime process itself.
+    ProcessResourcesSampled {
+        /// Absent for the baseline sample because CPU is a cumulative counter.
+        cpu_delta_millis: Option<u64>,
+        rss_bytes: u64,
+    },
+    /// The closed process sampler could no longer produce objective facts.
+    ProcessResourceSamplingFailed,
 }
 
 impl RuntimeEvent {
@@ -405,6 +421,8 @@ impl RuntimeEvent {
     const TURN_COMPLETED: &'static str = "turn_completed";
     const TURN_INTERRUPTED: &'static str = "turn_interrupted";
     const TURN_FAILED: &'static str = "turn_failed";
+    const PROCESS_RESOURCES_SAMPLED: &'static str = "process_resources_sampled";
+    const PROCESS_RESOURCE_SAMPLING_FAILED: &'static str = "process_resource_sampling_failed";
 
     const fn as_str(&self) -> &'static str {
         match self {
@@ -426,6 +444,8 @@ impl RuntimeEvent {
             Self::TurnCompleted { .. } => Self::TURN_COMPLETED,
             Self::TurnInterrupted { .. } => Self::TURN_INTERRUPTED,
             Self::TurnFailed { .. } => Self::TURN_FAILED,
+            Self::ProcessResourcesSampled { .. } => Self::PROCESS_RESOURCES_SAMPLED,
+            Self::ProcessResourceSamplingFailed => Self::PROCESS_RESOURCE_SAMPLING_FAILED,
         }
     }
 
@@ -459,7 +479,8 @@ impl RuntimeEvent {
 /// Stable, content-safe counters exposed through Runtime health reporting.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeObservabilitySnapshot {
-    /// Total typed facts consumed since this Runtime started.
+    /// Total lifecycle facts consumed since this Runtime started. Periodic
+    /// resource samples have their own histogram counts.
     pub event_count: u64,
     /// Authorized channel chat requests admitted for dispatch.
     pub chat_admitted: u64,
@@ -556,6 +577,8 @@ pub struct RuntimeObservabilitySnapshot {
     pub turn_latency: RuntimeDurationHistogramSnapshot,
     /// Time from tool start to its first terminal fact.
     pub tool_latency: RuntimeDurationHistogramSnapshot,
+    /// Objective Runtime-process metrics and explicit network availability.
+    pub resources: RuntimeResourceSnapshot,
 }
 
 #[derive(Default)]
@@ -573,6 +596,7 @@ struct RuntimeObservabilityInner {
     clock: Arc<dyn RuntimeClock>,
     observations: broadcast::Sender<RuntimeEvent>,
     timing: Mutex<RuntimeTimingState>,
+    resources: Mutex<resource::RuntimeResourceState>,
     event_count: AtomicU64,
     chat_admitted: AtomicU64,
     chat_dispatched: AtomicU64,
@@ -647,6 +671,7 @@ impl RuntimeObservability {
                 clock,
                 observations,
                 timing: Mutex::new(RuntimeTimingState::default()),
+                resources: Mutex::new(resource::RuntimeResourceState::default()),
                 event_count: AtomicU64::new(0),
                 chat_admitted: AtomicU64::new(0),
                 chat_dispatched: AtomicU64::new(0),
@@ -716,7 +741,13 @@ impl RuntimeObservability {
         let observation = event.clone();
         let event_name = event.as_str();
         self.record_timing(&event);
-        self.inner.event_count.fetch_add(1, Ordering::Relaxed);
+        if !matches!(
+            event,
+            RuntimeEvent::ProcessResourcesSampled { .. }
+                | RuntimeEvent::ProcessResourceSamplingFailed
+        ) {
+            self.inner.event_count.fetch_add(1, Ordering::Relaxed);
+        }
         match event {
             RuntimeEvent::ChatAdmitted {
                 request_id,
@@ -1172,6 +1203,30 @@ impl RuntimeObservability {
                     "runtime lifecycle fact"
                 );
             }
+            RuntimeEvent::ProcessResourcesSampled {
+                cpu_delta_millis,
+                rss_bytes,
+            } => {
+                self.inner
+                    .resources
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .observe(cpu_delta_millis, rss_bytes);
+                tracing::info!(
+                    event = event_name,
+                    ?cpu_delta_millis,
+                    rss_bytes,
+                    "runtime resource fact"
+                );
+            }
+            RuntimeEvent::ProcessResourceSamplingFailed => {
+                self.inner
+                    .resources
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .fail();
+                tracing::warn!(event = event_name, "runtime resource sampling failed");
+            }
         }
         // Governance consumers are deliberately lossy and never apply
         // backpressure to the execution path. No subscribers is not an error.
@@ -1274,7 +1329,9 @@ impl RuntimeObservability {
             | RuntimeEvent::PerceptionRecoveryClassified { .. }
             | RuntimeEvent::PerceptionEvaluationFinished { .. }
             | RuntimeEvent::CognitionRecoveryClassified { .. }
-            | RuntimeEvent::CognitionConsultationFinished { .. } => {}
+            | RuntimeEvent::CognitionConsultationFinished { .. }
+            | RuntimeEvent::ProcessResourcesSampled { .. }
+            | RuntimeEvent::ProcessResourceSamplingFailed => {}
         }
     }
 
@@ -1297,6 +1354,12 @@ impl RuntimeObservability {
             .timing
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let resources = self
+            .inner
+            .resources
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot();
         RuntimeObservabilitySnapshot {
             event_count: self.inner.event_count.load(Ordering::Relaxed),
             chat_admitted: self.inner.chat_admitted.load(Ordering::Relaxed),
@@ -1464,6 +1527,7 @@ impl RuntimeObservability {
             dispatch_latency: timing.dispatch_latency,
             turn_latency: timing.turn_latency,
             tool_latency: timing.tool_latency,
+            resources,
         }
     }
 }

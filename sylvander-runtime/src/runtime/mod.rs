@@ -32,9 +32,9 @@ use tracing::{info, warn};
 use crate::agent::definition::AgentSpec;
 use crate::agent::definition::{AgentId, SessionId};
 use crate::mcp::stdio::McpResultArtifactSink;
-use crate::observability::RuntimeObservabilitySnapshot;
 use crate::observability::{
-    RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability, RuntimeObservationDebugLog,
+    RuntimeCoordinationOutcome, RuntimeEvent, RuntimeObservability, RuntimeObservabilitySnapshot,
+    RuntimeObservationDebugLog, RuntimeResourceMonitor,
 };
 #[cfg(test)]
 use sylvander_agent::tools::InMemoryMemoryStore;
@@ -295,6 +295,8 @@ pub struct Runtime {
     observability: RuntimeObservability,
     /// Optional bounded governance projection for local debugging.
     observation_debug_log: Option<RuntimeObservationDebugLog>,
+    /// Mandatory, closed Runtime-process CPU/RSS sampling lifecycle.
+    resource_monitor: RuntimeResourceMonitor,
     /// Immutable concrete execution environments shared by Agent revisions.
     execution_service: RuntimeExecutionService,
     /// Agent-instance workspace isolation and recovery.
@@ -435,6 +437,7 @@ pub struct RuntimeOperationalSnapshot {
 pub enum RuntimeHealthIssue {
     EvidenceRecorder,
     ObservabilitySink,
+    ResourceSampler,
     GuardianSupervisor,
     ExecutionTarget,
     Storage,
@@ -4226,12 +4229,15 @@ impl Runtime {
             boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
             execution_service: execution_service.clone(),
         });
+        let resource_monitor = RuntimeResourceMonitor::start(observability.clone())
+            .map_err(|()| RuntimeError::Config("Runtime resource sampler is unavailable".into()))?;
         Ok(Self {
             engine,
             storage: RuntimeStorage::new(session_store, memory_store)
                 .with_coordination_store((*sqlite_session_store).clone()),
             observability,
             observation_debug_log: None,
+            resource_monitor,
             execution_service,
             agent_workspaces: None,
             mailbox_scheduler: None,
@@ -5039,11 +5045,14 @@ impl Runtime {
             mailbox_scheduler.wake(recipient);
         }
         let execution_health = Some(ExecutionHealthTask::start(execution_service.clone()));
+        let resource_monitor = RuntimeResourceMonitor::start(observability.clone())
+            .map_err(|()| RuntimeError::Config("Runtime resource sampler is unavailable".into()))?;
         Ok(Self {
             engine,
             storage: storage.with_guardian_probe(storage_guardian_probe),
             observability,
             observation_debug_log,
+            resource_monitor,
             execution_service,
             agent_workspaces: Some(agent_workspaces),
             mailbox_scheduler: Some(mailbox_scheduler),
@@ -6103,6 +6112,9 @@ impl Runtime {
         {
             health_issues.push(RuntimeHealthIssue::ObservabilitySink);
         }
+        if self.resource_monitor.failed() {
+            health_issues.push(RuntimeHealthIssue::ResourceSampler);
+        }
         if let Some(guardian) = &self.guardian
             && guardian.last_error().await.is_some()
         {
@@ -6192,6 +6204,7 @@ impl Runtime {
         if let Some(execution_health) = &self.execution_health {
             execution_health.shutdown().await;
         }
+        self.resource_monitor.shutdown().await;
         if let Some(evidence) = &self.evidence
             && let Err(error) = evidence.shutdown().await
         {

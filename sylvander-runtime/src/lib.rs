@@ -123,8 +123,10 @@ mod user_profile_store;
 
 mod runtime;
 pub use observability::{
-    RUNTIME_DURATION_BUCKET_UPPER_BOUNDS_MICROS, RuntimeDurationHistogramSnapshot,
-    RuntimeObservabilitySnapshot,
+    RUNTIME_CPU_DELTA_BUCKET_UPPER_BOUNDS_MILLIS, RUNTIME_DURATION_BUCKET_UPPER_BOUNDS_MICROS,
+    RUNTIME_RSS_BUCKET_UPPER_BOUNDS_BYTES, RuntimeDurationHistogramSnapshot,
+    RuntimeObservabilitySnapshot, RuntimeResourceHistogramSnapshot, RuntimeResourceMetricStatus,
+    RuntimeResourceSnapshot,
 };
 #[cfg(test)]
 pub(crate) use runtime::configure_test_memory_integrity;

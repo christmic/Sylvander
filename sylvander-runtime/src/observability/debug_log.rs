@@ -391,6 +391,15 @@ fn event_json(event: &RuntimeEvent) -> Value {
             "event": event_name, "turn_id": turn_id, "session_id": session_id.0,
             "failure_kind": kind.as_str(),
         }),
+        RuntimeEvent::ProcessResourcesSampled {
+            cpu_delta_millis,
+            rss_bytes,
+        } => json!({
+            "event": event_name,
+            "cpu_delta_millis": cpu_delta_millis,
+            "rss_bytes": rss_bytes,
+        }),
+        RuntimeEvent::ProcessResourceSamplingFailed => json!({"event": event_name}),
     }
 }
 
