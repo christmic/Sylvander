@@ -72,9 +72,12 @@ catalog and injected Runtime services, constructs immutable execution policy,
 and assembles the shared run state. `agent/run/orchestration.rs` owns one
 event-driven turn from correlated admission through durable terminal state,
 including the frozen Agent request, event projection order, and turn-scoped
-tool/workspace context. `agent/run/interaction.rs` owns pending
-approval, question, and plan state together with their timeout and
-bus-publication rules. `agent/run/background.rs` owns cancellation, timeout,
+tool/workspace context. `agent/run/interaction.rs` owns pending approval, question, and plan
+state together with their timeout and bus-publication rules. Pending
+records are keyed by `(AgentInstanceId, SessionId, call_id)` so two
+Agents sharing one Session can publish, wait, and settle identical call
+identifiers without crossing wires; the gate struct carries its instance
+identity for the lifetime of a turn. `agent/run/background.rs` owns cancellation, timeout,
 progress, and terminal publication for isolated background Agent work.
 `agent/run/projection.rs` is the type boundary from internal Agent and storage
 facts to public Runtime and governance DTOs; it contains no orchestration.

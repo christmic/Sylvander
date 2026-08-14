@@ -236,6 +236,40 @@ Guardian follows the same separation. Curation/canonical database failures are
 Tests corrupt the live canonical schema and prove the supervisor remains
 healthy while Runtime becomes unready for Storage alone.
 
+## Instance-bound interaction gates
+
+Each Session can carry multiple first-class Agent instances (defined Agents,
+forks, reviewers, future swarm members). Runtime therefore identifies every
+interactive decision (tool approval, AskUser answer, plan review) by the
+triple `(AgentInstanceId, SessionId, call_id)`, not by `(Session, call_id)`.
+This is the only key the runtime-side pending maps accept, so two Agents
+sharing one Session can publish, wait, and settle identical `call_id`
+values without crossing wires.
+
+The decision lifecycle follows the published contract:
+
+- `BusApprovalGate` owns `pending_approvals: HashMap<InteractionKey, PendingApproval>`.
+  Tool approval batches look up by `InteractionKey(agent_instance_id, session_id, call_id)`,
+  publish a typed `ToolApprovalRequired` event with the instance as the
+  recipient, and wait for `SystemMessage::ApproveTool` carrying the same
+  `Recipient::AgentInstance` to settle.
+- `BusAskUserGate` and `BusPlanGate` follow the same pattern for `AskUser`
+  and `ResolvePlan` answers.
+- `Recipient::AgentInstance` is mandatory on the settling system message;
+  any other recipient is logged and dropped before the pending map is touched.
+  This means an external caller cannot impersonate a different instance to
+  unblock or hijack a sibling's pending decision.
+
+Gate construction in `agent/run/orchestration.rs` injects
+`agent_instance_id` from the durable turn identity alongside `session_id`,
+so a single Session can host heterogeneous instances with isolated gate state
+without parallel `pending_*` maps per instance.
+
+Production builds reject durable turns whose `BusMessage.recipient` is not
+`Recipient::AgentInstance`; the test-only fallback derives a deterministic
+`moderator:<session_id>` identifier so integration tests do not need to mint
+their own. Both paths reuse the same `InteractionKey` shape.
+
 ## Built-in observability
 
 The target is for Runtime to assign correlation identifiers and emit one typed
