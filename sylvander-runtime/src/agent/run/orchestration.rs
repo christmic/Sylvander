@@ -425,12 +425,19 @@ impl AgentRunInner {
         }
     }
 
-    async fn cancel_pending_decisions(&self, session_id: &SessionId) {
+    async fn cancel_pending_decisions(
+        &self,
+        session_id: &SessionId,
+        agent_instance_id: Option<&AgentInstanceId>,
+    ) {
         let approval_ids = {
             let pending = self.pending_approvals.lock().await;
             pending
                 .iter()
-                .filter(|(_, request)| &request.session_id == session_id)
+                .filter(|(_, request)| {
+                    &request.session_id == session_id
+                        && agent_instance_id.is_none_or(|id| &request.agent_instance_id == id)
+                })
                 .map(|(call_id, _)| call_id.clone())
                 .collect::<Vec<_>>()
         };
@@ -448,7 +455,10 @@ impl AgentRunInner {
             let pending = self.pending_answers.lock().await;
             pending
                 .iter()
-                .filter(|(_, request)| &request.session_id == session_id)
+                .filter(|(_, request)| {
+                    &request.session_id == session_id
+                        && agent_instance_id.is_none_or(|id| &request.agent_instance_id == id)
+                })
                 .map(|(call_id, _)| call_id.clone())
                 .collect::<Vec<_>>()
         };
@@ -464,7 +474,10 @@ impl AgentRunInner {
             let pending = self.pending_plans.lock().await;
             pending
                 .iter()
-                .filter(|(_, request)| &request.session_id == session_id)
+                .filter(|(_, request)| {
+                    &request.session_id == session_id
+                        && agent_instance_id.is_none_or(|id| &request.agent_instance_id == id)
+                })
                 .map(|(plan_id, _)| plan_id.clone())
                 .collect::<Vec<_>>()
         };
@@ -1214,7 +1227,7 @@ impl AgentRunInner {
             let event = tokio::select! {
                 biased;
                 _ = &mut interrupted => {
-                    self.cancel_pending_decisions(&session_id).await;
+                    self.cancel_pending_decisions(&session_id, Some(&agent_instance_id)).await;
                     if let Some(store) = &self.session_store {
                         store
                             .finish_turn(

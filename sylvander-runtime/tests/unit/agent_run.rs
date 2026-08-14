@@ -3509,6 +3509,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_agent_instance
             InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
             PendingApproval {
                 session_id: session.clone(),
+                agent_instance_id: instance.clone(),
                 grant,
                 persistent_identity_authorized: true,
                 allowed_scopes: vec![sylvander_api::ApprovalScope::Once],
@@ -3519,6 +3520,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_agent_instance
             InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
             PendingAnswer {
                 session_id: session.clone(),
+                agent_instance_id: instance.clone(),
                 sender: answer,
             },
         );
@@ -3526,6 +3528,7 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_agent_instance
             InteractionKey::new(instance.clone(), session.clone(), "shared-id"),
             PendingPlan {
                 session_id: session.clone(),
+                agent_instance_id: instance.clone(),
                 sender: plan,
             },
         );

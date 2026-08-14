@@ -58,6 +58,7 @@ fn instance_stream_event(
 
 pub(super) struct PendingApproval {
     pub(super) session_id: SessionId,
+    pub(super) agent_instance_id: AgentInstanceId,
     pub(super) grant: ApprovalGrantKey,
     pub(super) persistent_identity_authorized: bool,
     pub(super) allowed_scopes: Vec<sylvander_api::ApprovalScope>,
@@ -66,11 +67,13 @@ pub(super) struct PendingApproval {
 
 pub(super) struct PendingAnswer {
     pub(super) session_id: SessionId,
+    pub(super) agent_instance_id: AgentInstanceId,
     pub(super) sender: oneshot::Sender<Vec<String>>,
 }
 
 pub(super) struct PendingPlan {
     pub(super) session_id: SessionId,
+    pub(super) agent_instance_id: AgentInstanceId,
     pub(super) sender: oneshot::Sender<PlanDecision>,
 }
 
@@ -136,6 +139,7 @@ impl ApprovalGate for BusApprovalGate {
                 ),
                 PendingApproval {
                     session_id: self.session_id.clone(),
+                    agent_instance_id: self.agent_instance_id.clone(),
                     grant,
                     persistent_identity_authorized: self.persistent_identity_authorized,
                     allowed_scopes: allowed_scopes.clone(),
@@ -234,6 +238,7 @@ impl AskUserGate for BusAskUserGate {
             ),
             PendingAnswer {
                 session_id: self.session_id.clone(),
+                agent_instance_id: self.agent_instance_id.clone(),
                 sender: tx,
             },
         );
@@ -301,6 +306,7 @@ impl PlanGate for BusPlanGate {
             ),
             PendingPlan {
                 session_id: self.session_id.clone(),
+                agent_instance_id: self.agent_instance_id.clone(),
                 sender: tx,
             },
         );
