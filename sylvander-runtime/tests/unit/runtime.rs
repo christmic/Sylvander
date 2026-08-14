@@ -521,6 +521,33 @@ async fn operational_readiness_tracks_sticky_observation_sink_failure() {
 }
 
 #[tokio::test]
+async fn operational_readiness_tracks_resource_sampler_failure() {
+    let directory = tempfile::tempdir().expect("temporary runtime directory");
+    let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &[]))
+        .await
+        .expect("configured runtime");
+    runtime.resource_monitor.fail_for_test();
+
+    let snapshot = runtime.operational_snapshot().await.unwrap();
+
+    assert!(!snapshot.ready);
+    assert_eq!(
+        snapshot.health_issues,
+        [RuntimeHealthIssue::ResourceSampler]
+    );
+    assert_eq!(
+        snapshot.observability.resources.rss_status,
+        crate::RuntimeResourceMetricStatus::Observed
+    );
+    assert!(snapshot.observability.resources.current_rss_bytes.is_some());
+    assert_eq!(
+        snapshot.observability.resources.network_status,
+        crate::RuntimeResourceMetricStatus::Unavailable
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn operational_readiness_separates_guardian_storage_from_supervisor_health() {
     let directory = tempfile::tempdir().expect("temporary runtime directory");
     let runtime = Runtime::boot_config(configured_memory_test_config(&directory, &[]))

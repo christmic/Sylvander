@@ -6,7 +6,8 @@ use crate::observability::{
     DEBUG_OBSERVATION_LOG_MAX_FILES, DEBUG_OBSERVATION_LOG_TOTAL_MAX_BYTES, RuntimeClock,
     RuntimeCoordinationOutcome, RuntimeDurationHistogramSnapshot, RuntimeEvent, RuntimeFailureKind,
     RuntimeObservability, RuntimeObservabilitySnapshot, RuntimeObservationDebugLog,
-    RuntimePersistenceOperation, RuntimeToolFailureKind,
+    RuntimePersistenceOperation, RuntimeResourceHistogramSnapshot, RuntimeResourceMetricStatus,
+    RuntimeResourceMonitor, RuntimeResourceSnapshot, RuntimeToolFailureKind, sequence_sampler,
 };
 use sylvander_api::MessageId;
 
@@ -77,6 +78,92 @@ impl RuntimeClock for TestClock {
     fn now_micros(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
     }
+}
+
+#[test]
+fn process_resource_facts_preserve_baseline_distributions_and_unavailable_network() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    recorder.record(RuntimeEvent::ProcessResourcesSampled {
+        cpu_delta_millis: None,
+        rss_bytes: 20 * 1024 * 1024,
+    });
+    recorder.record(RuntimeEvent::ProcessResourcesSampled {
+        cpu_delta_millis: Some(7),
+        rss_bytes: 40 * 1024 * 1024,
+    });
+
+    let snapshot = recorder.snapshot();
+    assert_eq!(snapshot.event_count, 0);
+    assert_eq!(
+        snapshot.resources,
+        RuntimeResourceSnapshot {
+            cpu_status: RuntimeResourceMetricStatus::Observed,
+            cpu_delta_millis: RuntimeResourceHistogramSnapshot {
+                count: 1,
+                total: 7,
+                max: 7,
+                bucket_counts: [0, 0, 1, 0, 0, 0, 0, 0],
+            },
+            rss_status: RuntimeResourceMetricStatus::Observed,
+            rss_bytes: RuntimeResourceHistogramSnapshot {
+                count: 2,
+                total: 60 * 1024 * 1024,
+                max: 40 * 1024 * 1024,
+                bucket_counts: [0, 1, 1, 0, 0, 0, 0, 0],
+            },
+            current_rss_bytes: Some(40 * 1024 * 1024),
+            network_status: RuntimeResourceMetricStatus::Unavailable,
+        }
+    );
+}
+
+#[test]
+fn process_resource_failure_is_sticky_without_erasing_prior_evidence() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    recorder.record(RuntimeEvent::ProcessResourcesSampled {
+        cpu_delta_millis: Some(3),
+        rss_bytes: 8,
+    });
+    recorder.record(RuntimeEvent::ProcessResourceSamplingFailed);
+
+    let resources = recorder.snapshot().resources;
+    assert_eq!(resources.cpu_status, RuntimeResourceMetricStatus::Failed);
+    assert_eq!(resources.rss_status, RuntimeResourceMetricStatus::Failed);
+    assert_eq!(resources.cpu_delta_millis.count, 1);
+    assert_eq!(resources.rss_bytes.count, 1);
+    assert_eq!(resources.current_rss_bytes, Some(8));
+    assert_eq!(
+        resources.network_status,
+        RuntimeResourceMetricStatus::Unavailable
+    );
+}
+
+#[tokio::test]
+async fn resource_monitor_baselines_joins_and_fails_on_counter_regression() {
+    let recorder = RuntimeObservability::with_test_clock(Arc::new(TestClock::default()));
+    let sampler = sequence_sampler([Ok((10, 100)), Ok((15, 110)), Ok((14, 120))]);
+    let monitor = RuntimeResourceMonitor::start_for_test(
+        recorder.clone(),
+        std::time::Duration::from_millis(5),
+        sampler,
+    )
+    .unwrap();
+    assert_eq!(recorder.snapshot().resources.cpu_delta_millis.count, 0);
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !monitor.failed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("resource monitor reaches the regression sample");
+
+    monitor.shutdown().await;
+    let resources = recorder.snapshot().resources;
+    assert_eq!(resources.cpu_status, RuntimeResourceMetricStatus::Failed);
+    assert_eq!(resources.cpu_delta_millis.count, 1);
+    assert_eq!(resources.cpu_delta_millis.total, 5);
+    assert_eq!(resources.rss_bytes.count, 2);
+    assert_eq!(resources.current_rss_bytes, Some(110));
 }
 
 #[test]
