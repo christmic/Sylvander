@@ -1,0 +1,1 @@
+{"scenario":"concurrent_review","branch":"workspace-concurrency","expect_merge":"exact_receipt"}

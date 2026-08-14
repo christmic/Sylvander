@@ -1,0 +1,6 @@
+{
+  "id": "runtime-multi_agent_coordination",
+  "revision": "v1.0.0",
+  "sha256": "cd1cdbc405b706f9755e20957685948aa0edbe2d1e0149e5c698545f94c2fc4c",
+  "content": "family=multi_agent_coordination;expect=homogeneous_or_fork_or_swarm"
+}

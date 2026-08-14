@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "suite": "sylvander-runtime-cognition-perception",
+  "suite_revision": "1.0.0",
+  "candidate": "perception_specialist",
+  "primary_model": "anthropic-claude-sonnet-5",
+  "auxiliary_models": [
+    {
+      "role": "vision",
+      "model": "anthropic-claude-vision-specialist"
+    },
+    {
+      "role": "audio",
+      "model": "anthropic-claude-audio-specialist"
+    },
+    {
+      "role": "document",
+      "model": "anthropic-claude-document-specialist"
+    }
+  ],
+  "repetitions": 2,
+  "scenarios": [
+    {
+      "id": "audio_attachment",
+      "family": "multimodal_perception",
+      "modality": "audio",
+      "risk": "medium",
+      "input": {
+        "locator": "artifacts/multimodal_perception_audio_input.wav",
+        "media_type": "audio/wav",
+        "sha256": "564867d8781dc7f4f43e66543e9db6631f464c90087e3cf87a04040f2e83217c"
+      },
+      "verifier": {
+        "id": "runtime-audio_attachment",
+        "revision": "v1.0.0",
+        "sha256": "4f21e46c55dd627239ff58909bbe7c68cd7d3f727b7140f56813dd3c4e1dc394"
+      },
+      "provenance": {
+        "dataset": "sylvander-runtime-bench-corpus",
+        "revision": "1.0.0",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "id": "vision_image_attachment",
+      "family": "multimodal_perception",
+      "modality": "image",
+      "risk": "medium",
+      "input": {
+        "locator": "artifacts/multimodal_perception_vision_input.png",
+        "media_type": "image/png",
+        "sha256": "4c4b6a3be1314ab86138bef4314dde022e600960d8689a2c8f8631802d20dab6"
+      },
+      "verifier": {
+        "id": "runtime-vision_image_attachment",
+        "revision": "v1.0.0",
+        "sha256": "35b1e597cbd59163c8246a89f1759a7c680313ce4eff20d91f6f7bebf2a94d9d"
+      },
+      "provenance": {
+        "dataset": "sylvander-runtime-bench-corpus",
+        "revision": "1.0.0",
+        "license": "Apache-2.0"
+      }
+    }
+  ]
+}

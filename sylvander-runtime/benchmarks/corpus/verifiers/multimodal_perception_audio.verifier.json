@@ -1,0 +1,6 @@
+{
+  "id": "runtime-multimodal_perception_audio",
+  "revision": "v1.0.0",
+  "sha256": "88db957773ac94ecc1cc23ba472a2dbb989c5b27c7a473f149ac705b6919e911",
+  "content": "family=multimodal_perception;modality=audio;expect=advisory"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "runtime-crash_recovery",
+  "revision": "v1.0.0",
+  "sha256": "dcfdca1e4a7efd76376329884b222bd3af82bb426b753111bc4c2c0ab93ae1f2",
+  "content": "family=crash_recovery;expect=manual_reconciliation_or_recover_from_receipt"
+}

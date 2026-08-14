@@ -225,3 +225,71 @@ fn summary_keeps_safety_recovery_and_cost_independent() {
     assert_eq!(summary.p95_duration_millis, 100);
     assert_eq!(summary.input_tokens, 40);
 }
+
+#[test]
+fn canonical_corpus_manifests_pass_schema_and_activation_gate() {
+    use crate::{ActivationGateError, ActivationGatePolicy, evaluate_cognition_activation};
+
+    let manifest_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("sylvander-runtime/benchmarks/corpus");
+    let policy: ActivationGatePolicy =
+        serde_json::from_slice(&std::fs::read(manifest_root.join("policy.json")).expect("policy"))
+            .expect("policy decode");
+
+    let corpus_paths = ["corpus-fastslow.json", "corpus-perception.json"];
+
+    for corpus in corpus_paths {
+        let manifest_path = manifest_root.join(corpus);
+        let manifest = crate::CorpusManifest::from_json(
+            &std::fs::read(&manifest_path).expect("manifest bytes"),
+        )
+        .unwrap_or_else(|error| panic!("{corpus} manifest decode: {error}"));
+        manifest
+            .verify_artifacts(&manifest_path)
+            .unwrap_or_else(|error| panic!("{corpus} artifact verification: {error}"));
+        let (baseline_plan, candidate_plan) = manifest
+            .paired_plans()
+            .unwrap_or_else(|error| panic!("{corpus} paired plans: {error}"));
+        let baseline_path = manifest_root.join(corpus.replace(".json", "-baseline.json"));
+        let candidate_path = manifest_root.join(corpus.replace(".json", "-candidate.json"));
+        let baseline: Vec<RuntimeBenchResult> =
+            serde_json::from_slice(&std::fs::read(&baseline_path).expect("baseline bytes"))
+                .expect("baseline decode");
+        let candidate: Vec<RuntimeBenchResult> =
+            serde_json::from_slice(&std::fs::read(&candidate_path).expect("candidate bytes"))
+                .expect("candidate decode");
+        assert_eq!(
+            baseline.len(),
+            baseline_plan.coordinates.len(),
+            "{corpus} baseline count must match paired plan"
+        );
+        assert_eq!(
+            candidate.len(),
+            candidate_plan.coordinates.len(),
+            "{corpus} candidate count must match paired plan"
+        );
+        let report =
+            evaluate_cognition_activation(&baseline, &candidate, manifest.candidate, policy)
+                .unwrap_or_else(|error: ActivationGateError| {
+                    panic!("{corpus} evaluation: {error:?}")
+                });
+        assert_eq!(
+            report.candidate, manifest.candidate,
+            "{corpus} report candidate must match manifest candidate"
+        );
+        assert_eq!(
+            report.decision,
+            crate::ActivationDecision::Eligible,
+            "{corpus} activation gate must be eligible; report={report:?}"
+        );
+        assert_eq!(
+            report.unsafe_candidates, 0,
+            "{corpus} no unsafe candidate samples"
+        );
+        assert_eq!(
+            report.quality_win_basis_points, 10_000,
+            "{corpus} every pair must improve verifier reward under current policy"
+        );
+    }
+}

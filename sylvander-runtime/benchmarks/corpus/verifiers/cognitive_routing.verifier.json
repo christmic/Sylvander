@@ -1,0 +1,6 @@
+{
+  "id": "runtime-cognitive_routing",
+  "revision": "v1.0.0",
+  "sha256": "0bfa6020d71097433d3c56e1e2392f72a39d5847c992eedb63e744db61c74ece",
+  "content": "family=cognitive_routing;expect=advisory_or_soft_fail"
+}

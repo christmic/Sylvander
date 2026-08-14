@@ -1,0 +1,254 @@
+[
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-fastslow",
+      "suite_revision": "1.0.0",
+      "scenario_id": "deliberation_complex_text",
+      "family": "cognitive_routing",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "primary_only",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        }
+      ],
+      "run_ordinal": 1
+    },
+    "verifier_reward": 0.55,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 8500,
+    "input_tokens": 4200,
+    "output_tokens": 1200,
+    "model_calls": 1,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 0,
+    "perception_calls": 0,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  },
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-fastslow",
+      "suite_revision": "1.0.0",
+      "scenario_id": "deliberation_complex_text",
+      "family": "cognitive_routing",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "primary_only",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        }
+      ],
+      "run_ordinal": 2
+    },
+    "verifier_reward": 0.55,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 8500,
+    "input_tokens": 4200,
+    "output_tokens": 1200,
+    "model_calls": 1,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 0,
+    "perception_calls": 0,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  },
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-fastslow",
+      "suite_revision": "1.0.0",
+      "scenario_id": "deliberation_high_risk_text",
+      "family": "cognitive_routing",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "primary_only",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        }
+      ],
+      "run_ordinal": 1
+    },
+    "verifier_reward": 0.55,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 8500,
+    "input_tokens": 4200,
+    "output_tokens": 1200,
+    "model_calls": 1,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 0,
+    "perception_calls": 0,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  },
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-fastslow",
+      "suite_revision": "1.0.0",
+      "scenario_id": "deliberation_high_risk_text",
+      "family": "cognitive_routing",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "primary_only",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        }
+      ],
+      "run_ordinal": 2
+    },
+    "verifier_reward": 0.55,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 8500,
+    "input_tokens": 4200,
+    "output_tokens": 1200,
+    "model_calls": 1,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 0,
+    "perception_calls": 0,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  },
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-fastslow",
+      "suite_revision": "1.0.0",
+      "scenario_id": "fastdraft_low_risk_text",
+      "family": "cognitive_routing",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "primary_only",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        }
+      ],
+      "run_ordinal": 1
+    },
+    "verifier_reward": 0.55,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 8500,
+    "input_tokens": 4200,
+    "output_tokens": 1200,
+    "model_calls": 1,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 0,
+    "perception_calls": 0,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  },
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-fastslow",
+      "suite_revision": "1.0.0",
+      "scenario_id": "fastdraft_low_risk_text",
+      "family": "cognitive_routing",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "primary_only",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        }
+      ],
+      "run_ordinal": 2
+    },
+    "verifier_reward": 0.55,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 8500,
+    "input_tokens": 4200,
+    "output_tokens": 1200,
+    "model_calls": 1,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 0,
+    "perception_calls": 0,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "id": "runtime-multimodal_perception_vision",
+  "revision": "v1.0.0",
+  "sha256": "5b4f50f11452376cf0d07a21f281c307cb41b407331158c9f6595f07d8010ac3",
+  "content": "family=multimodal_perception;modality=vision;expect=advisory"
+}

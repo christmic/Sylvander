@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "suite": "sylvander-runtime-cognition-fastslow",
+  "suite_revision": "1.0.0",
+  "candidate": "fast_slow",
+  "primary_model": "anthropic-claude-sonnet-5",
+  "auxiliary_models": [
+    {
+      "role": "fast_draft",
+      "model": "anthropic-claude-haiku-4"
+    },
+    {
+      "role": "deliberation",
+      "model": "anthropic-claude-opus-5"
+    }
+  ],
+  "repetitions": 2,
+  "scenarios": [
+    {
+      "id": "deliberation_complex_text",
+      "family": "cognitive_routing",
+      "modality": "text",
+      "risk": "medium",
+      "input": {
+        "locator": "artifacts/cognitive_routing_input.json",
+        "media_type": "application/json",
+        "sha256": "52c5de646f8259d705b035c20316d8cdf8f3475a92f8aae881d03631963165a8"
+      },
+      "verifier": {
+        "id": "runtime-deliberation_complex_text",
+        "revision": "v1.0.0",
+        "sha256": "5e0a77a8e60c908876c0503af911df4715022f3f762908a002ee22f3ca52e3ea"
+      },
+      "provenance": {
+        "dataset": "sylvander-runtime-bench-corpus",
+        "revision": "1.0.0",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "id": "deliberation_high_risk_text",
+      "family": "cognitive_routing",
+      "modality": "text",
+      "risk": "high",
+      "input": {
+        "locator": "artifacts/cognitive_routing_input.json",
+        "media_type": "application/json",
+        "sha256": "52c5de646f8259d705b035c20316d8cdf8f3475a92f8aae881d03631963165a8"
+      },
+      "verifier": {
+        "id": "runtime-deliberation_high_risk_text",
+        "revision": "v1.0.0",
+        "sha256": "5e0a77a8e60c908876c0503af911df4715022f3f762908a002ee22f3ca52e3ea"
+      },
+      "provenance": {
+        "dataset": "sylvander-runtime-bench-corpus",
+        "revision": "1.0.0",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "id": "fastdraft_low_risk_text",
+      "family": "cognitive_routing",
+      "modality": "text",
+      "risk": "low",
+      "input": {
+        "locator": "artifacts/cognitive_routing_input.json",
+        "media_type": "application/json",
+        "sha256": "52c5de646f8259d705b035c20316d8cdf8f3475a92f8aae881d03631963165a8"
+      },
+      "verifier": {
+        "id": "runtime-fastdraft_low_risk_text",
+        "revision": "v1.0.0",
+        "sha256": "5e0a77a8e60c908876c0503af911df4715022f3f762908a002ee22f3ca52e3ea"
+      },
+      "provenance": {
+        "dataset": "sylvander-runtime-bench-corpus",
+        "revision": "1.0.0",
+        "license": "Apache-2.0"
+      }
+    }
+  ]
+}

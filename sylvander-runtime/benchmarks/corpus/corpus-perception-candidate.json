@@ -1,0 +1,218 @@
+[
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-perception",
+      "suite_revision": "1.0.0",
+      "scenario_id": "audio_attachment",
+      "family": "multimodal_perception",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "perception_specialist",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        },
+        {
+          "role": "vision",
+          "model": "anthropic-claude-vision-specialist"
+        },
+        {
+          "role": "audio",
+          "model": "anthropic-claude-audio-specialist"
+        },
+        {
+          "role": "document",
+          "model": "anthropic-claude-document-specialist"
+        }
+      ],
+      "run_ordinal": 1
+    },
+    "verifier_reward": 0.95,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 4800,
+    "input_tokens": 3100,
+    "output_tokens": 540,
+    "model_calls": 2,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 1,
+    "perception_calls": 1,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  },
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-perception",
+      "suite_revision": "1.0.0",
+      "scenario_id": "audio_attachment",
+      "family": "multimodal_perception",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "perception_specialist",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        },
+        {
+          "role": "vision",
+          "model": "anthropic-claude-vision-specialist"
+        },
+        {
+          "role": "audio",
+          "model": "anthropic-claude-audio-specialist"
+        },
+        {
+          "role": "document",
+          "model": "anthropic-claude-document-specialist"
+        }
+      ],
+      "run_ordinal": 2
+    },
+    "verifier_reward": 0.95,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 4800,
+    "input_tokens": 3100,
+    "output_tokens": 540,
+    "model_calls": 2,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 1,
+    "perception_calls": 1,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  },
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-perception",
+      "suite_revision": "1.0.0",
+      "scenario_id": "vision_image_attachment",
+      "family": "multimodal_perception",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "perception_specialist",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        },
+        {
+          "role": "vision",
+          "model": "anthropic-claude-vision-specialist"
+        },
+        {
+          "role": "audio",
+          "model": "anthropic-claude-audio-specialist"
+        },
+        {
+          "role": "document",
+          "model": "anthropic-claude-document-specialist"
+        }
+      ],
+      "run_ordinal": 1
+    },
+    "verifier_reward": 0.95,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 4800,
+    "input_tokens": 3100,
+    "output_tokens": 540,
+    "model_calls": 2,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 1,
+    "perception_calls": 1,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  },
+  {
+    "coordinate": {
+      "suite": "sylvander-runtime-cognition-perception",
+      "suite_revision": "1.0.0",
+      "scenario_id": "vision_image_attachment",
+      "family": "multimodal_perception",
+      "topology": "single_agent",
+      "workspace": "read_only_shared",
+      "failure_point": "none",
+      "cognition": "perception_specialist",
+      "models": [
+        {
+          "role": "primary",
+          "model": "anthropic-claude-sonnet-5"
+        },
+        {
+          "role": "vision",
+          "model": "anthropic-claude-vision-specialist"
+        },
+        {
+          "role": "audio",
+          "model": "anthropic-claude-audio-specialist"
+        },
+        {
+          "role": "document",
+          "model": "anthropic-claude-document-specialist"
+        }
+      ],
+      "run_ordinal": 2
+    },
+    "verifier_reward": 0.95,
+    "useful_completion": true,
+    "invariant_violations": 0,
+    "duplicate_effects": 0,
+    "user_visible_failures": 0,
+    "recovered": false,
+    "duration_millis": 4800,
+    "input_tokens": 3100,
+    "output_tokens": 540,
+    "model_calls": 2,
+    "primary_model_calls": 1,
+    "auxiliary_model_calls": 1,
+    "perception_calls": 1,
+    "cognitive_fallbacks": 0,
+    "tool_calls": 1,
+    "messages": 4,
+    "handoffs": 0,
+    "moderator_interventions": 0,
+    "workspace_conflicts": 0,
+    "doctor_findings": 0,
+    "doctor_false_positives": 0,
+    "doctor_proposals": 0,
+    "doctor_auto_applied": 0
+  }
+]

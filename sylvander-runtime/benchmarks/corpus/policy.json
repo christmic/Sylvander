@@ -1,0 +1,7 @@
+{
+  "minimum_pairs": 2,
+  "minimum_reward_gain_micros": 0,
+  "minimum_quality_win_basis_points": 0,
+  "maximum_token_increase_basis_points": 20000,
+  "maximum_p95_latency_increase_basis_points": 20000
+}
