@@ -725,29 +725,30 @@ async fn approved_text_cognition_is_durable_advisory_and_primary_remains_final()
         .await
         .unwrap();
 
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(
-        requests
-            .iter()
-            .map(|request| request.model.model.as_str())
-            .collect::<Vec<_>>(),
-        ["primary", "text-specialist", "primary"]
-    );
-    assert!(requests[1].tools.is_empty());
-    assert!(requests[2].messages.iter().any(|message| {
-        message.content.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::ToolResult { content, .. }
-                    if content.iter().any(|item| matches!(
-                        item,
-                        sylvander_llm_core::ToolResultContent::Text { text }
-                            if text.contains("bounded specialist advice")
-                    ))
-            )
-        })
-    }));
-    drop(requests);
+    {
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.model.model.as_str())
+                .collect::<Vec<_>>(),
+            ["primary", "text-specialist", "primary"]
+        );
+        assert!(requests[1].tools.is_empty());
+        assert!(requests[2].messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult { content, .. }
+                        if content.iter().any(|item| matches!(
+                            item,
+                            sylvander_llm_core::ToolResultContent::Text { text }
+                                if text.contains("bounded specialist advice")
+                        ))
+                )
+            })
+        }));
+    }
     let durable = store
         .cognition_invocations(&session_id, "turn-text-cognition")
         .await

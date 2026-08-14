@@ -472,14 +472,14 @@ fn digest_capabilities(model: &ModelInfo) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn text_roles_have_distinct_bounded_instructions() {
         assert_ne!(
-            role_instruction(CognitiveRole::FastDraft),
-            role_instruction(CognitiveRole::Critic)
+            super::role_instruction(super::CognitiveRole::FastDraft),
+            super::role_instruction(super::CognitiveRole::Critic)
         );
-        assert!(role_instruction(CognitiveRole::Deliberation).contains("primary agent"));
+        assert!(
+            super::role_instruction(super::CognitiveRole::Deliberation).contains("primary agent")
+        );
     }
 }

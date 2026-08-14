@@ -147,24 +147,22 @@ pub enum CognitionLedgerError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn positions_are_adjacent_and_receipt_recovery_never_blindly_replays() {
         assert!(
-            CognitionExecutionPosition::Prepared
-                .can_advance_to(CognitionExecutionPosition::PromptPersisted)
+            super::CognitionExecutionPosition::Prepared
+                .can_advance_to(super::CognitionExecutionPosition::PromptPersisted)
         );
         assert!(
-            !CognitionExecutionPosition::PromptPersisted
-                .can_advance_to(CognitionExecutionPosition::InferenceCompleted)
+            !super::CognitionExecutionPosition::PromptPersisted
+                .can_advance_to(super::CognitionExecutionPosition::InferenceCompleted)
         );
         assert_eq!(
-            CognitionRecoveryClassification::for_interrupted(
-                CognitionExecutionPosition::InferenceStarted
+            super::CognitionRecoveryClassification::for_interrupted(
+                super::CognitionExecutionPosition::InferenceStarted
             )
             .decision,
-            CognitionRecoveryDecision::RecoverReceipt
+            super::CognitionRecoveryDecision::RecoverReceipt
         );
     }
 }

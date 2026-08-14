@@ -10,6 +10,8 @@ use tracing::{Instrument as _, info};
 
 use sylvander_agent::approval::{ApprovalDecision, ApprovalGate};
 use sylvander_agent::ask_user_gate::AskUserGate;
+#[cfg(test)]
+use sylvander_agent::doctor_gate::DoctorGate as _;
 use sylvander_agent::execution_ports::AgentExecutionPorts;
 use sylvander_agent::kernel::agent_loop;
 use sylvander_agent::memory::curated::{CuratedContextSubject, CuratedMemoryScope};
@@ -2093,8 +2095,6 @@ impl AgentRun {
         session_id: &SessionId,
         agent_instance_id: &AgentInstanceId,
     ) -> Result<sylvander_agent::doctor_gate::DoctorReport, AgentRunError> {
-        use sylvander_agent::doctor_gate::DoctorGate as _;
-
         let store = self.inner.workflow_store.clone().ok_or_else(|| {
             AgentRunError::Configuration("runtime inspection is unavailable".into())
         })?;
