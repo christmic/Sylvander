@@ -414,3 +414,31 @@ impl AgentRunBuilder {
         Ok((run, issuer))
     }
 }
+
+#[cfg(test)]
+impl AgentRun {
+    /// Return test-only proof for a Session already admitted by this run.
+    ///
+    /// Production callers must obtain this proof from the one-shot admission
+    /// path. Runtime integration tests need to exercise the public Channel
+    /// boundary first, then invoke lower-level memory operations without
+    /// admitting the same Session a second time.
+    pub(crate) async fn admitted_session_proof_for_integration_test(
+        &self,
+        session_id: &sylvander_api::SessionId,
+    ) -> Option<super::AuthenticatedSession> {
+        self.inner
+            .authenticated_sessions
+            .read()
+            .await
+            .contains(session_id)
+            .then(|| super::AuthenticatedSession {
+                authority: self.inner.session_authority.clone(),
+                session_id: session_id.clone(),
+                agent_instance_id: sylvander_api::AgentInstanceId::new(format!(
+                    "moderator:{}",
+                    session_id.0
+                )),
+            })
+    }
+}

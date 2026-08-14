@@ -79,7 +79,7 @@ impl RuntimeArtifactService {
         {
             return Err(EvidenceError::InvalidGovernedRecord);
         }
-        let source_seed = source_seed(&binding);
+        let source_seed = source_seed(&binding)?;
         Ok(Arc::new(BoundArtifactStore {
             scope: self.store.governed_scope(binding.user_id)?,
             source_seed,
